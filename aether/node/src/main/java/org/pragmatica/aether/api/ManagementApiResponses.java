@@ -190,15 +190,22 @@ public sealed interface ManagementApiResponses {
     /// Empty when every declaration bound. A slice using a rejected alias fails to load naming that
     /// alias; this is where the operator learns why, at the point where it is actionable. Rules whose
     /// violation leaves nothing to bind refuse the publish instead (`422`), so they never appear here.
+    /// #1564: `warnings` lists every deploy-time warning, each by `field`, `rule` and message; empty when none.
     record BlueprintResponse(String status,
                              String blueprint,
                              int targetInstances,
                              int activeInstances,
                              int failedInstances,
                              String statusUrl,
-                             List<RejectedStreamBinding> rejectedStreamBindings) {}
+                             List<RejectedStreamBinding> rejectedStreamBindings,
+                             List<DeployWarning> warnings) {}
 
     record RejectedStreamBinding(String field, String rule, String message) {}
+
+    /// #1564: a deploy-time warning — a stream validation warning, or a replication warning a stream, durable topic
+    /// or durable entity declaration raised (`replication-factor-below-three`, `confirmation-equals-replication-factor`,
+    /// `confirmation-factor-owner-only`) — by its TOML `field`, the `rule` (the warning's code) and the sentence.
+    record DeployWarning(String field, String rule, String message) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 

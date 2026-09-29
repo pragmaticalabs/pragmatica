@@ -44,6 +44,7 @@ import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -62,6 +63,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final SwimConfig swimConfig;
     private volatile Predicate<NodeId> membershipEligibility = _ -> true;
     private volatile Option<BootTokens> bootTokens = Option.none();
+    private volatile Option<OperatorWarningSink> operatorWarningSink = Option.none();
     private volatile List<NodeInfo> peerDirectory = List.of();
 
     public Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
@@ -76,6 +78,15 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     public Unit setBootTokens(BootTokens registry) {
         bootTokens = Option.some(registry);
         protocol().onPresent(protocol -> protocol.setBootTokens(registry));
+
+        return Unit.unit();
+    }
+
+    /// Route SWIM's operator warnings to this node's cluster event log (#1574). Applied to a protocol
+    /// that is already running, and to any protocol started later.
+    public Unit setOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarningSink = Option.some(sink);
+        protocol().onPresent(protocol -> protocol.setOperatorWarningSink(sink));
 
         return Unit.unit();
     }
@@ -520,6 +531,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         // dial set and, being the higher NodeId that must initiate, never dialed — wedging cold-start.
         protocol.setMembershipEligibility(membershipEligibility);
         bootTokens.onPresent(protocol::setBootTokens);
+        operatorWarningSink.onPresent(protocol::setOperatorWarningSink);
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         seedMembers(protocol);

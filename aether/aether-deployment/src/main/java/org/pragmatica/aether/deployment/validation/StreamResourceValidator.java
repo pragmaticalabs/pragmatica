@@ -15,6 +15,9 @@ import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
@@ -66,10 +69,12 @@ public sealed interface StreamResourceValidator {
     String RULE_VERSION_AND_SOURCE_EXCLUSIVE = "version-and-source-mutually-exclusive";
     String RULE_PRODUCER_VERSION_EXACT = "producer-version-must-be-exact";
     String RULE_PARTITIONS_OVER_CEILING = "partitions-over-ceiling";
-    String RULE_REPLICATION_INVALID = "replication-invalid";
+    /// #1564: a `replication_factor`/`confirmation_factor` the declaration resolution refuses.
+    String RULE_REPLICATION_POLICY_INVALID = "replication-policy-invalid";
+    /// #1564: a `replication_factor` above the cluster's desired core count (R7).
+    String RULE_REPLICATION_EXCEEDS_CORE_COUNT = "replication-exceeds-core-count";
     String RULE_UNKNOWN_STREAM_KEY = "unknown-stream-key";
     String RULE_STREAM_KEY_INVALID = "stream-key-invalid";
-    String RULE_REPLICAS_BELOW_MINIMUM = "replicas-below-minimum";
     String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
     String RULE_NAMESPACE_INVALID = "namespace-invalid";
     String RULE_STREAM_NAME_INVALID = "stream-name-invalid";
@@ -99,12 +104,13 @@ public sealed interface StreamResourceValidator {
     /// per spec §11.1.2 — empty when no slice manifests are available (e.g., legacy DSL path).
     static Result<ValidatedStreamResources> validate(Option<String> resourcesConfig,
                                                      Artifact blueprintArtifact,
-                                                     Map<String, String> roleHints) {
+                                                     Map<String, String> roleHints,
+                                                     ReplicationContext replication) {
         var failures = new ArrayList<StreamValidationFailure>();
         var warnings = new ArrayList<StreamValidationWarning>();
 
         guardBlueprintNamespace(blueprintArtifact, failures);
-        var resources = parseResourcesOrCollect(resourcesConfig, roleHints, failures);
+        var resources = parseResourcesOrCollect(resourcesConfig, roleHints, replication, failures);
 
         if (failures.isEmpty()) {
             guardInertConfig(resources, resourcesConfig, failures);
@@ -113,6 +119,7 @@ public sealed interface StreamResourceValidator {
 
         if (failures.isEmpty()) {
             collectMultiVersionWarnings(resources, resourcesConfig, roleHints, warnings);
+            collectReplicationWarnings(resources, resourcesConfig, replication, warnings);
         }
 
         if (failures.isEmpty()) {
@@ -145,30 +152,42 @@ public sealed interface StreamResourceValidator {
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
-    /// [#RULE_REPLICAS_BELOW_MINIMUM], [#RULE_REPLICATION_INVALID], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
     /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
     /// type not named here — and #576's inert config keys ([#RULE_INERT_STREAM_CONFIG],
     /// [#RULE_INERT_CONSUMER_CONFIG]). Each names the alias it sits under, taken from the section the parser
     /// refused, never from message text. [#RULE_NAMESPACE_RESERVED] on an External source has no producer at
     /// this head: `ResourceAddress.resourceAddress(String)` accepts `system:` (spec §11.2 allows it).
+    ///
+    /// #1564: every owned section's `replication_factor`/`confirmation_factor` resolve against `replication` — the
+    /// committed cluster defaults and desired core count — and the warnings the declarations raise ride out in
+    /// [StreamValidationPartition#warnings].
     static Result<StreamValidationPartition> partition(Option<String> resourcesConfig,
                                                        Artifact blueprintArtifact,
-                                                       Map<String, String> roleHints) {
+                                                       Map<String, String> roleHints,
+                                                       ReplicationContext replication) {
         var namespaceFailures = new ArrayList<StreamValidationFailure>();
 
         guardBlueprintNamespace(blueprintArtifact, namespaceFailures);
 
-        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesPartitioned(toml, roleHints))
+        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesPartitioned(toml,
+                                                                                        roleHints,
+                                                                                        replication.defaults()))
                               .or(Result.success(PartitionedStreamResources.partitionedStreamResources(Map.of(),
                                                                                                        List.of())))
                               .mapError(cause -> gating(namespaceFailures,
                                                         List.of(documentFailure(cause))))
-                              .flatMap(parsed -> partition(parsed, resourcesConfig, roleHints, namespaceFailures));
+                              .flatMap(parsed -> partition(parsed,
+                                                           resourcesConfig,
+                                                           roleHints,
+                                                           replication,
+                                                           namespaceFailures));
     }
 
     private static Result<StreamValidationPartition> partition(PartitionedStreamResources parsed,
                                                                Option<String> resourcesConfig,
                                                                Map<String, String> roleHints,
+                                                               ReplicationContext replication,
                                                                List<StreamValidationFailure> namespaceFailures) {
         var accepted = new LinkedHashMap<String, StreamResource>();
         var rejected = new ArrayList<StreamValidationFailure>();
@@ -176,7 +195,12 @@ public sealed interface StreamResourceValidator {
 
         parsed.rejected().forEach(cause -> rejected.add(toFailure(cause)));
         parsed.accepted()
-              .forEach((alias, resource) -> acceptOrReject(alias, resource, resourcesConfig, accepted, rejected));
+              .forEach((alias, resource) -> acceptOrReject(alias,
+                                                           resource,
+                                                           resourcesConfig,
+                                                           replication,
+                                                           accepted,
+                                                           rejected));
         var declaresStreams = !parsed.accepted().isEmpty() || !parsed.rejected().isEmpty();
         var gatesBySection = rejected.stream().anyMatch(failure -> GATING_SECTION_RULES.contains(failure.rule()));
 
@@ -186,6 +210,7 @@ public sealed interface StreamResourceValidator {
 
         rejected.addAll(namespaceFailures);
         collectMultiVersionWarnings(accepted, resourcesConfig, roleHints, warnings);
+        collectReplicationWarnings(accepted, resourcesConfig, replication, warnings);
 
         return Result.success(StreamValidationPartition.streamValidationPartition(accepted, rejected, warnings));
     }
@@ -193,11 +218,13 @@ public sealed interface StreamResourceValidator {
     private static void acceptOrReject(String alias,
                                        StreamResource resource,
                                        Option<String> resourcesConfig,
+                                       ReplicationContext replication,
                                        Map<String, StreamResource> accepted,
                                        List<StreamValidationFailure> rejected) {
         var inert = new ArrayList<StreamValidationFailure>();
 
         if (resource instanceof StreamResource.Owned owned) {
+            guardCoreCount(alias, owned.config(), replication, inert);
             guardStreamConfig(alias, owned.config(), inert);
             resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, inert));
         }
@@ -295,8 +322,11 @@ public sealed interface StreamResourceValidator {
 
     private static Map<String, StreamResource> parseResourcesOrCollect(Option<String> resourcesConfig,
                                                                        Map<String, String> roleHints,
+                                                                       ReplicationContext replication,
                                                                        List<StreamValidationFailure> failures) {
-        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesAggregating(toml, roleHints))
+        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesAggregating(toml,
+                                                                                        roleHints,
+                                                                                        replication.defaults()))
                               .or(Result.success(Map.<String, StreamResource> of()))
                               .fold(cause -> collectParseFailures(cause, failures),
                                     map -> map);
@@ -340,8 +370,7 @@ public sealed interface StreamResourceValidator {
             case StreamDeclarationError.VersionAndSourceBothSet _ -> RULE_VERSION_AND_SOURCE_EXCLUSIVE;
             case StreamDeclarationError.ProducerVersionLatest _ -> RULE_PRODUCER_VERSION_EXACT;
             case StreamDeclarationError.PartitionsOverCeiling _ -> RULE_PARTITIONS_OVER_CEILING;
-            case StreamDeclarationError.ReplicasBelowMinimum _ -> RULE_REPLICAS_BELOW_MINIMUM;
-            case StreamDeclarationError.ReplicationInvalid _ -> RULE_REPLICATION_INVALID;
+            case StreamDeclarationError.ReplicationRefused refused -> replicationRule(refused.cause());
             case StreamDeclarationError.UnknownStreamKeys _ -> RULE_UNKNOWN_STREAM_KEY;
             case StreamDeclarationError.NotAnInteger _ -> RULE_STREAM_KEY_INVALID;
             case StreamDeclarationError.MalformedValue _ -> RULE_STREAM_KEY_INVALID;
@@ -352,6 +381,56 @@ public sealed interface StreamResourceValidator {
             case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;
             default -> RULE_STREAM_RESOURCE_INVALID;
         };
+    }
+
+    private static String replicationRule(Cause cause) {
+        return cause instanceof ReplicationFactorsError.ExceedsCoreCount
+               ? RULE_REPLICATION_EXCEEDS_CORE_COUNT
+               : RULE_REPLICATION_POLICY_INVALID;
+    }
+
+    /// #1564 R7: an owned stream whose `replication_factor` exceeds the cluster's DESIRED core count could never
+    /// hold its copies; the section is rejected, named by rule, like any other per-section refusal.
+    private static void guardCoreCount(String alias,
+                                       StreamConfig config,
+                                       ReplicationContext replication,
+                                       List<StreamValidationFailure> failures) {
+        config.replication()
+              .withinCoreCount(replication.desiredCoreCount())
+              .onFailure(cause -> failures.add(StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
+                                                                                               RULE_REPLICATION_EXCEEDS_CORE_COUNT,
+                                                                                               "Stream resource '" + alias
+                                                                                              + "': " + cause.message())));
+    }
+
+    /// #1564: the replication warnings of every ACCEPTED owned section, one [StreamValidationWarning] each, keyed by
+    /// the warning's code — the deploy response reports them to the operator (owner ruling: LOUD warnings).
+    private static void collectReplicationWarnings(Map<String, StreamResource> accepted,
+                                                   Option<String> resourcesConfig,
+                                                   ReplicationContext replication,
+                                                   List<StreamValidationWarning> warnings) {
+        resourcesConfig.onPresent(toml -> StreamConfigParser.replicationWarnings(toml,
+                                                                                 replication.defaults())
+                                                            .forEach((alias, raised) -> reportIfAccepted(alias,
+                                                                                                         raised,
+                                                                                                         accepted,
+                                                                                                         warnings)));
+    }
+
+    private static void reportIfAccepted(String alias,
+                                         List<ReplicationWarning> raised,
+                                         Map<String, StreamResource> accepted,
+                                         List<StreamValidationWarning> warnings) {
+        Option.option(accepted.get(alias))
+              .filter(StreamResource.Owned.class::isInstance)
+              .map(StreamResource.Owned.class::cast)
+              .onPresent(owned -> raised.forEach(warning -> warnings.add(StreamValidationWarning.streamValidationWarning("[streams." + alias
+                                                                                                                        + "]",
+                                                                                                                         warning.code(),
+                                                                                                                         warning.message("stream '" + alias
+                                                                                                                                        + "'",
+                                                                                                                                         owned.config()
+                                                                                                                                              .replication())))));
     }
 
     private static String addressRule(ResourceAddressError.General address) {
@@ -609,9 +688,10 @@ public sealed interface StreamResourceValidator {
 
     record unused() implements StreamResourceValidator {}
 
-    /// Convenience constructor for the no-role-hints case (legacy DSL path / tests).
+    /// Convenience constructor for the no-role-hints case (legacy DSL path / tests). Resolves replication against
+    /// the BUILT-IN defaults: production deploys go through [#partition] with the committed cluster context.
     static Result<ValidatedStreamResources> validate(Option<String> resourcesConfig, Artifact blueprintArtifact) {
-        return validate(resourcesConfig, blueprintArtifact, Map.of());
+        return validate(resourcesConfig, blueprintArtifact, Map.of(), ReplicationContext.BUILT_IN);
     }
 
     /// Convenience: project resources only when the validator is being used purely for the parsed
@@ -619,7 +699,7 @@ public sealed interface StreamResourceValidator {
     static Result<Map<String, StreamResource>> validateResources(Option<String> resourcesConfig,
                                                                  Artifact blueprintArtifact,
                                                                  Map<String, String> roleHints) {
-        return validate(resourcesConfig, blueprintArtifact, roleHints).map(ValidatedStreamResources::resources);
+        return validate(resourcesConfig, blueprintArtifact, roleHints, ReplicationContext.BUILT_IN).map(ValidatedStreamResources::resources);
     }
 
     /// Mutating helper retained for the per-warning-aggregation contract used by the orchestrator.

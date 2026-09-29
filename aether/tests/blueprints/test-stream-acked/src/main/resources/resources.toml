@@ -6,20 +6,20 @@
 # slice loader resolves @ResourceQualifier(config = "streams.acked-events")
 # lookups (see @EventStreamPublisher / @EventStreamReader) against it.
 #
-# replicas = min-sync-replicas = 3 config for the #1549 acked-record owner-kill Forge test
+# replication_factor = confirmation_factor = 3 config for the #1549 acked-record owner-kill Forge test
 # (StreamAckedRecordsOwnerKillTest). A dedicated fixture so no other test's semantics move with it.
-#   - partitions        = 1  -> one clean, globally-ordered log (monotonic offsets).
-#   - replicas          = 3  -> replication factor (RF): copies incl owner (owner + 2 replicas).
-#   - min-sync-replicas = 3  -> owner + 2 in-sync per write: a publish acks only after BOTH replicas
-#     hold the event, so every acked event is on every replica (min-sync == replicas). Until #1549
-#     this key never reached the runtime; the test asserts the committed config carries it.
+#   - partitions          = 1  -> one clean, globally-ordered log (monotonic offsets).
+#   - replication_factor  = 3  -> copies incl owner (owner + 2 replicas).
+#   - confirmation_factor = 3  -> owner + 2 per write: a publish acks only after BOTH replicas hold the
+#     event, so every acked event is on every replica (CF == RF; raises the deploy warning, #1564).
+#     The test asserts the committed config carries it.
 #   - retention  = count     -> count-based eviction (never time-based); retention-value is far larger
 #     than any test event count, so nothing is ever dropped.
 
 [streams.acked-events]
 partitions = 1
-replicas = 3
-min-sync-replicas = 3
+replication_factor = 3
+confirmation_factor = 3
 retention = "count"
 retention-value = "100000"
 max-event-size = "64KB"

@@ -17,7 +17,7 @@
 #   * Every entity create that ACKED must read back with its EXACT written
 #     value after the owner is SIGKILLed. The ack IS the durability claim — an
 #     entity write does not resolve until the record is fsync-durable on the
-#     owner AND held by `minSyncReplicas` — so demanding more would assert a
+#     owner AND held by `confirmation_factor` — so demanding more would assert a
 #     guarantee the system does not make, and demanding less would not test the
 #     one it does. Creates that did NOT ack may legitimately be absent.
 #   * The amount is derived from the key index, so a readback proves the value
@@ -284,10 +284,10 @@ test_deploy_entity_blueprint() {
 
 # Ownership is minted per (entity:orders, partition) arc, and the write barrier
 # additionally needs each partition's replica set populated before
-# minSyncReplicas can be met. Probing ONE key certifies ONE partition — the
+# confirmation_factor can be met. Probing ONE key certifies ONE partition — the
 # Forge run failed in exactly that gap — so this probes a spread of keys.
 # Ownership is minted per (entity:orders, partition) arc, and the write barrier
-# additionally needs each partition's replica set populated before minSyncReplicas can
+# additionally needs each partition's replica set populated before confirmation_factor can
 # be met. Probing ONE key certifies ONE partition, so this probes a spread.
 #
 # Each poll uses a FRESH key block. The first version reused keys 900-911 every poll,
@@ -580,15 +580,18 @@ collect_checkpoints() {
 test_checkpoint_driver_is_alive() {
     # Bounded wait rather than a single sample: ENTITY_CHECKPOINT_INTERVAL is 30s,
     # so sampling once can land before the first tick and fail on a tick boundary
-    # instead of on a defect. `wait_for` evals its predicate in the CURRENT shell,
-    # so the collected globals survive it.
-    if wait_for "a successful checkpoint write somewhere in the cluster" \
-        'collect_checkpoints; [ "$CHECKPOINT_HOSTING" -gt 0 ] && [ "$CHECKPOINT_WRITES" -gt 0 ]' 120; then
+    # instead of on a defect. `wait_for` evaluates its predicate in a FORK
+    # (_fork_bounded), so the globals collect_checkpoints sets there never reach this
+    # shell (#1512: the PASS line read "across 0 node(s)"). Collect again here and
+    # assert on what THIS shell holds, so the verdict and its message come from one read.
+    wait_for "a successful checkpoint write somewhere in the cluster" \
+        'collect_checkpoints; [ "$CHECKPOINT_HOSTING" -gt 0 ] && [ "$CHECKPOINT_WRITES" -gt 0 ]' 120 || true
+    collect_checkpoints
+    if [ "$CHECKPOINT_HOSTING" -gt 0 ] && [ "$CHECKPOINT_WRITES" -gt 0 ]; then
         log_pass "checkpoint driver alive across ${CHECKPOINT_HOSTING} node(s): ${CHECKPOINT_DETAIL}"
         return 0
     fi
 
-    collect_checkpoints
     if [ "$CHECKPOINT_HOSTING" -eq 0 ]; then
         log_fail "no node reported an entity keyspace while the entity slice is deployed"
         return 1

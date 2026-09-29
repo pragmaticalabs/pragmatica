@@ -4,8 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -60,6 +64,24 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
     /// Bounded on count, bytes (off-heap hard cap) and age, mode ANY.
     public RetentionPolicy retention() {
         return RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAgeMs, RetentionMode.ANY);
+    }
+
+    /// #1564 (N2): the `system:cluster-events` stream config this node builds at construction, for its local
+    /// partition. It carries the SAME factors the `SystemStreamRegistrar` commits — those of the committed
+    /// `[replication.cluster_events]` ([ClusterReplication#clusterEventsFactors]) — never a separate hardcoded CF.
+    /// With no committed config (a fresh node), or an unresolvable one (refused at apply since B1, and reported by
+    /// the registrar), it is [ClusterReplication#CLUSTER_EVENTS_BUILT_IN].
+    public StreamConfig streamConfig(String streamName, Option<ClusterConfigValue> committed) {
+        var factors = ClusterReplication.clusterEventsFactors(committed).or(ClusterReplication.CLUSTER_EVENTS_BUILT_IN);
+
+        return StreamConfig.streamConfig(streamName,
+                                         1,
+                                         retention(),
+                                         "earliest",
+                                         maxEventSizeBytes,
+                                         ConsistencyMode.EVENTUAL,
+                                         factors.confirmationFactor())
+                           .withReplication(factors);
     }
 
     private static Result<Long> limit(Fn1<Option<String>, String> environment,

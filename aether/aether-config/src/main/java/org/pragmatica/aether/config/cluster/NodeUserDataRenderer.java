@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Contract;
@@ -121,7 +122,7 @@ public sealed interface NodeUserDataRenderer {
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
-            appendContainerRun(sb, clusterName, nodeId, role);
+            appendContainerRun(sb, clusterName, nodeId, role, source);
         } else {
             appendJvmInstall(sb,
                              resolveJarUrl(runtimeProfile,
@@ -130,6 +131,7 @@ public sealed interface NodeUserDataRenderer {
             appendJvmRun(sb,
                          clusterName,
                          role,
+                         source,
                          runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
         }
 
@@ -252,7 +254,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("chmod 600 /opt/aether/config/aether.toml\n\n");
     }
 
-    private static void appendContainerRun(StringBuilder sb, ClusterName clusterName, String nodeId, NodeRole role) {
+    private static void appendContainerRun(StringBuilder sb,
+                                           ClusterName clusterName,
+                                           String nodeId,
+                                           NodeRole role,
+                                           SourceProfile source) {
         sb.append("# --- Pull and run ---\n");
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
         sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
@@ -276,7 +282,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
         sb.append("    -e PEERS=\"${AETHER_PEERS}\" \\\n");
         sb.append("    ${ADVERTISE_ENV} \\\n");
-        appendEnv(sb, clusterName, role, true);
+        appendEnv(sb, clusterName, role, source, true);
         sb.append("    \"${AETHER_IMAGE}\"\n\n");
     }
 
@@ -286,19 +292,30 @@ public sealed interface NodeUserDataRenderer {
     /// `clusterName` param (the bootstrap-known cluster name); AETHER_ROLE is sourced from the
     /// threaded `role` param (the node's INTENDED role — Wave 2 / W4 of the
     /// cluster-topology-overhaul spec: never inherited from the bootstrapping host's env, which
-    /// carries the HOST's role, not this node's); the rest are read from the bootstrapping
-    /// host's env and emitted only when non-empty. AETHER_CLUSTER_SECRET is emitted HERE
+    /// carries the HOST's role, not this node's); AETHER_SOURCE and AETHER_ZONE are the node's own,
+    /// from `source` (#1650); the rest are read from the bootstrapping host's env and emitted only
+    /// when non-empty. AETHER_CLUSTER_SECRET is emitted HERE
     /// (single source of truth), not separately, so the allow-list is the only place identity
     /// vars are listed.
     ///
     /// `dockerRun==true` emits `-e VAR="value" \` (a `docker run` line-continuation form);
     /// `false` emits `export VAR="value"` for the JVM-run path.
-    private static void appendEnv(StringBuilder sb, ClusterName clusterName, NodeRole role, boolean dockerRun) {
+    private static void appendEnv(StringBuilder sb,
+                                  ClusterName clusterName,
+                                  NodeRole role,
+                                  SourceProfile source,
+                                  boolean dockerRun) {
         Fn2<Unit, String, String> emit = dockerRun
                                          ? (name, value) -> appendDockerRunEnvLine(sb, name, value)
                                          : (name, value) -> appendExportEnvLine(sb, name, value);
 
-        emitIdentityEnv(emit, clusterName, role, Option.some("${AETHER_CLUSTER_SECRET}"), System::getenv);
+        emitIdentityEnv(emit,
+                        clusterName,
+                        role,
+                        source.name(),
+                        source.knownZone(),
+                        Option.some("${AETHER_CLUSTER_SECRET}"),
+                        System::getenv);
     }
 
     /// Single source of truth for the cluster-identity env allow-list emission, shared by the
@@ -322,10 +339,13 @@ public sealed interface NodeUserDataRenderer {
     static void emitIdentityEnv(Fn2<Unit, String, String> emit,
                                 ClusterName clusterName,
                                 NodeRole role,
+                                SourceName source,
+                                Option<String> zone,
                                 Option<String> clusterSecretRef,
                                 Fn1<String, String> envLookup) {
         for (var name : ClusterIdentityEnv.IDENTITY_VARS) {
-            resolveEnvValue(name, clusterName, role, clusterSecretRef, envLookup).onPresent(v -> emit.apply(name, v));
+            resolveEnvValue(name, clusterName, role, source, zone, clusterSecretRef, envLookup).onPresent(v -> emit.apply(name,
+                                                                                                                          v));
         }
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
         // Emit AETHER_INSECURE_DEV_MODE only when present in the (injected) host env so a healed
@@ -338,6 +358,8 @@ public sealed interface NodeUserDataRenderer {
     private static Option<String> resolveEnvValue(String name,
                                                   ClusterName clusterName,
                                                   NodeRole role,
+                                                  SourceName source,
+                                                  Option<String> zone,
                                                   Option<String> clusterSecretRef,
                                                   Fn1<String, String> envLookup) {
         return switch (name) {
@@ -346,6 +368,14 @@ public sealed interface NodeUserDataRenderer {
             // Sourced from the threaded INTENDED role, not host env (Wave 2 / W4 — the
             // bootstrapping host's AETHER_ROLE is the host's own role, not this node's).
             case "AETHER_ROLE" -> Option.some(role.value());
+            // #1650: the node's OWN source and zone, never the rendering host's. A node learns its source
+            // only from this variable (`Main` → the SWIM `source` label → its community), and workers are
+            // rendered on the LEADER, whose env names the leader's source or nothing -- so every
+            // core-provisioned worker came up as `default`. The zone is stamped only when the node's
+            // source names exactly one zone ([SourceProfile#knownZone]); otherwise it is left absent rather than
+            // guessed or inherited.
+            case "AETHER_SOURCE" -> Option.some(source.value());
+            case "AETHER_ZONE" -> zone;
             // Sourced from the supplied ref (cloud-init: the script's own
             // ${AETHER_CLUSTER_SECRET} shell var); none() for the re-launch which emits the
             // finalized secret explicitly to avoid a duplicate -e AETHER_CLUSTER_SECRET.
@@ -404,14 +434,18 @@ public sealed interface NodeUserDataRenderer {
     ///
     /// Three files, in the order the unit needs them:
     ///  - [#JVM_ENV_FILE_PATH] — the identity allow-list plus the values resolved on the box. Written
-    ///    BEFORE the unit is enabled, `0600`, because it carries AETHER_CLUSTER_SECRET (#287's reason
+    ///    BEFORE the unit is started, `0600`, because it carries AETHER_CLUSTER_SECRET (#287's reason
     ///    for the `aether.toml` mode, same secret).
     ///  - [#JVM_LAUNCHER_PATH] — the launcher, carrying the empty-PEERS conditional verbatim from the
     ///    old launch, so the invocation is unchanged and only its supervisor is new. It `exec`s the
     ///    JVM, so systemd's MAINPID is the JVM rather than a wrapper shell.
     ///  - the unit itself, from [SystemdUnitTemplate].
-    private static void appendJvmRun(StringBuilder sb, ClusterName clusterName, NodeRole role, String jvmArgs) {
-        appendJvmEnvFile(sb, clusterName, role);
+    private static void appendJvmRun(StringBuilder sb,
+                                     ClusterName clusterName,
+                                     NodeRole role,
+                                     SourceProfile source,
+                                     String jvmArgs) {
+        appendJvmEnvFile(sb, clusterName, role, source);
         appendJvmLauncher(sb, jvmArgs);
         appendJvmUnit(sb);
     }
@@ -431,7 +465,10 @@ public sealed interface NodeUserDataRenderer {
     /// AETHER_ADVERTISE_HOST is written only when non-empty, preserving the old launch's runtime test:
     /// an unset value must leave the var ABSENT so the node's own SWIM-reflection chain takes over,
     /// rather than present-and-empty, which would advertise nothing.
-    private static void appendJvmEnvFile(StringBuilder sb, ClusterName clusterName, NodeRole role) {
+    private static void appendJvmEnvFile(StringBuilder sb,
+                                         ClusterName clusterName,
+                                         NodeRole role,
+                                         SourceProfile source) {
         sb.append("# --- Write the node env file systemd reads (0600: carries the cluster secret) ---\n");
         sb.append("install -d -m 0755 ").append(JVM_ENV_DIR).append('\n');
         sb.append("touch ").append(JVM_ENV_FILE_PATH).append('\n');
@@ -440,6 +477,8 @@ public sealed interface NodeUserDataRenderer {
         emitIdentityEnv((name, value) -> appendEnvFileLine(sb, name, value),
                         clusterName,
                         role,
+                        source.name(),
+                        source.knownZone(),
                         Option.none(),
                         System::getenv);
         sb.append("AETHER_ENV_LITERAL\n");
@@ -484,10 +523,14 @@ public sealed interface NodeUserDataRenderer {
         sb.append("chmod 0755 ").append(JVM_LAUNCHER_PATH).append("\n\n");
     }
 
-    /// Install and start the unit. `enable --now` both starts it and links it into
-    /// `multi-user.target`, so a rebooted host brings the node back — which is a HOST-level concern
-    /// and distinct from restarting a crashed process, the distinction
-    /// `aether/docs/operators/deployment-recovery.md` §2.3 draws.
+    /// Install and START the unit — never `enable` it. The node id is fixed per VM, and membership is
+    /// terminal-removal: once a node has been gone long enough to be removed, its id can never be admitted
+    /// again. An enabled unit (linked into `multi-user.target`) relaunched a rebooted VM under that removed
+    /// id, so the rejoin was refused and the VM kept billing without ever joining — the same-id hazard
+    /// behind #1467 and #1543. A rebooted host is replaced by CTM auto-heal under a FRESH id, and a host-level
+    /// unit must not start on boot while the id is fixed (`aether/docs/operators/deployment-recovery.md` §2.3 and
+    /// §4.4). The container path already runs
+    /// `docker run --restart no` for the same reason.
     private static void appendJvmUnit(StringBuilder sb) {
         sb.append("# --- Install and start the aether-node systemd unit ---\n");
         sb.append("# Restart=no is deliberate: Aether uses terminal-removal membership and CTM auto-heal\n");
@@ -497,7 +540,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append(SystemdUnitTemplate.generateDefault());
         sb.append("AETHER_UNIT\n");
         sb.append("systemctl daemon-reload\n");
-        sb.append("systemctl enable --now ").append(JVM_UNIT_NAME).append("\n\n");
+        sb.append("systemctl start ").append(JVM_UNIT_NAME).append("\n\n");
     }
 
     private static Unit appendEnvFileLine(StringBuilder sb, String name, String value) {

@@ -705,6 +705,8 @@ public class RabiaEngine<C extends Command> {
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
     /// when the engine activates, so the reported count is the length of the current stall.
     private final AtomicInteger syncRounds = new AtomicInteger();
+    /// Whether the current sync episode already reported its refusal to activate outside the electorate.
+    private final AtomicBoolean electorateRefusalReported = new AtomicBoolean();
 
     @SuppressWarnings("rawtypes")
     private final Map<CorrelationId, Promise> correlationMap = new ConcurrentHashMap<>();
@@ -753,6 +755,9 @@ public class RabiaEngine<C extends Command> {
     /// `phases` cannot grow unswept either: entries are created on the consensus path, which the
     /// same state guard gates.
     private final AtomicReference<ScheduledFuture<?>> cleanupTask = new AtomicReference<>();
+    /// #1683 — the idle slot probe ([#probeQuietSlot]). Same lifetime as [#cleanupTask]: armed at
+    /// activation, cancelled by [#stop].
+    private final AtomicReference<ScheduledFuture<?>> quietSlotProbeTask = new AtomicReference<>();
     private final AtomicLong quorumSequence = new AtomicLong();
 
     /// Current cluster membership (consensus-level view).
@@ -1092,6 +1097,7 @@ public class RabiaEngine<C extends Command> {
     private void doClusterConnected() {
         syncResponses.clear();
         syncRounds.set(0);
+        electorateRefusalReported.set(false);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
         // syncRetryInterval for the timer below. A replacement that joins a cluster hundreds of
         // phases ahead must start its snapshot-install round at once — otherwise it sits silently in
@@ -1781,6 +1787,7 @@ public class RabiaEngine<C extends Command> {
     private void performStop(Promise<Unit> promise) {
         cancelGenesisTimer();
         Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
+        Option.option(quietSlotProbeTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
 
         exitState(oldState);
@@ -2023,12 +2030,15 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // Check if we already have enough responses from previous attempt
-        if (adoptIfThresholdMet()) {
-            // Processed immediately instead of clearing
+        var adopted = adoptIfThresholdMet();
+        // #1447: a round is stuck by its OUTCOME, not by whether adoption ran. An adoption that did not
+        // activate (a restore that failed, an activation that was refused) retries and counts like any
+        // other round; at clusterSize 1 adoption runs on every round, so this is the only way it counts.
+        if (engineState.get().isActive()) {
             return;
         }
 
-        warnIfSyncStuck();
+        warnIfSyncStuck(adopted);
         // Only clear and restart if we don't have enough responses
         syncResponses.clear();
         var request = new SyncRequest(self);
@@ -2051,12 +2061,25 @@ public class RabiaEngine<C extends Command> {
     /// from "threshold can never be met".
     ///
     /// Periodic rather than per-round: at the default 5s `syncRetryInterval` this is roughly every 30s.
-    /// The counter resets whenever a sync round starts fresh or the engine activates, so the round number
-    /// in the line is the length of the CURRENT stall, not a process-lifetime total.
-    private void warnIfSyncStuck() {
+    /// The counter resets whenever a sync episode starts ([#doClusterConnected]) or the engine activates,
+    /// so the round number in the line is the length of the CURRENT stall, not a process-lifetime total.
+    /// Adoption does NOT reset it (#1447): a node whose adoption keeps failing is exactly the stall this
+    /// line exists to report.
+    private void warnIfSyncStuck(boolean adopted) {
         var round = syncRounds.incrementAndGet();
 
         if (round % WARN_EVERY_N_SYNC_ROUNDS != 0) {
+            return;
+        }
+
+        if (adopted) {
+            log.warn("Node {} still SYNCING after {} rounds: the adoption threshold is met, but the node did not "
+                    + "activate on the adopted state (restore or activation refused: {}). This node has no leader "
+                    + "and runs no reconciler while this persists.",
+                     self,
+                     round,
+                     authorityFailure.map(Cause::message).or("see the preceding ERROR or WARN"));
+
             return;
         }
 
@@ -2127,7 +2150,6 @@ public class RabiaEngine<C extends Command> {
                                   .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
                                   .toList();
 
-        syncRounds.set(0);
         if (responses.isEmpty()) {
             // Only reachable at clusterSize 1, where the requirement is zero responses: self is the
             // whole majority and there is no peer to adopt from.
@@ -2361,12 +2383,9 @@ public class RabiaEngine<C extends Command> {
     /// the cause.
     ///
     /// A `restoreSnapshot` that fails skips `activate()`, so the engine stays `Syncing` and the retry
-    /// tick re-enters the same branch. The periodic stuck-in-`Syncing` WARN does NOT cover this:
-    /// [#doSynchronize] calls [#warnIfSyncStuck] only after `adoptIfThresholdMet()` returns false, and
-    /// [#adoptCollectedState] resets `syncRounds` on every entry, so a loop that keeps re-entering
-    /// adoption never reaches [#WARN_EVERY_N_SYNC_ROUNDS] — and at `clusterSize` 1 the call is
-    /// unreachable outright (#1447). This line is therefore the whole operator surface for the state,
-    /// which is why it spells out that the node is NOT active rather than logging a bare cause.
+    /// tick re-enters the same branch. This is the per-attempt line; the periodic stuck-in-`Syncing`
+    /// WARN ([#warnIfSyncStuck]) also counts these rounds since #1447, so the stall is reported by its
+    /// length too. It spells out that the node is NOT active rather than logging a bare cause.
     ///
     /// It covers every failed restore that reaches [#restoreState]: a responder's snapshot, or the
     /// own-restore arm of [#activateWithoutAdoption] (fail-closed per #1468).
@@ -2567,13 +2586,24 @@ public class RabiaEngine<C extends Command> {
                                   .isSuccess();
     }
 
+    /// Once per sync episode: every retry of the adoption loop re-enters [#activate], so an unguarded WARN
+    /// repeated at the retry cadence without bound (measured: one per `syncRetryInterval`). The stall
+    /// itself stays reported periodically by [#warnIfSyncStuck].
+    private void warnOutsideElectorate() {
+        if (electorateRefusalReported.compareAndSet(false, true)) {
+            log.warn("Node {} cannot activate outside the core electorate; it keeps retrying synchronization", self);
+        } else {
+            log.debug("Node {} cannot activate outside the core electorate", self);
+        }
+    }
+
     private void activate() {
         if (authorityFailure.isPresent()) {
             return;
         }
 
         if (!observerMode && !isVoter(self)) {
-            log.warn("Node {} cannot activate outside the core electorate", self);
+            warnOutsideElectorate();
 
             return;
         }
@@ -2592,6 +2622,7 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         armCleanupTask();
+        armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
@@ -2610,6 +2641,7 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         armCleanupTask();
+        armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
@@ -3068,6 +3100,41 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
+    /// Idempotent arm for the idle slot probe (#1683), at the sync retry cadence. Same CAS guard as
+    /// [#armCleanupTask].
+    private void armQuietSlotProbe() {
+        if (quietSlotProbeTask.get() != null) {
+            return;
+        }
+
+        var task = SharedScheduler.scheduleAtFixedRate(() -> safeExecute(this::probeQuietSlot),
+                                                       config.syncRetryInterval());
+
+        if (!quietSlotProbeTask.compareAndSet(null, task)) {
+            task.cancel(false);
+        }
+    }
+
+    /// #1683 — a replica that missed ALL traffic for its current slot while the cluster then went quiet
+    /// learns of the gap from nothing: it is `Idle` (no stall detector), no later Decision is broadcast
+    /// (path 1, [#handleDecision] → [#triggerResync]), and peers repair only on an inbound ballot. It
+    /// served the stale state indefinitely and [#isPendingCatchUp] reported `false`, because no message
+    /// had advanced the observed cluster phase.
+    ///
+    /// So an `Idle` voter asks the other voters about its current slot on every tick. A peer past that
+    /// slot answers through [#repairPastSlot] with the slot's Decision and its own frontier Decision
+    /// ([#replayCompletedSlot]); a peer at the same slot has nothing to replay and stays silent. The
+    /// stale window is therefore bounded by one `syncRetryInterval`, not closed: until the probe is
+    /// answered this replica still cannot know it is behind. Cost in a quiet cluster: one `RoundRequest`
+    /// per voter pair per `syncRetryInterval`. InPhase replicas are covered by the stall detector instead.
+    private void probeQuietSlot() {
+        if (! (engineState.get() instanceof EngineState.Idle)) {
+            return;
+        }
+
+        broadcastVoters(new RoundRequest(self, voterEpoch(), currentPhase.get(), 0));
+    }
+
     private void doCleanupOldPhases() {
         var state = engineState.get();
 
@@ -3335,16 +3402,35 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void replayCompletedSlot(NodeId peer, Phase phase) {
-        Option.option(phases.get(phase))
-              .flatMap(PhaseData::completedDecision)
-              .map(decision -> new Decision<C>(self,
-                                               decision.epoch(),
-                                               decision.phase(),
-                                               decision.stateValue(),
-                                               decision.value(),
-                                               decision.reconfiguration()))
-              .onPresent(decision -> network.send(peer, decision))
-              .onEmpty(() -> doHandleSyncRequest(new SyncRequest(peer)));
+        completedDecision(phase).onPresent(decision -> network.send(peer, decision))
+                         .onEmpty(() -> doHandleSyncRequest(new SyncRequest(peer)));
+        replayFrontierDecision(peer, phase);
+    }
+
+    /// #1683 — a peer asking about slot P may be behind by more than P. Replaying only P repairs one slot
+    /// per request, and when P's data is already cleaned the fallback SyncResponse is ignored by an
+    /// ACTIVE requester. So the latest slot this replica completed is sent too: the requester applies it
+    /// directly when it is the next slot, and otherwise buffers it and resyncs ([#handleDecision], the
+    /// same path a live later Decision takes).
+    private void replayFrontierDecision(NodeId peer, Phase requested) {
+        var current = currentPhase.get().value();
+
+        if (current - 1 <= requested.value()) {
+            return;
+        }
+
+        completedDecision(Phase.phase(current - 1)).onPresent(decision -> network.send(peer, decision));
+    }
+
+    private Option<Decision<C>> completedDecision(Phase phase) {
+        return Option.option(phases.get(phase))
+                     .flatMap(PhaseData::completedDecision)
+                     .map(decision -> new Decision<C>(self,
+                                                      decision.epoch(),
+                                                      decision.phase(),
+                                                      decision.stateValue(),
+                                                      decision.value(),
+                                                      decision.reconfiguration()));
     }
 
     private void replayRoundTo(NodeId peer, PhaseData<C> phaseData, long round) {
@@ -3646,6 +3732,7 @@ public class RabiaEngine<C extends Command> {
 
         engineState.set(new EngineState.Idle());
         armCleanupTask();
+        armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());

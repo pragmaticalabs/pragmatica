@@ -426,7 +426,8 @@ Open `http://localhost:8888` for the dashboard. Deploy the URL Shortener example
 
 ```bash
 # Start nodes (each on a separate machine or container)
-java -jar aether-node.jar --peers node1:6000,node2:6000,node3:6000
+# -XX:+ExitOnOutOfMemoryError makes an out-of-memory node exit and get replaced (#966)
+java -XX:+ExitOnOutOfMemoryError -jar aether-node.jar --peers node1:6000,node2:6000,node3:6000
 
 # Deploy your application
 aether blueprints apply my-app.toml

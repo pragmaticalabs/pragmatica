@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.AutoHealSpec;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
@@ -334,6 +335,70 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(cmd1.contains("-e NODE_ID=\"eu-1-core-1\""), "NODE_ID must be node-specific: " + cmd1);
     }
 
+    /// #1650: the re-launch recreates the container that actually runs, so it must carry the node's OWN source --
+    /// the source being deployed -- and never the operator host's `AETHER_SOURCE`, which is the host's own.
+    @Test
+    void deployCloudSource_relaunchCarriesTheDeployedSource_notTheHostEnvSource() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.put(host, command);
+            return Result.success("");
+        };
+        Fn1<String, String> hostEnv = name -> switch (name) {
+            case SshKeyResolver.AETHER_SSH_KEY_ENV -> "/home/op/.ssh/aether_id_ed25519";
+            case "AETHER_SOURCE" -> "operator-host-source";
+            case "AETHER_ZONE" -> "operator-host-zone";
+            default -> null;
+        };
+
+        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                      ctx.config().sources().get("eu-1"),
+                                                      sourceNameOrDefault("eu-1"),
+                                                      alwaysHealthy(),
+                                                      sshExec,
+                                                      hostEnv);
+
+        assertEquals(3, commands.size(), () -> "control: one re-launch per node: " + commands.keySet());
+        for (var cmd : commands.values()) {
+            assertEquals(1, cmd.split("AETHER_SOURCE=", -1).length - 1, () -> "AETHER_SOURCE exactly once: " + cmd);
+            assertTrue(cmd.contains("-e AETHER_SOURCE=\"eu-1\""), () -> "the deployed source, not the host's: " + cmd);
+            assertFalse(cmd.contains("operator-host-"), () -> "no host-env source or zone may leak: " + cmd);
+        }
+    }
+
+    /// #1650, both re-launch builders: the node's source and zone win over a host env naming others.
+    @Test
+    void relaunchBuilders_stampTheNodesSourceAndZone_overTheHostEnv() {
+        var hostEnv = envOf(Map.of("AETHER_SOURCE", "leader-source", "AETHER_ZONE", "leader-zone"));
+        var source = sourceNameOrDefault("eu-2");
+        var docker = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+                                                              CLUSTER_NAME,
+                                                              "eu-2-worker-0",
+                                                              NodeRole.WORKER,
+                                                              source,
+                                                              Option.some("fsn1"),
+                                                              8090,
+                                                              8091,
+                                                              "eu-1-core-0:1.2.3.4:8090",
+                                                              CLUSTER_SECRET,
+                                                              hostEnv);
+        var jvm = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-2-worker-0",
+                                                              NodeRole.WORKER,
+                                                              source,
+                                                              Option.some("fsn1"),
+                                                              8090,
+                                                              8091,
+                                                              "eu-1-core-0:1.2.3.4:8090",
+                                                              CLUSTER_SECRET,
+                                                              CLUSTER_NAME,
+                                                              hostEnv);
+
+        assertTrue(docker.contains("-e AETHER_SOURCE=\"eu-2\"") && docker.contains("-e AETHER_ZONE=\"fsn1\""), docker);
+        assertTrue(jvm.contains("'AETHER_SOURCE=eu-2'") && jvm.contains("'AETHER_ZONE=fsn1'"), jvm);
+        assertFalse(docker.contains("leader-") || jvm.contains("leader-"), () -> docker + "\n" + jvm);
+    }
+
     @Test
     void deployCloudSource_dockerRunCommand_alwaysIncludesRmFAndConfigBindMount() {
         var ctx = contextWithThreeCloudNodes(cloudSource());
@@ -526,6 +591,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
+                                                           SourceName.DEFAULT,
+                                                           Option.none(),
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
@@ -559,6 +626,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
+                                                           SourceName.DEFAULT,
+                                                           Option.none(),
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -574,6 +643,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
+                                                           SourceName.DEFAULT,
+                                                           Option.none(),
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -589,6 +660,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
+                                                           SourceName.DEFAULT,
+                                                           Option.none(),
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -610,6 +683,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
+                                                           SourceName.DEFAULT,
+                                                           Option.none(),
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -632,6 +707,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
+                                                           SourceName.DEFAULT,
+                                                           Option.none(),
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -647,6 +724,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     void buildJvmRestartCommand_inlinesInsecureDevMode_whenPresentInInjectedEnv_secretOnce() {
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
                                                              NodeRole.CORE,
+                                                             SourceName.DEFAULT,
+                                                             Option.none(),
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
@@ -669,6 +748,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     void buildJvmRestartCommand_omitsIdentityVars_whenInjectedEnvEmpty() {
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
                                                              NodeRole.CORE,
+                                                             SourceName.DEFAULT,
+                                                             Option.none(),
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
@@ -1111,6 +1192,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         // Mutation guard: any future refactor that drops/renames a CLI flag should fail here.
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
                                                               NodeRole.CORE,
+                                                              SourceName.DEFAULT,
+                                                              Option.none(),
                                                               8090,
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",
