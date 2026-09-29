@@ -6011,14 +6011,6 @@ public interface AetherNode extends ManageableNode {
                   .collect(Collectors.toUnmodifiableSet());
     }
 
-    /// #557's boot-quorum projection as a NAMED seam (extracted under #644's assembly pass, per the
-    /// composition note on that ticket). The quorum numerator MUST read the OBSERVED-reachability
-    /// projection: swapping `coreObservedMembers` for `coreCountedMembers` here silently restores
-    /// #557 — boot quorum declared from configuration with zero packets moved. The wiring used to be
-    /// an inline lambda no test could reach, so `PresenceGenerationSnapshotSourceQuorumCompositionTest`
-    /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
-    /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
-    /// holder is populated before any snapshot is taken).
     /// #1573: the committed cluster-wide automatic-rollback policy. Absent or blank (seed) cluster TOML is the
     /// built-in default (ON). The section was validated at apply, so a failure here means a document committed
     /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
@@ -6290,6 +6282,14 @@ public interface AetherNode extends ManageableNode {
                                            .collect(Collectors.toUnmodifiableSet());
     }
 
+    /// #557's boot-quorum projection as a NAMED seam (extracted under #644's assembly pass, per the
+    /// composition note on that ticket). The quorum numerator MUST read the OBSERVED-reachability
+    /// projection: swapping `coreObservedMembers` for `coreCountedMembers` here silently restores
+    /// #557 — boot quorum declared from configuration with zero packets moved. The wiring used to be
+    /// an inline lambda no test could reach, so `PresenceGenerationSnapshotSourceQuorumCompositionTest`
+    /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
+    /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
+    /// holder is populated before any snapshot is taken).
     static Supplier<Set<NodeId>> presenceMemberSupplier(Supplier<MembershipFsm> membershipFsm, NodeId self) {
         return () -> Option.option(membershipFsm.get())
                            .map(fsm -> fsm.coreObservedMembers(self))
