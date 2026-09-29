@@ -391,7 +391,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     /// `ownerEpoch.localCounter == ownershipTerm`, so a deposed-but-alive core owner — whose
     /// committed epoch carried the OLD `ownershipTerm` — is strictly dominated by its successor's
     /// epoch and is fenced, even when no leader change occurred (the same-term gap that minting
-    /// `Epoch.epoch(rabiaTerm, 0)` left open). Still a pure function of committed state (committed
+    /// `Epoch.epoch(incarnation, rabiaTerm, 0)` left open). Still a pure function of committed state (committed
     /// generation term + the takeover counter derived from the committed record), so two replicas
     /// presented identical committed state mint the IDENTICAL value. `ownershipTerm` (NOT
     /// `generationCounter`) is the local counter by design: it is committed state, whereas the

@@ -1994,7 +1994,7 @@ public sealed interface AetherValue {
     /// leader advances on every owner change, so the append fence (1d-ii) can reject a deposed owner.
     ///
     /// There is no `ownerCommunityId` — streams have no community arc (that field is DHT-specific). The
-    /// `ownerEpoch` is sourced from the committed generation epoch (`Epoch.epoch(rabiaTerm, 0)`); the
+    /// `ownerEpoch` is sourced from the committed generation epoch (`Epoch.epoch(incarnation, rabiaTerm, 0)`); the
     /// `ownershipTerm` is a monotonic per-partition takeover counter, bumped on each owner change.
     record StreamPartitionOwnershipValue(NodeId owner,
                                          Epoch ownerEpoch,

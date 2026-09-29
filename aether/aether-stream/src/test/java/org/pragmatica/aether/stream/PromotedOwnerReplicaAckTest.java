@@ -114,7 +114,7 @@ class PromotedOwnerReplicaAckTest {
 
     private OwnerActivation gate() {
         var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(X,
-                                                                                             Epoch.epoch(3, 0),
+                                                                                             Epoch.epoch(0L, 3, 0),
                                                                                              3,
                                                                                              HlcTimestamp.ZERO));
 
