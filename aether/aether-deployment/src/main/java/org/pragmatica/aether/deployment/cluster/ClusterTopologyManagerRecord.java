@@ -2375,8 +2375,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// A node without a source label belongs to [SourceName#DEFAULT], as it does everywhere a source is derived.
     private SourceName sourceLabel(NodeId nodeId) {
         return observer.get(nodeId)
-                       .map(info -> SourceName.sourceNameOrDefault(info.labels()
-                                                                       .getOrDefault(LABEL_SOURCE, "")))
+                       .map(info -> SourceName.sourceNameOrDefault(info.labels().getOrDefault(LABEL_SOURCE, "")))
                        .or(SourceName.DEFAULT);
     }
 

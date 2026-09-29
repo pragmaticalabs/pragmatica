@@ -42,9 +42,7 @@ import static org.pragmatica.lang.Result.success;
 /// `hostEnv` is the provisioning host's environment, the one the identity and Docker-infra allow-lists are
 /// forwarded from. It is injected so the rule that a node's OWN variables never come from it (#1650) is testable
 /// against a host that HAS them, not only against a CI box that happens not to.
-public record DockerComputeProvider(DockerCommandRunner runner,
-                                    DockerConfig config,
-                                    Fn1<String, String> hostEnv) implements ComputeProvider {
+public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig config, Fn1<String, String> hostEnv) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(DockerComputeProvider.class);
 
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner, DockerConfig config) {
