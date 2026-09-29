@@ -116,6 +116,20 @@ final class EpochHistory {
         }
     }
 
+    /// Drop each of `named` that starts above `offset`; every other entry is kept. Nothing to drop is a no-op, with no
+    /// write.
+    Result<Unit> removeAbove(long offset, List<AppendLog.EpochStart> named) {
+        synchronized (lock) {
+            var kept = entries.stream()
+                              .filter(entry -> entry.startOffset() <= offset || !named.contains(entry))
+                              .toList();
+
+            return kept.size() == entries.size()
+                   ? Result.unitResult()
+                   : persist(kept);
+        }
+    }
+
     /// Runs under `lock`.
     private Result<Unit> recordAfter(AppendLog.EpochStart last,
                                      AppendLog.EpochKey key,

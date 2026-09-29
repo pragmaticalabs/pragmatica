@@ -364,6 +364,17 @@ public final class AppendLog implements AutoCloseable {
         }
     }
 
+    /// Drop the given epoch entries that no written record reaches (#1638 F1): each of `entries` whose start lies
+    /// above the larger of `knownHead` and the last written offset (read under the write lock, so an entry a
+    /// concurrent attributed write has just used is kept). Every other entry is kept, whatever its start -- an entry
+    /// above the head that the caller did not name belongs to someone else. Unlike [#truncateEpochsAboveHead] a head of
+    /// `-1` is not "unknown": the caller names entries it recorded itself, over a head it knows.
+    public Result<Unit> dropEpochStartsAboveHead(long knownHead, List<EpochStart> entries) {
+        synchronized (writeLock) {
+            return epochs.removeAbove(Math.max(knownHead, lastOffset), entries);
+        }
+    }
+
     /// Delete the log's files -- the log, its epoch history and any stale temp -- after [#close], when the
     /// log itself is being discarded (a deleted stream). Best effort per file; the first failure is returned.
     public Result<Unit> deleteFiles() {

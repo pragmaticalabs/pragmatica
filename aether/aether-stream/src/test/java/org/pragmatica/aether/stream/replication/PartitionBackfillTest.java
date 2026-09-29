@@ -108,6 +108,49 @@ class PartitionBackfillTest {
         }
     }
 
+    /// #1638 F1: one backfill of a partition at a time. A call made while one is in flight joins it -- the same result,
+    /// no second pull -- and a call after it lands starts a fresh run. Red under "no single-flight" (the second call
+    /// pulls again).
+    @Nested
+    class SingleFlight {
+        @Test
+        void concurrentBackfills_ofOnePartition_shareOnePull() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            var pending = new AtomicReference<Promise<ReplicationMessage.CatchupResponse>>();
+            var served = fixedSource(eventsFrom(0, 5));
+            CatchupTransport gated = (target, request) -> {
+                pulls.incrementAndGet();
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.set(response);
+
+                return response.flatMap(_ -> served.requestCatchup(target, request));
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF);
+
+            var first = backfill.backfill(STREAM, PARTITION);
+            var second = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("the second call joined the first").isEqualTo(1);
+
+            pending.get().fail(ReplicationError.General.REPLICATION_TIMEOUT);
+
+            assertThat(first.await().isFailure()).isTrue();
+            assertThat(second.await().isFailure()).as("the joined call resolves with the same result").isTrue();
+
+            var retry = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("a call after the flight landed runs again").isEqualTo(2);
+
+            pending.get().succeed(catchupResponse(SOURCE, STREAM, PARTITION, 0, -1, List.of(), List.of()));
+
+            assertThat(await(retry)).isEqualTo(5L);
+        }
+    }
+
     @Nested
     class FailureSafety {
         @Test

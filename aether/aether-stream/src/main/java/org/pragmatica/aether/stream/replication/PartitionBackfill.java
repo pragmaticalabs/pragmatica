@@ -154,6 +154,8 @@ public final class PartitionBackfill {
     /// null ⇒ elapsed default therefore fires only for rows that became CAUGHT_UP WITHOUT a pull (restart-
     /// loaded / cold-start self-promote), which earn one re-verify.
     private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs = new ConcurrentHashMap<>();
+    /// #1638 F1: the backfill in flight per partition ([#backfill]'s single-flight).
+    private final ConcurrentHashMap<PartitionKey, Promise<Long>> inFlight = new ConcurrentHashMap<>();
 
     private PartitionBackfill(ReplicaRegistry registry,
                               AlignedRecovery partitionRecovery,
@@ -360,7 +362,34 @@ public final class PartitionBackfill {
     ///      false `CAUGHT_UP@-1`,
     ///   3. owner unknown (bootstrap window, empty member view) → the registry `CAUGHT_UP` source / the
     ///      cold-start deadlock-break path, unchanged.
+    ///
+    /// ## Single-flight (#1638 F1)
+    /// At most one backfill of a partition runs at a time: a call made while one is in flight -- the periodic redrive,
+    /// the gap trigger and materialize-on-reconcile all call here -- joins it and resolves with its result, and pulls
+    /// nothing itself. Two concurrent catch-ups of one partition would interleave their installs and applies; the
+    /// provenance seam settles each install correctly regardless ([AlignedRecovery#applyAttributed]), and this keeps
+    /// the pulls themselves from racing. The in-flight entry is removed before its result is delivered, so a caller
+    /// reacting to that result starts a fresh run.
     public Promise<Long> backfill(String streamName, int partition) {
+        var key = partitionKey(streamName, partition);
+        var flight = Promise.<Long> promise();
+
+        return Option.option(inFlight.putIfAbsent(key, flight)).or(() -> fly(key, flight, streamName, partition));
+    }
+
+    private Promise<Long> fly(PartitionKey key, Promise<Long> flight, String streamName, int partition) {
+        runBackfill(streamName, partition).onResult(result -> land(key, flight, result));
+
+        return flight;
+    }
+
+    @Contract
+    private void land(PartitionKey key, Promise<Long> flight, Result<Long> result) {
+        inFlight.remove(key, flight);
+        flight.resolve(result);
+    }
+
+    private Promise<Long> runBackfill(String streamName, int partition) {
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
@@ -875,32 +904,20 @@ public final class PartitionBackfill {
             return MALFORMED_RESPONSE.result();
         }
 
-        return partitionRecovery.installProvenance(streamName,
-                                                   partition,
-                                                   response.fromOffset(),
-                                                   response.toOffset(),
-                                                   response.history())
-                                .flatMap(_ -> applyPayloads(streamName,
-                                                            partition,
-                                                            response.fromOffset(),
-                                                            payloads,
-                                                            timestamps))
-                                .onFailure(_ -> trimAfterFailedApply(streamName, partition));
+        return partitionRecovery.applyAttributed(streamName,
+                                                 partition,
+                                                 response.fromOffset(),
+                                                 response.toOffset(),
+                                                 response.history(),
+                                                 () -> applyPayloads(streamName,
+                                                                     partition,
+                                                                     response.fromOffset(),
+                                                                     payloads,
+                                                                     timestamps));
     }
 
-    /// #1638 B1: a page whose apply failed after its provenance was installed leaves entries above the head; they are
-    /// dropped so the retry installs cleanly. Recovery: FER -- a trim that fails is logged, and the next open trims
-    /// (trim at open) whatever it left.
-    @Contract
-    private void trimAfterFailedApply(String streamName, int partition) {
-        partitionRecovery.trimProvenance(streamName, partition)
-                         .onFailure(cause -> log.warn("Stream {}[{}]: trimming provenance after a failed apply failed: {}",
-                                                      streamName,
-                                                      partition,
-                                                      cause.message()));
-    }
-
-    /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded ([#applyEvents]).
+    /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded ([#applyEvents]); a failure
+    /// here settles that install by trimming it (#1638 B1).
     private Result<Long> applyPayloads(String streamName,
                                        int partition,
                                        long fromOffset,

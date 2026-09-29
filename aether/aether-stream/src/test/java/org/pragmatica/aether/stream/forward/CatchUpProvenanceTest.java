@@ -152,9 +152,8 @@ class CatchUpProvenanceTest {
         return AlignedRecovery.alignedRecovery((stream, partition, at, payload, timestamp) -> at == offset && armed.getAndSet(false)
                                                                                            ? Causes.cause("injected apply failure").<Long> result()
                                                                                            : real.appendRecovered(stream, partition, at, payload, timestamp),
-                                               real::installProvenance,
-                                               real::installUnattributed,
-                                               real::trimProvenance);
+                                               real::applyAttributed,
+                                               real::applyUnattributed);
     }
 
     private PartitionBackfill backfill() {

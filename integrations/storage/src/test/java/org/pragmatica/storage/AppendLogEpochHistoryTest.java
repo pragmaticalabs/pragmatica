@@ -279,6 +279,37 @@ class AppendLogEpochHistoryTest {
         wal.close();
     }
 
+    /// #1638 F1: a failed catch-up drops only the entries IT names, and only those no record reaches. An entry above the
+    /// head that it did not name (another catch-up's) is kept. Red under "drop every entry above the head".
+    @Test
+    void dropEpochStartsAboveHead_dropsOnlyTheNamedEntriesAboveTheHead() {
+        var wal = AppendLog.open(file()).unwrap();
+
+        wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(2), 4, NUMERIC).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(3), 6, NUMERIC).onFailure(c -> fail(c.message()));
+
+        wal.dropEpochStartsAboveHead(0, List.of(start(1, 0), start(3, 6))).onFailure(c -> fail(c.message()));
+        assertThat(wal.epochHistory()).as("the named entry at the head and the unnamed one above it are kept")
+                                      .containsExactly(start(1, 0), start(2, 4));
+        wal.close();
+
+        assertThat(AppendLog.readEpochHistory(file()).unwrap()).as("durably").containsExactly(start(1, 0), start(2, 4));
+    }
+
+    /// Unlike the trim at open, an empty log's head is known here: the named entries of an empty log are dropped.
+    @Test
+    void dropEpochStartsAboveHead_onAnEmptyLog_dropsTheNamedEntries() {
+        var wal = AppendLog.open(file()).unwrap();
+
+        wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(3), 2, NUMERIC).onFailure(c -> fail(c.message()));
+        wal.dropEpochStartsAboveHead(-1, List.of(start(1, 0), start(3, 2))).onFailure(c -> fail(c.message()));
+
+        assertThat(wal.epochHistory()).isEmpty();
+        wal.close();
+    }
+
     private static AppendLog.EpochKey key(long epoch) {
         return key(Long.toString(epoch));
     }

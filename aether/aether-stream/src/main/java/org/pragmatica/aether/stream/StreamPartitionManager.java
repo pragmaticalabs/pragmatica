@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -209,6 +210,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
     private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
+    /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Also the lock
+    /// that serialises recording an install against trimming one, so a trim never drops an entry a pending install has
+    /// just recorded or skipped. Lock order: this lock → a log's write lock, never the reverse.
+    private final Map<PartitionRef, List<InstalledSlice>> pendingInstalls = new HashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -936,7 +941,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       logs,
-                                      lastSealedOffset)
+                                      lastSealedOffset,
+                                      this::trimFailedAtOpen)
                           .onFailure(_ -> release(floorBytes))
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
@@ -1245,7 +1251,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         // fromConfig threads the per-partition floor-allocation Result (bug #6): a native-OOM on any
         // held partition closes the built siblings and fails. On that (rare) failure we release the
         // reserved floor budget and insert NO entry (computeIfAbsent null) — the node physically cannot
-        // allocate the memory, so there is no committed partition to diverge from. markCommitted on
+        // allocate the memory, so there is no committed partition to diverge from. The same path takes
+        // a WAL open or recovery refusal, and a failed trim at open (#1638 F6), which also leave the whole
+        // stream unmaterialized on this node; the trim failure is flagged durably first. markCommitted on
         // success keeps the follower's later createStream short-circuiting (no re-publish).
         return StreamEntry.fromConfig(config,
                                       evictionListener,
@@ -1254,7 +1262,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       logs,
-                                      lastSealedOffset)
+                                      lastSealedOffset,
+                                      this::trimFailedAtOpen)
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
@@ -1317,8 +1326,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    /// The cause is the ring build's own — an off-heap allocation, a WAL open, or a refused WAL recovery
-    /// (#1345: `WalReplayMismatch`) — so it is carried, not narrated as an allocation failure.
+    /// The cause is the ring build's own — an off-heap allocation, a WAL open, a refused WAL recovery
+    /// (#1345: `WalReplayMismatch`) or a failed trim at open (#1638 F6, flagged at [#trimFailedAtOpen]) — so it is
+    /// carried, not narrated as an allocation failure.
     private void hydrationFailed(StreamConfig config, long floorBytes, Cause cause) {
         release(floorBytes);
         log.warn("Follower could not materialize committed stream '{}' — entry not created: {}",
@@ -1804,6 +1814,32 @@ public final class StreamPartitionManager implements AutoCloseable {
                                         partition,
                                         PartitionRecoveryReasonKind.HISTORY_MISSING,
                                         "this copy holds records written before owner-epoch provenance existed"));
+    }
+
+    /// #1638 F6: the trim at open failed ([StreamEntry#trimAtOpen]), so the owner-epoch history keeps entries above the
+    /// head that no record reaches and the partition is not opened on this node. The trim's own cause is logged at
+    /// ERROR here, and `LOCAL_MISMATCH` is raised for this copy on the durable flag -- the log's history disagrees with
+    /// its own records, the local-verification failure of spec #1569 §7.5.3 -- so the state is visible cluster-wide
+    /// and survives the restart, like an N13 divergence. The evidence carries the head only, so a retry raises the same
+    /// reason. Returns `cause`, which fails the open.
+    private Cause trimFailedAtOpen(String streamName, int partition, long head, Cause cause) {
+        log.error("Partition {}[{}] not opened: its owner-epoch history holds entries above head {} that could not be trimmed: {}",
+                  streamName,
+                  partition,
+                  head,
+                  cause.message());
+        raiseOnce(streamName,
+                  partition,
+                  PartitionRecoveryReasonKind.LOCAL_MISMATCH,
+                  "the owner-epoch history holds entries above head " + head + " that the trim at open could not drop");
+
+        return cause;
+    }
+
+    /// Where the static recovery path reports a failed trim at open (#1638 F6); returns the cause the open fails with.
+    @FunctionalInterface
+    interface TrimFailure {
+        Cause trimFailed(String streamName, int partition, long head, Cause cause);
     }
 
     /// Raise a reason about this node's copy on the durable flag, at most once per process per reason. Without a
@@ -2536,9 +2572,49 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                               history));
     }
 
-    /// Install a catch-up source's owner-epoch slice before its records are applied (#1596, spec #1569 §7.5.1):
-    /// the source's entries covering `[base, toOffset]`, read by the source AFTER the records it served, so they
-    /// cover every one of them.
+    /// Install a catch-up source's owner-epoch slice, apply the page, and settle the install (#1596, spec #1569
+    /// §7.5.1; #1638 F1). The one entry point of a catch-up apply ([AlignedRecovery#applyAttributed]), so no caller
+    /// can apply without the install or forget to settle it.
+    ///
+    /// The slice is the source's entries covering `[base, toOffset]`, read by the source AFTER the records it served,
+    /// so they cover every one of them; it is installed first ([#installProvenance]), and nothing of the page is
+    /// applied when that fails. When `apply` then fails, the entries THIS install recorded that no record reaches are
+    /// dropped ([#trimProvenance]), so the retry installs cleanly and the copy is never ranked by an epoch it did not
+    /// receive; a trim that fails is logged, and the next open trims whatever it left.
+    public Result<Long> applyAttributed(String streamName,
+                                        int partition,
+                                        long fromOffset,
+                                        long toOffset,
+                                        List<ProvenanceEntry> slice,
+                                        AlignedRecovery.PageApply apply) {
+        return installProvenance(streamName, partition, fromOffset, toOffset, slice).flatMap(installed -> settle(installed,
+                                                                                                                 apply.apply()));
+    }
+
+    /// [#applyAttributed] for records from a place that carries no provenance ([#installUnattributed]).
+    public Result<Long> applyUnattributed(String streamName,
+                                          int partition,
+                                          long toOffset,
+                                          AlignedRecovery.PageApply apply) {
+        return installUnattributed(streamName, partition, toOffset).flatMap(installed -> settle(installed, apply.apply()));
+    }
+
+    private Result<Long> settle(InstalledSlice installed, Result<Long> applied) {
+        return applied.onSuccess(_ -> releaseProvenance(installed))
+                      .onFailure(_ -> trimAfterFailedApply(installed));
+    }
+
+    /// Recovery: FER -- a trim that fails is logged, and the next open trims (trim at open) whatever it left.
+    @Contract
+    private void trimAfterFailedApply(InstalledSlice installed) {
+        trimProvenance(installed).onFailure(cause -> log.warn("Stream {}[{}]: trimming provenance after a failed apply failed: {}",
+                                                              installed.streamName(),
+                                                              installed.partition(),
+                                                              cause.message()));
+    }
+
+    /// Install a catch-up source's owner-epoch slice before its records are applied (#1596, spec #1569 §7.5.1).
+    /// Production reaches it through [#applyAttributed] only.
     ///
     /// N13 first: this copy's provenance must equal the slice's over every offset it already holds up to
     /// `toOffset` -- the spec's `[base, fromOffset - 1]`, widened to the held overlap a re-verifying pull covers.
@@ -2549,29 +2625,33 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// cluster-wide until operator resolution (AD14).
     ///
     /// Then every slice entry starting in `[fromOffset, toOffset]` that this log does not already hold is recorded, in
-    /// order; one it already holds (same key, same start) is skipped, so a re-install is idempotent. If the page's
-    /// apply then fails, the caller trims what no record reaches ([#trimProvenanceAboveHead]). A partition that keeps
-    /// no log records no provenance, and this is a no-op for it.
-    public Result<Unit> installProvenance(String streamName,
-                                          int partition,
-                                          long fromOffset,
-                                          long toOffset,
-                                          List<ProvenanceEntry> slice) {
+    /// order; one it already holds (same key, same start) is skipped, so a re-install is idempotent. The returned
+    /// [InstalledSlice] names what this install recorded and every entry of its range it relies on (#1638 F1); it
+    /// stays pending until settled by [#releaseProvenance] or [#trimProvenance]. A partition that keeps no log records
+    /// no provenance, and this is a no-op for it.
+    public Result<InstalledSlice> installProvenance(String streamName,
+                                                    int partition,
+                                                    long fromOffset,
+                                                    long toOffset,
+                                                    List<ProvenanceEntry> slice) {
         return walFor(streamName, partition).map(wal -> installProvenance(wal,
                                                                           streamName,
                                                                           partition,
                                                                           fromOffset,
                                                                           toOffset,
                                                                           slice))
-                     .or(Result::unitResult);
+                     .or(() -> Result.success(InstalledSlice.installedSlice(streamName,
+                                                                            partition,
+                                                                            List.of(),
+                                                                            List.of())));
     }
 
-    private Result<Unit> installProvenance(AppendLog wal,
-                                           String streamName,
-                                           int partition,
-                                           long fromOffset,
-                                           long toOffset,
-                                           List<ProvenanceEntry> slice) {
+    private Result<InstalledSlice> installProvenance(AppendLog wal,
+                                                     String streamName,
+                                                     int partition,
+                                                     long fromOffset,
+                                                     long toOffset,
+                                                     List<ProvenanceEntry> slice) {
         var sourceBase = LogProvenance.baseOf(slice);
         var source = LogProvenance.logProvenance(sourceBase, sourceBase, toOffset, slice);
 
@@ -2582,7 +2662,19 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                         0,
                                                                                                                         Math.min(local.head(),
                                                                                                                                  toOffset))))
-                           .flatMap(_ -> recordSlice(wal, fromOffset, toOffset, slice));
+                           .flatMap(_ -> startsIn(slice, fromOffset, toOffset))
+                           .flatMap(claimed -> recordClaimed(wal, streamName, partition, claimed));
+    }
+
+    private static Result<List<AppendLog.EpochStart>> startsIn(List<ProvenanceEntry> slice,
+                                                               long fromOffset,
+                                                               long toOffset) {
+        return Result.allOf(slice.stream()
+                                 .filter(entry -> entry.startOffset() >= fromOffset && entry.startOffset() <= toOffset)
+                                 .map(entry -> entry.key()
+                                                    .map(key -> new AppendLog.EpochStart(key,
+                                                                                         entry.startOffset())))
+                                 .toList());
     }
 
     private Result<Unit> refuseMismatch(String streamName, int partition, Option<Long> divergence) {
@@ -2600,47 +2692,107 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
     }
 
-    /// Records, in order, the slice entries in `[fromOffset, toOffset]` this log does not already hold (#1638 B1): an
-    /// entry already present -- same key, same start -- is skipped, so re-installing a page (a retry after a failed
-    /// apply, an overlapping pull) is idempotent. The first refusal stops the install.
-    private static Result<Unit> recordSlice(AppendLog wal,
-                                            long fromOffset,
-                                            long toOffset,
-                                            List<ProvenanceEntry> slice) {
-        var held = wal.epochHistory();
+    /// Records, in order, the `claimed` entries this log does not already hold (#1638 B1): an entry already present --
+    /// same key, same start -- is skipped, so re-installing a page (a retry after a failed apply, an overlapping pull)
+    /// is idempotent. The first refusal stops the install and drops what it had recorded, as a failed apply would.
+    ///
+    /// #1638 F1: recording and registering the install happen under [#pendingInstalls], as does every trim, so a trim
+    /// always sees every install that has recorded or skipped an entry it might drop.
+    private Result<InstalledSlice> recordClaimed(AppendLog wal,
+                                                 String streamName,
+                                                 int partition,
+                                                 List<AppendLog.EpochStart> claimed) {
+        synchronized (pendingInstalls) {
+            var held = wal.epochHistory();
+            var recorded = new ArrayList<AppendLog.EpochStart>();
+            var outcome = Result.unitResult();
 
-        return slice.stream()
-                    .filter(entry -> entry.startOffset() >= fromOffset && entry.startOffset() <= toOffset)
-                    .reduce(Result.unitResult(),
-                            (recorded, entry) -> recorded.flatMap(_ -> recordUnlessHeld(wal, held, entry)),
-                            (left, right) -> left.flatMap(_ -> right));
+            for (var entry : claimed) {
+                if (outcome.isSuccess() && !held.contains(entry)) {
+                    outcome = wal.recordEpochStart(entry.key(),
+                                                   entry.startOffset(),
+                                                   ProvenanceEntry.ORDER)
+                                 .onSuccess(_ -> recorded.add(entry));
+                }
+            }
+
+            var installed = InstalledSlice.installedSlice(streamName, partition, recorded, claimed);
+
+            pending(installed.ref()).add(installed);
+
+            return outcome.fold(cause -> trimProvenance(installed).flatMap(_ -> cause.result()),
+                                _ -> Result.success(installed));
+        }
     }
 
-    private static Result<Unit> recordUnlessHeld(AppendLog wal,
-                                                 List<AppendLog.EpochStart> held,
-                                                 ProvenanceEntry entry) {
-        return entry.key()
-                    .flatMap(key -> held.contains(new AppendLog.EpochStart(key,
-                                                                           entry.startOffset()))
-                                    ? Result.unitResult()
-                                    : wal.recordEpochStart(key,
-                                                           entry.startOffset(),
-                                                           ProvenanceEntry.ORDER));
+    /// Settles a page that applied (#1638 F1): its install is no longer pending, so its entries no longer shield
+    /// themselves from another install's trim -- a record now reaches each one it relied on.
+    public Unit releaseProvenance(InstalledSlice installed) {
+        synchronized (pendingInstalls) {
+            unregister(installed);
+
+            return unit();
+        }
     }
 
-    /// Drops the provenance entries no held record reaches (#1638 B1): a catch-up records the source's slice BEFORE
-    /// applying the page -- an entry must be durable before the first record of its epoch -- so an apply that then
-    /// fails (fence, gap, I/O) leaves entries above the head, which would make every retry of the page refused and
-    /// rank this copy by an epoch it never received. Called by every catch-up apply on failure. A partition that keeps
+    /// Settles a page whose apply failed (#1638 B1, F1): drops the entries THIS install recorded that no held record
+    /// reaches, except one another pending install also relies on -- recorded or found already held. Never an entry it
+    /// did not record: another catch-up's entries above the head are that catch-up's to settle. A partition that keeps
     /// no log has nothing to trim.
-    public Result<Unit> trimProvenanceAboveHead(String streamName, int partition) {
-        return walFor(streamName, partition).map(wal -> wal.truncateEpochsAboveHead(nextExpectedOffset(streamName,
-                                                                                                       partition) - 1))
-                     .or(Result::unitResult);
+    public Result<Unit> trimProvenance(InstalledSlice installed) {
+        synchronized (pendingInstalls) {
+            unregister(installed);
+            var shielded = pending(installed.ref()).stream()
+                                  .flatMap(other -> other.claimed()
+                                                         .stream())
+                                  .collect(Collectors.toSet());
+            var droppable = installed.recorded().stream().filter(entry -> !shielded.contains(entry)).toList();
+
+            return walFor(installed.streamName(),
+                          installed.partition()).map(wal -> wal.dropEpochStartsAboveHead(nextExpectedOffset(installed.streamName(),
+                                                                                                            installed.partition()) - 1,
+                                                                                         droppable))
+                         .or(Result::unitResult);
+        }
+    }
+
+    /// Runs under [#pendingInstalls].
+    private List<InstalledSlice> pending(PartitionRef ref) {
+        return pendingInstalls.computeIfAbsent(ref, _ -> new ArrayList<>());
+    }
+
+    /// Runs under [#pendingInstalls].
+    private void unregister(InstalledSlice installed) {
+        pending(installed.ref()).remove(installed);
+    }
+
+    /// One catch-up's install of a source slice (#1638 F1): the entries it `recorded`, and every entry of its range it
+    /// `claimed` -- recorded, or skipped because the log already held it. Only the recorded ones are its to trim; the
+    /// claimed ones are shielded from any other install's trim while it is pending.
+    public record InstalledSlice(String streamName,
+                                 int partition,
+                                 List<AppendLog.EpochStart> recorded,
+                                 List<AppendLog.EpochStart> claimed) {
+        public InstalledSlice {
+            recorded = List.copyOf(recorded);
+            claimed = List.copyOf(claimed);
+        }
+
+        static InstalledSlice installedSlice(String streamName,
+                                             int partition,
+                                             List<AppendLog.EpochStart> recorded,
+                                             List<AppendLog.EpochStart> claimed) {
+            return new InstalledSlice(streamName, partition, recorded, claimed);
+        }
+
+        private PartitionRef ref() {
+            return new PartitionRef(streamName, partition);
+        }
     }
 
     /// The seam every catch-up apply lands through (#1505, #1596): records are appended unattributed and fenced with
-    /// the partition's current owner epoch, after the source's slice is installed.
+    /// the partition's current owner epoch, inside [#applyAttributed] / [#applyUnattributed], which install the
+    /// source's slice first and settle it after.
     public AlignedRecovery alignedRecovery() {
         return AlignedRecovery.alignedRecovery((streamName, partition, offset, payload, timestamp) -> appendCaughtUp(streamName,
                                                                                                                      partition,
@@ -2649,9 +2801,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                      timestamp,
                                                                                                                      ownerEpochSource.currentOwnerEpoch(streamName,
                                                                                                                                                         partition)),
-                                               this::installProvenance,
-                                               this::installUnattributed,
-                                               this::trimProvenanceAboveHead);
+                                               this::applyAttributed,
+                                               this::applyUnattributed);
     }
 
     /// Records about to be applied up to `toOffset` carry no provenance (#1596: a sealed segment without a slice).
@@ -2659,25 +2810,32 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// -- is recorded at the head + 1 before they are appended, and `HISTORY_INCOMPLETE` is raised for this copy:
     /// the range equals no other copy's, so any comparison over it fails closed rather than attributing the records
     /// to whichever epoch came before them. A partition without a log records nothing; records that land at or
-    /// below the head are verified against what is held and need nothing.
+    /// below the head are verified against what is held and need nothing. Production reaches it through
+    /// [#applyUnattributed] only; the install is pending until settled, like [#installProvenance]'s.
     ///
     /// The head is read outside the partition's ordered section: a live append landing between that read and the
     /// replay's first append makes the replay's appends at those offsets a verification instead, and the unknown
     /// entry then starts above records the live batch attributed -- conservative, never permissive.
-    public Result<Unit> installUnattributed(String streamName, int partition, long toOffset) {
+    public Result<InstalledSlice> installUnattributed(String streamName, int partition, long toOffset) {
         var start = nextExpectedOffset(streamName, partition);
 
         return walFor(streamName, partition).filter(_ -> toOffset >= start)
                      .map(wal -> recordUnattributed(wal, streamName, partition, start))
-                     .or(Result::unitResult);
+                     .or(() -> Result.success(InstalledSlice.installedSlice(streamName,
+                                                                            partition,
+                                                                            List.of(),
+                                                                            List.of())));
     }
 
-    private Result<Unit> recordUnattributed(AppendLog wal, String streamName, int partition, long start) {
+    private Result<InstalledSlice> recordUnattributed(AppendLog wal, String streamName, int partition, long start) {
         var unknown = ProvenanceEpoch.unknown(lastRecordedEpoch(streamName, partition).or(Epoch.ZERO));
 
         return ProvenanceEntry.provenanceEntry(unknown, start)
                               .key()
-                              .flatMap(key -> wal.recordEpochStart(key, start, ProvenanceEntry.ORDER))
+                              .flatMap(key -> recordClaimed(wal,
+                                                            streamName,
+                                                            partition,
+                                                            List.of(new AppendLog.EpochStart(key, start))))
                               .onSuccess(_ -> raiseOnce(streamName,
                                                         partition,
                                                         PartitionRecoveryReasonKind.HISTORY_INCOMPLETE,
@@ -3353,7 +3511,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           bytes -> reserveForGrowth(config, bytes),
                                           this::release,
                                           logs,
-                                          lastSealedOffset)
+                                          lastSealedOffset,
+                                          this::trimFailedAtOpen)
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
@@ -4021,13 +4180,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               LongConsumer release,
                                               IntPredicate shouldMaterialize,
                                               Option<AppendLog.Opener> logs,
-                                              LastSealedOffsetSource lastSealedOffset) {
+                                              LastSealedOffsetSource lastSealedOffset,
+                                              TrimFailure trimFailed) {
             var selected = selectedPartitions(config, shouldMaterialize);
             var ringResults = buildRings(config, selected, listener, reserve, release);
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(rings -> openEntryWals(config, selected, rings, logs, lastSealedOffset))
+                         .flatMap(rings -> openEntryWals(config, selected, rings, logs, lastSealedOffset, trimFailed))
                          .onFailure(_ -> closeBuilt(ringResults));
         }
 
@@ -4095,30 +4255,39 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                             LongPredicate reserve,
                                                             LongConsumer release,
                                                             Option<AppendLog.Opener> logs,
-                                                            LastSealedOffsetSource lastSealedOffset) {
+                                                            LastSealedOffsetSource lastSealedOffset,
+                                                            TrimFailure trimFailed) {
             return buildRing(config, partition, listener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                            .flatMap(ring -> openAndRecoverOne(config, partition, ring, logs, lastSealedOffset));
+                            .flatMap(ring -> openAndRecoverOne(config,
+                                                               partition,
+                                                               ring,
+                                                               logs,
+                                                               lastSealedOffset,
+                                                               trimFailed));
         }
 
         private static Result<MaterializedPartition> openAndRecoverOne(StreamConfig config,
                                                                        int partition,
                                                                        OffHeapRingBuffer ring,
                                                                        Option<AppendLog.Opener> logs,
-                                                                       LastSealedOffsetSource lastSealedOffset) {
+                                                                       LastSealedOffsetSource lastSealedOffset,
+                                                                       TrimFailure trimFailed) {
             return openWal(config, partition, logs).onFailure(_ -> ring.closeWithoutRelease())
-                          .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset));
+                          .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset, trimFailed));
         }
 
         private static Result<MaterializedPartition> recoverOne(StreamConfig config,
                                                                 int partition,
                                                                 OffHeapRingBuffer ring,
                                                                 Option<AppendLog> wal,
-                                                                LastSealedOffsetSource lastSealedOffset) {
+                                                                LastSealedOffsetSource lastSealedOffset,
+                                                                TrimFailure trimFailed) {
             return recoverPartition(config.name(),
                                     partition,
                                     ring,
                                     wal,
-                                    lastSealedOffset).map(_ -> new MaterializedPartition(ring, wal))
+                                    lastSealedOffset,
+                                    trimFailed).map(_ -> new MaterializedPartition(ring, wal))
                                    .onFailure(_ -> closeRingAndWal(ring, wal));
         }
 
@@ -4154,12 +4323,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          List<Integer> selected,
                                                          List<OffHeapRingBuffer> rings,
                                                          Option<AppendLog.Opener> logs,
-                                                         LastSealedOffsetSource lastSealedOffset) {
+                                                         LastSealedOffsetSource lastSealedOffset,
+                                                         TrimFailure trimFailed) {
             return openWals(config, selected, logs).flatMap(wals -> recoverWals(config,
                                                                                 selected,
                                                                                 rings,
                                                                                 wals,
-                                                                                lastSealedOffset))
+                                                                                lastSealedOffset,
+                                                                                trimFailed))
                            .map(wals -> entryOf(config, selected, rings, wals));
         }
 
@@ -4172,11 +4343,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                    List<Integer> selected,
                                                                    List<OffHeapRingBuffer> rings,
                                                                    List<Option<AppendLog>> wals,
-                                                                   LastSealedOffsetSource lastSealedOffset) {
+                                                                   LastSealedOffsetSource lastSealedOffset,
+                                                                   TrimFailure trimFailed) {
             var results = new ArrayList<Result<Unit>>(rings.size());
 
             for (int i = 0; i < rings.size(); i++) {
-                results.add(recoverPartition(config.name(), selected.get(i), rings.get(i), wals.get(i), lastSealedOffset));
+                results.add(recoverPartition(config.name(),
+                                             selected.get(i),
+                                             rings.get(i),
+                                             wals.get(i),
+                                             lastSealedOffset,
+                                             trimFailed));
             }
 
             return Result.allOf(results)
@@ -4192,10 +4369,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<AppendLog> wal,
-                                                     LastSealedOffsetSource lastSealedOffset) {
+                                                     LastSealedOffsetSource lastSealedOffset,
+                                                     TrimFailure trimFailed) {
             return wal.onPresent(ring::attachWal)
-                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset).flatMap(_ -> trimAtOpen(w,
-                                                                                                                     ring)))
+                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset).flatMap(_ -> trimAtOpen(streamName,
+                                                                                                                     partition,
+                                                                                                                     w,
+                                                                                                                     ring,
+                                                                                                                     trimFailed)))
                       .or(() -> success(unit()));
         }
 
@@ -4203,8 +4384,18 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// crash left between its durable record and the first frame of its epoch, or a catch-up whose apply did not
         /// happen. Such a ghost would rank this copy by an epoch it holds no record of (`LogProvenance.SOURCE_ORDER`),
         /// and a promotion that picked it would lose the acked records above its head.
-        private static Result<Unit> trimAtOpen(AppendLog wal, OffHeapRingBuffer ring) {
-            return wal.truncateEpochsAboveHead(ring.headOffset());
+        ///
+        /// #1638 F6: a trim that fails leaves the ghost in place, so the partition stays closed on this node -- detect and
+        /// flag, never guess -- and the failure is reported with its own cause ([TrimFailure]).
+        private static Result<Unit> trimAtOpen(String streamName,
+                                               int partition,
+                                               AppendLog wal,
+                                               OffHeapRingBuffer ring,
+                                               TrimFailure trimFailed) {
+            var head = ring.headOffset();
+
+            return wal.truncateEpochsAboveHead(head)
+                      .mapError(cause -> trimFailed.trimFailed(streamName, partition, head, cause));
         }
 
         /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its

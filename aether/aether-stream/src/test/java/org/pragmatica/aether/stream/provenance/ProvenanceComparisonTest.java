@@ -187,6 +187,21 @@ class ProvenanceComparisonTest {
             assertThat(List.of(behind, bare, ahead).stream().max(LogProvenance.SOURCE_ORDER)).contains(ahead);
             assertThat(List.of(behind, bare, ahead).stream().min(LogProvenance.SOURCE_ORDER)).contains(bare);
         }
+
+        /// #1638 F2 (v1638 probe r1): an entry starting above the head is a ghost no record reaches, and never ranks the
+        /// copy. An EMPTY copy holding the ghost e3 ranks below a copy holding records 0..5 at e2, and a copy with
+        /// records ranks by the last entry its records reach. Red under "rank every entry".
+        @Test
+        void entriesAboveTheHead_neverRank() {
+            var emptyWithGhost = copy(0, -1, at(E1, 0), at(E3, 2));
+            var holder = copy(0, 5, at(E1, 0), at(E2, 3));
+            var ghostAboveHead = copy(0, 2, at(E1, 0), at(E3, 6));
+
+            assertThat(emptyWithGhost.lastEpoch()).isEqualTo(Option.none());
+            assertThat(ghostAboveHead.lastEpoch()).isEqualTo(Option.some(E1));
+            assertThat(List.of(emptyWithGhost, holder, ghostAboveHead).stream().max(LogProvenance.SOURCE_ORDER)).contains(holder);
+            assertThat(LogProvenance.SOURCE_ORDER.compare(emptyWithGhost, holder)).isNegative();
+        }
     }
 
     private static ProvenanceEntry at(Epoch epoch, long start) {

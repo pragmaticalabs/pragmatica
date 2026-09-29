@@ -31,6 +31,7 @@ import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.StorageInstance;
@@ -165,6 +166,46 @@ class SegmentReplayProvenanceTest {
         assertThat(raised).isEmpty();
     }
 
+    /// #1638 F4: a replay whose apply fails after the sealer's slice was installed drops what no record reaches --
+    /// e3@10 above head 9 -- so the retry installs cleanly. Red under "the replay applies outside the seam's
+    /// settlement" (a GovernorFailoverHandler that installs, then appends on its own).
+    @Test
+    void failedReplayApply_isTrimmed_andTheRetryInstallsTheSlice() {
+        holdE1ThenE2();
+        sealByTheE3Owner();
+
+        replay(failingAt(10));
+
+        assertThat(node.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(10L);
+        assertThat(node.epochHistory(STREAM, PARTITION).unwrap()).as("e3@10 trimmed").containsExactly(at(E1, 0), at(E2, 5));
+
+        replay();
+
+        assertThat(node.epochHistory(STREAM, PARTITION).unwrap()).containsExactlyElementsOf(OWNER_HISTORY);
+    }
+
+    /// The slice-less replay settles the same way: the `UNKNOWN(d)` entry recorded at head + 1 is dropped when the
+    /// apply fails. Red under "the unattributed replay applies outside the seam's settlement".
+    @Test
+    void failedSliceLessReplayApply_isTrimmed() {
+        holdE1ThenE2();
+        sealWithoutASlice();
+
+        replay(failingAt(10));
+
+        assertThat(node.epochHistory(STREAM, PARTITION).unwrap()).containsExactly(at(E1, 0), at(E2, 5));
+    }
+
+    private AlignedRecovery failingAt(long offset) {
+        var real = node.alignedRecovery();
+
+        return AlignedRecovery.alignedRecovery((stream, partition, at, payload, timestamp) -> at == offset
+                                                                                           ? Causes.cause("injected apply failure").<Long> result()
+                                                                                           : real.appendRecovered(stream, partition, at, payload, timestamp),
+                                               real::applyAttributed,
+                                               real::applyUnattributed);
+    }
+
     private void holdE1ThenE2() {
         LongStream.range(0, 5).forEach(offset -> live(offset, E1));
         LongStream.range(5, 10).forEach(offset -> live(offset, E2));
@@ -189,7 +230,11 @@ class SegmentReplayProvenanceTest {
     }
 
     private void replay() {
-        governorFailoverHandler(replicaRegistry(), node.alignedRecovery(), node::syncReplicated)
+        replay(node.alignedRecovery());
+    }
+
+    private void replay(AlignedRecovery recovery) {
+        governorFailoverHandler(replicaRegistry(), recovery, node::syncReplicated)
             .handleFailover(STREAM, PARTITION, watermarkTracker(), index, reader)
             .await();
     }

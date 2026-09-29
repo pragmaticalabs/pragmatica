@@ -8,7 +8,6 @@ import java.util.List;
 
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 
 /// Offset-addressed, non-replicating append seam for every replica-side recovery apply (#1505): the catch-up apply
@@ -19,7 +18,7 @@ import org.pragmatica.lang.Unit;
 /// appending when offsets below `offset` are missing, or when a DIFFERENT event is held at `offset`.
 ///
 /// A catch-up append carries no epoch of its own (#1596): its records are attributed by the SOURCE's owner-epoch
-/// slice, which [#installProvenance] checks against this copy (N13) and records before the records are applied.
+/// slice, which [#applyAttributed] checks against this copy (N13) and records before the records are applied.
 ///
 /// Production binds `StreamPartitionManager#alignedRecovery`. The live receive path
 /// ({@link ReplicationReceiveHandler.RecoveredAppender}) lands through the same ordered section, so every replica
@@ -28,21 +27,28 @@ import org.pragmatica.lang.Unit;
 public interface AlignedRecovery {
     Result<Long> appendRecovered(String streamName, int partition, long offset, byte[] payload, long timestamp);
 
-    /// Check the source's slice against this copy's history and record it (#1596); a failure means nothing of the
-    /// page may be applied.
-    Result<Unit> installProvenance(String streamName,
-                                   int partition,
-                                   long fromOffset,
-                                   long toOffset,
-                                   List<ProvenanceEntry> slice);
+    /// Apply one page whose records carry the source's owner-epoch `slice` (#1596, #1638 F1): the slice is checked
+    /// against this copy's history (N13) and recorded, then `apply` runs -- appending through [#appendRecovered] --
+    /// and the install is settled: when `apply` fails, the entries this install recorded that no record reaches are
+    /// dropped, so the retry installs cleanly and the copy is never ranked by an epoch it did not receive. A failed
+    /// install means `apply` never runs. Install, apply and settle are one call so no caller can apply outside them.
+    Result<Long> applyAttributed(String streamName,
+                                 int partition,
+                                 long fromOffset,
+                                 long toOffset,
+                                 List<ProvenanceEntry> slice,
+                                 PageApply apply);
 
-    /// Records about to be applied up to `toOffset` came from a place that carries no provenance (a sealed segment
-    /// without a slice, #1596): mark what lies past this copy's head as `UNKNOWN(d)`, which equals no other copy's
-    /// range, so a comparison over it fails closed.
-    Result<Unit> installUnattributed(String streamName, int partition, long toOffset);
-    /// A page's apply failed after its provenance was installed (#1638 B1): drop the entries no held record reaches, so
-    /// the retry installs cleanly and the copy is never ranked by an epoch it did not receive.
-    Result<Unit> trimProvenance(String streamName, int partition);
+    /// [#applyAttributed] for records from a place that carries no provenance (a sealed segment without a slice,
+    /// #1596): what lies past this copy's head is marked `UNKNOWN(d)`, which equals no other copy's range, so a
+    /// comparison over it fails closed.
+    Result<Long> applyUnattributed(String streamName, int partition, long toOffset, PageApply apply);
+
+    /// The page's appends, run between the install and its settlement.
+    @FunctionalInterface
+    interface PageApply {
+        Result<Long> apply();
+    }
 
     @FunctionalInterface
     interface Appender {
@@ -50,28 +56,23 @@ public interface AlignedRecovery {
     }
 
     @FunctionalInterface
-    interface Installer {
-        Result<Unit> installProvenance(String streamName,
-                                       int partition,
-                                       long fromOffset,
-                                       long toOffset,
-                                       List<ProvenanceEntry> slice);
+    interface AttributedApplier {
+        Result<Long> applyAttributed(String streamName,
+                                     int partition,
+                                     long fromOffset,
+                                     long toOffset,
+                                     List<ProvenanceEntry> slice,
+                                     PageApply apply);
     }
 
     @FunctionalInterface
-    interface UnattributedInstaller {
-        Result<Unit> installUnattributed(String streamName, int partition, long toOffset);
-    }
-
-    @FunctionalInterface
-    interface Trimmer {
-        Result<Unit> trimProvenance(String streamName, int partition);
+    interface UnattributedApplier {
+        Result<Long> applyUnattributed(String streamName, int partition, long toOffset, PageApply apply);
     }
 
     static AlignedRecovery alignedRecovery(Appender appender,
-                                           Installer installer,
-                                           UnattributedInstaller unattributed,
-                                           Trimmer trimmer) {
+                                           AttributedApplier attributed,
+                                           UnattributedApplier unattributed) {
         return new AlignedRecovery() {
             @Override
             public Result<Long> appendRecovered(String streamName,
@@ -83,22 +84,18 @@ public interface AlignedRecovery {
             }
 
             @Override
-            public Result<Unit> installProvenance(String streamName,
-                                                  int partition,
-                                                  long fromOffset,
-                                                  long toOffset,
-                                                  List<ProvenanceEntry> slice) {
-                return installer.installProvenance(streamName, partition, fromOffset, toOffset, slice);
+            public Result<Long> applyAttributed(String streamName,
+                                                int partition,
+                                                long fromOffset,
+                                                long toOffset,
+                                                List<ProvenanceEntry> slice,
+                                                PageApply apply) {
+                return attributed.applyAttributed(streamName, partition, fromOffset, toOffset, slice, apply);
             }
 
             @Override
-            public Result<Unit> installUnattributed(String streamName, int partition, long toOffset) {
-                return unattributed.installUnattributed(streamName, partition, toOffset);
-            }
-
-            @Override
-            public Result<Unit> trimProvenance(String streamName, int partition) {
-                return trimmer.trimProvenance(streamName, partition);
+            public Result<Long> applyUnattributed(String streamName, int partition, long toOffset, PageApply apply) {
+                return unattributed.applyUnattributed(streamName, partition, toOffset, apply);
             }
         };
     }
@@ -106,9 +103,6 @@ public interface AlignedRecovery {
     /// A seam that installs NO provenance, for appliers whose partitions keep no log and so record none (test
     /// doubles). Never production: a catch-up through it leaves the applied records unattributed.
     static AlignedRecovery appendOnly(Appender appender) {
-        return alignedRecovery(appender,
-                               (_, _, _, _, _) -> Result.unitResult(),
-                               (_, _, _) -> Result.unitResult(),
-                               (_, _) -> Result.unitResult());
+        return alignedRecovery(appender, (_, _, _, _, _, apply) -> apply.apply(), (_, _, _, apply) -> apply.apply());
     }
 }

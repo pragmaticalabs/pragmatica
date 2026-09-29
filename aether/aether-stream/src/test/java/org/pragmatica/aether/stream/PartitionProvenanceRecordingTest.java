@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -16,12 +18,15 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.stream.provenance.LogProvenance;
 import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.provenance.PartitionFlags.PartitionFlag;
+import org.pragmatica.aether.stream.provenance.ProvenanceComparison;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -149,8 +154,7 @@ class PartitionProvenanceRecordingTest {
             live(2, E1);
             var slice = new ProvenanceEntry[]{at(E1, 0), at(E2, 4), at(E3, 6)};
 
-            install(3, 9, slice).onFailure(cause -> fail(cause.message()));
-            manager.trimProvenanceAboveHead(STREAM, PARTITION).onFailure(cause -> fail(cause.message()));
+            manager.trimProvenance(installed(3, 9, slice)).onFailure(cause -> fail(cause.message()));
             assertThat(history()).as("nothing above the head survives the failed apply").containsExactly(at(E1, 0));
 
             install(3, 9, slice).onFailure(cause -> fail("the retry: " + cause.message()));
@@ -196,6 +200,52 @@ class PartitionProvenanceRecordingTest {
 
             assertThat(local.head()).isEqualTo(2L);
             assertThat(local.history()).as("trimmed at open").containsExactly(at(E1, 0));
+        }
+
+        /// #1638 F3 (v1638 probe r3): the crash-shaped ghost -- an entry starting EXACTLY at head + 1, recorded durably
+        /// before the first frame of its epoch that the crash took -- is dropped at open. Red under the design's own bound
+        /// `truncateEpochsAbove(head + 1)`, which keeps it.
+        @Test
+        void ghostAtHeadPlusOne_isTrimmedAtOpen() {
+            live(0, E1);
+            live(1, E1);
+            live(2, E1);
+            install(3, 9, at(E1, 0), at(E3, 3)).onFailure(cause -> fail(cause.message()));
+            assertThat(history()).as("the ghost at head + 1 is on the volume").containsExactly(at(E1, 0), at(E3, 3));
+
+            manager.close();
+            manager = open();
+
+            assertThat(history()).containsExactly(at(E1, 0));
+        }
+
+        /// #1638 F2 (v1638 probe r1) end to end: an EMPTY replica installs a slice and dies before its apply. The trim at
+        /// open cannot tell an empty log from one whose data lives in sealed blocks, so it keeps the entries; the copy
+        /// must still rank by nothing, below a copy holding records, and never diverge. Red under "rank every entry".
+        @Test
+        void emptyCopysGhosts_surviveTheReopen_butNeverRank() {
+            install(0, 5, at(E1, 0), at(E3, 2)).onFailure(cause -> fail(cause.message()));
+
+            manager.close();
+            manager = open();
+
+            var ghost = manager.localProvenance(STREAM, PARTITION).unwrap().unwrap();
+            var holder = LogProvenance.logProvenance(0, 0, 5, List.of(at(E1, 0), at(E2, 3)));
+
+            assertThat(ghost.head()).isEqualTo(-1L);
+            assertThat(ghost.history()).as("kept by the trim at open").containsExactly(at(E1, 0), at(E3, 2));
+            assertThat(ProvenanceComparison.diverge(ghost, holder)).as("an empty copy never diverges").isFalse();
+            assertThat(LogProvenance.SOURCE_ORDER.compare(ghost, holder)).as("the empty copy ranks BELOW the holder of 0..5")
+                                                                          .isNegative();
+        }
+
+        /// #1638 F1: the failed-apply trim of an EMPTY replica drops what its install recorded -- its head (-1) is
+        /// known, unlike at open. Red under "the failed-apply trim keeps the `head < 0` guard".
+        @Test
+        void failedApplyOnAnEmptyReplica_isTrimmed() {
+            manager.trimProvenance(installed(0, 5, at(E1, 0), at(E3, 2))).onFailure(cause -> fail(cause.message()));
+
+            assertThat(history()).isEmpty();
         }
 
         /// N13 holds (the replica's own prefix matches the slice): the slice's entries past the replica's head are
@@ -248,6 +298,93 @@ class PartitionProvenanceRecordingTest {
         }
     }
 
+    /// #1638 F1: two catch-ups of one partition in flight at once. A failed apply trims only what ITS install recorded,
+    /// and never an entry another pending install relies on, so the other catch-up's records keep the epochs its
+    /// source attributed them to. Driven at the seam in the exact interleaving (v1638 probe r2); the backfill's
+    /// single-flight keeps the real pulls from overlapping (`PartitionBackfillTest$SingleFlight`).
+    @Nested
+    class ConcurrentCatchUps {
+        /// v1638 probe r2: A installs e2@4 and has not applied; B's install of the same slice records nothing (e2@4 is
+        /// held) and B's apply fails. B's trim must not drop A's e2@4 -- else A's records 4..9 read as e1, and the next
+        /// re-verifying pull of the same, correct source is refused by N13 (a spurious quarantine and MARKED_DIVERGED).
+        /// Red under "the trim drops every entry above the head".
+        @Test
+        void failedApplysTrim_keepsAnotherInstallsEntries() {
+            for (var offset = 0; offset < 3; offset++) {
+                live(offset, E1);
+            }
+
+            var first = installed(3, 9, at(E1, 0), at(E2, 4));
+            var second = installed(3, 9, at(E1, 0), at(E2, 4));
+
+            manager.trimProvenance(second).onFailure(cause -> fail(cause.message()));
+            for (var offset = 3; offset <= 9; offset++) {
+                caughtUp(offset);
+            }
+            manager.releaseProvenance(first);
+
+            assertThat(history()).as("records 4..9 read as e2").containsExactly(at(E1, 0), at(E2, 4));
+            install(3, 9, at(E1, 0), at(E2, 4)).onFailure(cause -> fail("the re-verifying pull: " + cause.message()));
+            assertThat(manager.quarantinedAt(STREAM, PARTITION)).isEqualTo(Option.none());
+        }
+
+        /// The mirror: B records e2@4 first, then A's install finds it held and skips it. B's apply fails. e2@4 is B's
+        /// own entry, but A relies on it, so B's trim keeps it while A is pending. Red under "trim everything this
+        /// install recorded" (no shield for another pending install's claims).
+        @Test
+        void failedApplysTrim_keepsItsOwnEntryWhileAnotherPendingInstallReliesOnIt() {
+            for (var offset = 0; offset < 3; offset++) {
+                live(offset, E1);
+            }
+
+            var failing = installed(3, 9, at(E1, 0), at(E2, 4));
+            var applying = installed(3, 9, at(E1, 0), at(E2, 4));
+
+            assertThat(failing.recorded()).as("the first install recorded e2@4").hasSize(1);
+            assertThat(applying.recorded()).as("the second found it held").isEmpty();
+
+            manager.trimProvenance(failing).onFailure(cause -> fail(cause.message()));
+            for (var offset = 3; offset <= 9; offset++) {
+                caughtUp(offset);
+            }
+            manager.releaseProvenance(applying);
+
+            assertThat(history()).as("records 4..9 read as e2").containsExactly(at(E1, 0), at(E2, 4));
+        }
+
+        /// Through the seam: a page whose apply fails is trimmed, one whose apply succeeds keeps its entries. Red under
+        /// "the seam does not settle a failed apply".
+        @Test
+        void applyAttributed_trimsAFailedApply_andKeepsASuccessfulOne() {
+            for (var offset = 0; offset < 3; offset++) {
+                live(offset, E1);
+            }
+
+            var failed = manager.applyAttributed(STREAM,
+                                                 PARTITION,
+                                                 3,
+                                                 9,
+                                                 List.of(at(E1, 0), at(E2, 4)),
+                                                 () -> Causes.cause("injected apply failure").result());
+
+            assertThat(failed.isFailure()).isTrue();
+            assertThat(history()).as("the failed page is trimmed").containsExactly(at(E1, 0));
+
+            manager.applyAttributed(STREAM, PARTITION, 3, 9, List.of(at(E1, 0), at(E2, 4)), this::applyThreeToNine)
+                   .onFailure(cause -> fail(cause.message()));
+
+            assertThat(history()).containsExactly(at(E1, 0), at(E2, 4));
+        }
+
+        private Result<Long> applyThreeToNine() {
+            for (var offset = 3; offset <= 9; offset++) {
+                caughtUp(offset);
+            }
+
+            return Result.success(7L);
+        }
+    }
+
     /// The durable half of the local fences: an N13 mismatch raises `MARKED_DIVERGED`, a log with records and no
     /// history raises `HISTORY_MISSING` -- each once per process, not once per occurrence. Red under "quarantine only".
     @Nested
@@ -282,6 +419,28 @@ class PartitionProvenanceRecordingTest {
 
             assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
                               .containsExactly(AetherValue.PartitionRecoveryReasonKind.HISTORY_MISSING);
+        }
+
+        /// #1638 F6: a ghost above the head that the trim at open cannot drop (the history's temp file is blocked)
+        /// keeps the partition closed on this node -- fail closed -- and raises `LOCAL_MISMATCH` for this copy on the
+        /// durable flag. Red under "a failed trim at open is not flagged".
+        @Test
+        void failedTrimAtOpen_failsClosed_andRaisesLocalMismatch() throws IOException {
+            live(0, E1);
+            install(3, 9, at(E1, 0), at(E3, 6)).onFailure(cause -> fail(cause.message()));
+            manager.close();
+            blockHistoryWrites();
+
+            var reopened = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+            reopened.partitionFlags(recordingFlags(raised));
+            assertThat(reopened.ensureStreamMaterialized(StreamConfig.streamConfig(STREAM)).isFailure()).as("fail closed")
+                                                                                                         .isTrue();
+            manager = reopened;
+
+            assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
+                              .containsExactly(AetherValue.PartitionRecoveryReasonKind.LOCAL_MISMATCH);
+            assertThat(raised.getFirst().evidence()).contains("above head 0");
         }
 
         @Test
@@ -380,6 +539,20 @@ class PartitionProvenanceRecordingTest {
 
     private void caughtUp(long offset) {
         manager.appendRecovered(STREAM, PARTITION, offset, PAYLOAD, 1L).onFailure(cause -> fail(cause.message()));
+    }
+
+    private StreamPartitionManager.InstalledSlice installed(long from, long to, ProvenanceEntry... slice) {
+        return manager.installProvenance(STREAM, PARTITION, from, to, List.of(slice)).unwrap();
+    }
+
+    /// A directory where the history writes its temp file: every history write then fails.
+    private void blockHistoryWrites() throws IOException {
+        try (var files = Files.walk(walDir)) {
+            var sidecar = files.filter(path -> path.getFileName().toString().endsWith(".epochs")).findFirst().orElseThrow();
+            var temp = sidecar.resolveSibling(sidecar.getFileName() + ".tmp");
+
+            Files.createDirectories(temp.resolve("blocked"));
+        }
     }
 
     private Result<?> install(long from, long to, ProvenanceEntry... slice) {
