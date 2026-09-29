@@ -5,7 +5,9 @@
 package org.pragmatica.aether.forge;
 
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.ProvisioningDecisionSnapshot;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ProvisioningDiagnostics;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.lang.Option;
@@ -37,7 +39,7 @@ import static org.awaitility.Awaitility.await;
 class LeaderTermFailoverTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
 
-    private final EmberCluster cluster = EmberCluster.emberCluster(5, 37400, 37500, 37600, "leader-term");
+    private final EmberCluster cluster = EmberCluster.emberCluster(5, 24000, 24100, 24200, "leader-term");
 
     @AfterEach
     void stop() {
@@ -48,6 +50,11 @@ class LeaderTermFailoverTest {
     void newLeaderTerm_isStrictlyAboveThePriorLeaders_acrossTwoFailovers() {
         LifecycleAwait.settled("start leader-term cluster", cluster, cluster.start());
         var first = awaitLeaderTerm(none());
+
+        assertThat(first.preLatched()).as("the first leader of a fresh cluster (term %d) must not pre-latch reachedFullMembership",
+                                          first.term())
+                  .isFalse();
+
         var second = failOver(first);
 
         failOver(second);
@@ -63,6 +70,11 @@ class LeaderTermFailoverTest {
                                         successor.leaderId(),
                                         prior.leaderId())
                   .isGreaterThan(prior.term());
+        assertThat(successor.preLatched()).as("never-led successor %s (committed term %d) must pre-latch reachedFullMembership "
+                                              + "at activation, before its first reconcile pass (#1559)",
+                                              successor.leaderId(),
+                                              successor.term())
+                  .isTrue();
 
         return successor;
     }
@@ -74,13 +86,32 @@ class LeaderTermFailoverTest {
         var leader = settledLeader(excluded).unwrap();
         var committed = committedLeader(leader).unwrap();
         var term = mintedTerm(leader);
+        var activation = activationSnapshot(leader);
 
         assertThat(term).as("leader %s term vs its committed viewSequence",
                             leader.self().id())
                   .isEqualTo(committed.viewSequence());
 
         return LeaderTermObservation.leaderTermObservation(leader.self().id(),
-                                                           term);
+                                                           term,
+                                                           activation.reachedFullMembership());
+    }
+
+    /// #1559: the reconciler's LeaderChange route runs BEFORE the one that adopts the committed term, so
+    /// what the pre-latch reads at activation is only visible until the first reconcile pass, which is
+    /// delayed by the activation quiesce and can latch the same flag from observed membership. The
+    /// snapshot is therefore read inside that window, and the window is asserted rather than assumed: a
+    /// snapshot taken after the first pass could not tell the pre-latch from the pass.
+    private static ProvisioningDecisionSnapshot activationSnapshot(AetherNode leader) {
+        var snapshot = leader.provisioningDiagnostics()
+                             .map(ProvisioningDiagnostics::decision)
+                             .unwrap();
+
+        assertThat(snapshot.reason()).as("leader %s must be observed before its first reconcile pass",
+                                         leader.self().id())
+                  .isEqualTo("NOT_EVALUATED");
+
+        return snapshot;
     }
 
     private Option<AetherNode> settledLeader(Option<String> excluded) {
@@ -112,9 +143,9 @@ class LeaderTermFailoverTest {
                    .getTyped(LeaderKey.INSTANCE, LeaderValue.class);
     }
 
-    private record LeaderTermObservation(String leaderId, long term) {
-        static LeaderTermObservation leaderTermObservation(String leaderId, long term) {
-            return new LeaderTermObservation(leaderId, term);
+    private record LeaderTermObservation(String leaderId, long term, boolean preLatched) {
+        static LeaderTermObservation leaderTermObservation(String leaderId, long term, boolean preLatched) {
+            return new LeaderTermObservation(leaderId, term, preLatched);
         }
     }
 }

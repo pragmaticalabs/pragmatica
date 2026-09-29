@@ -35,12 +35,13 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
 
     /// Synchronous protocol messages (part of the consensus rounds).
     sealed interface Synchronous extends RabiaProtocolMessage {
-        /// One immutable proposal for a log slot in a fixed voter epoch.
+        /// One immutable proposal for a log slot in a fixed voter epoch. `epoch` is the sender's voter
+        /// epoch for this slot; a carried `reconfiguration` names its own base epoch (Rabia §4).
         record Propose<C extends Command>(NodeId sender,
                                           long epoch,
                                           Phase phase,
                                           Batch<C> value,
-                                          Option<ClusterConfig> reconfiguration) implements Synchronous {
+                                          Option<ReconfigurationCommand> reconfiguration) implements Synchronous {
             public Propose(NodeId sender, Phase phase, Batch<C> value) {
                 this(sender, 0, phase, value, Option.none());
             }
@@ -75,7 +76,7 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
                                            Phase phase,
                                            StateValue stateValue,
                                            Batch<C> value,
-                                           Option<ClusterConfig> reconfiguration) implements Synchronous {
+                                           Option<ReconfigurationCommand> reconfiguration) implements Synchronous {
             public Decision(NodeId sender, Phase phase, StateValue stateValue, Batch<C> value) {
                 this(sender, 0, phase, stateValue, value, Option.none());
             }
@@ -106,23 +107,16 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
             }
         }
 
+        /// Asks the other voters to carry `target` as a Rabia §4 command computed from voter epoch `epoch`.
         record ReconfigurationRequest(NodeId sender, long epoch, ClusterConfig target) implements Asynchronous {}
 
-        record ConfigurationTransfer<C extends Command>(NodeId sender, ConfigurationHandoff<C> handoff) implements Asynchronous {
-            @Override
-            public StreamType streamType() {
-                return StreamType.SYNC;
-            }
-        }
-
-        record ConfigurationInstalled(NodeId sender,
-                                      VoterConfiguration configuration,
-                                      Phase nextSlot,
-                                      boolean requestAcknowledgements) implements Asynchronous {
-            public ConfigurationInstalled(NodeId sender, VoterConfiguration configuration, Phase nextSlot) {
-                this(sender, configuration, nextSlot, false);
-            }
-        }
+        /// Genesis view agreement (#1526). A core whose genesis is pending announces its `view` in its
+        /// `round`; a core whose electorate is already formed answers with the configuration that governs
+        /// it in `formed`.
+        record GenesisAnnouncement(NodeId sender,
+                                   long round,
+                                   Option<ClusterConfig> view,
+                                   Option<VoterConfiguration> formed) implements Asynchronous {}
 
         /// State synchronization request. Travels on the dedicated SYNC lane (not CONSENSUS) so a
         /// far-behind joiner's SyncRequest retries do not flood the consensus round traffic.

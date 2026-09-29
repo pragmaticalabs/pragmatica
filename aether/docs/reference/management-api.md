@@ -3682,6 +3682,42 @@ land.
 }
 ```
 
+### POST /api/v1/backup/declare-genesis
+
+Make this cluster's state the KV backup head in place of a backup of ANOTHER lineage (#1532). The
+leader raises its committed cluster incarnation to `max(its own, the head's) + 1` — never backwards
+(`ClusterIncarnationKey`, lineage unchanged) — then commits a declaration naming exactly that lineage and incarnation (`declared-lineage.txt`)
+beside the backup and pushes it; the next change-triggered flush then supersedes the head as a
+fast-forward, and the old lineage stays in git history. The declaration is the only way the backup's
+lineage changes: a head of another lineage is otherwise gated whatever the incarnations. The incarnation
+write is a leader transaction witnessed on the incarnation the leader read, so a concurrent restore or
+declaration makes it refuse (`NOT_COMMITTED`) rather than be overwritten. Re-running after a failed push
+publishes the declaration already committed locally, without moving the incarnation again.
+
+**Refusals:**
+
+| Status | When |
+|---|---|
+| 409 `SameLineage` | The head already belongs to this cluster's lineage — nothing to supersede |
+| 409 `RemoteIsNewer` | The head is this cluster's lineage and AHEAD of it — restore it instead |
+| 409 `NOTHING_TO_SUPERSEDE` | The backup is empty — the first flush establishes this cluster's lineage |
+| 409 `NOT_COMMITTED` | A concurrent write won; re-read and retry |
+| 503 `DeclarationNotPublished` | The incarnation committed but the declaration did not reach the backup; re-run the command |
+| 409 `BACKUP_NOT_ENABLED` | `[backup]` is not enabled with a path on this node |
+| 503 `NOT_LEADER` / `NO_INCARNATION` / `HeadUnreadable` | Retry against the leader, after genesis, or once the head is reachable and readable |
+
+**RBAC:** ADMIN (exact route) · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "lineageId": "01K4ZT9Q6W3X8Y2B7C5D1E0F9G",
+  "incarnation": 4,
+  "supersededLineageId": "01K4ZS0000000000000000OLD0",
+  "supersededIncarnation": 3
+}
+```
+
 ### GET /api/v1/cluster/keys/audit
 
 List API key audit trail (create, rotate, revoke, expire events).
@@ -6089,14 +6125,16 @@ Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 R
 
 The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
 
-### Voter handoff diagnostics
+### Voter reconfiguration diagnostics
 
-The node status response includes `voterReconfiguration`: installed epoch and voters, target voters,
-optional barrier slot, stage, persisted checkpoint/installation certificate witness counts, and a
-failure description. Stages distinguish unavailable, stable, requested, checkpoint collection,
-installation pending and complete. Counts describe certified evidence, not transient network acknowledgements.
-A state-transfer admission failure remains visible while the stage is stalled; it is not reported
-as a successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
+The node status response includes `voterReconfiguration`: `stage`, `installedEpoch`,
+`installedVoters`, `targetVoters` (the requested roster, empty when none), `effectiveSlot` (the first
+slot the installed epoch governs, R+1 for a Rabia §4 change agreed at slot R; absent for genesis and
+when this node adopted the epoch from a snapshot), `awaitingCatchUp` (members the last applied change
+added that this node has not yet seen voting past R) and `failure`. Stages: `UNAVAILABLE`,
+`GENESIS_PENDING` (the complete genesis roster is still being discovered), `STABLE`, `REQUESTED` and
+`CATCHING_UP`. A state-transfer refusal remains visible in `failure`; it is not reported as a
+successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
 
 Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
 `completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.

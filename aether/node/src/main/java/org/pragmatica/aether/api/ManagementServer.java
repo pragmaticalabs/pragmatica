@@ -17,6 +17,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.http.ListenerStops;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -374,6 +375,7 @@ class ManagementServerImpl implements ManagementServer {
         apiKeyRoutesRef.set(apiKeyRoutes);
         routeSources.add(apiKeyRoutes);
         routeSources.add(GossipKeyRoutes.gossipKeyRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.BackupRoutes.backupRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
@@ -545,7 +547,7 @@ class ManagementServerImpl implements ManagementServer {
                                                       .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
                                  .or(Promise.success(unit()));
 
-        return h1Stop.flatMap(_ -> h3Stop);
+        return ListenerStops.bothStopped(h1Stop, h3Stop);
     }
 
     @Override
@@ -558,11 +560,13 @@ class ManagementServerImpl implements ManagementServer {
     /// Certificate rotation empties the slots with `take()` rather than `close()`: the listeners are
     /// being replaced, not shut down, so the slots must stay publishable. A rotation racing a `stop()`
     /// finds them already CLOSED, and the replacement listeners are then closed by their publisher.
+    ///
+    /// #1612: a stop that fails is logged and the restart goes ahead ([ListenerStops#stoppedForRestart]).
     private Promise<Unit> stopHttpServers() {
         var h1Stop = serverSlot.take().map(HttpServer::stop).or(Promise.success(unit()));
         var h3Stop = h3ServerSlot.take().map(HttpServer::stop).or(Promise.success(unit()));
 
-        return h1Stop.flatMap(_ -> h3Stop);
+        return ListenerStops.stoppedForRestart(ListenerStops.bothStopped(h1Stop, h3Stop), log, "Management listeners");
     }
 
     @SuppressWarnings("JBCT-PAT-01")
