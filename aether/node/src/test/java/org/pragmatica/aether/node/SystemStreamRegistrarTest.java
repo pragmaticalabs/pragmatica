@@ -320,6 +320,55 @@ class SystemStreamRegistrarTest {
             assertThat(recoveries.get()).as("a committed leg recovers once").isEqualTo(1);
         }
 
+        /// v1735 X4b: a re-armed leg that is REFUSED AGAIN has not recovered — the sink must not clear a still-refused
+        /// state; the refusal is reported again instead.
+        @Test
+        void recoverySink_doesNotRun_whenTheReArmedLegIsRefusedAgain() {
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                5).result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+
+            assertThat(refusals.get()).as("refused, re-armed, refused again").isEqualTo(2);
+            assertThat(recoveries.get()).as("a still-refused leg never clears").isZero();
+        }
+
+        /// v1735 X4c: after a re-arm the stream may already be committed (another leader committed it) — the leg
+        /// answers `STREAM_ALREADY_EXISTS`, which is the committed state, so the refusal is cleared once.
+        @Test
+        void recoverySink_runsOnce_whenTheReArmedLegFindsTheStreamAlreadyCommitted() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : StreamError.General.STREAM_ALREADY_EXISTS.result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).isTrue();
+            assertThat(recoveries.get()).isEqualTo(1);
+        }
+
         @Test
         void recoverySink_neverRunsForALegThatWasNotRefused() {
             var recoveries = new AtomicInteger();

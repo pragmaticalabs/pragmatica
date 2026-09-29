@@ -6034,8 +6034,9 @@ public interface AetherNode extends ManageableNode {
     /// #1564 B1: the operator-visible half of a refused `system:cluster-events` registration, a CRITICAL
     /// `cluster-events-registration-refused` operator warning (#1617, R10): an ERROR log, plus a cluster event. The
     /// event is offered to the very stream whose registration was refused, so it lands only once cluster-events
-    /// exists. So the refusal is ALSO an injected CRITICAL alert on `/api/alerts/active` (v1680 N-r3-1), which does not
-    /// depend on the stream; the registrar's recovery sink resolves it once a corrected config commits the stream.
+    /// exists. So the refusal is ALSO a CRITICAL alert on the leader's `/api/alerts/active` (v1680 N-r3-1), which does
+    /// not depend on the stream. It is LOCAL-only (`injectLocal`, v1735 B1): a replicated copy would outlive the
+    /// registrar's recovery sink, which resolves the alert once a corrected config commits the stream.
     @Contract
     private static void raiseClusterEventsRefusal(OperatorWarningSink sink, AlertManager alertManager, Cause cause) {
         OperatorWarnings.raise(LOG,
@@ -6044,12 +6045,10 @@ public interface AetherNode extends ManageableNode {
                                "system:cluster-events",
                                "system:cluster-events was not registered: {} — correct [replication.cluster_events] and re-apply the cluster config",
                                cause.message());
-        alertManager.inject(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),
-                            "CRITICAL",
-                            "system:cluster-events was not registered: " + cause.message()
-                           + " — correct [replication.cluster_events] and re-apply the cluster config",
-                            Option.none(),
-                            Option.none())
+        alertManager.injectLocal(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),
+                                 "CRITICAL",
+                                 "system:cluster-events was not registered: " + cause.message()
+                                + " — correct [replication.cluster_events] and re-apply the cluster config")
                     .onFailure(failure -> LOG.warn("Cluster-events refusal alert injection failed: {}",
                                                    failure.message()));
     }

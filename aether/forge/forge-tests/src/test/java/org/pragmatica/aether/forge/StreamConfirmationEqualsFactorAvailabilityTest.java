@@ -165,6 +165,18 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     void replacementJoined_isNotPlaced_writesStayRefused_TRIPWIRE() {
         joinReplacement();
 
+        // Positive control (v1735): the tripwire reads the owner's replica view, so an unreadable view would pass it
+        // vacuously. The view must be served and list exactly the two survivors before "not placed" means anything.
+        var survivors = ownerView().map(view -> view.replicas()
+                                                    .stream()
+                                                    .map(replica -> replica.nodeId())
+                                                    .toList())
+                                   .or(List.of());
+
+        assertThat(survivors).describedAs("positive control: the owner view is readable and lists the two survivors")
+                             .hasSize(2)
+                             .doesNotContain(killedNode);
+
         var placed = placedWithin(PLACEMENT_TIMEOUT);
 
         assertThat(placed)
@@ -173,8 +185,10 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                          replacementNode)
             .isFalse();
         assertThat(httpPost(appPort(), "/api/stream-acked/publish", "{\"payload\":\"after\"}"))
-            .describedAs("with only two replicas placed CF 3 cannot be met, so a publish stays refused")
-            .doesNotContain("\"published\"");
+            .describedAs("with only two replicas placed CF 3 cannot be met, so a publish stays refused — with the replica "
+                         + "refusal itself, not any error")
+            .doesNotContain("\"published\"")
+            .containsAnyOf("Not enough replicas", "REPLICATION_TIMEOUT");
     }
 
     /// The real acceptance for the recovery half, disabled until #1732: once the replacement is placed and caught
