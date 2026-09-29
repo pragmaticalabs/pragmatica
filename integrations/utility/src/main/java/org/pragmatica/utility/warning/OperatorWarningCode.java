@@ -37,7 +37,9 @@ public enum OperatorWarningCode {
     REPLICA_FSYNC_FAILED("replica-fsync-failed", "stream-replication", WarningLevel.WARNING),
     /// A whole-cluster restore withheld the previous cluster's entity checkpoints; entity state restarts empty
     /// for the named partitions (#1533).
-    BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED("backup-restore-entity-checkpoints-dropped", "kv-backup", WarningLevel.WARNING),
+    BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED("backup-restore-entity-checkpoints-dropped",
+                                              "kv-backup",
+                                              WarningLevel.WARNING),
     /// A cold start cannot read the KV backup (unreachable, undecodable); cluster-state writes stay refused
     /// until it can, or until a restart with `[backup] restore = "fresh"` (#1533).
     BACKUP_RESTORE_BLOCKED("backup-restore-blocked", "kv-backup", WarningLevel.CRITICAL),
