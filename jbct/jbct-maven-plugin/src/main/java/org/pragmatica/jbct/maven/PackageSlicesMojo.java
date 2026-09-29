@@ -129,13 +129,17 @@ public class PackageSlicesMojo extends AbstractMojo {
         getLog().info("Processing slice: " + manifest.sliceName());
         // Classify dependencies
         var classification = classifyDependencies(manifest);
+
+        if (!classification.unpackaged().isEmpty()) {
+            throw new MojoExecutionException(refusalMessage(manifest, classification.unpackaged()));
+        }
         // Create Impl JAR (fat JAR with dependencies file and manifest entries)
         createImplJar(manifest, classification);
         // Generate POM for impl artifact
         generatePom(manifest);
     }
 
-    private DependencyClassification classifyDependencies(SliceManifest manifest) throws MojoExecutionException {
+    private DependencyClassification classifyDependencies(SliceManifest manifest) {
         var sharedDeps = new ArrayList<ArtifactInfo>();
         var infraDeps = new ArrayList<ArtifactInfo>();
         var sliceDeps = new ArrayList<ArtifactInfo>();
@@ -173,39 +177,39 @@ public class PackageSlicesMojo extends AbstractMojo {
         }
         // Add same-module slice dependencies from manifest
         addLocalSliceDependencies(manifest, sliceDeps);
-        refuseUnpackagedSliceDependencies(manifest, providedInterfaces);
 
-        return new DependencyClassification(sharedDeps, infraDeps, sliceDeps, externalDeps);
+        return new DependencyClassification(sharedDeps,
+                                            infraDeps,
+                                            sliceDeps,
+                                            externalDeps,
+                                            unpackagedSliceDependencies(manifest, providedInterfaces));
     }
 
     /// #1408: every slice dependency the manifest declares must reach the `[slices]` section, either as a
     /// sibling this module packages or as a direct Maven slice dependency providing its interface. The
     /// runtime reads only `[slices]`, so a dependency accounted for by neither was dropped silently and the
     /// consumer died at load with a NoClassDefFoundError naming the provider interface.
-    private void refuseUnpackagedSliceDependencies(SliceManifest manifest,
-                                                   Set<String> providedInterfaces) throws MojoExecutionException {
-        var unpackaged = manifest.dependencies()
-                                 .stream()
-                                 .filter(dep -> !isLocalSliceCoordinate(dep.artifact())
-                                                && !providedInterfaces.contains(dep.interfaceQualifiedName()))
-                                 .map(dep -> dep.interfaceQualifiedName() + " (coordinate '" + dep.artifact() + "')")
-                                 .toList();
-
-        if (!unpackaged.isEmpty()) {
-            throw new MojoExecutionException("Slice " + manifest.sliceName() + " declares "
-                                             + unpackaged.size() + " dependenc" + (unpackaged.size() == 1 ? "y" : "ies")
-                                             + " that would reach no [slices] entry: " + String.join(", ", unpackaged)
-                                             + ". A sibling slice in this module is packaged only under '"
-                                             + project.getGroupId() + ":" + project.getArtifactId() + "-<slice>'; "
-                                             + "compile with -Aslice.groupId=" + project.getGroupId()
-                                             + " -Aslice.artifactId=" + project.getArtifactId()
-                                             + " (jbct-init writes both), or declare the provider's slice artifact "
-                                             + "as a direct Maven dependency.");
-        }
+    private List<String> unpackagedSliceDependencies(SliceManifest manifest, Set<String> providedInterfaces) {
+        return manifest.dependencies()
+                       .stream()
+                       .filter(dep -> !isLocalSliceCoordinate(dep.artifact())
+                                      && !providedInterfaces.contains(dep.interfaceQualifiedName()))
+                       .map(dep -> dep.interfaceQualifiedName() + " (coordinate '" + dep.artifact() + "')")
+                       .toList();
     }
 
+    private String refusalMessage(SliceManifest manifest, List<String> unpackaged) {
+        return "Slice " + manifest.sliceName() + " declares " + unpackaged.size() + " dependenc"
+               + (unpackaged.size() == 1 ? "y" : "ies") + " that would reach no [slices] entry: "
+               + String.join(", ", unpackaged) + ". A sibling slice in this module is packaged only under '"
+               + project.getGroupId() + ":" + project.getArtifactId() + "-<slice>'; compile with -Aslice.groupId="
+               + project.getGroupId() + " -Aslice.artifactId=" + project.getArtifactId()
+               + " (jbct-init writes both), or declare the provider's slice artifact as a direct Maven dependency.";
+    }
+
+    /// `SliceManifest` reads an absent coordinate as "", never null.
     private boolean isLocalSliceCoordinate(String coordinate) {
-        return coordinate != null && coordinate.startsWith(project.getGroupId() + ":" + project.getArtifactId() + "-");
+        return coordinate.startsWith(project.getGroupId() + ":" + project.getArtifactId() + "-");
     }
 
     /// The `slice.interface` of every slice manifest in `artifact`'s jar.
@@ -953,15 +957,18 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private record ArtifactInfo(String groupId, String artifactId, String version) {}
 
+    /// `unpackaged` lists every declared slice dependency that would reach no `[slices]` entry (#1408).
     private record DependencyClassification(List<ArtifactInfo> sharedDeps,
                                             List<ArtifactInfo> infraDeps,
                                             List<ArtifactInfo> sliceDeps,
-                                            List<Artifact> externalDeps) {
+                                            List<Artifact> externalDeps,
+                                            List<String> unpackaged) {
         DependencyClassification {
             sharedDeps = List.copyOf(sharedDeps);
             infraDeps = List.copyOf(infraDeps);
             sliceDeps = List.copyOf(sliceDeps);
             externalDeps = List.copyOf(externalDeps);
+            unpackaged = List.copyOf(unpackaged);
         }
     }
 }

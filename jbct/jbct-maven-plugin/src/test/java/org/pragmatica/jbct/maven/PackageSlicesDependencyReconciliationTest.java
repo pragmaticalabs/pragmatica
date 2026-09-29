@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream;
 import java.io.FileOutputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
@@ -21,7 +22,6 @@ import org.apache.maven.project.MavenProject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -39,10 +39,12 @@ class PackageSlicesDependencyReconciliationTest {
     Path tempDir;
 
     @Test
-    void classifyDependencies_packageDerivedSiblingCoordinate_refusesNamingTheInterfaceAndTheOptions() {
+    void processManifest_packageDerivedSiblingCoordinate_refusesNamingTheInterfaceAndTheOptions() throws Exception {
         var mojo = mojoFor(project(List.of()));
-        var thrown = assertThrows(InvocationTargetException.class,
-                                  () -> classify(mojo, manifestDependingOn(PROVIDER, "org.example.shop:inventory")));
+        var manifestFile = tempDir.resolve("Checkout.manifest");
+
+        Files.writeString(manifestFile, manifestText(PROVIDER, "org.example.shop:inventory"));
+        var thrown = assertThrows(InvocationTargetException.class, () -> processManifest(mojo, manifestFile));
         var cause = assertInstanceOf(MojoExecutionException.class, thrown.getCause());
 
         assertTrue(cause.getMessage().contains(PROVIDER), cause.getMessage());
@@ -51,11 +53,11 @@ class PackageSlicesDependencyReconciliationTest {
     }
 
     @Test
-    void classifyDependencies_moduleKeyedSiblingCoordinate_isPackaged() {
+    void classifyDependencies_moduleKeyedSiblingCoordinate_isPackaged() throws Exception {
         // Control: the coordinate the processor emits WITH the two options is accepted.
         var mojo = mojoFor(project(List.of()));
 
-        assertDoesNotThrow(() -> classify(mojo, manifestDependingOn(PROVIDER, "org.example:shop-inventory-service")));
+        assertTrue(unpackaged(mojo, manifestDependingOn(PROVIDER, "org.example:shop-inventory-service")).isEmpty());
     }
 
     @Test
@@ -66,25 +68,41 @@ class PackageSlicesDependencyReconciliationTest {
                                                                    + "base.artifact=org.example:inventory\n");
         var mojo = mojoFor(project(List.of(sliceArtifact(providerJar))));
 
-        assertDoesNotThrow(() -> classify(mojo, manifestDependingOn(PROVIDER, "org.example.shop:inventory")));
+        assertTrue(unpackaged(mojo, manifestDependingOn(PROVIDER, "org.example.shop:inventory")).isEmpty());
     }
 
-    private static Object classify(PackageSlicesMojo mojo, SliceManifest manifest) throws Exception {
+    private static void processManifest(PackageSlicesMojo mojo, Path manifestFile) throws Exception {
+        var method = PackageSlicesMojo.class.getDeclaredMethod("processManifest", Path.class);
+
+        method.setAccessible(true);
+        method.invoke(mojo, manifestFile);
+    }
+
+    /// The `unpackaged` list of the classification `processManifest` refuses on.
+    private static List<?> unpackaged(PackageSlicesMojo mojo, SliceManifest manifest) throws Exception {
         var method = PackageSlicesMojo.class.getDeclaredMethod("classifyDependencies", SliceManifest.class);
 
         method.setAccessible(true);
+        var classification = method.invoke(mojo, manifest);
+        var accessor = classification.getClass().getDeclaredMethod("unpackaged");
 
-        return method.invoke(mojo, manifest);
+        accessor.setAccessible(true);
+
+        return (List<?>) accessor.invoke(classification);
+    }
+
+    private static String manifestText(String interfaceName, String coordinate) {
+        return "slice.name=Checkout\n"
+               + "slice.package=org.example.shop.checkout\n"
+               + "slice.artifactId=shop-checkout\n"
+               + "dependencies.count=1\n"
+               + "dependency.0.interface=" + interfaceName + "\n"
+               + "dependency.0.artifact=" + coordinate + "\n"
+               + "dependency.0.version=UNRESOLVED\n";
     }
 
     private static SliceManifest manifestDependingOn(String interfaceName, String coordinate) {
-        var text = "slice.name=Checkout\n"
-                   + "slice.package=org.example.shop.checkout\n"
-                   + "slice.artifactId=shop-checkout\n"
-                   + "dependencies.count=1\n"
-                   + "dependency.0.interface=" + interfaceName + "\n"
-                   + "dependency.0.artifact=" + coordinate + "\n"
-                   + "dependency.0.version=UNRESOLVED\n";
+        var text = manifestText(interfaceName, coordinate);
 
         return SliceManifest.load(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8))).unwrap();
     }
