@@ -104,17 +104,52 @@ class LeaderTermTest {
         assertThat(term.current()).isEqualTo(5L);
     }
 
-    /// The count `LeaderReconciler`'s re-election pre-latch reads: THIS process's gains, independent of the
-    /// cluster-wide term the epochs are minted from. It reproduces the pre-latch's earlier input, defects
-    /// included; it does not make the pre-latch correct.
+    /// `committedTerm` max-merges exactly as `onLeaderGained` does. A committed record naming this node with
+    /// a sequence BELOW the held term (a replayed or out-of-order `LeaderKey` read, as above) must not report
+    /// the lower sequence as the term about to be adopted: `onLeaderGained` would keep the held term, so the
+    /// pure read has to agree with the edge it anticipates.
     @Test
-    void localGainCount_countsThisProcessesGains_independentOfTheClusterWideTerm() {
-        electThenLead(NODE_A, NODE_B, NODE_A);
-        var termC = elect(NODE_C);
+    void committedTerm_keepsTheHigherHeldTerm_whenTheCommittedSequenceIsLower() {
+        var committed = new AtomicReference<>(some(LeaderValue.leaderValue(NODE_A, 5L)));
+        var term = LeaderTerm.leaderTerm(NODE_A, committed::get);
 
-        assertThat(terms.get(NODE_A).localGainCount()).isEqualTo(2L);
-        assertThat(terms.get(NODE_C).localGainCount()).isEqualTo(1L);
-        assertThat(termC).isEqualTo(4L);
+        term.onLeaderGained();
+        committed.set(some(LeaderValue.leaderValue(NODE_A, 3L)));
+
+        assertThat(term.committedTerm()).isEqualTo(5L);
+        assertThat(term.committedTerm()).as("the pure read agrees with the edge it anticipates")
+                                        .isEqualTo(term.onLeaderGained());
+    }
+
+    /// #1559 — the re-election pre-latch input, read where `LeaderReconciler.activate()` reads it: after
+    /// the node's own `LeaderKey` commit, BEFORE its leader-gain edge. A failover to a node that has never
+    /// led reads a term above 1 (pre-latch); the first leader of a fresh cluster reads 1 (no pre-latch).
+    @Test
+    void committedTerm_atReconcilerActivation_preLatchesAFailoverToANeverLedNode() {
+        elect(NODE_A);
+        commitLeader(NODE_C);
+        leader.set(NODE_C);
+
+        assertThat(terms.get(NODE_C).committedTerm()).as("a never-led successor reads the committed term, above 1")
+                                                     .isGreaterThan(1L);
+        assertThat(terms.get(NODE_C).current()).as("the read never advances the minting term").isZero();
+    }
+
+    @Test
+    void committedTerm_atReconcilerActivation_doesNotPreLatchTheFirstLeaderOfAFreshCluster() {
+        commitLeader(NODE_A);
+
+        assertThat(terms.get(NODE_A).committedTerm()).isEqualTo(1L);
+    }
+
+    /// A node the committed record does not name reads its held term, never another node's sequence.
+    @Test
+    void committedTerm_readsTheHeldTerm_whenTheCommittedLeaderIsAnotherNode() {
+        var termA = elect(NODE_A);
+
+        commitLeader(NODE_B);
+
+        assertThat(terms.get(NODE_A).committedTerm()).isEqualTo(termA);
     }
 
     /// The consumer-group consequence: A assigned the partition to itself; after A dies, C must move the
