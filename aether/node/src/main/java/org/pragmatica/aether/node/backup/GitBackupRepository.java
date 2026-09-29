@@ -201,8 +201,8 @@ public record GitBackupRepository(Path dir,
     /// every `(lineage, incarnation, revision)` it has written.
     public Result<List<String>> history(String ref) {
         return git("log", "--format=%H %s", ref).map(output -> output.lines()
-                                                                    .filter(line -> !line.isBlank())
-                                                                    .toList());
+                                                                     .filter(line -> !line.isBlank())
+                                                                     .toList());
     }
 
     // --- internals ---

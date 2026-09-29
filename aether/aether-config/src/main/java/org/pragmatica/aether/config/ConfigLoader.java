@@ -400,8 +400,8 @@ public final class ConfigLoader {
         if (enabled) {
             var path = doc.getString("backup", "path").or("");
             var remote = doc.getString("backup", "remote").or("");
-            var restore = BackupConfig.RestoreMode.restoreMode(doc.getString("backup", "restore").or("auto"))
-                                                  .getOrThrow(IllegalArgumentException::new, "invalid [backup]");
+            var restore = BackupConfig.RestoreMode.restoreMode(doc.getString("backup", "restore").or("auto")).getOrThrow(IllegalArgumentException::new,
+                                                                                                                         "invalid [backup]");
 
             builder.backup(BackupConfig.backupConfig(true, path, remote, restore));
         }

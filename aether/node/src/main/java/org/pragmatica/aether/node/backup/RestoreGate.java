@@ -57,16 +57,15 @@ public sealed interface RestoreGate {
     /// Admit `commands` unless the gate is closed and one of them writes a backed-up key.
     static Result<Unit> admit(KVStore<AetherKey, AetherValue> kvStore, List<KVCommand<AetherKey>> commands) {
         return firstGatedWrite(commands).filter(_ -> !isOpen(kvStore))
-                                        .map(key -> RestorePending.FACTORY.apply(key.toString())
-                                                                          .<Unit> result())
-                                        .or(Result::unitResult);
+                              .map(key -> RestorePending.FACTORY.apply(key.toString()).<Unit> result())
+                              .or(Result::unitResult);
     }
 
     /// Open once this node holds a terminal restore decision.
     static boolean isOpen(KVStore<AetherKey, AetherValue> kvStore) {
         return decision(kvStore).filter(value -> value.outcome()
                                                       .isTerminal())
-                               .isPresent();
+                       .isPresent();
     }
 
     /// The committed restore decision, if any.
@@ -75,9 +74,7 @@ public sealed interface RestoreGate {
     }
 
     private static Option<AetherKey> firstGatedWrite(List<KVCommand<AetherKey>> commands) {
-        return Option.from(commands.stream()
-                                   .flatMap(RestoreGate::gatedKeys)
-                                   .findFirst());
+        return Option.from(commands.stream().flatMap(RestoreGate::gatedKeys).findFirst());
     }
 
     /// Keys are read as `Object`: the log also carries foreign-typed atoms under the `AetherKey` parameter
@@ -87,7 +84,7 @@ public sealed interface RestoreGate {
             case KVCommand.Put<AetherKey, ?> put -> backedUp(keyOf(put));
             case KVCommand.Remove<AetherKey> remove -> backedUp(keyOf(remove));
             case KVCommand.LeaderTransaction<AetherKey, ?> transaction -> transactionKeys(transaction);
-            case KVCommand.Get<AetherKey> _, KVCommand.Noop<AetherKey> _ -> Stream.empty();
+            case KVCommand.Get<AetherKey>_, KVCommand.Noop<AetherKey>_ -> Stream.empty();
         };
     }
 

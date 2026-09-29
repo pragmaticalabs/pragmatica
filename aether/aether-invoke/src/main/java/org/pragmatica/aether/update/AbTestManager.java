@@ -44,6 +44,7 @@ public interface AbTestManager {
     default Unit reloadRestoredState() {
         return Unit.unit();
     }
+
     Promise<Unit> deactivate();
     boolean isActive();
 

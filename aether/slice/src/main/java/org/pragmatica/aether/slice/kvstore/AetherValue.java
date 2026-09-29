@@ -1091,7 +1091,6 @@ public sealed interface AetherValue {
         /// Wire sentinel: an ordinal this node cannot name decodes here instead of throwing. Not terminal,
         /// so a node that cannot name the outcome keeps its restore gate closed. Must stay LAST.
         UNKNOWN;
-
         /// Whether the decision is final — the restore gate opens only on these.
         public boolean isTerminal() {
             return this == RESTORED || this == FRESH || this == SKIPPED_EXISTING_STATE || this == DISABLED;

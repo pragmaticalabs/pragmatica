@@ -762,8 +762,8 @@ public interface AetherNode extends ManageableNode {
     /// #1533 — the central restore gate: on a backup-enabled node every batch this node submits to
     /// consensus is checked by [RestoreGate] before it enters the log.
     private static RabiaNode<KVCommand<AetherKey>> installRestoreGate(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                     AetherNodeConfig config,
-                                                                     KVStore<AetherKey, AetherValue> kvStore) {
+                                                                      AetherNodeConfig config,
+                                                                      KVStore<AetherKey, AetherValue> kvStore) {
         enabledBackup(config).onPresent(_ -> clusterNode.installSubmitGuard(RestoreGate.restoreGate(kvStore)));
 
         return clusterNode;
@@ -782,8 +782,8 @@ public interface AetherNode extends ManageableNode {
     /// #1533 — the restore source, when this node backs up: the service and the configured restore mode.
     private static Option<BackupRestoreCoordinator.Source> restoreSource(AetherNodeConfig config,
                                                                          Option<KvBackupService> kvBackupService) {
-        return Option.all(kvBackupService, enabledBackup(config))
-                     .map((service, backup) -> BackupRestoreCoordinator.Source.source(service, backup.restore()));
+        return Option.all(kvBackupService, enabledBackup(config)).map((service, backup) -> BackupRestoreCoordinator.Source.source(service,
+                                                                                                                                  backup.restore()));
     }
 
     private static GitBackupRepository kvBackupRepository(BackupConfig backup) {
@@ -4536,9 +4536,9 @@ public interface AetherNode extends ManageableNode {
                                                  // #1533: the ONE restore-commit hook — see onRestoreDecision.
                                                  .onPut(AetherKey.BackupRestoreKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
-                                                                                                                                                      bootstrapModule,
-                                                                                                                                                      deploymentManager,
-                                                                                                                                                      abTestManager))
+                                                                                                                                                                            bootstrapModule,
+                                                                                                                                                                            deploymentManager,
+                                                                                                                                                                            abTestManager))
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,
@@ -6638,13 +6638,10 @@ public interface AetherNode extends ManageableNode {
     /// restored keys are covered by those listeners, because the restore's writes publish ordinary puts.
     @Contract
     static void onRestoreDecision(KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put,
-                                          BootstrapModule bootstrapModule,
-                                          DeploymentManager deploymentManager,
-                                          AbTestManager abTestManager) {
-        if (put.cause()
-               .value()
-               .outcome()
-               .isTerminal()) {
+                                  BootstrapModule bootstrapModule,
+                                  DeploymentManager deploymentManager,
+                                  AbTestManager abTestManager) {
+        if (put.cause().value().outcome().isTerminal()) {
             bootstrapModule.retryIfNeeded();
             deploymentManager.reloadRestoredState();
             abTestManager.reloadRestoredState();

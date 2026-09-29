@@ -93,8 +93,10 @@ public final class BackupRestoreCoordinator {
     /// Rendered-entry bytes per restore transaction. A consensus frame is capped at 32 MiB
     /// (`OutboundMessageLimit.MAX_FRAME_BYTES`); a quarter of it leaves room for the batch envelope.
     static final long CHUNK_BYTES = 8L * 1024 * 1024;
+
     /// The subject [KvBackupService] gives every backup commit: `kv backup lineage=… incarnation=… revision=…`.
     private static final Pattern SUBJECT = Pattern.compile("kv backup lineage=(\\S*) incarnation=(\\d+) revision=(\\d+)");
+
     private static final String SUBJECT_PREFIX = "kv backup";
 
     private final KVStore<AetherKey, AetherValue> kvStore;
@@ -134,13 +136,10 @@ public final class BackupRestoreCoordinator {
             NO_COMMITTED_LEADER("no committed leader to authorize the restore transaction yet"),
             NOTHING_TO_RESUME("an interrupted restore is recorded, but this leader has no [backup] to resume it from"),
             BACKUP_VANISHED("an interrupted restore is recorded, but the backup it was reading is gone");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
             @Override
             public String message() {
                 return message;
@@ -193,8 +192,8 @@ public final class BackupRestoreCoordinator {
     private void warnLocalSource() {
         warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_SOURCE_LOCAL,
                                                   "[backup] has no remote: a cold restart restores from the local repository"
-                                                  + " of whichever node leads it, which may be older than another node's; configure"
-                                                  + " [backup] remote for a reliable restore"));
+                                                 + " of whichever node leads it, which may be older than another node's; configure"
+                                                 + " [backup] remote for a reliable restore"));
     }
 
     /// `LeaderChange` route hook: arm on leader gain, disarm on loss — only the leader decides.
@@ -237,14 +236,12 @@ public final class BackupRestoreCoordinator {
             return;
         }
 
-        pass().onSuccess(_ -> latchSuccess())
-              .onFailure(this::onFailure);
+        pass().onSuccess(_ -> latchSuccess()).onFailure(this::onFailure);
     }
 
     /// Continue from the committed marker, or take the decision when there is none.
     Promise<Unit> pass() {
-        return RestoreGate.decision(kvStore)
-                          .fold(this::decide, this::continueFrom);
+        return RestoreGate.decision(kvStore).fold(this::decide, this::continueFrom);
     }
 
     private Promise<Unit> continueFrom(BackupRestoreValue marker) {
@@ -258,8 +255,7 @@ public final class BackupRestoreCoordinator {
             case DISABLED -> commitDecision(BackupRestoreOutcome.DISABLED);
             case EXISTING_STATE -> commitDecision(BackupRestoreOutcome.SKIPPED_EXISTING_STATE);
             case FRESH -> commitDecision(BackupRestoreOutcome.FRESH);
-            case READ_BACKUP -> source.async(RestoreError.General.NOTHING_TO_RESUME)
-                                      .flatMap(this::restoreHead);
+            case READ_BACKUP -> source.async(RestoreError.General.NOTHING_TO_RESUME).flatMap(this::restoreHead);
         };
     }
 
@@ -356,9 +352,7 @@ public final class BackupRestoreCoordinator {
     private Result<Long> highestRecorded(KvBackupService service, String ref, BackupHeader header) {
         return service.repository()
                       .history(ref)
-                      .flatMap(lines -> Result.allOf(lines.stream()
-                                                          .map(line -> recordedHeader(service, line))
-                                                          .toList()))
+                      .flatMap(lines -> Result.allOf(lines.stream().map(line -> recordedHeader(service, line)).toList()))
                       .map(headers -> headers.stream()
                                              .flatMap(Option::stream)
                                              .filter(recorded -> recorded.lineageId()
@@ -401,24 +395,18 @@ public final class BackupRestoreCoordinator {
             // TODO(#1574): also emit as an OperatorWarning cluster event once #1617 lands.
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED,
                                                       "entity checkpoints from the previous cluster were not restored: their"
-                                                      + " offsets belong to a log that did not survive, so entity state"
-                                                      + " restarts empty for " + withheld.size() + " partition(s): "
-                                                      + String.join(", ", withheld)));
+                                                     + " offsets belong to a log that did not survive, so entity state"
+                                                     + " restarts empty for " + withheld.size()
+                                                     + " partition(s): " + String.join(", ", withheld)));
         }
     }
 
     // --- restoring ---
     private Promise<Unit> start(Loaded loaded) {
         var marker = BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
-                                                           loaded.document()
-                                                                 .header()
-                                                                 .lineageId(),
-                                                           loaded.document()
-                                                                 .header()
-                                                                 .incarnation(),
-                                                           loaded.document()
-                                                                 .header()
-                                                                 .revision(),
+                                                           loaded.document().header().lineageId(),
+                                                           loaded.document().header().incarnation(),
+                                                           loaded.document().header().revision(),
                                                            loaded.commit());
 
         LOG.info("Backup restore: restoring commit {} (lineage {}, incarnation {}, revision {})",
@@ -426,17 +414,15 @@ public final class BackupRestoreCoordinator {
                  marker.lineageId(),
                  marker.incarnation(),
                  marker.revision());
-
         warnEntityCheckpointsNotRestored(loaded.document());
 
-        return submit(markerTransaction(marker)).flatMap(_ -> restore(loaded,
-                                                                                                             marker));
+        return submit(markerTransaction(marker)).flatMap(_ -> restore(loaded, marker));
     }
 
     private Promise<Unit> restore(Loaded loaded, BackupRestoreValue marker) {
         return chunks(loaded).async()
-                             .flatMap(chunks -> applyChunks(chunks, marker))
-                             .flatMap(_ -> finish(loaded, marker));
+                     .flatMap(chunks -> applyChunks(chunks, marker))
+                     .flatMap(_ -> finish(loaded, marker));
     }
 
     /// Entries this node does not already hold, excluding the incarnation, split into transactions of at
@@ -457,8 +443,7 @@ public final class BackupRestoreCoordinator {
                                                                                        entry.getValue()))
                                                      .or(() -> success(0))
                                                      .map(size -> new Sized(entry, size)))
-                                  .toList())
-                     .map(sized -> split(sized, CHUNK_BYTES));
+                                  .toList()).map(sized -> split(sized, CHUNK_BYTES));
     }
 
     /// THE restore normalisation — the one place a backed-up entry is changed or withheld on its way into
@@ -483,10 +468,10 @@ public final class BackupRestoreCoordinator {
     static Option<Map.Entry<AetherKey, AetherValue>> normalised(Map.Entry<AetherKey, AetherValue> entry) {
         return switch (entry.getValue()) {
             case CommunityValue community when isLiveMembershipState(community.state()) -> Option.some(Map.entry(entry.getKey(),
-                                                                                                             community.withState(CommunityState.FORMING)));
+                                                                                                                 community.withState(CommunityState.FORMING)));
             case DeploymentOutcomeValue outcome when outcome.status() == DeploymentOutcomeStatus.IN_PROGRESS -> Option.none();
             case SchemaVersionValue schema when schema.status() == SchemaStatus.MIGRATING -> Option.some(Map.entry(entry.getKey(),
-                                                                                                                  schema.withStatus(SchemaStatus.PENDING)));
+                                                                                                                   schema.withStatus(SchemaStatus.PENDING)));
             case EntityFoldCheckpointValue _ -> Option.none();
             default -> Option.some(entry);
         };
@@ -530,8 +515,7 @@ public final class BackupRestoreCoordinator {
         return chunks;
     }
 
-    private Promise<Unit> applyChunks(List<List<Map.Entry<AetherKey, AetherValue>>> chunks,
-                                      BackupRestoreValue marker) {
+    private Promise<Unit> applyChunks(List<List<Map.Entry<AetherKey, AetherValue>>> chunks, BackupRestoreValue marker) {
         var chain = Promise.unitPromise();
 
         for (var chunk : chunks) {
@@ -543,30 +527,28 @@ public final class BackupRestoreCoordinator {
 
     private Promise<Unit> applyChunk(List<Map.Entry<AetherKey, AetherValue>> chunk, BackupRestoreValue marker) {
         return leaderValue().async()
-                            .flatMap(leaderValue -> submit(transaction(RestoreGate.RESTORE_TRANSACTION_PREFIX + "chunk:",
-                                                                       leaderValue,
-                                                                       List.of(markerWitness(marker)),
-                                                                       chunk.stream()
-                                                                            .map(entry -> mutation(entry.getKey(),
-                                                                                                   Option.some(entry.getValue())))
-                                                                            .toList())));
+                          .flatMap(leaderValue -> submit(transaction(RestoreGate.RESTORE_TRANSACTION_PREFIX + "chunk:",
+                                                                     leaderValue,
+                                                                     List.of(markerWitness(marker)),
+                                                                     chunk.stream()
+                                                                          .map(entry -> mutation(entry.getKey(),
+                                                                                                 Option.some(entry.getValue())))
+                                                                          .toList())));
     }
 
     /// The incarnation per [ClusterIncarnation#restoreCommands] and the `RESTORED` marker, in one
     /// transaction that replaces the `IN_PROGRESS` marker — so it applies at most once.
     private Promise<Unit> finish(Loaded loaded, BackupRestoreValue marker) {
         return restoredIncarnation(loaded).async()
-                                          .flatMap(incarnation -> leaderValue().async()
-                                                                               .flatMap(leaderValue -> submit(finalTransaction(leaderValue,
-                                                                                                                               incarnation,
-                                                                                                                               loaded.highestRecorded(),
-                                                                                                                               marker))));
+                                  .flatMap(incarnation -> leaderValue().async()
+                                                                     .flatMap(leaderValue -> submit(finalTransaction(leaderValue,
+                                                                                                                     incarnation,
+                                                                                                                     loaded.highestRecorded(),
+                                                                                                                     marker))));
     }
 
     private static Result<ClusterIncarnationValue> restoredIncarnation(Loaded loaded) {
-        return Option.option(loaded.document()
-                                   .entries()
-                                   .get(ClusterIncarnationKey.clusterIncarnationKey()))
+        return Option.option(loaded.document().entries().get(ClusterIncarnationKey.clusterIncarnationKey()))
                      .filter(ClusterIncarnationValue.class::isInstance)
                      .map(ClusterIncarnationValue.class::cast)
                      .toResult(RestoreError.Blocked.FACTORY.apply(Causes.cause("the backup at " + loaded.commit()
@@ -580,7 +562,7 @@ public final class BackupRestoreCoordinator {
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
         netEffect(ClusterIncarnation.restoreCommands(restored, highestRecorded)).forEach((key, value) -> mutations.add(mutation(key,
-                                                                                                                   value)));
+                                                                                                                                value)));
         mutations.add(new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
                                                Option.<AetherValue> some(marker),
                                                Option.<AetherValue> some(marker.restored())));
@@ -596,7 +578,7 @@ public final class BackupRestoreCoordinator {
         for (var command : commands) {
             switch (command) {
                 case KVCommand.Put<AetherKey, ?> put when put.value() instanceof AetherValue value -> effect.put(put.key(),
-                                                                                                                Option.some(value));
+                                                                                                                 Option.some(value));
                 case KVCommand.Remove<AetherKey> remove -> effect.put(remove.key(), Option.none());
                 default -> {}
             }
@@ -631,8 +613,7 @@ public final class BackupRestoreCoordinator {
         return applier.apply(List.of(command))
                       .flatMap(results -> accepted(results, transactionId)
                                           ? Promise.unitPromise()
-                                          : RestoreError.Refused.FACTORY.apply(transactionId)
-                                                                        .promise());
+                                          : RestoreError.Refused.FACTORY.apply(transactionId).promise());
     }
 
     private static boolean accepted(List<Object> results, String transactionId) {
@@ -672,10 +653,10 @@ public final class BackupRestoreCoordinator {
     private void latchSuccess() {
         cancelPendingRetry();
         if (done.compareAndSet(false, true)) {
-            RestoreGate.decision(kvStore)
-                       .onPresent(BackupRestoreCoordinator::logDecision);
+            RestoreGate.decision(kvStore).onPresent(BackupRestoreCoordinator::logDecision);
             if (blocked.compareAndSet(true, false)) {
-                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED, "the backup restore is no longer blocked"));
+                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED,
+                                                          "the backup restore is no longer blocked"));
             }
         }
     }
@@ -695,10 +676,11 @@ public final class BackupRestoreCoordinator {
         if (cause instanceof RestoreError.Blocked && blocked.compareAndSet(false, true)) {
             // TODO(#1574): also emit as an OperatorWarning cluster event once #1617 lands.
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
-                                                      cause.message() + "; this cluster will not start fresh over a backup it"
-                                                      + " cannot read, and writes to cluster state stay refused until it"
-                                                      + " can. Fix the backup source (" + sourceDescription()
-                                                      + "), or restart with [backup] restore = \"fresh\" to abandon it"));
+                                                      cause.message()
+                                                     + "; this cluster will not start fresh over a backup it"
+                                                     + " cannot read, and writes to cluster state stay refused until it"
+                                                     + " can. Fix the backup source (" + sourceDescription()
+                                                     + "), or restart with [backup] restore = \"fresh\" to abandon it"));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }

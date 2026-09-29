@@ -727,7 +727,7 @@ final class EntityFold {
 
         if (checkpoint.throughOffset() > head) {
             LOG.warn("Entity keyspace '{}' partition {}: the checkpoint claims offset {} but this node's complete log"
-                     + " ends at {} (the log restarted); ignoring the checkpoint and folding from the log",
+                    + " ends at {} (the log restarted); ignoring the checkpoint and folding from the log",
                      keyspace,
                      partition,
                      checkpoint.throughOffset(),
@@ -737,9 +737,10 @@ final class EntityFold {
         }
 
         return EntityFoldSnapshot.decode(checkpoint.snapshot())
-                                 .map(snapshot -> new SeedCheckpoint(checkpoint.throughOffset(), snapshot))
+                                 .map(snapshot -> new SeedCheckpoint(checkpoint.throughOffset(),
+                                                                     snapshot))
                                  .onFailure(cause -> LOG.warn("Entity keyspace '{}' partition {}: the checkpoint at offset {}"
-                                                              + " cannot be decoded ({}); ignoring it and folding from the log",
+                                                             + " cannot be decoded ({}); ignoring it and folding from the log",
                                                               keyspace,
                                                               partition,
                                                               checkpoint.throughOffset(),
@@ -749,7 +750,7 @@ final class EntityFold {
 
     private Option<SeedCheckpoint> unreadableCheckpoint(int partition, Cause cause) {
         LOG.warn("Entity keyspace '{}' partition {}: the checkpoint cannot be read ({}); ignoring it and folding from"
-                 + " the log",
+                + " the log",
                  keyspace,
                  partition,
                  cause.message());
@@ -792,8 +793,7 @@ final class EntityFold {
 
         return replayFrom(partition,
                           building,
-                          checkpoint.map(c -> c.throughOffset() + 1)
-                                    .or(0L));
+                          checkpoint.map(c -> c.throughOffset() + 1).or(0L));
     }
 
     /// State AND timers are seeded together, because the checkpoint recorded them together. Seeding only

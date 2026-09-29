@@ -21,15 +21,12 @@ public record BackupConfig(boolean enabled, String path, String remote, RestoreM
         AUTO,
         /// Ignore the backup and start a fresh cluster — the operator's escape hatch.
         FRESH;
-
         private static final Fn1<Cause, String> UNKNOWN_MODE = Causes.forOneValue("unknown [backup] restore '%s' — use auto or fresh");
-
         public static Result<RestoreMode> restoreMode(String raw) {
             return switch (raw.strip()) {
                 case "auto" -> success(AUTO);
                 case "fresh" -> success(FRESH);
-                default -> UNKNOWN_MODE.apply(raw)
-                                       .result();
+                default -> UNKNOWN_MODE.apply(raw).result();
             };
         }
     }

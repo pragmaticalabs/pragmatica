@@ -27,6 +27,7 @@ public interface DeploymentManager {
     default Unit reloadRestoredState() {
         return Unit.unit();
     }
+
     Promise<Unit> deactivate();
     boolean isActive();
 

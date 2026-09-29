@@ -436,9 +436,7 @@ public final class EmberCluster {
     private Option<BackupConfig> kvBackupConfig(NodeId nodeId) {
         return kvBackup.get()
                        .map(backup -> BackupConfig.backupConfig(true,
-                                                                backup.baseDir()
-                                                                      .resolve(nodeId.id())
-                                                                      .toString(),
+                                                                backup.baseDir().resolve(nodeId.id()).toString(),
                                                                 backup.remote(),
                                                                 backup.restore()));
     }

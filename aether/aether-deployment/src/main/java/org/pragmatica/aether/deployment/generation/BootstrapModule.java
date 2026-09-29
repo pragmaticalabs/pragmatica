@@ -175,7 +175,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
             return;
         }
-
         // #1533: the config seed is a cluster-state write, which a backup-enabled node refuses until its
         // restore decision commits; submitted apart from the runtime core-partition write so that refusal
         // never holds the DHT core bootstrap back. The decision's commit re-drives it via retryIfNeeded.
