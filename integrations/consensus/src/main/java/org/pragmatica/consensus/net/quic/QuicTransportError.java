@@ -85,6 +85,15 @@ public sealed interface QuicTransportError extends Cause {
                                                                                      ConnectFailed::new);
     }
 
+    /// #1489: the QUIC connect failed in its TLS handshake (the netty-quic connect future fails with a
+    /// `javax.net.ssl.SSLException`, e.g. `CERTIFICATE_VERIFY_FAILED` for a peer of another cluster). Kept apart
+    /// from [ConnectFailed] (unreachable, refused, timed out) so `quic_handshake_failures_total` counts TLS
+    /// failures only; `quic_dial_failures_total` counts every failed dial.
+    record HandshakeFailed(String address, Cause origin, String message) implements QuicTransportError, Cause.Wrapped {
+        static final Fn2<HandshakeFailed, String, Cause> FACTORY = Causes.forTwoValues("QUIC TLS handshake with %s failed: %s",
+                                                                                       HandshakeFailed::new);
+    }
+
     /// Peer address could not be resolved to an IP (e.g. stale/unknown DNS name).
     /// Clean, retryable dial failure — distinct from a Netty-level connect failure.
     record UnresolvedAddress(String address, String message) implements QuicTransportError {

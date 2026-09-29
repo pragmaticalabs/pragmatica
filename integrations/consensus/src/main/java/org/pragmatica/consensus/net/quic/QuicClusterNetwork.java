@@ -1530,7 +1530,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             journalDialerHelloRejected(peer, mismatch);
         }
 
-        quicMetrics.onHandshakeFailure();
+        // #1489: every failed dial is a dial failure; only a TLS handshake failure is a handshake failure.
+        quicMetrics.onDialFailure();
+        if (cause instanceof QuicTransportError.HandshakeFailed) {
+            quicMetrics.onHandshakeFailure();
+        }
         log.warn("Failed to connect from {} to {}: {}", self, peer, cause.message());
         // Reset phase to EVICTED so a subsequent retry (via topology reconciler) can re-enter
         // CONNECTING. The dial failed from CONNECTING, so use `evictStaleConnecting`

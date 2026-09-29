@@ -461,6 +461,20 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                    .addListener(future -> handleQuicConnect(peerId, address, attempt, future));
     }
 
+    /// #1489: a TLS handshake failure (an [javax.net.ssl.SSLException] anywhere in the cause chain) is reported as
+    /// [QuicTransportError.HandshakeFailed]; every other connect failure stays [QuicTransportError.ConnectFailed].
+    private static QuicTransportError connectFailure(InetSocketAddress address, Throwable failure) {
+        return isTlsFailure(failure)
+               ? QuicTransportError.HandshakeFailed.FACTORY.apply(address.toString(), Causes.fromThrowable(failure))
+               : QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(), Causes.fromThrowable(failure));
+    }
+
+    private static boolean isTlsFailure(Throwable failure) {
+        return java.util.stream.Stream.iterate(failure, java.util.Objects::nonNull, Throwable::getCause)
+                                      .limit(16)
+                                      .anyMatch(javax.net.ssl.SSLException.class::isInstance);
+    }
+
     @SuppressWarnings({"JBCT-PAT-01", "unchecked"})  // Netty future callback
     private void handleQuicConnect(NodeId peerId,
                                    InetSocketAddress address,
@@ -469,8 +483,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         var promise = attempt.promise();
 
         if (!future.isSuccess()) {
-            promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(),
-                                                                        Causes.fromThrowable(future.cause())));
+            promise.fail(connectFailure(address, future.cause()));
 
             return;
         }
