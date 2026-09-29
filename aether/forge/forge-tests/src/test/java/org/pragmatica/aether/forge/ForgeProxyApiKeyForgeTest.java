@@ -53,9 +53,9 @@ import static org.awaitility.Awaitility.await;
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ForgeProxyApiKeyForgeTest {
-    private static final int BASE_PORT = 14500;
-    private static final int BASE_MGMT_PORT = 14600;
-    private static final int BASE_APP_HTTP_PORT = 14700;
+    private static final int BASE_PORT = 15500;
+    private static final int BASE_MGMT_PORT = 15700;
+    private static final int BASE_APP_HTTP_PORT = 15800;
     private static final int NODES = 3;
     private static final String NODE_PREFIX = "fpk";
     private static final String OPERATOR_KEY = "forge-1105-operator-key";

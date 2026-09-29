@@ -29,8 +29,8 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | StreamFanoutConsumerTest      | 13000     | 13100          | 0          | 5 nodes (shared cluster, app-http 13200; #265 STEP 0 streaming baseline) |
 | StreamCrashDurabilityTest     | 13500     | 13600          | 0          | 5 nodes (shared cluster, app-http 13700; streaming-persistence A6 WAL crash-durability) |
 | StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership; per-PR since #1550) |
-| ForgeProxyApiKeyForgeTest     | 14500     | 14600          | 0          | 3 nodes (shared cluster, app-http 14700; #1105 Forge proxy calls carry the operator key under API_KEY). Inside the 14200-15000 gap, below 32768, outside the aether/ember scan windows |
 | StreamOwnerFailoverPinnedTest | 15000     | 15100          | 0          | 5 nodes (shared cluster, app-http 15200; #491 RF=2 owner-kill failover, pinned membership) |
+| ForgeProxyApiKeyForgeTest     | 15500     | 15700          | 0          | 3 nodes (shared cluster; SWIM UDP 15600-15602 = cluster+100, app-http 15800; #1105 Forge proxy calls carry the operator key under API_KEY). Moved off 14500 (#1688 CommunityObservabilityForgeTest registered it first); block confirmed free against rc4, #1688 and #1703 by v1688 |
 | MultiPartitionStreamTest      | 16000     | 16100          | 0          | 5 nodes (shared cluster, app-http 16200; #429 multi-partition e2e — distribution/order/read-paths) |
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
 | MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
@@ -108,6 +108,7 @@ the start of the Linux ephemeral range.
 - 13500+ / 13600+: Allocated to StreamCrashDurabilityTest (app-http 13700)
 - 14000+ / 14100+: Allocated to StreamOwnerFailoverTest (app-http 14200)
 - 15000+ / 15100+: Allocated to StreamOwnerFailoverPinnedTest (app-http 15200)
+- 15500+ / 15700+: Allocated to ForgeProxyApiKeyForgeTest (SWIM 15600, app-http 15800)
 - 16000+ / 16100+: Allocated to MultiPartitionStreamTest (app-http 16200)
 - 17000+ / 17100+: Allocated to StreamPublishReshuffleTest (app-http 17200)
 - 17500+ / 17600+: Allocated to MultiPartitionCrashDurabilityTest (app-http 17700)
