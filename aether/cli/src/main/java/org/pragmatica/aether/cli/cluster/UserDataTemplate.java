@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 import java.util.List;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
@@ -100,8 +101,10 @@ sealed interface UserDataTemplate {
     static void emitIdentityEnv(Fn2<Unit, String, String> emit,
                                 ClusterName clusterName,
                                 NodeRole role,
+                                SourceName source,
+                                Option<String> zone,
                                 Option<String> clusterSecretRef,
                                 Fn1<String, String> envLookup) {
-        NodeUserDataRenderer.emitIdentityEnv(emit, clusterName, role, clusterSecretRef, envLookup);
+        NodeUserDataRenderer.emitIdentityEnv(emit, clusterName, role, source, zone, clusterSecretRef, envLookup);
     }
 }

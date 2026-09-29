@@ -24,6 +24,7 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -92,6 +93,41 @@ class ClusterTopologyManagerWorkerReconcileTest {
 
             [source.eu-1.core]
             count = 3
+            """;
+
+    /// Two cloud sources with workers, each pinned to one zone (#1650).
+    private static final String TWO_WORKER_SOURCES_TOML = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            zone = "nbg1"
+
+            [source.eu-1.core]
+            count = 3
+
+            [source.eu-1.worker]
+            count = 1
+
+            [source.eu-2]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            zone = "fsn1"
+
+            [source.eu-2.worker]
+            count = 1
             """;
 
     private WorkerRecordingLifecycleManager lifecycleManager;
@@ -232,6 +268,28 @@ class ClusterTopologyManagerWorkerReconcileTest {
         ctm.activate();
 
         assertThat(lifecycleManager.provisionedSourceNames()).containsExactlyInAnyOrder("primary", "secondary");
+    }
+
+    /// #1650: two cloud sources, each backing workers in its own zone. Every worker the leader provisions must
+    /// BOOT with its own source and zone -- the provision context already carried the right source (above), but
+    /// the rendered cloud-init env took `AETHER_SOURCE`/`AETHER_ZONE` from the leader's own process env, and a
+    /// node learns its source only from that variable. Asserted on the user-data the provider receives.
+    @Test
+    void reconcile_twoCloudWorkerSources_eachWorkerBootsWithItsOwnSourceAndZone() {
+        seedConfig(TWO_WORKER_SOURCES_TOML,
+                   entry("eu-1", "core", 3),
+                   entry("eu-1", "worker", 1),
+                   entry("eu-2", "worker", 1));
+
+        ctm.activate();
+
+        var userData = lifecycleManager.userDataBySource();
+
+        assertThat(userData).containsOnlyKeys("eu-1", "eu-2");
+        assertThat(userData.get("eu-1")).contains("AETHER_SOURCE=\"eu-1\"", "AETHER_ZONE=\"nbg1\"")
+                                        .doesNotContain("AETHER_SOURCE=\"eu-2\"", "AETHER_ZONE=\"fsn1\"");
+        assertThat(userData.get("eu-2")).contains("AETHER_SOURCE=\"eu-2\"", "AETHER_ZONE=\"fsn1\"")
+                                        .doesNotContain("AETHER_SOURCE=\"eu-1\"", "AETHER_ZONE=\"nbg1\"");
     }
 
     /// Defect A, core-tier half: the auto-heal replacement path has no topology entry to read, so it
@@ -396,6 +454,102 @@ class ClusterTopologyManagerWorkerReconcileTest {
                .untilAsserted(() -> assertThat(lifecycleManager.listCalls()).isEqualTo(1));
     }
 
+    /// #1650 F1 (v1650): `eu-1` is pinned to `nbg1` and runs the cores; `us-1` is a ZONELESS source with one
+    /// worker. With no configured zone the worker falls back to zone BALANCING, which must count `us-1`'s own
+    /// nodes only -- another source's zone names a location this source's provider may not have.
+    private static final String ZONELESS_SECOND_SOURCE_TOML = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            zone = "nbg1"
+
+            [source.eu-1.core]
+            count = 3
+
+            [source.us-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "us-east"
+
+            [source.us-1.worker]
+            count = 1
+            """;
+
+    /// CONTROL, the pre-#1650 world: no node carries a source or zone label, so there is nothing to balance.
+    @Test
+    void reconcile_zonelessSource_unlabelledTopology_getsNoPlacement() {
+        assertThat(us1WorkerPlacements(Map.of(), Map.of(), Map.of())).containsExactly(Option.none());
+    }
+
+    /// The v1650 defect: once the renderer stamps `eu-1`'s cores with `source=eu-1, zone=nbg1`, the zoneless
+    /// `us-1` worker must NOT be steered into `nbg1` -- Hetzner would put it there, AWS and GCP would fail the create.
+    @Test
+    void reconcile_zonelessSource_isNeverPlacedInAnotherSourcesZone() {
+        var eu1 = Map.of(NodeInfo.LABEL_SOURCE, "eu-1", NodeInfo.LABEL_ZONE, "nbg1");
+
+        assertThat(us1WorkerPlacements(eu1, eu1, eu1)).containsExactly(Option.none());
+    }
+
+    /// Balancing still works WITHIN the source: `us-1`'s own nodes sit in `ash`, so the hint is `ash`. Counted
+    /// across sources, `nbg1` (one node) would be the under-represented zone and the hint would be `nbg1`.
+    @Test
+    void reconcile_zonelessSource_balancesAcrossItsOwnNodesZones_only() {
+        var eu1 = Map.of(NodeInfo.LABEL_SOURCE, "eu-1", NodeInfo.LABEL_ZONE, "nbg1");
+        var us1 = Map.of(NodeInfo.LABEL_SOURCE, "us-1", NodeInfo.LABEL_ZONE, "ash");
+
+        assertThat(us1WorkerPlacements(eu1, us1, us1)).containsExactly(Option.some(PlacementHint.zoneHint("ash")));
+    }
+
+    private List<Option<PlacementHint>> us1WorkerPlacements(Map<String, String> selfLabels,
+                                                           Map<String, String> peerALabels,
+                                                           Map<String, String> peerBLabels) {
+        var config = new TopologyConfig(SELF,
+                                        3,
+                                        timeSpan(60).seconds(),
+                                        timeSpan(1).seconds(),
+                                        List.of(labelled(INFO_SELF, selfLabels),
+                                                labelled(INFO_A, peerALabels),
+                                                labelled(INFO_B, peerBLabels)));
+        observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        // The observer holds only SELF until SWIM discovers the peers; configured peers are not in its topology.
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF,
+                                                                          List.of(labelled(INFO_A, peerALabels),
+                                                                                  labelled(INFO_B, peerBLabels))));
+        assertThat(observer.topology()).as("CONTROL: the balancer sees all three nodes").hasSize(3);
+        ctm = buildCtm(MembershipLiveness.UNWIRED);
+        seedConfig(ZONELESS_SECOND_SOURCE_TOML, entry("eu-1", "core", 3), entry("us-1", "worker", 1));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        var us1 = lifecycleManager.provisioned.stream()
+                                              .filter(spec -> spec.context()
+                                                                  .sourceName()
+                                                                  .value()
+                                                                  .equals("us-1"))
+                                              .toList();
+
+        assertThat(us1).as("CONTROL: the zoneless source's worker was provisioned").hasSize(1);
+
+        return us1.stream().map(ProvisionSpec::placement).toList();
+    }
+
+    private static NodeInfo labelled(NodeInfo info, Map<String, String> labels) {
+        return NodeInfo.nodeInfo(info.id(), info.address(), labels);
+    }
+
     private static InstanceInfo workerInstance(String sourceName, String nodeId) {
         return instance(CLUSTER, sourceName, "worker", nodeId);
     }
@@ -458,6 +612,14 @@ class ClusterTopologyManagerWorkerReconcileTest {
         /// `aether-source` label, which is the string the reconcile selector must round-trip.
         List<String> provisionedSourceNames() {
             return provisioned.stream().map(spec -> spec.context().sourceName().value()).distinct().toList();
+        }
+
+        /// The cloud-init user-data each provision carried, by the source it was provisioned for.
+        Map<String, String> userDataBySource() {
+            return provisioned.stream()
+                              .collect(java.util.stream.Collectors.toMap(spec -> spec.context().sourceName().value(),
+                                                                         spec -> spec.userData().or(""),
+                                                                         (first, _) -> first));
         }
 
         List<String> provisionedNodeIds() {

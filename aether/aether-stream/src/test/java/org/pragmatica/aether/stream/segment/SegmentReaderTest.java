@@ -380,7 +380,9 @@ class SegmentReaderTest {
             var heldReader = segmentReader(holdingGetAt(storage, FAILING_SEGMENT, held), index);
 
             sealOneEventSegments(SOME_SEGMENTS);
-            var read = heldReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).onResult(_ -> settled.incrementAndGet());
+            // `withResult`, not `onResult`: an `onResult` action runs on the async executor after `await()` is already
+            // released, so the count could still read 0 (seen in CI). `withResult`'s promise resolves only after it runs.
+            var read = heldReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).withResult(_ -> settled.incrementAndGet());
 
             assertThat(held.get()).as("control: the loop reached the held step").isNotNull();
             assertThat(read.isResolved()).as("control: the read is suspended on the held step").isFalse();
