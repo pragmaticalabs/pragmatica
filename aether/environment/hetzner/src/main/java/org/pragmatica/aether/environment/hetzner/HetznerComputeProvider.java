@@ -39,6 +39,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 
 import org.slf4j.Logger;
@@ -81,6 +82,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
             return SPOT_UNSUPPORTED.promise();
         }
 
+        if (!Verify.Is.present(request.zone())) {
+            return REGION_UNRESOLVED.promise();
+        }
+
         return requireClusterName(request.context()).fold(Cause::promise,
                                                           clusterName -> createLabelled(request, clusterName));
     }
@@ -116,6 +121,16 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                                                                               + "or the provider config. The server would carry no aether-cluster label, which no scoped "
                                                                                                               + "cleanup can find — it would leak as a billable orphan. Set the cluster name on the provisioning "
                                                                                                               + "context (bootstrap/CTM) or export AETHER_CLUSTER_NAME."));
+
+    /// #992 — a blank region never reaches the wire as `"location":""`. `cluster init` requires an explicit
+    /// region, but a config written by any other means reaches this provider too, and Hetzner is the one
+    /// provider whose placement is not already a required credential (AWS/GCP/Azure refuse a blank region at
+    /// factory construction). The check sits here, at the create-server call, rather than in the factory:
+    /// cleanup and discovery build this provider without a region and never place a server. Aether never
+    /// picks a jurisdiction on the operator's behalf.
+    private static final Cause REGION_UNRESOLVED = EnvironmentError.provisionFailed(new RuntimeException("Refusing to provision: no Hetzner region resolved — neither the placement nor `[cloud.compute] region` "
+                                                                                                        + "names a location, so the server would be created with an empty location and land wherever "
+                                                                                                        + "Hetzner chooses. Set the source's region (e.g. `region = \"fsn1\"`)."));
 
     /// Hetzner offers no spot/preemptible product. PF-16 ([ClusterBootstrapConfigValidator]) already
     /// rejects a spot sub-table on Hetzner at parse, so a SPOT request reaching this provider is a

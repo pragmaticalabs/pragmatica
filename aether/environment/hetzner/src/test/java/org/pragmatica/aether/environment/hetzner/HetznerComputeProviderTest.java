@@ -65,6 +65,14 @@ class HetznerComputeProviderTest {
             "#!/bin/bash\necho hello").unwrap();
     }
 
+    private static HetznerEnvironmentConfig configWithRegion(String region) {
+        return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
+            hetznerConfig("test-token"),
+            "cx22", "ubuntu-24.04", region,
+            List.of(1L, 2L), List.of(10L), List.of(5L),
+            "#!/bin/bash\necho hello").unwrap();
+    }
+
     private static HetznerEnvironmentConfig configWithImage(String image) {
         return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
             hetznerConfig("test-token"),
@@ -237,6 +245,24 @@ class HetznerComputeProviderTest {
             provider.provision(ctmSpec("default")).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.serverType()).isEqualTo("cx22");
+        }
+
+        /// #992: a blank region never reaches the wire as `"location":""`. `cluster init` demands a region,
+        /// but a config written any other way (by hand, templated, an older CLI) reaches the provider too, and
+        /// Hetzner is the one provider whose placement is not already a required credential. Refused before
+        /// any Hetzner call, so no server lands in a location nobody named.
+        @Test
+        void provision_blankRegion_failsBeforeCreateServer() {
+            var regionlessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient, configWithRegion(""))
+                                                           .unwrap();
+
+            var result = regionlessProvider.provision(ctmSpec("default")).await();
+
+            assertThat(result.isFailure()).as("a blank region must refuse the provision: %s", result).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("region"));
+            assertThat(testClient.lastCreateServerRequest)
+                    .as("#992: the create-server call must never be sent with an empty location")
+                    .isNull();
         }
 
         @Test
