@@ -296,6 +296,70 @@ class BackupRestoreCoordinatorTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
         }
 
+        /// The finish applies at most once (v1533 MY6). Two leaders both decided to resume the same
+        /// `IN_PROGRESS` restore; the first finished it. The second builds its finish only afterwards, and its
+        /// finish is guarded on the `IN_PROGRESS` marker it resumed from, so it is refused: the incarnation rises
+        /// ONCE and ONE instance is minted. Without the guard the second finish would raise the incarnation again
+        /// and mint a second instance.
+        @Test
+        void aFinishBuiltAfterAnotherLeaderFinished_isRefused_soTheIncarnationRisesOnce() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            var commit = git(Path.of(remote), "rev-parse", "backup").strip();
+
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                                                  LINEAGE,
+                                                                                  3,
+                                                                                  40,
+                                                                                  commit)));
+            var secondWorker = new KvBackupServiceTest.ManualScheduler();
+            var secondService = KvBackupService.kvBackupService(kvStore,
+                                                                CODEC,
+                                                                GitBackupRepository.gitBackupRepository(temp.resolve("local-second"),
+                                                                                                        Option.some(remote),
+                                                                                                        "backup",
+                                                                                                        TimeSpan.timeSpan(30).seconds()),
+                                                                secondWorker,
+                                                                secondWorker::now,
+                                                                warnings::add,
+                                                                TIMING);
+            var second = coordinator(Option.some(BackupRestoreCoordinator.Source.source(secondService, RestoreMode.AUTO)));
+
+            // The second leader reads IN_PROGRESS now; its load waits on its own worker.
+            second.activate();
+            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+            var afterFirst = ClusterIncarnation.committed(kvStore)
+                                               .unwrap();
+
+            assertThat(afterFirst.incarnation()).isEqualTo(4);
+            // The first leader's cluster backs up its new incarnation at once (#1532), so the second leader's
+            // history floor is now 4: an unguarded second finish would commit incarnation 5 — accepted by the
+            // successor fence — and mint a second instance.
+            seedRemote(remote,
+                       BackupHeader.backupHeader(LINEAGE, 4, afterFirst.instanceId(), 50),
+                       Map.of(ConfigKey.forKey("alpha"), ALPHA),
+                       "kv backup (hand-written)");
+
+            for (int i = 0; i < 200 && !second.isComplete(); i++) {
+                for (int j = 0; j < 100 && retries.isEmpty() && !second.isComplete(); j++) {
+                    secondWorker.advance(0);
+                    pause();
+                }
+                var due = List.copyOf(retries);
+
+                retries.clear();
+                due.forEach(Runnable::run);
+            }
+
+            assertThat(second.isComplete()).as("the second leader settles on the committed decision").isTrue();
+            assertThat(ClusterIncarnation.committed(kvStore)
+                                         .unwrap()).as("one incarnation bump, one instance")
+                                                   .isEqualTo(afterFirst);
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+        }
+
         /// The one restore normalisation (#1533 audit rulings): each runtime observation is reset to what a
         /// fresh cluster would see, declared intent passes through unchanged.
         @Test
