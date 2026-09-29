@@ -394,11 +394,17 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Side Effect]**
-    /// Run an action once the promise is resolved. The action is executed in the order in which transformations
+    /// Run an action once the promise is resolved, as a DEPENDENT step: the action is executed in the order in
+    /// which transformations are written, BEFORE the returned promise resolves, so every transformation chained
+    /// on the returned promise observes the action's effects.
+    ///
+    /// The converse does not hold (#1188): an effect the action makes visible to another thread (a latch
+    /// count-down, a flag) can be observed while the returned promise is still unresolved. To act after this
+    /// step completes, chain on the returned promise or await it — never on a signal raised by the action.
     ///
     /// @param consumer Action to be executed once the promise is resolved.
     ///
-    /// @return New promise instance.
+    /// @return New promise instance, resolved with the same result after the action has run.
     default Promise<T> withResult(Consumer<Result<T>> consumer) {
         return replaceResult(result -> {
             consumer.accept(result);

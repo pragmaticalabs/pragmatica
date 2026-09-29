@@ -125,6 +125,9 @@ public interface ObservabilityRegistry {
             registerTransportGauge("quic_active_connections", "Active QUIC peer connections", metricsSupplier);
             registerTransportGauge("quic_handshake_total", "Total QUIC handshakes completed", metricsSupplier);
             registerTransportGauge("quic_handshake_failures_total", "Failed QUIC handshakes", metricsSupplier);
+            registerTransportGauge("quic_dial_abandoned_total",
+                                   "#1578: dials abandoned before their QUIC handshake because the peer connected over another link",
+                                   metricsSupplier);
             registerTransportGauge("quic_messages_sent_total", "Messages sent over QUIC", metricsSupplier);
             registerTransportGauge("quic_messages_received_total", "Messages received over QUIC", metricsSupplier);
             registerTransportGauge("quic_bytes_sent_total",

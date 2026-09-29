@@ -91,6 +91,18 @@ public record SourceProfile(SourceName name,
                    .or(List.of());
     }
 
+    /// The zone a node provisioned from this source is KNOWN to land in, before it is created: the single
+    /// effective zone. With several zones the provisioning paths rotate through them on capacity exhaustion
+    /// after the node's user-data is rendered, so the landing zone is not known then and this is empty
+    /// (#1650: a node's `AETHER_ZONE` is stamped from this, never inherited from the rendering host).
+    public Option<String> knownZone() {
+        var candidates = effectiveZones();
+
+        return candidates.size() == 1
+               ? Option.some(candidates.getFirst())
+               : Option.none();
+    }
+
     /// The in-flight ceiling for an auto-heal replacement provisioned from this source: the configured
     /// `replacement_ceiling`, else [#DEFAULT_REPLACEMENT_CEILING].
     public TimeSpan effectiveReplacementCeiling() {

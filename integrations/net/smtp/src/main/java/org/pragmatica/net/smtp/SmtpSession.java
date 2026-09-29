@@ -44,7 +44,11 @@ class SmtpSession {
     /// field lets that read see `null` and silently skip the close, which is the leak that method
     /// documents itself as preventing.
     private volatile Channel channel;
-    private State state;
+    /// Written on the event loop, but read off it by [#onTimeout] on the timer thread (#1203). Volatile for
+    /// the same reason as [#channel]: a stale read there could re-run the terminal path on a finished session.
+    /// Who wins a race between a reply and the timeout is decided by the promise's own compare-and-set, not
+    /// by this field, so volatile is about visibility only.
+    private volatile State state;
     private int recipientIndex;
 
     enum State {
