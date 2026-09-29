@@ -3720,9 +3720,7 @@ public interface AetherNode extends ManageableNode {
         // the key divergence this rests on.
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
-        allEntries.addAll(epochSources.incarnation()
-                                      .routeEntries());
-
+        allEntries.addAll(epochSources.incarnation().routeEntries());
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
         var swimTimeouts = config.timeouts().swim();
