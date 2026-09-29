@@ -119,9 +119,8 @@ public interface HttpRouteRegistry {
         RouteInfo withoutNode(NodeId nodeId) {
             var updated = new HashMap<>(securityBySource);
 
-            updated.keySet()
-                   .removeIf(source -> source.nodeId()
-                                             .equals(nodeId));
+            updated.keySet().removeIf(source -> source.nodeId()
+                                                      .equals(nodeId));
 
             return new RouteInfo(httpMethod, pathPrefix, updated);
         }
@@ -142,9 +141,7 @@ public interface HttpRouteRegistry {
         /// JVM, so without the tie-break two ingresses could resolve one route to different policies.
         private static String strongest(List<String> policies) {
             return Option.from(policies.stream()
-                                       .max(Comparator.comparingInt(RouteInfo::rank)
-                                                      .thenComparing(Comparator.naturalOrder())))
-                         .or("UNSPECIFIED");
+                                       .max(Comparator.comparingInt(RouteInfo::rank).thenComparing(Comparator.naturalOrder()))).or("UNSPECIFIED");
         }
 
         private static int rank(String policy) {
@@ -193,7 +190,8 @@ public interface HttpRouteRegistry {
                     var method = route.httpMethod();
                     var prefix = route.pathPrefix();
                     var security = NodeRouteSecurity.nodeRouteSecurity(route.security(), route.declaredSecurity());
-                    var source = RouteSource.routeSource(nodeId, key.artifact().asString());
+                    var source = RouteSource.routeSource(nodeId,
+                                                         key.artifact().asString());
                     var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
 
                     ref.updateAndGet(current -> addSourceToRoute(current, method, prefix, source, security));
@@ -228,7 +226,8 @@ public interface HttpRouteRegistry {
             @SuppressWarnings("JBCT-RET-01")
             public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 var key = valueRemove.cause().key();
-                var source = RouteSource.routeSource(key.nodeId(), key.artifact().asString());
+                var source = RouteSource.routeSource(key.nodeId(),
+                                                     key.artifact().asString());
 
                 routesByMethod.values()
                               .forEach(ref -> ref.updateAndGet(current -> removeSourceFromAllRoutes(current, source)));
