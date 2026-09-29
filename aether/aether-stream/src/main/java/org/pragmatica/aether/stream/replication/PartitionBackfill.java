@@ -994,7 +994,7 @@ public final class PartitionBackfill {
     }
 
     /// Owner promotion is LOSSLESS (#336 phase-2). A freshly HRW-elected owner can be BEHIND a surviving
-    /// replica when `replicas > minSyncReplicas`: different client-acked writes were confirmed by different
+    /// replica when `replicas > confirmationFactor`: different client-acked writes were confirmed by different
     /// peers, so the promoted owner's local watermark may trail the highest survivor. Self-promoting at the
     /// local watermark would then serve a SHORT log (silent data loss on failover — the empirically-observed
     /// ownerHeadOffset=5 while 20 were acked). The catch-up target is the MAX `confirmedOffset` among the

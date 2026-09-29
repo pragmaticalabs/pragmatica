@@ -8,6 +8,11 @@
 **Author:** Design team
 **Last Updated:** 2026-03-17
 
+> **Superseded replication keys (#1564).** This exploratory draft's `replication` and `acks` stream keys were never
+> implemented. The shipped policy is `replication_factor` (copies including the owner) and `confirmation_factor`
+> (copies including the owner that hold a write before it is acknowledged) — see `streaming-spec.md` §10.5 and
+> `../reference/guarantees.md` §4a.
+
 ---
 
 ## Table of Contents
@@ -747,6 +752,9 @@ acks = "governor"     # Option A (default)
 # acks = "replicas"   # Option B, requires replication >= 2
 # acks = "consensus"  # Option C, equivalent to consistency = "strong"
 ```
+
+> Superseded by #1564: the shipped equivalent of Option B is `confirmation_factor` (copies, the owner included, that
+> hold a write before the ack; default 2), not an `acks` key.
 
 ### DD-3: Consumer Group Partition Assignment
 

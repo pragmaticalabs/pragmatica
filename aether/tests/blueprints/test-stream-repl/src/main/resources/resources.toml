@@ -8,20 +8,18 @@
 #
 # RF=3 / synchronously-replicated config for the 02-chaos replica-failover test:
 #   - partitions        = 1  -> one clean, globally-ordered log (monotonic offsets).
-#   - replicas          = 3  -> replication factor (RF): copies incl owner (owner + 2 replicas).
-#     3 is the stream replication minimum (#1547); a value below it is refused as a binding at publish.
-#   - min-sync-replicas = 2  -> DECLARED: owner + 1 in-sync peer per write. With 2 peers only ONE of
-#     them is guaranteed caught up, so a lossless promotion is not guaranteed (#411). And until #1549
-#     this key does not reach the runtime at all (the provisioning binder reads min_sync_replicas and
-#     defaults to 0), so every publish actually acks on the owner alone.
+#   - replication_factor  = 3  -> copies incl owner (owner + 2 replicas).
+#   - confirmation_factor = 2  -> owner + 1 peer per write. With 2 peers only ONE of them is
+#     guaranteed to hold an acked record; #1555's promotion gate catches the new owner up from the
+#     highest-head survivor, which is what makes CF < RF lossless (#411, #1564).
 #   - retention  = count     -> count-based eviction (never time-based) so a slow
 #     consumer is never evicted mid-test; retention-value is far larger than any
 #     test event count, so nothing is ever dropped (no spurious CursorExpired).
 
 [streams.repl-failover-events]
 partitions = 1
-replicas = 3
-min-sync-replicas = 2
+replication_factor = 3
+confirmation_factor = 2
 retention = "count"
 retention-value = "100000"
 max-event-size = "64KB"

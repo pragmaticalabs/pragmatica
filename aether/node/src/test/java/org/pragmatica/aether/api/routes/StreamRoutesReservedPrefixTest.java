@@ -125,7 +125,7 @@ class StreamRoutesReservedPrefixTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
         try {
-            var spec = DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
+            var spec = DurableTopicSpec.durableTopicSpec(1, new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), List.of()), DurableTopicSpec.DEFAULT_RETENTION).unwrap();
 
             DurableTopicSubstrate.durableTopicSubstrate(manager)
                                  .activateTopic("foo", spec)
@@ -240,7 +240,7 @@ class StreamRoutesReservedPrefixTest {
                                                                           null);
 
         try {
-            substrate.ensureLog("ledger", 2, 3, 1)
+            substrate.ensureLog("ledger", 2, new org.pragmatica.aether.slice.ReplicationFactors(3, 1))
                      .onFailure(cause -> fail("internal entity provisioning must succeed: " + cause.message()));
 
             assertThat(manager.streamInfo(EntityPartitionArc.arcName("ledger")).isPresent()).isTrue();
@@ -291,7 +291,7 @@ class StreamRoutesReservedPrefixTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
         var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
         var committed = DurableTopicSubstrate.topicStreamConfig("foo",
-                                                                DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION)
+                                                                DurableTopicSpec.durableTopicSpec(1, new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), List.of()), DurableTopicSpec.DEFAULT_RETENTION)
                                                                                 .unwrap());
 
         try {
@@ -301,7 +301,7 @@ class StreamRoutesReservedPrefixTest {
             legacyRoutes(manager, store).ensureStreamExists(committed.name())
                                         .onFailure(cause -> fail("a committed real-resource config must be adopted: " + cause.message()));
 
-            assertThat(manager.minSyncReplicasFor(committed.name())).isEqualTo(3);
+            assertThat(manager.confirmationFactorFor(committed.name())).isEqualTo(3);
         } finally {
             manager.close();
         }

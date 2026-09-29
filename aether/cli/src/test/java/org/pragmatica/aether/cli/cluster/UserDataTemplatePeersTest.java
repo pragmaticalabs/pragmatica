@@ -174,8 +174,10 @@ class UserDataTemplatePeersTest {
 
             assertTrue(script.contains("/etc/systemd/system/aether-node.service"), "the unit file must be written");
             assertTrue(script.contains("systemctl daemon-reload"), "systemd must be told to re-read units");
-            assertTrue(script.contains("systemctl enable --now aether-node.service"),
-                       "the unit must be started AND linked into multi-user.target so a host reboot brings it back");
+            assertTrue(script.contains("systemctl start aether-node.service"), "the unit must be started");
+            assertFalse(script.contains("systemctl enable"),
+                        "the unit must NOT start on boot: a rebooted VM would relaunch under a node id the cluster has "
+                        + "already removed, be refused, and bill without joining (#1467, #1543)");
             assertTrue(script.contains("ExecStart=/opt/aether/run-node.sh"), "the unit must launch the node launcher");
             assertTrue(script.contains("exec java "),
                        "the launcher must exec so systemd's MAINPID is the JVM, not a wrapper shell");

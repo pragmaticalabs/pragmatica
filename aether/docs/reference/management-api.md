@@ -403,7 +403,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 ]
 ```
 
-**Event Types** (the 35 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
+**Event Types** (the 36 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
 
 - `NODE_JOINED` -- a node joined the cluster (sourced from the transport `PeerJoined` handshake; leader-gated). Severity INFO.
 - `NODE_LEFT` -- a node gracefully departed (consensus-committed decommission/drain decision; leader-gated). Severity WARNING.
@@ -438,6 +438,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
 - `THRESHOLD_BREACHED` -- a metric crossed an alert threshold (owner-gated; `details` carries `metric`, `nodeId`, `value`, `threshold`, `alertSeverity`). The durable alert HISTORY, not the source of truth for what is firing now. Severity follows the alert (WARNING or CRITICAL).
 - `THRESHOLD_CLEARED` -- a breached metric fell below its hysteresis-adjusted clear point (owner-gated; `details` carries `metric`, `nodeId`, `value`, `clearedFrom`, `clearPoint`). Severity INFO.
+- `OPERATOR_WARNING` -- a condition an operator needs to see, raised by the node that observed it (per-node fact, NOT leader-gated; see below). Severity WARNING or CRITICAL, fixed per code.
 
 `GENERATION_CHANGED` no longer exists (#722). It was documented and consumer-wired but never produced: the
 v1 spec's leader-resident reconciler that would have emitted it was never built, and the epoch the cluster
@@ -451,6 +452,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
+
+`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node; `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes: `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused), `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally), `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy). Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
@@ -763,7 +766,8 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint **
 
 `rejectedStreamBindings` (#1336) appears only when the publish accepted the blueprint WITHOUT binding one
 or more `[streams.*]` declarations — it is **omitted when empty**, so read it as absent-or-list. Shape and
-rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy).
+rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy). `warnings` (#1564) follows
+the same absent-or-list rule; see the same section.
 
 > **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
@@ -954,9 +958,28 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
       "rule": "version-and-source-mutually-exclusive",
       "message": "Stream resource 'audit-events' must not set both 'source' and 'version'"
     }
+  ],
+  "warnings": [
+    {
+      "field": "[streams.orders]",
+      "rule": "replication-factor-below-three",
+      "message": "stream 'orders' (replication_factor=2, confirmation_factor=2): replication_factor is below 3"
+    }
   ]
 }
 ```
+
+#1564 — **`warnings` lists every deploy-time warning**, each by its TOML `field`, the `rule` (the warning's
+code) and the `message`; like `rejectedStreamBindings` it is omitted when empty. A warning never blocks
+the publish. Besides the stream validator's own warnings it carries the replication-policy warnings of every
+stream, durable topic and durable entity declaration (`guarantees.md` §4a):
+`replication-factor-below-three` (an explicitly declared `replication_factor` below 3 — LOUD: under
+terminal removal it loses the partition when that many nodes die), `confirmation-equals-replication-factor`
+(losing any one replica refuses writes) and `confirmation-factor-owner-only` (`confirmation_factor = 1`: the
+owner's death loses records it acknowledged but had not replicated). Each is also logged at WARN on the
+node that handled the publish. The cluster event for the LOUD warnings is not emitted yet (it is wired by
+#1617). The same key is returned by [`POST /api/v1/blueprints`](#post-apiv1blueprints) and
+`POST /api/v1/blueprints/publish`.
 
 #1336 — **`rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
 blueprint WITHOUT binding**, each by its TOML `field` (the section the parser refused, `[streams.<alias>]`),
@@ -973,7 +996,7 @@ by one `[rule] field — message` line per failure (not the structured triples a
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
 exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
-`partitions-over-ceiling`, `replicas-below-minimum` (`replicas` under 3, #1547), `replication-invalid`, `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
+`partitions-over-ceiling`, `replication-policy-invalid` (#1564: `1 <= confirmation_factor <= replication_factor` does not hold, or a `replication_factor` below 3 came from the cluster default rather than the declaration), `replication-exceeds-core-count` (#1564: `replication_factor` above the cluster's desired core count), `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549; the removed #1564 keys `replicas`, `min-sync-replicas` and `min_sync_replicas` land here, naming `replication_factor` / `confirmation_factor`), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
 names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
@@ -5528,6 +5551,10 @@ through consensus. The created stream is then visible in `GET /api/v1/streams` a
 `GET /api/v1/streams/namespaces` on every node. (Before #968 this route only materialized the stream's
 ring buffers and answered `"created"` for a stream no catalog read could find.)
 
+The body carries no replication factors: a stream created here takes the committed cluster
+`[replication]` defaults (#1564; built-in `replication_factor` 3, `confirmation_factor` 2), so a publish
+to it needs one registered peer. See `bootstrap-config.md` and `guarantees.md` §4a.
+
 Outcomes, by status:
 
 | Outcome | Status | Body |
@@ -5802,6 +5829,13 @@ never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemRespons
 dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
 `NOT_ATTEMPTED` with `200` — see below.
 
+A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
+for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
+registers only after its config commits (the default `confirmation_factor` is 2 since #1564) — answers
+**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. The batch form
+reports the item `OUTCOME_UNKNOWN` with the cause. `[mechanism: ManagementServerError.PublishRetryable; pinned by
+StreamApiRoutesPublishPartitionTest]`
+
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
@@ -5957,7 +5991,7 @@ refusal as the routes above, instead of the earlier silent empty-bindings publis
 `system`-namespace source is unaffected, because its engine key is the bare name.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
-(partitions, replicas, min-sync, retention) that the resource later finds already in place. For
+(partitions, replication factors, retention) that the resource later finds already in place. For
 `entity:`, the name can even exactly match a real keyspace log, because keyspace names may contain `:`.
 `[mechanism: the prefixes are declared once as StreamEngineKey.RESERVED_KIND_PREFIXES and pinned against
 their canonical owners; ReservedStreamNames.requireUnreserved runs before each Management-API mint, and

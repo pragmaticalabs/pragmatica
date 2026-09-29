@@ -2450,13 +2450,13 @@ public class AetherCli implements Runnable {
             }
 
             /// #1336: the TABLE success line alone hides the `[streams.X]` declarations the cluster did not
-            /// bind; JSON/VALUE/CSV already carry the whole body.
+            /// bind, and (#1564) the deploy-time warnings; JSON/VALUE/CSV already carry the whole body.
             private static void printRejectedStreamBindings(String response, OutputOptions options) {
                 if (options.isQuiet() || options.format() != OutputFormat.TABLE) {
                     return;
                 }
 
-                RejectedStreamBindings.lines(response).forEach(System.out::println);
+                DeployWarnings.publishTableFooter(response).forEach(System.out::println);
             }
         }
 

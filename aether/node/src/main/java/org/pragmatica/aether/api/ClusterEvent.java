@@ -19,15 +19,15 @@ import org.pragmatica.serialization.Codec;
 /// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
 /// additional variants without modifying the sealed parent.
 ///
-/// Closed-set count is **35 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// Closed-set count is **36 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
 /// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED + STREAM_MEMORY_EXCEEDED +
-/// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED + THRESHOLD_BREACHED/THRESHOLD_CLEARED).
+/// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED + THRESHOLD_BREACHED/THRESHOLD_CLEARED + OPERATOR_WARNING).
 ///
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -434,6 +434,25 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         @Override
         public ClusterEvent withDetail(String key, String value) {
             return new ThresholdCleared(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// A condition an operator needs to see, raised through `OperatorWarnings.raise` (#1574).
+    ///
+    /// This is one generic event rather than a variant per condition. `details.code` is the stable
+    /// identifier of the condition, taken from the `OperatorWarningCode` catalogue, so adding a condition
+    /// does not add a wire type. Neither `GET /api/events` nor `aether events` can filter on it yet. Every one of these is a per-node fact, reported by the node that saw it, so it goes
+    /// through the aggregator's ungated `emitLocal` path, like [SelfDrainInitiated]. The emit is throttled
+    /// to one per `(code, subject)` per minute. The log line at the call site is never throttled.
+    ///
+    /// `severity` is `WARNING` or `CRITICAL`, following the code's level. `summary` is the message the
+    /// site logged. `details` carries `code`, `subsystem`, `subject`, `nodeId` and `suppressedSince`,
+    /// which is the number of occurrences the throttle held back since the previous emitted event for
+    /// the same key.
+    record OperatorWarning(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new OperatorWarning(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
         }
     }
 }

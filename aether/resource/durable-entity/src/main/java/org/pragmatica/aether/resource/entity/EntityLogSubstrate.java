@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.entity;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -29,9 +30,8 @@ import org.pragmatica.lang.Unit;
 ///      ownership high-water. This is what stops two nodes that both believe they own an arc from both
 ///      writing.
 ///   2. **[#append] resolves only when durable.** The returned promise must not resolve until the record
-///      is fsync-durable on the owner AND held by the keyspace's declared `minSyncReplicas` (counting the
-///      owner). A promise that resolves earlier turns [DurableEntityConfig#minSyncReplicas()] into a
-///      decoration.
+///      is fsync-durable on the owner AND held by the keyspace's `confirmation_factor` copies (counting the
+///      owner). A promise that resolves earlier turns the declared confirmation factor into a decoration.
 ///   3. **[#read] spans tiers.** A fold starts at a checkpoint that may predate everything still in
 ///      memory, so reads must transparently cross sealed segments as well as the live ring.
 ///   4. **[#saveCheckpoint] is shared, not node-local.** A checkpoint on the owner's own disk bounds a
@@ -53,9 +53,9 @@ public interface EntityLogSubstrate {
     ///
     /// @param keyspace          raw keyspace name; the implementation applies the `entity:` arc prefix
     /// @param partitionCount    number of partitions, matching the keyspace's ownership arcs
-    /// @param replicationFactor total copies including the owner
-    /// @param minSyncReplicas   copies including the owner that must hold a record before an append acks
-    Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas);
+    /// @param replication       the keyspace's resolved factors: copies including the owner, and copies
+    ///                          including the owner that must hold a record before an append acks
+    Result<Unit> ensureLog(String keyspace, int partitionCount, ReplicationFactors replication);
     /// Append one encoded [EntityLogRecord] to `(keyspace, partition)`, resolving with its offset only
     /// once the durability contract above is met.
     Promise<Long> append(String keyspace, int partition, byte[] record);

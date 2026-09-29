@@ -58,7 +58,7 @@ public final class SystemStreamFactories {
 
     /// Construct a {@link FrameworkStreamPublisher} for a system address backed by a local
     /// partition materialized from `config`. Use this overload when the stream needs the full set of
-    /// production knobs — `maxEventSizeBytes`, `consistencyMode`, `minSyncReplicas` — carried on the
+    /// production knobs — `maxEventSizeBytes`, `consistencyMode`, `confirmationFactor` — carried on the
     /// {@link StreamConfig} (e.g. `system:cluster-events`, B5b). The config's `name` must equal
     /// `address.asString()`.
     public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address,

@@ -19,6 +19,44 @@ import static org.assertj.core.api.Assertions.fail;
 /// #1549: `CLUSTER_EVENTS_MAX_*` are checked at boot — a value the stream engine would refuse at creation
 /// (zero, negative, unparseable, a count past the ring's capacity) refuses the boot, naming the variable.
 class ClusterEventsLimitsTest {
+    /// #1564 N2 (v1680 W8): the cluster-events config built at node construction carries the committed
+    /// `[replication.cluster_events]` confirmation factor and RF = the desired core count, the same factors the
+    /// registrar commits — not a hardcoded CF 1.
+    @Test
+    void streamConfig_committedClusterEventsFactors_areTheConfigsFactors() {
+        var committed = org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue.clusterConfigValue("""
+                                                                                                             [replication.cluster_events]
+                                                                                                             confirmation_factor = 2
+                                                                                                             """,
+                                                                                                             "c1",
+                                                                                                             "1.0.0",
+                                                                                                             java.util.List.of(org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry.topologyEntry("local",
+                                                                                                                                                                                                   org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry.CORE_ROLE,
+                                                                                                                                                                                                   5)),
+                                                                                                             5,
+                                                                                                             5,
+                                                                                                             "embedded",
+                                                                                                             1L);
+        var config = defaults().streamConfig("system:cluster-events:1.0.0", Option.some(committed));
+
+        assertThat(config.replicationFactor()).isEqualTo(5);
+        assertThat(config.confirmationFactor()).isEqualTo(2);
+        assertThat(config.name()).isEqualTo("system:cluster-events:1.0.0");
+        assertThat(config.partitions()).isEqualTo(1);
+    }
+
+    @Test
+    void streamConfig_noCommittedConfig_isTheBuiltInClusterEventsFactors() {
+        var config = defaults().streamConfig("system:cluster-events:1.0.0", Option.none());
+
+        assertThat(config.replicationFactor()).isEqualTo(3);
+        assertThat(config.confirmationFactor()).isEqualTo(1);
+    }
+
+    private static ClusterEventsLimits defaults() {
+        return ClusterEventsLimits.clusterEventsLimits(_ -> Option.none()).unwrap();
+    }
+
 
     @Test
     void clusterEventsLimits_unsetOrBlank_usesTheDefaults() {

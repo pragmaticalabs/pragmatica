@@ -12,8 +12,8 @@ package org.pragmatica.aether.resource;
 /// - [#EPHEMERAL] — today's RPC fan-out: dispatch is attempted to currently-registered subscriber
 ///   groups, nothing is persisted or queued, delivery is at-most-once per group. The default, so
 ///   the zero-config path stays cheap and durability is an explicit, costed choice.
-/// - [#DURABLE] — the topic is backed by a replicated stream (`min-sync == replicas >= 3`, default 3,
-///   spec §3 v1 constraint): `publish` resolves at the replication floor, consumer groups read
+/// - [#DURABLE] — the topic is backed by a replicated stream (`replication_factor`/`confirmation_factor`,
+///   cluster defaults 3/2, #1564): `publish` resolves at the confirmation factor, consumer groups read
 ///   through durable cursors at-least-once, exhausted redeliveries land in the topic's DLQ stream.
 public enum TopicDurability {
     EPHEMERAL,
