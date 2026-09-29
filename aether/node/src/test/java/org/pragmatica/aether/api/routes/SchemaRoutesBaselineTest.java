@@ -151,6 +151,47 @@ class SchemaRoutesBaselineTest {
         }
     }
 
+    /// #217 — a baseline over an in-flight migration writes COMPLETED, and the orchestrator dispatches only
+    /// PENDING records, so the migration silently never runs (the RC1 parallel-suite race). Refused with a 409
+    /// unless `force=true`. The Preservation cases above (COMPLETED, FAILED) are the controls: those still
+    /// baseline. Mutation that reddens the refusals: make `guardBaseline` return the record unconditionally.
+    @Nested
+    class InFlightGuard {
+        @Test
+        void baselineDatasource_isRefused_whenMigrationIsPending() {
+            assertRefusedAndUntouched(SchemaStatus.PENDING);
+        }
+
+        @Test
+        void baselineDatasource_isRefused_whenMigrationIsMigrating() {
+            assertRefusedAndUntouched(SchemaStatus.MIGRATING);
+        }
+
+        @Test
+        void baselineDatasource_proceeds_whenForcedOverAPendingMigration() {
+            seed(SchemaStatus.PENDING);
+
+            routes.baselineDatasource(DATASOURCE, Option.some("7"), Option.some(true))
+                  .await()
+                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
+            assertThat(recorded().currentVersion()).isEqualTo(7);
+        }
+
+        private void assertRefusedAndUntouched(SchemaStatus inFlight) {
+            seed(inFlight);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("#217: baseline over %s must be refused: %s", inFlight, result).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaRouteError.SchemaBaselineOverInFlightMigration.class)
+                                                       .satisfies(refusal -> assertThat(((SchemaRouteError) refusal).httpStatus()
+                                                                                                                    .code()).isEqualTo(409)));
+            assertThat(recorded().status()).as("the in-flight record is left as it was").isEqualTo(inFlight);
+        }
+    }
+
     @Nested
     class MissingRecord {
         @Test

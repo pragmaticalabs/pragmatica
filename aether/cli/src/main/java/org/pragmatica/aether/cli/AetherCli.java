@@ -3881,6 +3881,9 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Baseline version")
             private int version;
 
+            @CommandLine.Option(names = "--force", description = "Baseline even while a migration is PENDING or MIGRATING; that migration then never runs (#217, audited)")
+            private boolean force;
+
             /// Baselining inherits the existing record's owning blueprint, so a datasource with no
             /// schema record cannot be baselined (#551) — the server answers with an error rather
             /// than fabricating an unowned record. The error guard is what makes that visible:
@@ -3889,7 +3892,10 @@ public class AetherCli implements Runnable {
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var output = schemaParent.parent.outputOptions();
-                var response = schemaParent.parent.post(SCHEMA_BASELINE, List.of(datasource), "version=" + version, "{}");
+                var query = force
+                            ? "version=" + version + "&force=true"
+                            : "version=" + version;
+                var response = schemaParent.parent.post(SCHEMA_BASELINE, List.of(datasource), query, "{}");
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to baseline datasource");
 
                 if (errorCode >= 0) {

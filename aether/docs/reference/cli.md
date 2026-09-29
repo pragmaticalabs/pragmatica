@@ -1408,7 +1408,7 @@ aether schema undo <datasource> -v <version>
 aether schema retry <datasource>
 
 # Baseline a datasource at a version
-aether schema baseline <datasource> -v <version>
+aether schema baseline <datasource> -v <version> [--force]
 ```
 
 | Subcommand | Description |
@@ -1418,7 +1418,7 @@ aether schema baseline <datasource> -v <version>
 | `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving, or already PENDING) |
 | `undo <datasource> -v N` | Undo to target version — leader-only (`409` on a follower); `422` if the version has no undo script or fails its checksum |
 | `retry <datasource>` | Retry a failed migration (clears the activation hold) |
-| `baseline <datasource> -v N` | Baseline at version — leader-only (`409` on a follower or on applied history past the target version) |
+| `baseline <datasource> -v N [--force]` | Baseline at version — leader-only (`409` on a follower or on applied history past the target version); `409` while a migration is PENDING or MIGRATING unless `--force` (#217) |
 
 #### `aether schema status` output
 
