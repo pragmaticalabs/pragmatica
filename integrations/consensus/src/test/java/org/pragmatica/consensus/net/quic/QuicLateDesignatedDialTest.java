@@ -102,6 +102,9 @@ class QuicLateDesignatedDialTest {
             start(lowNet, 0);
             lowNet.dialForTests(nodeInfo(high, gate.port()), false);
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(PEER_START_DELAY_MS));
+            assertThat(lowNet.peerPhaseForTests(high))
+                .as("arming: the lower id's dial is still pending when the peer starts")
+                .isEqualTo(Option.some(PeerState.Phase.CONNECTING));
             start(highNet, highPort);
             highNet.dialForTests(nodeInfo(low, lowNet.boundPort().unwrap()), true);
 

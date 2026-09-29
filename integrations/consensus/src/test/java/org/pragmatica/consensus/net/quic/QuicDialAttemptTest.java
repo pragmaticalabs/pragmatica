@@ -193,13 +193,11 @@ class QuicDialAttemptTest {
             for (int i = 0; i < late; i++) {
                 start(nodes.get(i).network(), ports.get(i));
             }
-            // Each seed dials every higher id — the designated dialer — including the late core, through the closed
-            // gate, so those four attempts stay pending.
+            // Each seed dials every higher seed — the designated dialer — and the seeds connect to each other first.
             for (int i = 0; i < late; i++) {
                 for (int j = i + 1; j < late; j++) {
                     nodes.get(i).network().dialForTests(nodeInfo(ids.get(j), ports.get(j)), false);
                 }
-                nodes.get(i).network().dialForTests(nodeInfo(ids.get(late), gate.port()), false);
             }
             for (int i = 0; i < late; i++) {
                 for (int j = i + 1; j < late; j++) {
@@ -211,7 +209,21 @@ class QuicDialAttemptTest {
                                             a.id() + " and " + b.id() + " connected");
                 }
             }
+            // Only then do the seeds dial the late core, through the closed gate, LATE_START_DELAY_MS before it starts —
+            // well inside the per-attempt timeout, so the four attempts are still pending when its links attach. (Dialed
+            // together with the seed-to-seed dials, a slow seed mesh on a loaded runner outlived that timeout: CI saw
+            // every late-core attempt released before the late core started, and nothing left to abandon.)
+            for (int i = 0; i < late; i++) {
+                nodes.get(i).network().dialForTests(nodeInfo(ids.get(late), gate.port()), false);
+            }
+            var seeds = nodes.subList(0, late);
+
+            awaitTrue(() -> seeds.stream().allMatch(seed -> phase(seed.network(), ids.get(late)) == PeerState.Phase.CONNECTING),
+                      "arming: every seed's dial to the late core is in flight");
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(LATE_START_DELAY_MS));
+            assertThat(seeds.stream().filter(seed -> phase(seed.network(), ids.get(late)) == PeerState.Phase.CONNECTING))
+                .as("arming: every seed's dial to the late core is still pending when the late core starts")
+                .hasSize(late);
             start(nodes.get(late).network(), ports.get(late));
             // The late core is the designated dialer for no pair; it initiates from its isolation branch (forced).
             for (int i = 0; i < late; i++) {
