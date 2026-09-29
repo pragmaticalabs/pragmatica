@@ -135,11 +135,12 @@ public class PackageSlicesMojo extends AbstractMojo {
         generatePom(manifest);
     }
 
-    private DependencyClassification classifyDependencies(SliceManifest manifest) {
+    private DependencyClassification classifyDependencies(SliceManifest manifest) throws MojoExecutionException {
         var sharedDeps = new ArrayList<ArtifactInfo>();
         var infraDeps = new ArrayList<ArtifactInfo>();
         var sliceDeps = new ArrayList<ArtifactInfo>();
         var externalDeps = new ArrayList<Artifact>();
+        var providedInterfaces = new HashSet<String>();
         // Collect direct dependency keys for filtering transitives
         var directDependencyKeys = collectDirectDependencyKeys();
 
@@ -161,6 +162,7 @@ public class PackageSlicesMojo extends AbstractMojo {
                 // Slice dependencies (direct only)
                 // Read actual artifact names from manifest (not Maven artifact ID)
                 sliceDeps.add(toSliceArtifactInfo(artifact));
+                providedInterfaces.addAll(sliceInterfacesOf(artifact));
             } else if ("provided".equals(scope) && isDirectDependency) {
                 // Shared dependencies (provided scope, non-infra, direct only)
                 sharedDeps.add(toArtifactInfo(artifact));
@@ -171,8 +173,71 @@ public class PackageSlicesMojo extends AbstractMojo {
         }
         // Add same-module slice dependencies from manifest
         addLocalSliceDependencies(manifest, sliceDeps);
+        refuseUnpackagedSliceDependencies(manifest, providedInterfaces);
 
         return new DependencyClassification(sharedDeps, infraDeps, sliceDeps, externalDeps);
+    }
+
+    /// #1408: every slice dependency the manifest declares must reach the `[slices]` section, either as a
+    /// sibling this module packages or as a direct Maven slice dependency providing its interface. The
+    /// runtime reads only `[slices]`, so a dependency accounted for by neither was dropped silently and the
+    /// consumer died at load with a NoClassDefFoundError naming the provider interface.
+    private void refuseUnpackagedSliceDependencies(SliceManifest manifest,
+                                                   Set<String> providedInterfaces) throws MojoExecutionException {
+        var unpackaged = manifest.dependencies()
+                                 .stream()
+                                 .filter(dep -> !isLocalSliceCoordinate(dep.artifact())
+                                                && !providedInterfaces.contains(dep.interfaceQualifiedName()))
+                                 .map(dep -> dep.interfaceQualifiedName() + " (coordinate '" + dep.artifact() + "')")
+                                 .toList();
+
+        if (!unpackaged.isEmpty()) {
+            throw new MojoExecutionException("Slice " + manifest.sliceName() + " declares "
+                                             + unpackaged.size() + " dependenc" + (unpackaged.size() == 1 ? "y" : "ies")
+                                             + " that would reach no [slices] entry: " + String.join(", ", unpackaged)
+                                             + ". A sibling slice in this module is packaged only under '"
+                                             + project.getGroupId() + ":" + project.getArtifactId() + "-<slice>'; "
+                                             + "compile with -Aslice.groupId=" + project.getGroupId()
+                                             + " -Aslice.artifactId=" + project.getArtifactId()
+                                             + " (jbct-init writes both), or declare the provider's slice artifact "
+                                             + "as a direct Maven dependency.");
+        }
+    }
+
+    private boolean isLocalSliceCoordinate(String coordinate) {
+        return coordinate != null && coordinate.startsWith(project.getGroupId() + ":" + project.getArtifactId() + "-");
+    }
+
+    /// The `slice.interface` of every slice manifest in `artifact`'s jar.
+    private Set<String> sliceInterfacesOf(Artifact artifact) {
+        var file = artifact.getFile();
+        var interfaces = new HashSet<String>();
+
+        if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
+            return interfaces;
+        }
+
+        try (var jar = new JarFile(file)) {
+            var entries = jar.entries();
+
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+
+                if (entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest")) {
+                    var props = new Properties();
+
+                    try (var stream = jar.getInputStream(entry)) {
+                        props.load(stream);
+                    }
+
+                    Option.option(props.getProperty("slice.interface")).onPresent(interfaces::add);
+                }
+            }
+        } catch (IOException e) {
+            getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
+        }
+
+        return interfaces;
     }
 
     private void addLocalSliceDependencies(SliceManifest manifest, List<ArtifactInfo> sliceDeps) {
@@ -185,7 +250,7 @@ public class PackageSlicesMojo extends AbstractMojo {
             // Check if this is a local slice (same groupId and base artifactId)
             var depArtifact = dep.artifact();
 
-            if (depArtifact.startsWith(project.getGroupId() + ":" + project.getArtifactId() + "-")) {
+            if (isLocalSliceCoordinate(depArtifact)) {
                 // Extract slice artifact ID and create version range
                 var version = "^" + project.getVersion();
 
