@@ -18,12 +18,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.api.ClusterEvent;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
-import org.pragmatica.aether.slice.stream.SystemStreams;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
@@ -34,7 +28,6 @@ import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1640 live path: cluster events raised while the cluster-events partition's owner dies are not lost.
 ///
@@ -72,6 +65,11 @@ class ClusterEventOwnerFailoverTest {
     /// (The two assertions that described a release WITHOUT #1555, "no new owner" and "held > 0", were a tripwire and
     /// are deleted now that #1555 has landed.) Its retry count pins that held events are re-sent, by the 1 s tick OR
     /// the new owner's drain; it does not isolate the tick, which the Ember NO-TICK mutation arm pins on its own.
+    /// The ownership-change drain is not observed here: with #1555 the dead owner is replaced before any event
+    /// waits, so there is nothing for a drain to re-send. It is pinned by the Ember NO-DRAIN-ROUTE mutation arm (run
+    /// on a pre-#1555 head) and, for the aggregator's handling, by the unit tests
+    /// `ClusterEventAggregatorTest.onStreamPartitionOwnershipPut_clusterEventsPartition0_drainsAtOnce_otherPutsDoNot`
+    /// and `ClusterEventRedeliveryTest.redeliverAll_ownerChanged_resendsBeforeTheBackoff`.
     @Test
     void eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost() {
         startSettledCluster();
@@ -111,33 +109,6 @@ class ClusterEventOwnerFailoverTest {
         // are re-sent, by AetherNode's 1 s tick OR the new owner's ownership-put drain", not the tick alone. The tick
         // and the drain are pinned separately by the Ember mutation arms (NO-TICK, NO-DRAIN-ROUTE).
         assertThat(sum(producers, "retried")).as("held events were re-sent, by the 1 s tick or the new owner's drain").isPositive();
-        assertOwnershipPutDrainsAtOnce(producers.iterator()
-                                                .next());
-    }
-
-    /// #1653 round 2, the other retry driver: AetherNode routes a committed ownership put for cluster-events
-    /// partition 0 to the aggregator, which re-sends every WAITING event at once instead of on its backoff.
-    /// Re-committing the current ownership record (the same value, so nothing moves) produces that put. Held events
-    /// back off to 8 s, so the tick alone re-sends only a few percent of them in 500 ms; a drain re-sends them all.
-    private void assertOwnershipPutDrainsAtOnce(String producer) {
-        var aggregator = cluster.getNode(producer)
-                                .unwrap()
-                                .eventAggregator();
-        var waitingBefore = aggregator.redeliveryWaiting();
-        var retriedBefore = counterOn(producer, "retried");
-        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(SystemStreams.CLUSTER_EVENTS.asString(), 0);
-        var node = cluster.getNode(producer)
-                          .unwrap();
-        var current = node.kvStore()
-                          .getTyped(key, StreamPartitionOwnershipValue.class)
-                          .unwrap();
-
-        assertThat(waitingBefore).as("control: enough events are waiting to tell a drain from the tick").isGreaterThanOrEqualTo(10);
-        node.<Object>apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(key, current)))
-            .await(timeSpan(10).seconds());
-        await().atMost(Duration.ofMillis(500))
-               .pollInterval(Duration.ofMillis(20))
-               .until(() -> counterOn(producer, "retried") - retriedBefore >= waitingBefore * 9L / 10);
     }
 
     /// The full #1640 property, now that #1555 re-places a dead owner: events raised across the owner's death and then
