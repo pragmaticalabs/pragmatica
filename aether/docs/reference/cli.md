@@ -2582,8 +2582,8 @@ aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--res
 | `--cluster <name>` | Target the named cluster instead of the active-context one, and rewrite the file's `[cluster].name` to `<name>` before applying — the same rewrite as `aether cluster bootstrap --cluster`, so a cluster bootstrapped under an override accepts its own TOML (`cluster.name` is immutable) |
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
-| `--resume` | Resume a halted apply from first unfinished wave |
-| `--rollback` | Rollback completed waves to pre-apply state |
+| `--resume` | Resume a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below) |
+| `--rollback` | Roll back a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below); even when reached, it lists the recorded resources and destroys nothing |
 | `--full-check` | Run full network pre-flight checks |
 
 **Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
@@ -2612,6 +2612,14 @@ state for the cluster and abort without it (`No apply state found for cluster '<
 resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
 rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
 options report that message and the wave executor is unreachable end to end.
+
+**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
+- `destroyed`: gone, nothing to do;
+- `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
+  --wait --yes`, then the provider's delete (for Hetzner, `hcloud server delete <server-id>`);
+- `kept` (created by an earlier, completed step, so it belongs to the desired configuration): keep it if it joined
+  (`aether nodes`), or remove it the same way.
 
 ### `aether cluster rotate-key`
 

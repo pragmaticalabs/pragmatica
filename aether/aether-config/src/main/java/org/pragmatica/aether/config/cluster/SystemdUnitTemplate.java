@@ -56,7 +56,7 @@ public sealed interface SystemdUnitTemplate {
     /// process without changing how it is invoked.
     ///
     /// `EnvironmentFile=-` (leading dash) tolerates an absent file rather than refusing to start, so a
-    /// unit that is enabled before the env file is written fails visibly at the node's own startup
+    /// unit that is started before the env file is written fails visibly at the node's own startup
     /// rather than as a systemd load error an operator has to decode.
     static String generate(String execStart, String environmentFile, String user, String group) {
         var sb = new StringBuilder();
