@@ -12,7 +12,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
 
-
 @Codec
 @SuppressWarnings("JBCT-UTIL-02")
 public record SecurityOverrides(List<Entry> entries, SecurityOverridePolicy policy) {
@@ -43,21 +42,19 @@ public record SecurityOverrides(List<Entry> entries, SecurityOverridePolicy poli
     public Option<String> findMatch(String httpMethod, String pathPrefix) {
         // `max` keeps the FIRST of equally specific entries (BinaryOperator.maxBy), so list order breaks only a tie.
         return Option.from(entries.stream()
-                                  .filter(entry -> matchesRoute(entry.routePattern(), httpMethod, pathPrefix))
-                                  .max(Comparator.comparingInt(entry -> specificity(entry.routePattern()))))
-                     .map(Entry::securityLevel);
+                                  .filter(entry -> matchesRoute(entry.routePattern(),
+                                                                httpMethod,
+                                                                pathPrefix))
+                                  .max(Comparator.comparingInt(entry -> specificity(entry.routePattern())))).map(Entry::securityLevel);
     }
 
     /// Path length dominates; at equal length an exact path outranks a wildcard, and a named method outranks `*`.
     private static int specificity(String pattern) {
         var parts = splitMethodAndPath(pattern);
-        var wildcard = parts.path()
-                            .endsWith("/*");
+        var wildcard = parts.path().endsWith("/*");
         var path = wildcard
-                   ? parts.path()
-                          .substring(0,
-                                     parts.path()
-                                          .length() - 1)
+                   ? parts.path().substring(0,
+                                            parts.path().length() - 1)
                    : normalizePath(parts.path());
         var exactBonus = wildcard
                          ? 0

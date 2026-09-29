@@ -1515,8 +1515,13 @@ class AppHttpServerAdapter implements AppHttpServer {
             return;
         }
 
-        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath)
-            .onPresent(_ -> serveForwarded(httpCtx, request, network, ser, routerOpt.unwrap(), method, normalizedPath));
+        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath).onPresent(_ -> serveForwarded(httpCtx,
+                                                                                                                   request,
+                                                                                                                   network,
+                                                                                                                   ser,
+                                                                                                                   routerOpt.unwrap(),
+                                                                                                                   method,
+                                                                                                                   normalizedPath));
     }
 
     /// #1659 (v1670): the host RE-AUTHORIZES every forwarded request against the route it will actually serve it by
@@ -1557,7 +1562,10 @@ class AppHttpServerAdapter implements AppHttpServer {
                                  String method) {
         var statusAndMessage = mapSecurityError(cause);
         var status = statusAndMessage.status();
-        var problem = ProblemDetail.problemDetail(status, statusAndMessage.clientMessage(), httpCtx.path(), request.requestId());
+        var problem = ProblemDetail.problemDetail(status,
+                                                  statusAndMessage.clientMessage(),
+                                                  httpCtx.path(),
+                                                  request.requestId());
 
         log.warn("[{}] Forwarded {} {} refused by this host's own authorization: {}",
                  request.requestId(),

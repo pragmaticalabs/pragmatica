@@ -28,3 +28,16 @@
   [verified: `AppHttpServerRouteSecurityPolicyTest` — `remoteRoute_nestedPrefixes_theInnerRouteGovernsItsSubtree`,
   `remoteRoute_nestedPrefixes_committedOverrideOnTheInnerRoute_isEnforced`]
   [unverified: Ember nested-prefix, because no Ember fixture slice declares nested prefixes]
+- **Overlapping security overrides resolve to the MOST SPECIFIC pattern, whatever order they are listed in.** Before,
+  the first-listed match won. So `GET /api/*` = `public` listed ahead of `GET /api/admin/*` = `role:admin` left the
+  admin route governed by the parent. Under the default `strengthen_only` policy the route then inherited the global
+  API-key policy, and any valid key was admitted. Specificity is ranked by the longest path, then an exact path over
+  a `/*` wildcard, then a named method over `*`. List order breaks only a full tie.
+  [verified: `SecurityOverridesTest$SpecificityTests`, and
+  `AppHttpServerRouteSecurityPolicyTest.remoteRoute_overlappingOverrides_theMostSpecificGoverns_parentListedFirst` / `_childListedFirst`]
+- **The host re-authorizes every forwarded request against the route it serves it by.** That is the host's own longest
+  local match, with its own committed overrides. The ingress authorizes against its own view, and while routes or
+  overrides propagate, that view can lack a narrower, stricter child route the host already serves. Authorizing at
+  both ends means a request is served only when both policies admit it. A refusal returns the same 401/403 problem
+  response the ingress would send.
+  [verified: `AppHttpServerForwardReauthorizationTest`]
