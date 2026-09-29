@@ -205,20 +205,6 @@ class QuicClusterAdmissionTest {
                                                    .isNotInstanceOf(CoreError.Timeout.class));
     }
 
-    /// TRIPWIRE — found while fixing #807. When the server REFUSES the client's certificate, the client's
-    /// connect promise never settles: not with a refusal, and not with its own Hello timeout either
-    /// (measured: still unresolved after 20 s, at rc4 `90d00cd13` and at #1677's head `6223858a2`). The
-    /// old 8 s wait scored the TEST's own timeout as "rejected", so these two rejections were never
-    /// observed as the client's verdict. This asserts today's behaviour: not admitted, and unsettled.
-    /// It reddens the moment the client settles — then replace the call with [#assertRejected].
-    private static void assertNotAdmittedAndClientNeverSettles(Result<QuicPeerConnection> outcome, String why) {
-        assertThat(outcome.isSuccess()).as("%s — outcome: %s", why, outcome).isFalse();
-        outcome.onFailure(cause -> assertThat(cause)
-            .as("TRIPWIRE: the client now SETTLES a refused-certificate connect (%s). That is the fix this "
-                + "tripwire waits for: replace assertNotAdmittedAndClientNeverSettles with assertRejected.", cause)
-            .isInstanceOf(CoreError.Timeout.class));
-    }
-
     @Nested
     class ClusterAdmission {
         /// THE POSITIVE CONTROL. Without this, every rejection below could be a broken harness.
@@ -236,7 +222,7 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected() {
             var port = startServer(clusterServerSsl());
 
-            assertNotAdmittedAndClientNeverSettles(connect(certificatelessClientSsl(), port),
+            assertRejected(connect(certificatelessClientSsl(), port),
                 "#715: a peer presenting no certificate must not be admitted to the cluster — "
                     + "before the fix this succeeded, and the peer was then counted by the CTM");
         }
@@ -260,7 +246,7 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected_againstRotatedContext() {
             var port = startServer(rotatedClusterServerSsl());
 
-            assertNotAdmittedAndClientNeverSettles(connect(certificatelessClientSsl(), port),
+            assertRejected(connect(certificatelessClientSsl(), port),
                 "the rotated context must enforce the same admission policy as the initial one");
         }
 
