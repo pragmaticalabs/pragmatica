@@ -6,88 +6,90 @@ package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidKeyspace;
 import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidPartitionCount;
-import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidReplicationFactor;
-import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.ReplicationDeclaration;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.config.StrictKeys;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.all;
 
 
 /// Configuration for a [DurableEntity] resource.
 ///
 /// Bound from an `[entities.*]` section of the blueprint's `resources.toml` by the record binder, which
-/// prefers this type's `durableEntityConfig(String, int, int)` factory over the canonical constructor —
-/// so every rule below runs at BIND time and a rejected declaration fails slice loading with a named
-/// cause rather than producing a config object nobody can honour.
+/// prefers this type's `durableEntityConfig(String, int, Option, Option)` factory over the canonical
+/// constructor — so every rule below runs at BIND time and a rejected declaration fails slice loading with a
+/// named cause rather than producing a config object nobody can honour. [StrictKeys]: a key the section does
+/// not declare (a mistyped key, or the pre-#1564 derived `min_sync_replicas`) fails the bind instead of being
+/// silently ignored.
 ///
-/// @param keyspace          logical name of the entity family (e.g. `"orders"`); also the name of the
-///                          `(keyspace, partition)` ownership arcs the write fence and the linearizable
-///                          read pipeline both key on
-/// @param partitionCount    number of ownership arcs the keyspace's keys are spread across via
-///                          [org.pragmatica.aether.dht.EntityPartitionArc]; the fence granularity —
-///                          a reshuffle of one arc never fences a key that hashes to another
-/// @param replicationFactor total copies of each partition INCLUDING the owner, honoured as the backing
-///                          stream's `replicas`. See [#minSyncReplicas()] for what each value actually
-///                          buys — this is the knob that decides whether entity state survives losing a
-///                          node, so it is honoured rather than refused (#345 I3)
-public record DurableEntityConfig(String keyspace, int partitionCount, int replicationFactor) {
-    /// Enough copies to survive one node loss with a quorum left over. The default is deliberately NOT
-    /// `1`: a durable entity that silently evaporates when its owner dies would not earn the name, and a
-    /// default has to be the safe reading of the word.
-    public static final int DEFAULT_REPLICATION_FACTOR = 3;
-
-    /// The in-sync acks a write waits for, INCLUDING the owner — so `2` means the owner plus one peer,
-    /// i.e. `awaitReplication(..., minAcks)` blocks on ONE distinct non-self ack.
-    ///
-    /// ## Why this is derived and not configured
-    /// `replicationFactor < 3` is refused at bind (#1547, the stream replication minimum: under terminal
-    /// removal a dead owner never returns, so a single copy dies with it), which leaves one value:
-    /// `replicationFactor >= 3` ⇒ `2`. The owner and one peer hold the record before the write acks. With
-    /// `2 < replicationFactor` the peer that acked need not be the replica promoted when the owner dies,
-    /// and promotion catch-up sources from a single survivor, so a lossless promotion is not yet
-    /// guaranteed (#411).
-    ///
-    /// Deriving rather than configuring is what keeps the runtime from silently degrading: a cluster too
-    /// small to satisfy the barrier FAILS the write with a typed cause instead of quietly serving the
-    /// weaker guarantee under the stronger name.
-    public int minSyncReplicas() {
-        return Math.min(2, replicationFactor);
-    }
-
+/// @param keyspace           logical name of the entity family (e.g. `"orders"`); also the name of the
+///                           `(keyspace, partition)` ownership arcs the write fence and the linearizable
+///                           read pipeline both key on
+/// @param partitionCount     number of ownership arcs the keyspace's keys are spread across via
+///                           [org.pragmatica.aether.dht.EntityPartitionArc]; the fence granularity —
+///                           a reshuffle of one arc never fences a key that hashes to another
+/// @param replicationFactor  `replication_factor`: copies of each partition INCLUDING the owner; absent takes
+///                           the committed cluster default (#1564)
+/// @param confirmationFactor `confirmation_factor`: copies, the owner included, that hold a write before it is
+///                           acknowledged; absent takes `min(cluster default, replication_factor)` (#1564)
+@StrictKeys
+public record DurableEntityConfig(String keyspace,
+                                  int partitionCount,
+                                  Option<Integer> replicationFactor,
+                                  Option<Integer> confirmationFactor) {
     private static final int DEFAULT_PARTITION_COUNT = 64;
 
-    /// Build a config with the default partition count and replication factor.
+    /// Build a config with the default partition count and the cluster's default replication factors.
     ///
     /// @param keyspace logical name of the entity family
     ///
     /// @return the config
     public static Result<DurableEntityConfig> durableEntityConfig(String keyspace) {
-        return durableEntityConfig(keyspace, DEFAULT_PARTITION_COUNT, DEFAULT_REPLICATION_FACTOR);
+        return durableEntityConfig(keyspace, DEFAULT_PARTITION_COUNT, none(), none());
     }
 
-    /// Build a config with an explicit partition count and replication factor.
+    /// Build a config with an explicit partition count and declared replication factors.
     ///
-    /// @param keyspace          logical name of the entity family; non-blank, no `/` (see
-    ///                          [EntityProvisioningError.InvalidKeyspace] for why the character is
-    ///                          reserved)
-    /// @param partitionCount    number of ownership arcs for the keyspace
-    /// @param replicationFactor total copies including the owner; at least `StreamConfig.MIN_REPLICAS` (3, #1547)
+    /// @param keyspace           logical name of the entity family; non-blank, no `/` (see
+    ///                           [EntityProvisioningError.InvalidKeyspace] for why the character is reserved)
+    /// @param partitionCount     number of ownership arcs for the keyspace
+    /// @param replicationFactor  declared `replication_factor`, if any
+    /// @param confirmationFactor declared `confirmation_factor`, if any
     ///
-    /// @return the config, or a failure naming the rule the declaration broke
+    /// @return the config, or a failure naming the rule the declaration broke. The factors are checked here
+    ///         only where no default is involved (a declared factor below 1, a declared CF above a declared
+    ///         RF); the rest waits for the cluster defaults at provisioning ([DurableEntityFactory]).
     public static Result<DurableEntityConfig> durableEntityConfig(String keyspace,
                                                                   int partitionCount,
-                                                                  int replicationFactor) {
+                                                                  Option<Integer> replicationFactor,
+                                                                  Option<Integer> confirmationFactor) {
         return all(validKeyspace(keyspace),
                    Verify.ensure(partitionCount,
                                  Verify.Is::greaterThanOrEqualTo,
                                  1,
                                  new InvalidPartitionCount(partitionCount)),
-                   Verify.ensure(replicationFactor,
-                                 Verify.Is::greaterThanOrEqualTo,
-                                 StreamConfig.MIN_REPLICAS,
-                                 new InvalidReplicationFactor(replicationFactor))).map(DurableEntityConfig::new);
+                   declaredFactorsInRange(replicationFactor, confirmationFactor)).map((name, partitions, _) -> new DurableEntityConfig(name,
+                                                                                                                                  partitions,
+                                                                                                                                  replicationFactor,
+                                                                                                                                  confirmationFactor));
+    }
+
+    /// The declared replication factors, before any default applies.
+    public ReplicationDeclaration replication() {
+        return ReplicationDeclaration.replicationDeclaration(replicationFactor, confirmationFactor);
+    }
+
+    private static Result<ReplicationFactors> declaredFactorsInRange(Option<Integer> replicationFactor,
+                                                                     Option<Integer> confirmationFactor) {
+        var confirmation = confirmationFactor.or(1);
+        var factor = replicationFactor.or(Math.max(1, confirmation));
+
+        return ReplicationFactors.replicationFactors(factor, confirmation)
+                                 .mapError(EntityProvisioningError.ReplicationRefused::new);
     }
 
     /// Parse-don't-validate for the keyspace name: this factory is the ONE entry point every keyspace
