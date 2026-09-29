@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
@@ -39,16 +40,20 @@ import static org.awaitility.Awaitility.await;
 
 /// #1652 live path: a community formed by REAL worker admissions (`addWorkerNode`, not a synthetic
 /// `NodeJoined` — the #367 lesson) is observable through `GET /cluster/communities` and the cluster
-/// event log, and so is its degradation when a member is killed.
+/// event log, and so are its degradation and the killed member's removal from the roster.
 ///
 /// Three cores plus three workers: the default viability floor is 3, so the community forms (FORMING →
 /// ACTIVE) at exactly three live members, and killing one non-governor worker drops the leader's live
-/// count below the floor (ACTIVE → DEGRADED) once the community-absence window (20s default) passes.
+/// count below the floor (ACTIVE → DEGRADED) once the community-absence window (20s default) passes. The
+/// core then removes the departed worker's activation directive, and the governor's next authority write
+/// commits a roster without it (MEMBER_LEFT).
+///
+/// Ports 46100–46300 are disjoint from `EmberGenesisRecoveryTest`'s 44100–44900 candidates.
 @Execution(ExecutionMode.SAME_THREAD)
 class CommunityObservabilityForgeTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final int WORKERS = 3;
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 44100, 44200, 44300, "community-obs");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 46100, 46200, 46300, "community-obs");
     private final HttpClient http = HttpClient.newHttpClient();
 
     @AfterEach
@@ -78,6 +83,10 @@ class CommunityObservabilityForgeTest {
         assertThat(field(communityJson(community), "liveMembers").map(Integer::parseInt)).hasValueSatisfying(live -> assertThat(live).isLessThan(WORKERS));
         await().atMost(BUDGET.duration())
                .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(CommunityObservabilityForgeTest::assertDegradedEdge));
+        await().atMost(BUDGET.duration())
+               .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberLeft.class::isInstance)
+                                                                          .anySatisfy(event -> assertThat(event.details()).containsEntry("nodeId",
+                                                                                                                                         victim.id())));
     }
 
     private static void assertDegradedEdge(ClusterEvent event) {
