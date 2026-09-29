@@ -72,6 +72,7 @@ class QuicDialAttemptTest {
     private static final TimeSpan SHORT_HELLO_TIMEOUT = TimeSpan.timeSpan(300).millis();
     private static final TimeSpan DEFAULT_HELLO_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final int OUTAGE_ATTEMPTS = 3;
+    private static final long ATTEMPT_QUIET_MS = 300L;
     /// How long the late core stays down; below connectTimeout (15 s at the default Hello timeout), so each
     /// seed has ONE attempt pending — the normal la-5 shape. #1554's la-5 booted 3 s late.
     private static final long LATE_START_DELAY_MS = 2_000L;
@@ -105,13 +106,24 @@ class QuicDialAttemptTest {
         var highNode = node(high, SHORT_HELLO_TIMEOUT, BootTokens.bootTokens(0L));
 
         start(lowNode.network(), 0);
+        // `dialForTests` is asynchronous (resolve → beginConnecting), so each attempt is armed by ITS OWN eviction —
+        // the count rising to the attempt's number — never by the phase a previous attempt left behind.
         for (int attempt = 1; attempt <= OUTAGE_ATTEMPTS; attempt++) {
+            var evictionsSoFar = attempt;
+
             lowNode.network().dialForTests(nodeInfo(high, highPort), false);
-            awaitTrue(() -> phase(lowNode.network(), high) == PeerState.Phase.EVICTED,
+            awaitTrue(() -> transitions(lowNode.journal(), high, PeerState.CAUSE_EVICT_STALE_CONNECTING) >= evictionsSoFar,
                       "attempt " + attempt + " times out while the peer is down");
+            // Let the released attempt's own failure land before the next dial starts.
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(ATTEMPT_QUIET_MS));
         }
-        lowNode.network().dialForTests(nodeInfo(high, highPort), false);
+        assertThat(transitions(lowNode.journal(), high, PeerState.CAUSE_BEGIN_CONNECTING))
+            .as("arming: every outage attempt really started").isEqualTo(OUTAGE_ATTEMPTS);
+        assertThat(transitions(lowNode.journal(), high, PeerState.CAUSE_EVICT_STALE_CONNECTING))
+            .as("arming: every outage attempt timed out while the peer was down").isEqualTo(OUTAGE_ATTEMPTS);
+        // The peer is listening before the final dial, so the final attempt cannot lose its window to the peer's bind.
         start(highNode.network(), highPort);
+        lowNode.network().dialForTests(nodeInfo(high, highPort), false);
 
         awaitTrue(() -> connected(lowNode.network(), high) && connected(highNode.network(), low), "both ends CONNECTED");
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(OUTAGE_SETTLE_MS));
@@ -228,6 +240,12 @@ class QuicDialAttemptTest {
                      .filter(Predicate.not(lane -> received.stream()
                                                            .anyMatch(probe -> probe.marker().equals(prefix + lane))))
                      .toList();
+    }
+
+    private static long transitions(List<PeerTransitionRecord> journal, NodeId peer, String cause) {
+        return journal.stream()
+                      .filter(record -> record.peerId().equals(peer) && record.cause().equals(cause))
+                      .count();
     }
 
     private static List<String> causes(List<PeerTransitionRecord> journal) {
