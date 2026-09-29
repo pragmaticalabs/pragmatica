@@ -77,6 +77,13 @@ class QuicDialAttemptTest {
     private static final long LATE_START_DELAY_MS = 2_000L;
     /// Long enough for a late completion to land, were a released or abandoned attempt still alive.
     private static final long SETTLE_MS = 3_000L;
+    /// After a long outage the released attempts' QUIC retransmissions back off exponentially (≈1, 2, 4 s), so a
+    /// late completion can land several seconds after the peer starts; wait past that.
+    private static final long OUTAGE_SETTLE_MS = 8_000L;
+    /// Journalled at the dialer for every dial that completes (`QuicClusterNetwork#journalDialerHello`) — whether
+    /// the attach then accepts, supersedes or discards it as a DUPLICATE (which is neither counted nor journalled
+    /// as an attach cause).
+    private static final String DIALER_HELLO = "dialer-hello";
     private static final int CORES = 5;
     private static final List<String> SUPERSEDING_CAUSES = List.of(PeerState.CAUSE_ATTACH_SUPERSEDE,
                                                                    PeerState.CAUSE_ATTACH_STALE_REPLACE);
@@ -107,9 +114,12 @@ class QuicDialAttemptTest {
         start(highNode.network(), highPort);
 
         awaitTrue(() -> connected(lowNode.network(), high) && connected(highNode.network(), low), "both ends CONNECTED");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(OUTAGE_SETTLE_MS));
         assertEveryLaneCarriesTrafficBothWays(lowNode, highNode);
 
+        assertThat(causes(lowNode.journal()).stream().filter(cause -> cause.startsWith(DIALER_HELLO)))
+            .as("only the newest attempt completed: the timed-out ones were released and never completed late")
+            .hasSize(1);
         assertThat(lowNode.network().quicMetrics().handshakeTotalCount()).as("one connection attached at the dialer, however many attempts timed out")
                                                                           .isEqualTo(1);
         assertThat(highNode.network().quicMetrics().handshakeTotalCount()).as("... and at the peer").isEqualTo(1);
