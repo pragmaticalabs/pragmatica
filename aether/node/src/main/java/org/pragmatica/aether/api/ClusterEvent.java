@@ -430,8 +430,9 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
 
     /// The leader minted a community (#1652): its committed `CommunityValue` appeared. Derived from the
     /// committed record, so every node observes it and the aggregator's owner-gated
-    /// {@link ClusterEventAggregator#emit} path publishes it once. Severity INFO. `details` carries
-    /// `communityId`, `state` (FORMING for a mint), `targetSize` and `role`.
+    /// {@link ClusterEventAggregator#emit} path publishes it from the owner only (at-least-once across an
+    /// ownership handover, guarantees.md row 14b). Severity INFO. `details` carries `communityId`,
+    /// `state` (FORMING for a mint), `targetSize` and `role`.
     record CommunityMinted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
         @Override
         public ClusterEvent withDetail(String key, String value) {

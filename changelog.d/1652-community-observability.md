@@ -14,7 +14,8 @@
 - **Four new cluster events** (wire tags 1740–1743): `COMMUNITY_MINTED`, `COMMUNITY_STATE_CHANGED` (one event
   per edge, `from`/`to` in `details`; WARNING only for the edge into `DEGRADED`), `COMMUNITY_MEMBER_JOINED` and
   `COMMUNITY_MEMBER_LEFT` (roster changes: assignment, not liveness). They are derived from the committed
-  `CommunityValue` / governor-roster writes, so every node observes them and the owner gate publishes once.
+  `CommunityValue` / governor-roster writes, so every node observes them and only the cluster-events owner publishes them
+  (the owner-gated delivery contract, `guarantees.md` row 14b: at-least-once across an ownership handover).
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` —
   minted, member joined, FORMING→ACTIVE and ACTIVE→DEGRADED on a live cluster]
 - The `→ DISSOLVED` edge for placement-policy retirement is not drivable in an in-JVM cluster; it is pinned by

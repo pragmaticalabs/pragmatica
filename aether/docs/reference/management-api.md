@@ -441,8 +441,10 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `COMMUNITY_STATE_CHANGED` -- a community's committed lifecycle state changed; one event per edge (`details`: `communityId`, `from`, `to`, `targetSize`). `FORMING -> ACTIVE` is "formed", `ACTIVE -> DEGRADED` (severity WARNING, the only non-INFO edge) is live membership falling below the viability floor, `DEGRADED -> ACTIVE` is recovery, `-> DISSOLVED` is retirement by placement policy. Severity INFO otherwise.
 - `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO.
 
-The four community events are derived from committed records, so every node observes them and the owner gate publishes each once. They
-record what the core can see. A worker that loses the core fences itself locally and writes nothing, so no `-> DISSOLVED` event exists for
+The four community events are derived from committed records, so every node observes them and only the cluster-events owner publishes
+them, not every node. Delivery is the owner-gated contract of `guarantees.md` row 14b: at-least-once across an ownership handover (a raise
+on both sides appears twice, with distinct `eventId`s), and dropped and counted while ownership is unresolvable. They record what the core
+can see. A worker that loses the core fences itself locally and writes nothing, so no `-> DISSOLVED` event exists for
 that case; see [`GET /api/v1/cluster/communities`](#get-apiv1clustercommunities) for how that boundary looks.
 
 `GENERATION_CHANGED` no longer exists (#722). It was documented and consumer-wired but never produced: the

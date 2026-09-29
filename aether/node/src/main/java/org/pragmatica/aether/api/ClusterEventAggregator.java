@@ -967,7 +967,8 @@ public final class ClusterEventAggregator {
     }
 
     /// #1652 — community mint and lifecycle-state edges, projected from the committed `CommunityValue`
-    /// write by [CommunityLifecycleEvents]. Every node sees the commit; the owner gate publishes once.
+    /// write by [CommunityLifecycleEvents]. Every node sees the commit; only the owner publishes
+    /// (guarantees.md row 14b).
     @Contract
     public void onCommunityPut(ValuePut<CommunityKey, CommunityValue> event) {
         CommunityLifecycleEvents.fromCommunityPut(hlcClock::now,
