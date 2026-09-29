@@ -1,7 +1,7 @@
 ### Changed (2026-09-29 — #1533: a whole-cluster restart restores the change-triggered KV backup)
 - **Restart = a regular start of fresh cores, then the restore.** The leader of a cold-started cluster
   decides once whether to restore the `[backup]` head (`RESTORED`, `FRESH`, `SKIPPED_EXISTING_STATE`,
-  `DISABLED`), committed as the runtime marker `BackupRestoreKey` (wire tags 1711–1713). A restore applies
+  `DISABLED`), committed as the runtime marker `BackupRestoreKey` (wire tags 1718–1720). A restore applies
   the head in leader transactions of at most 8 MiB and moves the incarnation past every incarnation the
   backup history records for its lineage (#1621). An interrupted restore is resumed from its own commit.
   `[verified: ApiKeyFullRestartForgeTest — fresh cores; the key is accepted, the incarnation rises, the
