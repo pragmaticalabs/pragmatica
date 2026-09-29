@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -131,29 +132,35 @@ public interface RateLimiter {
             return validate(source).map(_ -> build(source));
         }
 
-        private static final long MAX_CAPACITY = (1L << 16) - 1L;
-        private static final long MAX_NANOS_PER_TOKEN = (1L << 48) - 1L;
+        private static final long MAX_CAPACITY = (1L<< 16) - 1L;
+        private static final long MAX_NANOS_PER_TOKEN = (1L<< 48) - 1L;
 
         private Result<Unit> validate(TimeSource source) {
             if (rate < 1) {
                 return invalid("rate must be at least 1 permit per period, got " + rate);
             }
+
             if (burst < 0) {
                 return invalid("burst must not be negative, got " + burst);
             }
+
             if ((long) rate + (long) burst > MAX_CAPACITY) {
-                return invalid("rate + burst must not exceed " + MAX_CAPACITY + " (16-bit token count), got "
-                               + ((long) rate + (long) burst));
+                return invalid("rate + burst must not exceed " + MAX_CAPACITY
+                              + " (16-bit token count), got " + ((long) rate + (long) burst));
             }
-            if (period == null || source == null) {
+
+            if (Option.option(period).isEmpty() || Option.option(source).isEmpty()) {
                 return invalid("period and time source are required");
             }
+
             if (period.nanos() / rate < 1L) {
                 return invalid("period " + period + " is shorter than one nanosecond per permit at rate " + rate);
             }
+
             if (period.nanos() / rate > MAX_NANOS_PER_TOKEN) {
                 return invalid("period " + period + " / rate " + rate + " exceeds the 48-bit refill clock");
             }
+
             return Result.unitResult();
         }
 

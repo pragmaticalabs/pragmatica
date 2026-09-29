@@ -21,7 +21,8 @@ record DefaultRateGuard(RateLimiter limiter, int limit) implements RateGuard {
                           .period(config.window())
                           .burst(config.burst())
                           .withDefaultTimeSource()
-                          .map(limiter -> new DefaultRateGuard(limiter, config.requestsPerSecond()));
+                          .map(limiter -> new DefaultRateGuard(limiter,
+                                                               config.requestsPerSecond()));
     }
 
     @Override

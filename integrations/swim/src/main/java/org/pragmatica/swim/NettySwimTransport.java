@@ -411,7 +411,8 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private AnnounceRateLimiterEntry newAnnounceEntry(InetAddress ignored) {
-        return new AnnounceRateLimiterEntry(RateLimiter.rateLimiter(ANNOUNCE_RATE_PER_SECOND, timeSpan(1).seconds())
+        return new AnnounceRateLimiterEntry(RateLimiter.rateLimiter(ANNOUNCE_RATE_PER_SECOND,
+                                                                    timeSpan(1).seconds())
                                                        .unwrap(),
                                             System.currentTimeMillis());
     }
