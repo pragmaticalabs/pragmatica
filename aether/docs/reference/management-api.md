@@ -417,7 +417,8 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `DEPLOYMENT_FAILED` -- an artifact deployment failed on a node (`details` carries `reason`). Severity WARNING.
 - `SCALE_UP` -- an artifact was scaled up to more instances. Severity INFO.
 - `SCALE_DOWN` -- an artifact was scaled down to fewer instances. Severity INFO.
-- `SLICE_FAILURE` -- all instances of a slice method failed. Severity CRITICAL.
+- `SLICE_FAILURE` -- every live instance of a slice version reported only bridge-level defects within the detection window (leader-detected, #1573). Severity CRITICAL.
+- `AUTO_ROLLBACK` -- the leader committed an automatic rollback. `details`: `artifact`, `from`, `to`, `rollbackNumber`, `windowMs`, `requestId`, and `defects.<nodeId>` per hosting node. Severity CRITICAL.
 - `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
 - `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
 - `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
@@ -443,6 +444,8 @@ actually keeps is `(leaderTerm, tenure-tick)` — the tick advances once per pin
 event per advance would be a 1 Hz stream with no information beyond "the leader is still the leader". Leader
 changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on demand from
 `GET /api/v1/cluster/generation`.
+
+**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
@@ -969,7 +972,7 @@ by one `[rule] field — message` line per failure (not the structured triples a
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
 exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
-`partitions-over-ceiling`, `replication-invalid`, `source-address-invalid`, `namespace-invalid`,
+`partitions-over-ceiling`, `replicas-below-minimum` (`replicas` under 3, #1547), `replication-invalid`, `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
 names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
@@ -1337,6 +1340,17 @@ consumers difference them over their own window.
 boundary — the serialized frame handed to the channel on send, and the frame decoded from the
 buffer on receive — after the pipeline has already stripped QUIC framing, TLS encryption overhead,
 and retransmits. This is **not a wire-byte or bandwidth figure**; do not treat it as one.
+
+**Boot-token refusals (#1528, terminal removal).** Non-zero means a process tried to use a NodeId
+that belongs to a different (dead or retired) process:
+- `boot_token_refusals_total` — admissions the node's shared boot-token registry refused (SWIM
+  evidence and QUIC Hello together);
+- `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
+  sender is a retired NodeId;
+- `membership_process_evidence_refusals_total` — governor/worker-admission evidence the membership
+  FSM refused (different token, or a DEAD/DEPARTING identity).
+
+Recovery: replace the node under a fresh NodeId; a restarted process under the old NodeId is refused.
 
 ### GET /api/v1/metrics/history
 
@@ -3671,6 +3685,42 @@ land.
 }
 ```
 
+### POST /api/v1/backup/declare-genesis
+
+Make this cluster's state the KV backup head in place of a backup of ANOTHER lineage (#1532). The
+leader raises its committed cluster incarnation to `max(its own, the head's) + 1` — never backwards
+(`ClusterIncarnationKey`, lineage unchanged) — then commits a declaration naming exactly that lineage and incarnation (`declared-lineage.txt`)
+beside the backup and pushes it; the next change-triggered flush then supersedes the head as a
+fast-forward, and the old lineage stays in git history. The declaration is the only way the backup's
+lineage changes: a head of another lineage is otherwise gated whatever the incarnations. The incarnation
+write is a leader transaction witnessed on the incarnation the leader read, so a concurrent restore or
+declaration makes it refuse (`NOT_COMMITTED`) rather than be overwritten. Re-running after a failed push
+publishes the declaration already committed locally, without moving the incarnation again.
+
+**Refusals:**
+
+| Status | When |
+|---|---|
+| 409 `SameLineage` | The head already belongs to this cluster's lineage — nothing to supersede |
+| 409 `RemoteIsNewer` | The head is this cluster's lineage and AHEAD of it — restore it instead |
+| 409 `NOTHING_TO_SUPERSEDE` | The backup is empty — the first flush establishes this cluster's lineage |
+| 409 `NOT_COMMITTED` | A concurrent write won; re-read and retry |
+| 503 `DeclarationNotPublished` | The incarnation committed but the declaration did not reach the backup; re-run the command |
+| 409 `BACKUP_NOT_ENABLED` | `[backup]` is not enabled with a path on this node |
+| 503 `NOT_LEADER` / `NO_INCARNATION` / `HeadUnreadable` | Retry against the leader, after genesis, or once the head is reachable and readable |
+
+**RBAC:** ADMIN (exact route) · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "lineageId": "01K4ZT9Q6W3X8Y2B7C5D1E0F9G",
+  "incarnation": 4,
+  "supersededLineageId": "01K4ZS0000000000000000OLD0",
+  "supersededIncarnation": 3
+}
+```
+
 ### GET /api/v1/cluster/keys/audit
 
 List API key audit trail (create, rotate, revoke, expire events).
@@ -5081,6 +5131,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
   "servedByOwner": true,
   "ownerHeadOffset": 256,
   "earliestRetainedOffset": 0,
+  "ownerActivationBlock": "",
   "replicas": [
     {"nodeId": "core-1", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": true},
     {"nodeId": "core-3", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": false},
@@ -5097,6 +5148,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
 | `servedByOwner` | Whether the answering node is itself the HRW owner — i.e. whether `replicas` is the complete authoritative view |
 | `ownerHeadOffset` | The answering node's local next-expected offset (head + 1); on the owner this is the true tail used to spot a lagging `CAUGHT_UP` replica (#333) |
 | `earliestRetainedOffset` | Earliest offset still retained locally (`-1` when the partition is absent/empty) |
+| `ownerActivationBlock` | Why the answering node's owner promotion of the partition waits for an operator (#1555), `""` when it does not. Two causes: a live peer disagrees with the local log where both hold records (a divergent tail — neither lineage is served; pick the source with #1569's surface), or live members have not answered the promotion probe for longer than the alarm window (the partition waits for them or for an operator). A non-empty value is also raised once as a CRITICAL operator warning |
 | `replicas[]` | Every registered replica for the partition, sorted by node id |
 | `replicas[].state` | Replication state: `SYNCING` / `CAUGHT_UP` / `LAGGING` |
 | `replicas[].confirmedOffset` | The replica's acked confirmed watermark |
@@ -6078,14 +6130,16 @@ Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 R
 
 The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
 
-### Voter handoff diagnostics
+### Voter reconfiguration diagnostics
 
-The node status response includes `voterReconfiguration`: installed epoch and voters, target voters,
-optional barrier slot, stage, persisted checkpoint/installation certificate witness counts, and a
-failure description. Stages distinguish unavailable, stable, requested, checkpoint collection,
-installation pending and complete. Counts describe certified evidence, not transient network acknowledgements.
-A state-transfer admission failure remains visible while the stage is stalled; it is not reported
-as a successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
+The node status response includes `voterReconfiguration`: `stage`, `installedEpoch`,
+`installedVoters`, `targetVoters` (the requested roster, empty when none), `effectiveSlot` (the first
+slot the installed epoch governs, R+1 for a Rabia §4 change agreed at slot R; absent for genesis and
+when this node adopted the epoch from a snapshot), `awaitingCatchUp` (members the last applied change
+added that this node has not yet seen voting past R) and `failure`. Stages: `UNAVAILABLE`,
+`GENESIS_PENDING` (the complete genesis roster is still being discovered), `STABLE`, `REQUESTED` and
+`CATCHING_UP`. A state-transfer refusal remains visible in `failure`; it is not reported as a
+successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
 
 Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
 `completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.

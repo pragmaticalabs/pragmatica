@@ -21,6 +21,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
@@ -71,6 +72,10 @@ class StreamRestartVisibleWatermarkTest {
     @TempDir
     Path walDir;
 
+    /// #1567: a seal needs a durable tier to land on.
+    @TempDir
+    Path storageDir;
+
     private MetadataStore metadataStore;
     private StorageInstance storage;
     private SegmentIndex index;
@@ -82,7 +87,8 @@ class StreamRestartVisibleWatermarkTest {
     void setUp() {
         metadataStore = MetadataStore.inMemoryMetadataStore("restart-visible");
         storage = StorageInstance.storageInstance("restart-visible",
-                                                  List.of(MemoryTier.memoryTier(ONE_GB)),
+                                                  List.of(MemoryTier.memoryTier(ONE_GB),
+                                                          LocalDiskTier.localDiskTier(storageDir, ONE_GB).unwrap()),
                                                   metadataStore);
     }
 
@@ -194,7 +200,7 @@ class StreamRestartVisibleWatermarkTest {
                                          "earliest",
                                          1_048_576L,
                                          ConsistencyMode.EVENTUAL,
-                                         2,
+                                         3,
                                          minSyncReplicas,
                                          StreamCompression.NONE,
                                          Option.none());

@@ -23,7 +23,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.WalSnapshot;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalStats;
+import org.pragmatica.storage.AppendLog.WalStats;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;

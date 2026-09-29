@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.parse.TimeSpan;
 
 
 /// Typed failures of topic-declaration parsing (durable-pubsub-spec §3).
@@ -27,13 +28,13 @@ public sealed interface TopicConfigError extends Cause {
         }
     }
 
-    /// The v1 durable-config constraint (durable-pubsub-spec §3): outside `min-sync == replicas >= 2`
-    /// nothing is proven lossless — `replicas = 1` has no failover durability, and
+    /// The v1 durable-config constraint (durable-pubsub-spec §3): outside `min-sync == replicas >= 3`
+    /// nothing is accepted — fewer than 3 copies is below the stream replication minimum (#1547), and
     /// `min-sync < replicas` can drop acked records on single-survivor promotion until #411 lands.
     record OutsideProvenDurableConfig(int replicas, int minSyncReplicas) implements TopicConfigError {
         @Override
         public String message() {
-            return "durable topic requires replicas >= 2 and min_sync_replicas == replicas"
+            return "durable topic requires replicas >= 3 and min_sync_replicas == replicas"
                  + " (durable-pubsub-spec §3, v1 constraint until #411); got replicas=" + replicas
                  + ", min_sync_replicas=" + minSyncReplicas;
         }
@@ -50,6 +51,15 @@ public sealed interface TopicConfigError extends Cause {
         }
     }
 
+    /// The topic's stream holds retention in whole milliseconds and refuses a bound below 1 (#1549).
+    record RetentionBelowOneMillisecond(TimeSpan retention) implements TopicConfigError {
+        @Override
+        public String message() {
+            return "durable topic retention must be at least 1ms, got '" + retention
+                 + "'; declare a longer retention (durable-pubsub-spec §3)";
+        }
+    }
+
     static TopicConfigError missingTopicName() {
         return new MissingTopicName();
     }
@@ -60,6 +70,10 @@ public sealed interface TopicConfigError extends Cause {
 
     static TopicConfigError outsideProvenDurableConfig(int replicas, int minSyncReplicas) {
         return new OutsideProvenDurableConfig(replicas, minSyncReplicas);
+    }
+
+    static TopicConfigError retentionBelowOneMillisecond(TimeSpan retention) {
+        return new RetentionBelowOneMillisecond(retention);
     }
 
     static TopicConfigError inertEphemeralKeys(String declaredKeys) {

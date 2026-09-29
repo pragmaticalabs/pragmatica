@@ -98,6 +98,34 @@ class FileOpsTest {
                               .doesNotContain(plain.toAbsolutePath());
         }
 
+        /// The first half of `writeBytesDurable`: the file is forced with its metadata and the
+        /// directory is NOT -- a caller renaming the file into place forces the directory after the
+        /// rename, and a force here would sync an entry the rename is about to replace.
+        @Test
+        void writeBytesForced_forcesFileWithMetadata_notItsDirectory() {
+            var file = tempDir.resolve("forced.bin");
+
+            var forced = forcedFilesDuring(() -> assertThat(writeBytesForced(file, new byte[]{4, 5}).isSuccess()).isTrue());
+
+            assertThat(readBytes(file).unwrap()).containsExactly(4, 5);
+            assertThat(forced).as("the file forced with its metadata")
+                              .contains(new ForcedFile(file.toAbsolutePath(), true));
+            assertThat(forced.stream().map(ForcedFile::path).toList()).as("the directory is left to the caller")
+                              .doesNotContain(tempDir.toAbsolutePath());
+        }
+
+        @Test
+        void forceDirectory_forcesTheDirectory() {
+            var forced = forcedFilesDuring(() -> assertThat(forceDirectory(tempDir).isSuccess()).isTrue());
+
+            assertThat(forced).contains(new ForcedFile(tempDir.toAbsolutePath(), true));
+        }
+
+        @Test
+        void forceDirectory_fails_forMissingDirectory() {
+            assertThat(forceDirectory(tempDir.resolve("absent")).isFailure()).isTrue();
+        }
+
         @Test
         void writeBytesDurable_truncatesExisting() {
             var file = tempDir.resolve("durable-overwrite.bin");
@@ -142,6 +170,34 @@ class FileOpsTest {
             var result = createDirectories(dir);
             assertThat(result.isSuccess()).isTrue();
             assertThat(isDirectory(dir)).isTrue();
+        }
+
+        /// Each directory this call creates is named by an entry in its parent, and that entry is
+        /// durable only once the PARENT is forced -- so the parents of `a`, `a/b` and `a/b/c` are
+        /// forced, the leaf itself is not (it holds nothing yet), and a directory that already
+        /// existed is never forced on its own account.
+        @Test
+        void createDirectoriesDurable_forcesTheParentOfEveryCreatedDirectory() {
+            var leaf = tempDir.resolve("a/b/c");
+
+            var forced = forcedFilesDuring(() -> assertThat(createDirectoriesDurable(leaf).isSuccess()).isTrue());
+            var forcedPaths = forced.stream().map(ForcedFile::path).toList();
+
+            assertThat(isDirectory(leaf)).isTrue();
+            assertThat(forcedPaths).contains(tempDir.toAbsolutePath(),
+                                             tempDir.resolve("a").toAbsolutePath(),
+                                             tempDir.resolve("a/b").toAbsolutePath())
+                                   .doesNotContain(leaf.toAbsolutePath());
+        }
+
+        @Test
+        void createDirectoriesDurable_forcesNothing_whenDirectoryExists() {
+            var dir = tempDir.resolve("present");
+            createDirectories(dir);
+
+            var forced = forcedFilesDuring(() -> assertThat(createDirectoriesDurable(dir).isSuccess()).isTrue());
+
+            assertThat(forced).isEmpty();
         }
 
         @Test

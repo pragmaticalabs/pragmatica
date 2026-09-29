@@ -356,8 +356,10 @@ public final class ControlLoopContext {
                        .or(() -> recordSourceSnapshot(incoming));
     }
 
+    /// `incarnation` is the source's boot token (equality only). The first token pins the source; a
+    /// different token is another process claiming the NodeId (terminal removal) and never supersedes.
     private boolean isNewerSource(CommunityMetricsSnapshot incoming, CommunityMetricsSnapshot previous) {
-        return incoming.incarnation() > previous.incarnation() || incoming.incarnation() == previous.incarnation() && incoming.sequence() > previous.sequence();
+        return incoming.incarnation() == previous.incarnation() && incoming.sequence() > previous.sequence();
     }
 
     private CommunityMetricsSnapshot recordSourceSnapshot(CommunityMetricsSnapshot incoming) {

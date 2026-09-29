@@ -1,6 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.cluster.state.kvstore;
 
@@ -77,29 +75,15 @@ class KVStoreCommittedNotificationTest {
     }
 
     @Test
-    void committedRecoveryRemainsSilentUntilReplayAndKeepsRevision() {
-        var replayFlags = new ArrayList<Boolean>();
-        router.addRoute(KVStoreNotification.ValuePut.class,
-            (KVStoreNotification.ValuePut<Key, String> put) -> replayFlags.add(store.isReplaying()));
-
-        assertThat(store.recoverCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 21).isSuccess()).isTrue();
-        assertThat(store.committedRevision()).isEqualTo(21);
-        assertThat(replayFlags).isEmpty();
-        store.replayNotifications();
-        assertThat(replayFlags).containsExactly(true);
-        assertThat(store.isReplaying()).isFalse();
-        assertThat(store.committedRevision()).isEqualTo(21);
-    }
-    @Test
     void liveReentrantCommitDuringReplayDoesNotInheritReplayFlag() {
         var delivered = new ArrayList<String>();
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 21);
         router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<Key, String> put) -> {
             delivered.add(put.cause().key().id() + ":" + store.isReplaying());
             if (put.cause().key().equals(FIRST)) {
                 store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(REENTRANT, "nested"))), 22);
             }
         });
-        store.recoverCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 21).unwrap();
         store.replayNotifications();
         assertThat(delivered).containsExactly("first:true", "reentrant:false");
         assertThat(store.committedRevision()).isEqualTo(22);

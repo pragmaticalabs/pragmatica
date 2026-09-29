@@ -32,7 +32,9 @@ public final class CommunityHealthIndex {
     private final String incarnation = UUID.randomUUID().toString();
     private final Map<String, Pending> pending = new HashMap<>();
     private final Map<String, Observation> observations = new HashMap<>();
-    private final Map<NodeId, Long> incarnations = new HashMap<>();
+    /// Boot token first seen for each member (equality only, never ordered). Member evidence carrying
+    /// a different token is another process claiming the NodeId (terminal removal) and is ignored.
+    private final Map<NodeId, Long> memberTokens = new HashMap<>();
     private long sequence;
 
     private record Pending(Request request, NodeId governor, long sentAt) {}
@@ -126,18 +128,9 @@ public final class CommunityHealthIndex {
         var request = pending.remove(report.communityId());
         long now = clock.nanoTime();
         var members = new HashMap<NodeId, MemberHealth>();
-
-        report.members()
-              .stream()
-              .filter(value -> value.incarnation() >= incarnations.getOrDefault(value.node(),
-                                                                                0L))
-              .forEach(value -> {
-                           members.put(value.node(),
-                                       value);
-                           incarnations.merge(value.node(),
-                                              value.incarnation(),
-                                              Math::max);
-                       });
+        // MemberHealth.incarnation is the member's boot token (equality only, never ordered): the first
+        // token pins the member, and evidence from a different token is dropped from this observation.
+        report.members().stream().filter(this::pinnedToken).forEach(value -> members.put(value.node(), value));
         observations.put(report.communityId(),
                          new Observation(report,
                                          now,
@@ -182,6 +175,10 @@ public final class CommunityHealthIndex {
                && assignment.apply(report.sender())
                             .filter(report.communityId()::equals)
                             .isPresent();
+    }
+
+    private boolean pinnedToken(MemberHealth member) {
+        return memberTokens.computeIfAbsent(member.node(), _ -> member.incarnation()) == member.incarnation();
     }
 
     private boolean validMembers(Report report) {
@@ -264,7 +261,7 @@ public final class CommunityHealthIndex {
     public synchronized org.pragmatica.lang.Unit retainCommunities(java.util.Set<String> communities) {
         pending.keySet().retainAll(communities);
         observations.keySet().retainAll(communities);
-        incarnations.keySet().removeIf(node -> assignment.apply(node)
+        memberTokens.keySet().removeIf(node -> assignment.apply(node)
                                                          .filter(communities::contains)
                                                          .isEmpty());
 

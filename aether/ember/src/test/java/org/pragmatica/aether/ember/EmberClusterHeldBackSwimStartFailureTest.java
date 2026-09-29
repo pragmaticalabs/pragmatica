@@ -62,7 +62,8 @@ class EmberClusterHeldBackSwimStartFailureTest {
     @Timeout(300)
     void startHeldBackNodes_stopsTheNodeAndFailsWithTheBindFailure_whenItsSwimPortIsTaken() throws IOException {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
-        // 2 of 3 started is a Rabia quorum, so the cluster forms around the held-back node.
+        // The two started nodes are the genesis roster (#1526: a held-back node is not a genesis
+        // member, because genesis forms only when every member announces it), so they form alone.
         var formed = cluster.start(Set.of(HELD_BACK_ID)).await(FORMATION_BOUND).fold(Cause::message, _ -> "started");
 
         assertThat(formed).describedAs("2-of-3 formation is the fixture; it must succeed or the test proves nothing")

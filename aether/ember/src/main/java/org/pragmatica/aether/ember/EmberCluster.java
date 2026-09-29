@@ -56,7 +56,6 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.HttpProtocol;
-import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
@@ -113,6 +112,8 @@ public final class EmberCluster {
     /// let a leader lookup answer from a node that has no consensus state. Empty in every production
     /// and existing-test path (plain [#start] holds nothing back).
     private final Map<String, AetherNode> heldBackNodes = new ConcurrentHashMap<>();
+    /// Initial node ids left out of the genesis roster: the ones [#start] holds back.
+    private volatile Set<String> genesisExcluded = Set.of();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
     /// Immutable provider identity. Initial/manual nodes use the harness prefix as cluster name,
     /// their explicit source (or default), and configured role. Provider-created nodes retain the
@@ -121,13 +122,14 @@ public final class EmberCluster {
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
+    /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
+    /// new process at the SAME address as the killed one.
+    private final Map<String, Integer> lastSlotByNodeId = new ConcurrentHashMap<>();
+    /// Exit code each node exited with (see [#exitCodeOf]); the latest exit wins for a reused NodeId.
+    private final Map<String, Integer> exitCodes = new ConcurrentHashMap<>();
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
-
-    private final Path consensusBase = Path.of(System.getProperty("java.io.tmpdir"),
-                                               "aether-ember-" + java.util.UUID.randomUUID());
-
     private final int basePort;
     private final int baseMgmtPort;
     private final int baseAppHttpPort;
@@ -420,9 +422,10 @@ public final class EmberCluster {
         dataBaseDir.set(Option.option(baseDir));
     }
 
-    /// Enable production consensus persistence in pre-created per-node directories before the first start.
-    /// The caller provisions <baseDir>/<nodeId> for initial and future nodes, as production provisioning does.
-    /// The participation marker remains durable; this never reasserts newness on restart.
+    /// Enable the git-backed `[backup]` consensus snapshot in pre-created per-node directories before the
+    /// first start. Consensus itself runs in memory (owner ruling, session 28); the backup is what a
+    /// whole-cluster restart restores from. The caller provisions <baseDir>/<nodeId> for initial and
+    /// future nodes. The participation marker remains durable; this never reasserts newness on restart.
     @Contract
     public Unit withConsensusBaseDir(Path baseDir) {
         consensusBaseDir.set(Option.some(baseDir));
@@ -632,6 +635,17 @@ public final class EmberCluster {
     ///
     /// @param heldBackNodeIds ids of initial nodes whose `start()` is deferred; empty = plain [#start]
     public Promise<Unit> start(Set<String> heldBackNodeIds) {
+        return start(heldBackNodeIds, heldBackNodeIds);
+    }
+
+    /// TEST SEAM (#1554) — a cold start where some initial cores boot late: they are held back like
+    /// [#start(Set)] but stay in the genesis roster, so the started cores wait in genesis for them, as
+    /// production cores do when a configured core is slow to boot. Start them with [#startHeldBackNodes].
+    public Promise<Unit> startWithLateGenesisMembers(Set<String> lateNodeIds) {
+        return start(lateNodeIds, Set.of());
+    }
+
+    private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
         log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {})",
                  initialClusterSize,
                  basePort,
@@ -640,6 +654,7 @@ public final class EmberCluster {
                  heldBackNodeIds);
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
+        genesisExcluded = Set.copyOf(excludedFromGenesis);
         availableSlots.clear();
         for (int i = 0; i < poolSize; i++) {
             availableSlots.offer(i);
@@ -657,6 +672,7 @@ public final class EmberCluster {
             instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
             nodeInfos.put(nodeId.id(), info);
             slotsByNodeId.put(nodeId.id(), slot);
+            lastSlotByNodeId.put(nodeId.id(), slot);
         }
 
         nodeCounter.set(initialClusterSize);
@@ -1020,9 +1036,18 @@ public final class EmberCluster {
         return Map.copyOf(configured);
     }
 
-    private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
-        var nodeId = nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap();
+    /// TEST SEAM (#1554) — add a core under an explicit NodeId, so a test can place the joiner at a chosen
+    /// position in the NodeId order (the lower NodeId of a pair is its designated dialer). Harness-scoped.
+    public Promise<NodeId> addCoreNode(String nodeIdStr) {
+        return addConfiguredNode(nodeId(nodeIdStr).unwrap(), configuredNodeLabels(Map.of()));
+    }
 
+    private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
+        return addConfiguredNode(nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap(),
+                                 labels);
+    }
+
+    private Promise<NodeId> addConfiguredNode(NodeId nodeId, Map<String, String> labels) {
         if ("core".equalsIgnoreCase(labels.getOrDefault(NodeInfo.LABEL_ROLE, "core"))) {
             localCoreAdmissions.add(nodeId.id());
         } else if ("worker".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE)) || "spot".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE))) {
@@ -1045,12 +1070,35 @@ public final class EmberCluster {
                       node.id());
     }
 
+    /// TEST SEAM (#1528) — start a NEW process under the NodeId of a node this harness killed, as an
+    /// operator restarting a container would. Under terminal removal the running cluster must refuse
+    /// it: the new process carries a fresh boot token. `sameAddress` reuses the killed node's slot
+    /// (same ports); otherwise the next free slot is taken. Harness-scoped; production never calls this.
+    public Promise<NodeId> relaunchNode(String nodeIdStr, boolean sameAddress) {
+        var nodeId = nodeId(nodeIdStr).unwrap();
+        // A force-kill's slot returns to the pool only when the killed node's stop completes, which a
+        // hard kill does not wait for; the same-address relaunch takes the slot back directly.
+        var slot = Option.option(lastSlotByNodeId.get(nodeIdStr))
+                         .filter(_ -> sameAddress)
+                         .onPresent(availableSlots::remove);
+
+        if (sameAddress && slot.isEmpty()) {
+            return EnvironmentError.operationNotSupported("No recorded slot for node: " + nodeIdStr).promise();
+        }
+
+        return addProvisionedNode(nodeId, Map.of(NodeInfo.LABEL_ROLE, "core"), slot);
+    }
+
     private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels) {
+        return addProvisionedNode(nodeId, labels, Option.none());
+    }
+
+    private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels, Option<Integer> chosenSlot) {
         if (nodes.containsKey(nodeId.id())) {
             return EnvironmentError.operationNotSupported("Node identity already exists: " + nodeId.id()).promise();
         }
 
-        var slotOpt = Option.option(availableSlots.poll());
+        var slotOpt = chosenSlot.orElse(() -> Option.option(availableSlots.poll()));
 
         if (slotOpt.isEmpty()) {
             log.warn("Slot pool exhausted — no available ports for new node");
@@ -1068,6 +1116,7 @@ public final class EmberCluster {
 
         log.info("Adding new node {} on port {} labels={}", nodeId.id(), port, labels);
         slotsByNodeId.put(nodeId.id(), slot);
+        lastSlotByNodeId.put(nodeId.id(), slot);
         nodeInfos.put(nodeId.id(), info);
         var allNodes = new ArrayList<>(nodeInfos.values());
         var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, false);
@@ -1329,7 +1378,6 @@ public final class EmberCluster {
                                           Option.empty(),
                                           quicTls,
                                           TtmConfig.ttmConfig(),
-                                          RollbackConfig.rollbackConfig(),
                                           AppHttpConfig.appHttpConfig(true,
                                                                       appHttpPort,
                                                                       appHttpApiKeys.get(),
@@ -1380,12 +1428,14 @@ public final class EmberCluster {
         Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8)));
 
         lastNodeConfig.set(Option.some(config));
-        // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
-        // phase, do NOT halt the JVM (would kill all other in-process nodes). Stop the
-        // node gracefully and remove it from the cluster's registry instead.
-        Runnable jvmExit = () -> handleSelfDrain(nodeId.id());
-
-        return AetherNode.aetherNode(config, jvmExit).unwrap();
+        // Single-JVM hosting: when this node would exit (drain complete, or its identity refused by the
+        // cluster), do NOT halt the JVM (would kill all other in-process nodes). Record the exit code
+        // the process would have exited with, then stop the node gracefully and remove it from the
+        // cluster's registry instead.
+        return AetherNode.aetherNode(config,
+                                     code -> onNodeExit(nodeId.id(),
+                                                        code))
+                         .unwrap();
     }
 
     /// Per-node `storageConfig` map for [#createNode]. When a writable base dir was set via
@@ -1425,18 +1475,25 @@ public final class EmberCluster {
         }
     }
 
-    /// Genesis identity and consensus storage survive all in-process restarts of this cluster.
+    /// Only the initial nodes that [#start] actually starts carry `cluster.genesis_voters` (#1526):
+    /// genesis forms only when every member of its roster announces it, so a held-back node is not a
+    /// genesis member. Like a node added later, it joins the formed electorate (it announces itself, a
+    /// formed core answers) and is voted in through a Rabia §4 add command. Consensus state is
+    /// in-memory (owner ruling, session 28), so no consensus storage path is injected.
     private ConfigurationProvider nodeConfiguration(NodeId nodeId) {
-        var genesis = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
-                                                .mapToObj(index -> nodeIdPrefix + "-" + index)
-                                                .collect(java.util.stream.Collectors.joining(","));
-        var directory = dataBaseDir.get().or(consensusBase).resolve(nodeId.id()).resolve("consensus");
-        var builder = ConfigurationProvider.builder().withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
-                                                                                                                  Map.of("cluster.genesis_voters",
-                                                                                                                         genesis,
-                                                                                                                         "cluster.consensus_path",
-                                                                                                                         directory.toString()),
-                                                                                                                  Integer.MAX_VALUE));
+        var genesisIds = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
+                                                   .mapToObj(index -> nodeIdPrefix + "-" + index)
+                                                   .filter(id -> !genesisExcluded.contains(id))
+                                                   .toList();
+        var builder = ConfigurationProvider.builder();
+
+        if (genesisIds.contains(nodeId.id())) {
+            builder = builder.withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
+                                                                                          Map.of("cluster.genesis_voters",
+                                                                                                 String.join(",",
+                                                                                                             genesisIds)),
+                                                                                          Integer.MAX_VALUE));
+        }
 
         configProvider.onPresent(builder::withSource);
 
@@ -1497,6 +1554,18 @@ public final class EmberCluster {
                                                  defaults.snapshotRetentionCount());
 
         return Map.of("artifacts", config);
+    }
+
+    private void onNodeExit(String nodeIdStr, int exitCode) {
+        exitCodes.put(nodeIdStr, exitCode);
+        handleSelfDrain(nodeIdStr);
+    }
+
+    /// The process exit code a node exited with in this harness (`AetherNode.EXIT_DRAINED`,
+    /// `AetherNode.EXIT_IDENTITY_REFUSED`, ...), or none while it has not exited. Kept after the node is
+    /// removed, so a test can read why a node left.
+    public Option<Integer> exitCodeOf(String nodeIdStr) {
+        return Option.option(exitCodes.get(nodeIdStr));
     }
 
     private void handleSelfDrain(String nodeIdStr) {

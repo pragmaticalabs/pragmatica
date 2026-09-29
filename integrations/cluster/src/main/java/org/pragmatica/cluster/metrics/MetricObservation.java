@@ -1,6 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.cluster.metrics;
 
@@ -10,7 +8,10 @@ import org.pragmatica.serialization.Codec;
 
 
 /// Producer identity is the containing map key (or pong sender). Forwarding preserves this
-/// envelope unchanged. Sequence is monotonic within an incarnation; observation time is UTC.
+/// envelope unchanged. `incarnation` is the producer's per-process random BOOT TOKEN — equality
+/// only, never ordered: sequence is monotonic within one token. The first token seen for a producer
+/// pins it; a sample from a different token is another process claiming the NodeId (terminal
+/// removal) and never supersedes. Observation time is UTC.
 @Codec
 public record MetricObservation(long incarnation, long sequence, long observedAtMs, Map<String, Double> values) {
     public static final long MAX_AGE_MS = 30_000;
@@ -33,7 +34,9 @@ public record MetricObservation(long incarnation, long sequence, long observedAt
         return age >= -CLOCK_SKEW_ALLOWANCE_MS && age <= MAX_AGE_MS;
     }
 
+    /// Within the pinned boot token the higher sequence wins. A different token is a different process
+    /// for the same NodeId — refused under terminal removal — so it is never "after" the pinned one.
     public boolean isAfter(MetricObservation previous) {
-        return incarnation > previous.incarnation() || incarnation == previous.incarnation() && sequence > previous.sequence();
+        return incarnation == previous.incarnation() && sequence > previous.sequence();
     }
 }

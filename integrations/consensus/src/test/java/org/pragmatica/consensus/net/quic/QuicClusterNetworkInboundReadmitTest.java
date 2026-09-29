@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -305,6 +306,121 @@ class QuicClusterNetworkInboundReadmitTest {
             .isEqualTo(PeerState.Phase.CONNECTED);
     }
 
+    /// #1528 / #1545 — the verifier's path: a peer that was only EVICTED (never REMOVED) reconnects as a
+    /// RECONNECT attach. When its NodeId is retired in the shared boot-token registry, the attach is
+    /// refused — the peer stays EVICTED, even with every re-admit authority (SWIM liveness, FSM
+    /// membership) answering yes.
+    @Test
+    void onPeerConnected_retiredIdentity_evictedPeer_isNotReattached() {
+        var self = new NodeId("aaa-self");
+        var peerId = new NodeId("zzz-peer");
+        var network = createNetwork(self, Set.of(self, peerId));
+
+        network.setSwimLivenessGate(id -> true);
+        network.setBootTokens(retiredRegistry(peerId));
+        var evicted = PeerState.peerState(peerId, System.nanoTime());
+
+        evicted.attach(activeConnection(peerId), System.nanoTime());
+        evicted.evict(System.nanoTime());
+        var seeded = network.seedPeerForTests(peerId, evicted);
+
+        network.onPeerConnectedForTests(activeConnection(peerId), addressOf("127.0.0.1", 5000), Map.of());
+
+        assertThat(seeded.phase()).as("a retired identity must not be re-attached as RECONNECT")
+                                  .isEqualTo(PeerState.Phase.EVICTED);
+    }
+
+    /// Control for the test above: the same EVICTED peer with a non-retired identity reconnects.
+    @Test
+    void onPeerConnected_liveIdentity_evictedPeer_isReattached() {
+        var self = new NodeId("aaa-self");
+        var peerId = new NodeId("zzz-peer");
+        var network = createNetwork(self, Set.of(self, peerId));
+        var evicted = PeerState.peerState(peerId, System.nanoTime());
+
+        evicted.attach(activeConnection(peerId), System.nanoTime());
+        evicted.evict(System.nanoTime());
+        var seeded = network.seedPeerForTests(peerId, evicted);
+
+        network.onPeerConnectedForTests(activeConnection(peerId), addressOf("127.0.0.1", 5000), Map.of());
+
+        assertThat(seeded.phase()).isEqualTo(PeerState.Phase.CONNECTED);
+    }
+
+    /// A REMOVED peer whose identity is retired stays REMOVED through every tombstone re-admit authority.
+    @Test
+    void onPeerConnected_retiredIdentity_removedPeer_isNotReadmitted() {
+        var self = new NodeId("aaa-self");
+        var peerId = new NodeId("zzz-peer");
+        var network = createNetwork(self, Set.of(self, peerId));
+
+        network.setSwimLivenessGate(id -> true);
+        network.setBootTokens(retiredRegistry(peerId));
+        var removed = PeerState.peerState(peerId, System.nanoTime());
+
+        removed.authoritativeRemove(System.nanoTime());
+        var seeded = network.seedPeerForTests(peerId, removed);
+
+        network.onPeerConnectedForTests(activeConnection(peerId), addressOf("127.0.0.1", 5000), Map.of());
+
+        assertThat(seeded.phase()).isEqualTo(PeerState.Phase.REMOVED);
+    }
+
+    /// Consensus defence in depth: traffic from a retired identity — as connection peer or as a
+    /// relayed protocol sender — never reaches the router. Control: a live peer's message is routed.
+    @Test
+    void onMessageReceived_fromRetiredIdentity_isDroppedBeforeRouting() {
+        var self = new NodeId("aaa-self");
+        var retired = new NodeId("zzz-peer");
+        var live = new NodeId("mmm-peer");
+        var router = MessageRouter.mutable();
+        var routed = new ArrayList<NodeId>();
+
+        router.addRoute(NetworkMessage.DiscoverNodes.class, (NetworkMessage.DiscoverNodes message) -> routed.add(message.self()));
+        var network = createNetwork(self, Set.of(self, retired, live), router);
+
+        network.setBootTokens(retiredRegistry(retired));
+
+        network.onMessageReceivedForTests(retired, new NetworkMessage.DiscoverNodes(retired));
+        network.onMessageReceivedForTests(live, new NetworkMessage.DiscoverNodes(live));
+
+        assertThat(routed).as("only the live identity's message is routed").containsExactly(live);
+    }
+
+    /// #1558 — the moment a NodeId is retired (a different process claimed it, seen by any layer), its
+    /// still-CONNECTED link to the dead process is dropped, instead of lingering in `connectedPeers()`
+    /// until the liveness TTL. Control: before the conflict the peer is CONNECTED.
+    @Test
+    void retirement_evictsTheConnectedPeerImmediately() {
+        var self = new NodeId("aaa-self");
+        var peerId = new NodeId("zzz-peer");
+        var network = createNetwork(self, Set.of(self, peerId));
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        network.setBootTokens(tokens);
+        var connected = PeerState.peerState(peerId, System.nanoTime());
+
+        connected.attach(activeConnection(peerId), System.nanoTime());
+        var seeded = network.seedPeerForTests(peerId, connected);
+
+        tokens.admit(peerId, 0x0011L);
+        assertThat(seeded.phase()).as("control: the admitted process stays CONNECTED").isEqualTo(PeerState.Phase.CONNECTED);
+
+        tokens.admit(peerId, 0x0022L);
+
+        assertThat(seeded.phase()).as("the retired identity is permanently departed at once").isEqualTo(PeerState.Phase.REMOVED);
+    }
+
+    private static BootTokens retiredRegistry(NodeId peer) {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        tokens.admit(peer, 0x0011L);
+        tokens.admit(peer, 0x0022L);
+        assertThat(tokens.isRetired(peer)).as("precondition: the identity is retired").isTrue();
+
+        return tokens;
+    }
+
     @Test
     void tombstonePastGraceFloor_boundary() {
         // Pure age predicate boundary (the deterministic core of the P3 grace decision).
@@ -333,9 +449,13 @@ class QuicClusterNetworkInboundReadmitTest {
     }
 
     private QuicClusterNetwork createNetwork(NodeId selfId, Set<NodeId> coreNodes) {
+        return createNetwork(selfId, coreNodes, MessageRouter.mutable());
+    }
+
+    private QuicClusterNetwork createNetwork(NodeId selfId, Set<NodeId> coreNodes, MessageRouter router) {
         var selfInfo = NodeInfo.nodeInfo(selfId, addressOf("127.0.0.1", 19998));
         var topology = new OverridableTopology(selfInfo, coreNodes);
-        var network = new QuicClusterNetwork(topology, codec, codec, MessageRouter.mutable(),
+        var network = new QuicClusterNetwork(topology, codec, codec, router,
                                              serverSsl, clientSsl);
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));

@@ -38,7 +38,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private boolean dispatching;
     private boolean collectingReplay;
     private int pendingNotifications;
-    private boolean recovering;
     private long committedRevision;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
@@ -86,11 +85,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     @Override
-    public Result<Unit> recoverCommitted(Batch<KVCommand<K>> batch, long nextSlot) {
-        return mutate(() -> recoverSilently(batch).onSuccess(_ -> committedRevision = nextSlot));
-    }
-
-    @Override
     public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
         return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot));
     }
@@ -110,10 +104,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private <T extends org.pragmatica.messaging.Message> void publish(T message) {
-        if (!recovering) {
-            notifications.addLast(new PendingNotification(message, collectingReplay));
-            pendingNotifications++;
-        }
+        notifications.addLast(new PendingNotification(message, collectingReplay));
+        pendingNotifications++;
     }
 
     private void drainNotifications() {
@@ -143,20 +135,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                 pendingNotifications--;
             }
         }
-    }
-
-    @Override
-    public Result<Unit> recover(Batch<KVCommand<K>> batch) {
-        return mutate(() -> recoverSilently(batch));
-    }
-
-    private Result<Unit> recoverSilently(Batch<KVCommand<K>> batch) {
-        recovering = true;
-        var recovered = Result.lift(Causes::fromThrowable, () -> processCommands(batch)).mapToUnit();
-
-        recovering = false;
-
-        return recovered;
     }
 
     @Override

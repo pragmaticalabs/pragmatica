@@ -1787,7 +1787,7 @@ aether stream show orders:order-events:1.0.0
 
 ### `aether stream replicas <stream> <partition> [--local]`
 
-Show per-node replica state for a stream partition — the replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Renders a per-replica table (each replica's `STATE` — `SYNCING`/`CAUGHT_UP`/`LAGGING` — its `CONFIRMED` acked offset, and whether it is the partition's HRW owner) and surfaces the partition-level fields (`hrwOwner`, `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`) in `--format json`. Compare a `CAUGHT_UP` replica's `CONFIRMED` against `ownerHeadOffset` to spot the #333 write-idle residual (a replica that reports caught-up but lags the owner's true tail).
+Show per-node replica state for a stream partition — the replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Renders a per-replica table (each replica's `STATE` — `SYNCING`/`CAUGHT_UP`/`LAGGING` — its `CONFIRMED` acked offset, and whether it is the partition's HRW owner) and surfaces the partition-level fields (`hrwOwner`, `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`, `ownerActivationBlock`) in `--format json`. A non-empty `ownerActivationBlock` names why the owner's promotion waits for an operator (#1555: a divergent peer, or members unreachable past the alarm window). Compare a `CAUGHT_UP` replica's `CONFIRMED` against `ownerHeadOffset` to spot the #333 write-idle residual (a replica that reports caught-up but lags the owner's true tail).
 
 **`<stream>` means something different depending on `--local` (#753):**
 - **Without `--local`** (default): `<stream>` must be a full `namespace:stream:version` catalog address — there is no bare-name-defaults-to-`system` convenience here (unlike `streams status/publish/read/delete`), because the raw engine key a `--local` query needs and the catalog address this path needs are two different shapes for a non-`system` stream, and silently guessing between them is worse than requiring the caller to say which one. Dispatches to the catalog-form `STREAM_REPLICAS` route.
@@ -2687,6 +2687,30 @@ aether cluster list-keys [--audit]
 | Option | Description |
 |--------|-------------|
 | `--audit` | Show full key operation history (create, rotate, revoke, expire) |
+
+---
+
+## Backup
+
+The KV backup (#1532) is written by the leader to a git repository under `[backup] path`
+(`<path>/kv-backup`, branch `kv-backup`) whenever cluster-state keys change, and pushed as a
+fast-forward to `[backup] remote` when one is configured. It is enabled only with `[backup] enabled = true`
+and a path.
+
+### `aether backup declare-genesis`
+
+Make this cluster's state the KV backup head, superseding a backup of another lineage. ADMIN only.
+
+```bash
+aether backup declare-genesis
+```
+
+A freshly started cluster mints its own lineage and will not overwrite a backup that belongs to another
+cluster history: its backup is **gated**, and the node logs `BACKUP_GATED` naming this command. Run it
+only when this cluster's state — not the backup's — is the one to keep; the superseded head stays in the
+git history. It is refused when the backup head already belongs to this cluster's lineage, and when that
+head is **newer** than the cluster — restore it instead (`POST /api/v1/backup/declare-genesis`, see the
+Management API reference for the refusals).
 
 ---
 

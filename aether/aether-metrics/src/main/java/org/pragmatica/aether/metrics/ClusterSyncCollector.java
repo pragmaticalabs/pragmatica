@@ -231,13 +231,13 @@ public interface ClusterSyncCollector {
     @Contract
     default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
 
-    /// Durable node-process discriminator stamped onto `ClusterSyncPong.incarnation`.
-    /// Independent of SWIM refutation counters; monotonic across process restart.
+    /// Per-process random boot token stamped onto `ClusterSyncPong.incarnation`. Independent of SWIM
+    /// refutation counters; compared by EQUALITY only — a restarted process carries a new, unordered token.
     default org.pragmatica.lang.Unit setMembershipIncarnationSupplier(LongSupplier supplier) {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    /// Durable producer-process epoch, independent of membership incarnation.
+    /// Per-process random boot token stamped onto every [MetricObservation]; equality only, never ordered.
     @Contract
     default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
 
@@ -339,10 +339,11 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// Fresh governor readiness evaluated on every read, without caching or renewing evidence age.
     private final AtomicReference<Supplier<Map<NodeId, NodeReportedState>>> communityReadiness = new AtomicReference<>(Map::of);
 
-    /// Membership/health incarnation is the durable process epoch, independent of SWIM refutation.
+    /// Membership/health incarnation is the per-process boot token, independent of SWIM refutation.
     private final AtomicReference<LongSupplier> membershipIncarnationSupplier = new AtomicReference<>(() -> 0L);
 
-    /// Durable process epoch for raw producer sample replay ordering; fixed throughout one process.
+    /// Per-process boot token for raw producer samples; fixed throughout one process. Sequence orders
+    /// samples within one token; a different token is a different process ([MetricObservation#isAfter]).
     private final AtomicReference<java.util.function.LongSupplier> incarnationSupplier = new AtomicReference<>(() -> 0L);
 
     /// Membership v2 (B5a) — handler invoked when an inbound DRAIN ping is received. Default
@@ -1009,6 +1010,17 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         }
 
         invMetrics.snapshot().forEach(snapshot -> addInvocationSnapshot(metrics, snapshot));
+        invMetrics.executionCounts().forEach(counts -> addExecutionCounts(metrics, counts));
+    }
+
+    /// #1573: cumulative execution outcomes under [ExecutionOutcomeKeys]; the leader's all-instances-failed
+    /// detector takes per-window deltas of them per producer.
+    private static void addExecutionCounts(Map<String, Double> metrics,
+                                           InvocationMetricsCollector.ExecutionCounts counts) {
+        metrics.put(ExecutionOutcomeKeys.successKey(counts.artifact(), counts.method()),
+                    (double) counts.successes());
+        metrics.put(ExecutionOutcomeKeys.defectKey(counts.artifact(), counts.method()),
+                    (double) counts.defects());
     }
 
     private void addInvocationSnapshot(Map<String, Double> metrics,

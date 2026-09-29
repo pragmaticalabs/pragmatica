@@ -35,6 +35,7 @@ import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.SelfDrainInitiated;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
+import org.pragmatica.aether.api.ClusterEvent.AutoRollback;
 import org.pragmatica.aether.api.ClusterEvent.StreamDeleted;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.api.ClusterEvent.StreamRegistered;
@@ -335,6 +336,7 @@ class ClusterEventCodecTest {
                        new ScaleUp(ts, sev, "ScaleUp", d),
                        new ScaleDown(ts, sev, "ScaleDown", d),
                        new SliceFailure(ts, sev, "SliceFailure", d),
+                       new AutoRollback(ts, sev, "AutoRollback", d),
                        new ConnectionEstablished(ts, sev, "ConnectionEstablished", d),
                        new ConnectionFailed(ts, sev, "ConnectionFailed", d),
                        new CommunityScaleRequest(ts, sev, "CommunityScaleRequest", d),

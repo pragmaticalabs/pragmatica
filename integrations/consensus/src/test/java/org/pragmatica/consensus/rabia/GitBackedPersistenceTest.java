@@ -149,6 +149,20 @@ class GitBackedPersistenceTest {
         assertGitCommitCount(2);
     }
 
+    /// A node restoring its own backup re-saves identical content; that must succeed, or the restore's
+    /// re-persist fails and fences the node from activating.
+    @Test
+    void save_unchangedSnapshot_succeeds() {
+        stateMachine.setSnapshot(new byte[]{7});
+        persistence.save(stateMachine, Phase.phase(5), List.of())
+                   .onFailure(_ -> fail("First save should succeed"));
+
+        persistence.save(stateMachine, Phase.phase(5), List.of())
+                   .onFailure(cause -> fail("Re-saving identical content must succeed: " + cause.message()));
+
+        assertGitCommitCount(2);
+    }
+
     // --- Helpers ---
 
     /// #676: an interrupted snapshot write must not corrupt the previous snapshot. The seam writes

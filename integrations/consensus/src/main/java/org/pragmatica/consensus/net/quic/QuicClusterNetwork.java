@@ -20,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,6 +38,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.ConnectionError;
@@ -301,6 +303,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private volatile Option<Function<NodeId, Boolean>> swimHealthGate = Option.empty();
+    /// Per-process boot-token registry shared with SWIM (terminal removal, owner ruling session 28).
+    /// The Hello handshake admits every peer through it; a retired NodeId is refused at attach,
+    /// never dialed by the reconciler, and its inbound traffic is dropped before routing.
+    private volatile BootTokens bootTokens = BootTokens.bootTokens(0L);
     /// RAW-SWIM proof-of-life predicate for the INBOUND tombstone-readmit path (Fix A,
     /// safety-critical split-brain root). Returns `true` when the SWIM protocol layer — NOT the
     /// FSM, whose terminal-DEAD verdict poisons `swimMembershipAllows`/`coreNodes()` — currently
@@ -493,6 +499,29 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// a `NodeId` and returns `true` when SWIM considers the peer healthy enough to
     /// reconnect (HEALTHY or SUSPECTED); `false` when FAULTY or UNKNOWN.
     /// A `null` argument removes the gate (all reconnects allowed — default behaviour).
+    /// Install the node's boot-token registry — the SAME instance SWIM consults — before [#start].
+    /// Read when the QUIC server and client are built, so it must be set before the transport starts.
+    @Override
+    public Unit setBootTokens(BootTokens registry) {
+        this.bootTokens = registry;
+        registry.onRetired(this::onIdentityRetired);
+
+        return Unit.unit();
+    }
+
+    /// A NodeId just retired by a boot-token conflict (#1558): its known process is treated as dead, so the
+    /// peer is permanently departed now — dropped from `connectedPeers()` and never re-dialed — instead of
+    /// lingering until the liveness TTL evicts the dead link.
+    private void onIdentityRetired(NodeId peer) {
+        log.warn("QUIC evicting retired identity {} (boot-token conflict) — permanent departure", peer);
+        departurePermanent(peer);
+    }
+
+    /// The boot-token registry this transport admits peers through.
+    public BootTokens bootTokens() {
+        return bootTokens;
+    }
+
     @Contract
     public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
         this.swimHealthGate = Option.option(gate);
@@ -610,7 +639,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      serverSslContext,
                                                      Option.empty(),
                                                      this::onPeerConnected,
-                                                     this::onMessageReceived);
+                                                     this::onMessageReceived,
+                                                     bootTokens);
         client = QuicClusterClient.quicClusterClient(self.id(),
                                                      self.address(),
                                                      self.labels(),
@@ -619,7 +649,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      quicMetrics,
                                                      clientSslContext,
                                                      Option.empty(),
-                                                     this::onMessageReceived);
+                                                     this::onMessageReceived,
+                                                     bootTokens);
 
         return server.start(port)
                      .map(this::captureLoopbackLoop)
@@ -984,8 +1015,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
+    /// QUIC transport counters plus `boot_token_refusals_total` — every admission the shared boot-token
+    /// registry refused (SWIM and QUIC Hello together; terminal removal, #1528).
     public Map<String, Number> transportMetrics() {
-        return quicMetrics.snapshot();
+        var metrics = new HashMap<String, Number>(quicMetrics.snapshot());
+
+        metrics.put("boot_token_refusals_total", bootTokens.refusals());
+
+        return Map.copyOf(metrics);
     }
 
     /// Get the typed QUIC transport metrics collector.
@@ -1040,7 +1077,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      newServerSsl,
                                                      Option.empty(),
                                                      this::onPeerConnected,
-                                                     this::onMessageReceived);
+                                                     this::onMessageReceived,
+                                                     bootTokens);
         client = QuicClusterClient.quicClusterClient(self.id(),
                                                      self.address(),
                                                      self.labels(),
@@ -1049,7 +1087,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      quicMetrics,
                                                      newClientSsl,
                                                      Option.empty(),
-                                                     this::onMessageReceived);
+                                                     this::onMessageReceived,
+                                                     bootTokens);
 
         return server.start(port)
                      .map(this::captureLoopbackLoop)
@@ -1086,6 +1125,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
             peer.markInbound(System.nanoTime());
         }
 
+        if (fromRetiredProcess(sender, message)) {
+            return;
+        }
+
         if (message instanceof NetworkMessage.KeepAlive) {
             // Transport-internal liveness beacon: its entire purpose was the markInbound above.
             // Never routed, never counted as an application message.
@@ -1104,6 +1147,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
                       sender,
                       option(message).map(Object::getClass).map(Class::getSimpleName));
         }
+    }
+
+    /// Consensus defence in depth (terminal removal): traffic from a retired NodeId — whether the
+    /// connection's peer or a relayed protocol message's claimed sender — never reaches the router,
+    /// so Rabia cannot count a vote, proposal or sync response from it. Admission already refuses a
+    /// different process at Hello, and the recorded token never changes once set, so "retired" is
+    /// exactly "not the admitted process" for every connection that could still be open.
+    private boolean fromRetiredProcess(NodeId sender, Object message) {
+        var retired = bootTokens.isRetired(sender) || message instanceof ProtocolMessage protocol && bootTokens.isRetired(protocol.sender());
+
+        if (retired) {
+            quicMetrics.onBootTokenDrop();
+            log.debug("Dropped a message from retired identity (connection {}): {}",
+                      sender,
+                      option(message).map(Object::getClass).map(Class::getSimpleName));
+        }
+
+        return retired;
     }
 
     // --- Internal: peer state lookup ---
@@ -1197,6 +1258,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback chain
     private void connectPeer(NodeInfo peer, boolean forceInitiate) {
         var peerId = peer.id();
+
+        if (bootTokens.isRetired(peerId)) {
+            log.debug("Not dialing retired identity {} (boot-token conflict)", peerId);
+
+            return;
+        }
         // Deterministic connection policy selects one initiator. The default uses NodeId
         // ordering; directed hierarchy edges can select the worker as initiator. Bypassing this caused both sides to dial
         // concurrently at cold start — both Hellos completed, the second arrival closed
@@ -1398,6 +1465,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // (processViewChange REMOVE for self → leader re-election → CDM rebuild)
         if (peerId.equals(self.id())) {
             log.debug("Ignoring self-connection from {}", peerId);
+            connection.close();
+
+            return;
+        }
+        // Boot-token gate, attach side: a NodeId retired AFTER its Hello was admitted (e.g. SWIM saw
+        // the conflict) is never attached — not as ADD, not as RECONNECT of an EVICTED/SUSPECT peer,
+        // not through any tombstone re-admission authority below.
+        if (bootTokens.isRetired(peerId)) {
+            log.warn("QUIC refusing to attach retired identity {} (boot-token conflict; refusals={})",
+                     peerId,
+                     bootTokens.refusals());
             connection.close();
 
             return;
@@ -2431,6 +2509,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void considerPeerForReconcile(NodeId peerId, long nowMs, boolean forceInitiate) {
+        if (bootTokens.isRetired(peerId)) {
+            log.debug("Missing-peer reconciler skips retired identity {} (boot-token conflict)", peerId);
+
+            return;
+        }
+
         var existing = peers.get(peerId);
         // CONNECTING means a dial is already in flight — the reconciler must NOT fire (see commit
         // 2e7b85dd1 dedup). REMOVED is normally terminal, but a REMOVED peer that SWIM has

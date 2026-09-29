@@ -48,7 +48,7 @@ import static org.awaitility.Awaitility.await;
 /// SUBSCRIBES that synchronizer to its `AppBlueprintKey` notifications. That wiring is the whole
 /// defect: before the fix `SliceRoutes.pushSecurityOverrides` installed overrides in-process on
 /// whichever single node ran the management handler, and every other node held
-/// `SecurityOverrides.EMPTY`. This test boots three REAL nodes in one JVM and drives the override
+/// `SecurityOverrides.EMPTY`. This test boots five REAL nodes in one JVM and drives the override
 /// through the replicated blueprint only.
 ///
 /// ## Which node "served" the POST
@@ -57,7 +57,7 @@ import static org.awaitility.Awaitility.await;
 /// `taskGroup(DEPLOYMENT)`, so `ManagementServer` forwards it to the DEPLOYMENT task-group owner when
 /// the addressed node is not that owner. The handler therefore runs on exactly ONE node, and that
 /// node is not necessarily the one addressed. This test does not try to name it — it asserts that ALL
-/// THREE nodes refuse. At most one node ran the handler, so at least two of the three refusing nodes
+/// FIVE nodes refuse. At most one node ran the handler, so at least four of the five refusing nodes
 /// did not, which is the claim. The addressed node is separately pinned to be the LEADER, and the two
 /// refusals from non-leader node ids are asserted explicitly.
 ///
@@ -86,9 +86,9 @@ import static org.awaitility.Awaitility.await;
 ///      when the blueprint carries no `[security.overrides]`. Without it, a refusal caused by a
 ///      broken route or a slice that never deployed reads exactly like the fix working.
 ///   2. INSTRUMENT CHECK — every response carries `X-Node-Id` (`AppHttpServer` sets it on the success
-///      path and in `sendProblem`), so the three probed app-HTTP ports are asserted to answer from
-///      three DISTINCT node ids matching `cluster.status().nodes()`, and the derived ports are
-///      asserted against the harness's own `getAvailableAppHttpPorts()`. Querying one node three
+///      path and in `sendProblem`), so the probed app-HTTP ports are asserted to answer from
+///      DISTINCT node ids matching `cluster.status().nodes()`, and the derived ports are
+///      asserted against the harness's own `getAvailableAppHttpPorts()`. Querying one node several
 ///      times, or a port that is not the node it is believed to be, cannot pass.
 ///   3. SCOPE CHECK — `GET /ping` lies outside the `GET /echo/*` pattern and is asserted still SERVED
 ///      on every node after the override applies. A cluster that broke, lost its keys, or started
@@ -134,7 +134,12 @@ import static org.awaitility.Awaitility.await;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class BlueprintSecurityOverrideClusterWideTest {
-    private static final int NODES = 3;
+    /// Five, not three: #1495's floor makes three the fewest instances a blueprint may deploy, and
+    /// [#overrideAddedAfterTheRouteRegistered_isEnforcedOnNodesThatDoNotHostTheRoute] needs nodes that
+    /// do NOT host the slice, which a three-node cluster running three instances cannot have.
+    private static final int NODES = 5;
+    /// The #1495 floor: the fewest instances a blueprint may declare, leaving `NODES - HOSTS` non-hosting nodes.
+    private static final int HOSTS = 3;
     private static final int BASE_PORT = 23500;
     private static final int BASE_MGMT_PORT = 23600;
     private static final int BASE_APP_HTTP_PORT = 23700;
@@ -296,7 +301,7 @@ class BlueprintSecurityOverrideClusterWideTest {
     ///     200 afterwards would be consistent with the override never having applied at all, which is
     ///     the reading that makes a broken hook look fixed.
     ///   - SLICE STILL DEPLOYED — the echo slice is asserted present in `/api/v1/slices/status` with a
-    ///     live instance on all three nodes AFTER the delete. Deleting a blueprint undeploys ITS OWN
+    ///     live instance on every node AFTER the delete. Deleting a blueprint undeploys ITS OWN
     ///     slices, and the carrier's are the versioned-echo ones under `/api/orders`; this assertion
     ///     is what proves the echo route survived rather than trusting that it did.
     ///   - DELETE ACTUALLY LANDED — the carrier's own slice is asserted to LEAVE the status. A
@@ -470,6 +475,76 @@ class BlueprintSecurityOverrideClusterWideTest {
                   .contains(INSUFFICIENT_ROLE_DETAIL);
         // ---- And the survivors must not have lost it either.
         awaitEveryNodeAnswers(GOVERNED_PATH, REFUSED, "every node including the replacement enforces after the rejoin");
+    }
+
+    /// #1659 — an override added AFTER the route first registered must be enforced on a node that does NOT host
+    /// the route. Such a node authorizes from the cluster route registry, which used to keep the policy registered
+    /// FIRST (here: the undeclared, pre-override one) for as long as any node served the route; the override's
+    /// republish never reached it, the node inherited the global API-key policy, accepted the probe's key and
+    /// forwarded -- 200 where the hosting node answered 403. No flap is needed: three instances (the #1495 floor) on
+    /// five nodes leave two non-hosting nodes.
+    ///
+    /// ## Controls
+    ///   - THREE HOSTS — the echo slice runs on exactly three nodes, so the other two can only answer by forwarding.
+    ///   - SERVED FIRST — every node, hosting or not, serves the route before the override, so a later 403 on a
+    ///     non-hosting node is the override and not a missing route.
+    ///   - BODY — the refusal must be the override's own role check.
+    @Test
+    @Order(4)
+    void overrideAddedAfterTheRouteRegistered_isEnforcedOnNodesThatDoNotHostTheRoute() {
+        resetToCleanSlate();
+        var leaderMgmtPort = leaderManagementPort();
+
+        applyBlueprint(leaderMgmtPort, floorInstancesBlueprintWithoutOverride());
+        awaitSliceDeployed();
+        awaitAllAppHttpPortsReady();
+        await().alias("the echo slice settles on exactly " + HOSTS + " nodes")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> echoInstanceNodeIds().size() == HOSTS);
+        var hosts = Set.copyOf(echoInstanceNodeIds());
+        // CONTROL: every node, including the two that only forward, serves the route before any override.
+        awaitEveryNodeAnswers(GOVERNED_PATH, SERVED, "every node serves /echo/* before the override, the non-hosting ones by forwarding");
+        // ---- The claim: the override added now reaches the nodes that do not host the route.
+        applyBlueprint(leaderMgmtPort, overrideCarrierBlueprint());
+        var refusals = awaitEveryNodeAnswers(GOVERNED_PATH,
+                                             REFUSED,
+                                             "every node, including those not hosting the route, enforces an override added after it registered");
+        var nonHosting = refusals.stream()
+                                 .filter(probe -> !hosts.contains(probe.nodeId()))
+                                 .toList();
+
+        assertThat(nonHosting).describedAs("CONTROL: two nodes do not host the route (hosts %s): %s", hosts, refusals)
+                  .hasSize(NODES - HOSTS);
+        nonHosting.forEach(probe -> assertThat(probe.body()).describedAs("a non-hosting node's refusal must be the OVERRIDE's own role check — %s",
+                                                                          probe)
+                                             .contains(INSUFFICIENT_ROLE_DETAIL));
+        // ---- Relaxation: withdrawing the override returns the route to SERVED on the non-hosting nodes too, so
+        // a node's stale strict entry cannot pin the route closed once the committed override is gone.
+        deleteBlueprint(leaderMgmtPort, OVERRIDE_CARRIER_BLUEPRINT_ID);
+        // CONTROL: the DELETE landed, so a persisting 403 is a relaxation failure and not a delete that never ran.
+        awaitCarrierSliceUndeployed();
+        var served = awaitEveryNodeAnswers(GOVERNED_PATH,
+                                           SERVED,
+                                           "every node, including those not hosting the route, relaxes once the override is withdrawn");
+
+        assertThat(served.stream()
+                         .filter(probe -> !hosts.contains(probe.nodeId()))
+                         .toList()).describedAs("CONTROL: the two non-hosting nodes relaxed too (hosts %s): %s", hosts, served)
+                  .hasSize(NODES - HOSTS);
+        served.forEach(probe -> assertThat(probe.body()).describedAs("SERVED must mean the echo route really answered — %s",
+                                                                     probe)
+                                          .contains(PROBE_MESSAGE));
+    }
+
+    private static String floorInstancesBlueprintWithoutOverride() {
+        return """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, TEST_ARTIFACT, HOSTS);
     }
 
     private int leaderManagementPort() {

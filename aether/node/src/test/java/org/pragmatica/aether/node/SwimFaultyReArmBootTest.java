@@ -32,7 +32,6 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
-import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.TtmConfig;
@@ -273,8 +272,7 @@ class SwimFaultyReArmBootTest {
                                 .tls(Option.none())
                                 .quicTls(TlsConfig.selfSignedMutual())
                                 .certificateProvider(Option.none())
-                                .configProvider(Option.some(HermeticStorage.withControlStorageIn(tempDir,
-                                    org.pragmatica.config.ConfigurationProvider.builder().build())))
+                                .configProvider(Option.none())
                                 .environment(Option.none())
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(tempDir, false))
@@ -285,7 +283,6 @@ class SwimFaultyReArmBootTest {
                                 .sliceAction(SliceActionConfig.sliceActionConfig())
                                 .cache(DHTConfig.CACHE_DEFAULT)
                                 .ttm(TtmConfig.ttmConfig())
-                                .rollback(RollbackConfig.rollbackConfig())
                                 .controllerConfig(ControllerConfig.DEFAULT)
                                 .autoHeal(autoHeal)
                                 .build();

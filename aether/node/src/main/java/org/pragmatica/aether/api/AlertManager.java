@@ -544,9 +544,12 @@ public class AlertManager {
     /// Publish a threshold breach to the cluster event log (#957).
     ///
     /// Routed through the bound sink, which `AetherNode` binds to `ClusterEventAggregator::emit` — the
-    /// OWNER-GATED path. That gate is the whole reason this event needs no deduplication: every node
-    /// holds every other node's metrics via `ClusterSyncCollector`, so every node reaches this same
-    /// conclusion, and an un-gated emit would write the breach once per node.
+    /// OWNER-GATED path. Every node holds every other node's metrics via `ClusterSyncCollector`, so every
+    /// node reaches this same conclusion; the gate is what keeps it to one write per breach in the steady
+    /// state, where an un-gated emit would write it once per node. It is not a guarantee: the gate is each
+    /// node's own view of partition-0 ownership, so across an ownership handover the old and the new owner
+    /// can both pass it and the breach is written twice, with distinct `eventId`s that no read collapses
+    /// (#1653; at-least-once across a handover, see guarantees.md).
     private void emitThresholdBreached(ActiveAlert alert) {
         emitClusterEvent(clock -> new ClusterEvent.ThresholdBreached(clock.now(),
                                                                      severityFor(alert.severity),

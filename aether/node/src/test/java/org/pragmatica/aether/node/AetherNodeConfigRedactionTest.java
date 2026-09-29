@@ -95,7 +95,7 @@ class AetherNodeConfigRedactionTest {
                          + "override in AetherNodeConfig does NOT pick up new components "
                          + "automatically — add the new one to it (redacting it if it carries a "
                          + "secret), then update this expected count.")
-            .hasSize(33);
+            .hasSize(32);
     }
 
     /// Same shape as `AetherNodeStorageEncryptionBootTest#minimalConfig` — nothing here is on the path

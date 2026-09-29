@@ -66,8 +66,8 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// **A third stream, deployed here at full coverage.** The fixture also carries the five-partition
 /// `streams.spread-events` added for #535. This suite runs it with the slice on EVERY node, so each
 /// partition's owner is itself a candidate and owner-preference keeps every read local — that is the
-/// control. [DeclarativeConsumerPlacementTest] deploys the SAME stream at `instances = 1`, where the
-/// owners cannot run the consumer and reads must be forwarded. Having both means a change that fixes
+/// control. [DeclarativeConsumerPlacementTest] deploys the SAME stream at `instances = 3` (the #1495 floor) on
+/// seven nodes, where some owners cannot run the consumer and their reads must be forwarded. Having both means a change that fixes
 /// the uncovered case by breaking the co-located one cannot pass. `setUp` therefore waits until every
 /// node reports every partition consumed by its owner: instances reach ACTIVE seconds apart, and until
 /// the last one does the manager legitimately hands its partitions to a node that IS active.

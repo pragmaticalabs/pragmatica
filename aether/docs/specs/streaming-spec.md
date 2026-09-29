@@ -365,11 +365,15 @@ Streams are declared in the blueprint's `resources.toml` alongside other resourc
 ```toml
 [streams.order-events]
 partitions = 6                    # Number of partitions (default: 4)
-retention = "time"                # "time", "count", or "size" (default: "time")
+retention = "time"                # "time", "count", "size" or "compound" (default: "count")
 retention-value = "5m"            # Duration for time, integer for count, size string for size
 max-event-size = "64KB"           # Maximum serialized event size (default: "1MB")
-backpressure = "drop-oldest"      # "block", "drop-oldest", "reject" (default: "drop-oldest")
 ```
+
+Since #1549 every key above reaches the runtime through the same parser that validates it, and a key the parser does not read
+is refused (`unknown-stream-key`). Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy.
+The `backpressure`, `storage` and `storage-instance` keys of the table below are among the refused keys:
+they were never read, and used to be ignored silently.
 
 ### 3.2 Consumer Group Configuration
 
@@ -409,12 +413,12 @@ on-failure = "stall"             # REJECTED as inert
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `partitions` | int | `4` | Number of partitions. Immutable after creation (Phase 1). |
-| `retention` | string | `"time"` | Retention mode: `"time"`, `"count"`, or `"size"`. |
-| `retention-value` | string/int | `"5m"` | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
+| `retention` | string | `"count"` | Retention mode: `"time"`, `"count"`, `"size"` or `"compound"` (`max-age`, `max-count`, `max-bytes`, `retention-mode` = `any`/`all`). **`time`/`size` retention also cap at the default count/bytes unless declared; eviction at whichever limit is hit first** (#1549) — `time` keeps the default 100,000 events and 256 MB, `size` the default 100,000 events and 24 h, and `compound` the default for any of `max-count`/`max-bytes`/`max-age` it omits (under `retention-mode = "all"` a partition is evicted only once every limit is exceeded). The ring's index is sized from the count, so it can never be unbounded; a count it cannot index is refused (`RetentionCountUnindexable`). `count` keeps no byte or age cap. |
+| `retention-value` | string/int | `"100000"` (count) | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
 | `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. |
-| `backpressure` | string | `"drop-oldest"` | Behavior when ring buffer is full: `"block"`, `"drop-oldest"`, `"reject"`. |
-| `storage` | string | `"memory"` | Storage mode: `"memory"` (Phase 1, in-memory only) or `"persistent"` (AHSE-backed, Phase 2+). |
-| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](future/hierarchical-storage-spec.md). |
+| `backpressure` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"block"`, `"drop-oldest"`, `"reject"`). |
+| `storage` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"memory"` or `"persistent"`, AHSE-backed). |
+| `storage-instance` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: AHSE instance name, see [AHSE spec](future/hierarchical-storage-spec.md)). |
 
 #### Consumer-Level Properties
 
@@ -1501,14 +1505,16 @@ Replication durability is governed by two independent stream-level knobs. Both c
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `replicas` | int | `1` | Replication factor (RF): total copies of each partition **including the owner**. The owner plus `replicas − 1` follower replicas are placed by HRW (highest-random-weight) over the eligible nodes, so `replicas = 1` is owner-only (no follower). |
+| `replicas` | int | `3` | Replication factor (RF): total copies of each partition **including the owner**. The owner plus `replicas − 1` follower replicas are placed by HRW (highest-random-weight) over the eligible nodes. **Minimum 3** (#1547): under terminal removal a dead owner never returns, so fewer copies lose a dead owner's partitions; a declared value below 3 is never clamped: it is refused as a binding at blueprint publish (the blueprint still publishes with the alias under `rejected`, rule `replicas-below-minimum`; a slice that uses the alias then fails to load with `UnboundStreamAlias`, and an alias no slice uses is silently unbound). |
 | `min-sync-replicas` | int | `0` | Minimum in-sync replicas (Kafka `min.insync.replicas`, **counts the owner**) that must acknowledge a write before it is client-acked. `min-sync ≤ 1` resolves on the owner's local write (no peer-ack wait); `min-sync ≥ 2` blocks the publish until `min-sync − 1` follower replicas ack. |
 
-**Invariant:** `0 ≤ min-sync-replicas ≤ replicas`. A configuration violating this bound is rejected at stream creation. Note: `min-sync-replicas = 0` and `1` are equivalent at runtime — both resolve on the owner's local write. A large `replicas` with `min-sync ≤ 1` therefore buys placement redundancy with a **zero peer-ack durability floor**: at ack time the record may exist only on the owner (followers replicate asynchronously).
+**Invariant:** `replicas ≥ 3` and `0 ≤ min-sync-replicas ≤ replicas`. A configuration violating this bound is rejected at stream creation.
 
-**Durability guarantee (storage):** a write that has been client-acked is held by `min-sync` distinct copies before the ack returns, so the *data* survives up to `min-sync − 1` simultaneous replica failures (owner included). Whether a *promotion* recovers all of it is scoped below. With `replicas = 2, min-sync-replicas = 2` (owner + 1 in-sync per write), the single follower is always caught up to the last acked offset, so it can be promoted with zero loss.
+**One parse, deploy and runtime (#1549).** A `[streams.X]` section is parsed by `StreamConfigParser` both when the blueprint is validated and when the slice's stream resources are provisioned, so the committed config carries every declared key. Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy. The accepted keys are exactly `version`, `source`, `role`, `partitions`, `retention`, `retention-value`, `retention-mode`, `max-age`, `max-count`, `max-bytes`, `auto-offset-reset`, `max-event-size`, `consistency`, `replicas`, `min-sync-replicas`, `compression` and `encryption-key-id`; any other key directly in the section (a snake_case spelling such as `min_sync_replicas`, a record-component name such as `max_event_size_bytes`) is refused under `unknown-stream-key`, naming the key it resembles, and a non-integer value for `partitions`, `replicas` or `min-sync-replicas` under `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value). Before #1549 the provisioning path used the generic record binder, which read snake_case component names and silently resolved everything else from `StreamConfig.DEFAULT`: `min-sync-replicas` was provisioned as 0 and `max-event-size`, `retention*`, `auto-offset-reset`, `consistency`, `compression` and `encryption-key-id` as their defaults, whatever the blueprint declared. Note: `min-sync-replicas = 0` and `1` are equivalent at runtime — both resolve on the owner's local write. A large `replicas` with `min-sync ≤ 1` therefore buys placement redundancy with a **zero peer-ack durability floor**: at ack time the record may exist only on the owner (followers replicate asynchronously).
 
-**Failover (HRW-elect + catch-up-before-serve):** on owner death the new owner is the next HRW-ranked survivor — election is placement-driven, not ISR-membership-driven. A lagging promotee is held non-authoritative until it catches up to the highest `confirmedOffset` among surviving replicas, then serves. **Losslessness scope:** with `replicas = 2` or `min-sync-replicas = replicas`, every client-acked record is on every surviving in-sync replica, so the promoted owner serves the complete acked history (this is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite). With `replicas > 2` and `min-sync < replicas`, promotion catch-up currently sources from a **single** ahead-survivor; distinct acked offsets may reside on different followers, so promotion is not yet guaranteed lossless — tracked in #411 (multi-survivor promotion catch-up).
+**Durability guarantee (storage):** a write that has been client-acked is held by `min-sync` distinct copies before the ack returns, so the *data* survives up to `min-sync − 1` simultaneous replica failures (owner included). Whether a *promotion* recovers all of it is scoped below. With `min-sync-replicas = replicas` every follower is caught up to the last acked offset, so any of them can be promoted with zero loss.
+
+**Failover (HRW-elect + catch-up-before-serve):** on owner death the new owner is the next HRW-ranked survivor — election is placement-driven, not ISR-membership-driven. A lagging promotee is held non-authoritative until it catches up to the highest `confirmedOffset` among surviving replicas, then serves. **Losslessness scope:** with `min-sync-replicas = replicas`, every client-acked record is on every surviving in-sync replica, so the promoted owner serves the complete acked history (this is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite). With `replicas > 2` and `min-sync < replicas`, promotion catch-up currently sources from a **single** ahead-survivor; distinct acked offsets may reside on different followers, so promotion is not yet guaranteed lossless — tracked in #411 (multi-survivor promotion catch-up).
 
 ### 10.6 Multi-survivor promotion catch-up — coverage-union design (#411, 2026-07-04)
 

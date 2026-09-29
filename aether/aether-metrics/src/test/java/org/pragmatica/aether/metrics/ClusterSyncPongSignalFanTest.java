@@ -225,13 +225,16 @@ class ClusterSyncPongSignalFanTest {
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
         }
 
+        /// The pong's `incarnation` is the sender's boot token — equality only, never ordered (owner
+        /// ruling, session 28). The first token pins the entry; a different token is another process
+        /// claiming the NodeId (terminal removal) and is ignored, never installed as a fresh entry.
         @Test
-        void fan_higherIncarnation_replacesEntry() {
+        void fan_differentBootToken_isIgnored_pinnedEntryKept() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "READY", 1L));
             f.fan(pong(PEER_A, "DRAINING", 2L));
-            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.DRAINING);
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
         @Test
@@ -243,12 +246,13 @@ class ClusterSyncPongSignalFanTest {
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
+        /// Tokens carry no order: a numerically HIGHER token is just as much another process.
         @Test
-        void fan_lowerIncarnation_ignoredAsStale() {
+        void fan_differentBootToken_numericallyHigher_isAlsoIgnored() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "READY", 5L));
-            f.fan(pong(PEER_A, "DRAINING", 2L));
+            f.fan(pong(PEER_A, "DRAINING", 9L));
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
@@ -399,19 +403,21 @@ class ClusterSyncPongSignalFanTest {
             assertThat(reported).isEmpty();
         }
 
-        /// A lower-incarnation pong is stale and leaves the newer entry in place; its `DRAINING` must not be
-        /// reported as an acknowledgement on behalf of the newer tenure.
+        /// A `DRAINING` pong from a process other than the pinned one must not acknowledge a drain on behalf
+        /// of the pinned process. Control: the pinned process's own `DRAINING` pong is reported.
         @Test
-        void fan_staleLowerIncarnationDrainingPong_doesNotReport() {
+        void fan_differentBootTokenDrainingPong_doesNotReport() {
             var reported = new ArrayList<NodeId>();
             var f = fan(new TestLeaderManager(true));
 
             f.onDrainingReported(reported::add);
             f.fan(pong(PEER_A, "READY", 5L));
             f.fan(pong(PEER_A, "DRAINING", 4L));
-            assertThat(f.readinessSnapshot()).as("arming: the stale pong was fenced out")
+            assertThat(f.readinessSnapshot()).as("the other process's pong was fenced out")
                       .containsEntry(PEER_A, NodeReportedState.READY);
             assertThat(reported).isEmpty();
+            f.fan(pong(PEER_A, "DRAINING", 5L));
+            assertThat(reported).as("control: the pinned process's drain is acknowledged").containsExactly(PEER_A);
         }
 
         @Test

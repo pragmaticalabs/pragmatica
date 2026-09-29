@@ -79,4 +79,55 @@ public sealed interface StorageError extends Cause {
             return "DHT tier '" + instanceName + "' not yet admitted (waited " + timeoutMillis + "ms)";
         }
     }
+
+    /// [StorageInstance#openLog] on an instance built without a log root: it has nowhere on local
+    /// disk to put a log, and a log is never placed on any other tier (#1567).
+    record LogsUnsupported(String instanceName) implements StorageError {
+        static LogsUnsupported logsUnsupported(String instanceName) {
+            return new LogsUnsupported(instanceName);
+        }
+
+        @Override
+        public String message() {
+            return "Storage instance '" + instanceName + "' has no log root; it cannot open append logs";
+        }
+    }
+
+    /// A log name that is blank or does not resolve to a file strictly under the instance's log root
+    /// (absolute, or climbing out with `..`).
+    record InvalidLogName(String name) implements StorageError {
+        static InvalidLogName invalidLogName(String name) {
+            return new InvalidLogName(name);
+        }
+
+        @Override
+        public String message() {
+            return "Invalid append-log name '" + name + "': must be a relative path under the log root";
+        }
+    }
+
+    /// [StorageInstance#seal] on an instance with no durable tier ([StorageTier#isDurable]): the block
+    /// could not be made to survive a power loss, so the range is not sealed and its log keeps it (#1567).
+    /// Recovery: configure a local-disk tier for the instance; the sealer retries.
+    record NoDurableTier(String instanceName) implements StorageError {
+        static NoDurableTier noDurableTier(String instanceName) {
+            return new NoDurableTier(instanceName);
+        }
+
+        @Override
+        public String message() {
+            return "Storage instance '" + instanceName + "' has no durable tier; refusing to seal";
+        }
+    }
+
+    record InvalidSealRange(long fromOffset, long toOffset) implements StorageError {
+        static InvalidSealRange invalidSealRange(long fromOffset, long toOffset) {
+            return new InvalidSealRange(fromOffset, toOffset);
+        }
+
+        @Override
+        public String message() {
+            return "Invalid seal range [" + fromOffset + "-" + toOffset + "]";
+        }
+    }
 }

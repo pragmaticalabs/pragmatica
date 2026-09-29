@@ -11,9 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
-import org.pragmatica.consensus.rabia.Phase;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -26,8 +24,7 @@ class ClusterConfigKVTest {
     private static final List<AetherValue.TopologyEntry> CORE_5 =
             List.of(new AetherValue.TopologyEntry("primary", "core", 5));
 
-    private static final Phase TEST_PHASE = Phase.phase(42L);
-    private static final Instant TEST_TIMESTAMP = Instant.parse("2026-03-26T12:00:00Z");
+    private static final BackupEntryCodec BACKUP = BackupEntryCodec.backupEntryCodec(BackupFixtures.codec());
 
     @Nested
     class KeyTests {
@@ -102,7 +99,7 @@ class ClusterConfigKVTest {
     @Nested
     class SerializationRoundTrip {
         @Test
-        void toToml_fromToml_roundTrips() {
+        void backup_roundTrips() {
             var key = ClusterConfigKey.clusterConfigKey(3);
             var value = ClusterConfigValue.clusterConfigValue(
                 "name = \"test\"",
@@ -116,8 +113,9 @@ class ClusterConfigKVTest {
                 1711461000000L
             );
 
-            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .flatMap(KVStoreSerializer::fromToml)
+            BACKUP.encode(42L, Map.of(key, value))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  assertThat(entries).hasSize(1);
@@ -139,15 +137,16 @@ class ClusterConfigKVTest {
         }
 
         @Test
-        void toToml_fromToml_preservesTomlContentWithSpecialChars() {
+        void backup_preservesTomlContentWithSpecialChars() {
             var key = ClusterConfigKey.CURRENT;
             var tomlContent = "[deployment]\ntype = \"hetzner\"\n\n[cluster]\nname = \"prod\"";
             var value = ClusterConfigValue.clusterConfigValue(
                 tomlContent, "prod", "0.21.1", CORE_5, 3, 9, "hetzner", 1, 1711461000000L
             );
 
-            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .flatMap(KVStoreSerializer::fromToml)
+            BACKUP.encode(42L, Map.of(key, value))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  var parsedValue = (ClusterConfigValue) entries.values().iterator().next();
@@ -252,8 +251,9 @@ class ClusterConfigKVTest {
             var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3),
                                                     new AetherValue.TopologyEntry("us", "worker", 4)));
 
-            KVStoreSerializer.toToml(Map.of(ClusterConfigKey.CURRENT, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .flatMap(KVStoreSerializer::fromToml)
+            BACKUP.encode(42L, Map.of(ClusterConfigKey.CURRENT, value))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
                              .onSuccess(restored -> {
                                  var config = (ClusterConfigValue) restored.get(ClusterConfigKey.CURRENT);

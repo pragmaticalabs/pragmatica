@@ -119,9 +119,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 class DurableEntityForgeTest {
     private static final System.Logger LOG = System.getLogger(DurableEntityForgeTest.class.getName());
 
-    private static final int BASE_PORT = 19000;
-    private static final int BASE_MGMT_PORT = 19100;
-    private static final int BASE_APP_HTTP_PORT = 19200;
+    /// Registered in `TEST_PORT_ALLOCATION.md` (#1627). This suite used to bind 19000/19100/19200, which
+    /// `DurableTopicDeliveryForgeTest` also binds. The block is compact because this cluster has 5 nodes:
+    /// the cluster ports are 24300-24304 and SWIM is +100 (UDP 24400-24404). Management is 24320-24324
+    /// and app HTTP is 24340-24344.
+    private static final int BASE_PORT = 24300;
+    private static final int BASE_MGMT_PORT = 24320;
+    private static final int BASE_APP_HTTP_PORT = 24340;
     private static final int NODES = 5;
     /// Deliberately FEWER instances than nodes (02w hosting-set fix): the leader must mint entity arc
     /// ownership over the nodes hosting the declaring slice, never the whole member view. With 5/5 the

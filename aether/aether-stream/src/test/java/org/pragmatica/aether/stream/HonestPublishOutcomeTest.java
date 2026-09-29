@@ -26,7 +26,7 @@ import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -453,7 +453,7 @@ class HonestPublishOutcomeTest {
                                       new AcceptingClusterNode(),
                                       OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
                                       StreamOwnerEpochSource.zero(),
-                                      Option.some(walDir),
+                                      Option.some(AppendLog.Opener.directory(walDir)),
                                       LastSealedOffsetSource.none(),
                                       DurableSealedOffsetSource.none());
     }
@@ -470,7 +470,7 @@ class HonestPublishOutcomeTest {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          ConsistencyMode.EVENTUAL,
-                                         MIN_SYNC,
+                                         3,
                                          MIN_SYNC,
                                          StreamCompression.NONE,
                                          Option.none());
@@ -497,7 +497,7 @@ class HonestPublishOutcomeTest {
     /// Read the WAL through an INDEPENDENT reader on the same file, as `StreamPartitionManagerWalTest`
     /// does: it sees exactly what reached the file, whatever the manager's own handle believes.
     private long walLastOffset() {
-        var reader = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal")).unwrap();
+        var reader = AppendLog.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal")).unwrap();
 
         try {
             return reader.lastOffset();

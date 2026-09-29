@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.forge;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -55,6 +56,7 @@ import static org.awaitility.Awaitility.await;
 /// (SWIM false-removal-under-churn), so exercising it here would couple this durability assertion to an
 /// unrelated open residual. The kill path exercises a real ownership reshuffle while keeping the acked
 /// -durability guarantee decidable under default membership.
+@Disabled("#1553: leaks loopback HTTP connections to its own app-http port (42k-45k sockets, ~9k HttpClient threads) when ownership never settles, exhausting the host's ephemeral ports; re-enable when #1553 is fixed")
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

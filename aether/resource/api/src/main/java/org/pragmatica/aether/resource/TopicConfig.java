@@ -33,15 +33,17 @@ import static org.pragmatica.lang.Option.none;
 /// topic_name = "order-events"
 /// durability = "durable"        # "ephemeral" (default) | "durable"
 /// partitions = 4                 # durable only; default 1
-/// replicas = 2                   # durable only; default 2
-/// min_sync_replicas = 2          # durable only; default = replicas
+/// replicas = 3                   # durable only; default 3, minimum 3 (#1547)
+/// min_sync_replicas = 3          # durable only; default = replicas
 /// retention = "7d"               # durable only; default 7d
 /// ```
 ///
 /// Validation is parse-time via [#topicConfig] (the TOML binder invokes the matching static
-/// factory when one exists): a durable declaration outside the proven `min-sync == replicas >= 2`
-/// configuration is rejected (see [DurableTopicSpec]), and stream knobs on an ephemeral topic are
-/// rejected as inert rather than silently ignored (#576 config-honesty stance). The knob
+/// factory when one exists): a durable declaration outside `min-sync == replicas >= 3` is rejected
+/// (see [DurableTopicSpec]), and stream knobs on an ephemeral topic are rejected as inert rather
+/// than silently ignored (#576 config-honesty stance). Because all three replicas must ack, a
+/// 3-core cluster refuses every durable publish (`NOT_ENOUGH_REPLICAS`) while a lost core is being
+/// replaced (owner ruling, know 8fb91f876). The knob
 /// components are `Option`-typed precisely so declared-vs-absent is distinguishable — an absent
 /// key falls back to the durable tier's default at resolution, a declared key on an ephemeral
 /// topic is a loud error.

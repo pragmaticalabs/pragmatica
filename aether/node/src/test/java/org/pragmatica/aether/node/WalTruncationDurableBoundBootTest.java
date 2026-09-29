@@ -32,6 +32,7 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -55,7 +56,7 @@ class WalTruncationDurableBoundBootTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int RING_EVENTS = 20;
-    /// 200 × 70 KiB ≈ 13.7 MiB > PartitionWal.COMPACTION_THRESHOLD_BYTES (8 MiB): the sealed prefix, once
+    /// 200 × 70 KiB ≈ 13.7 MiB > AppendLog.COMPACTION_THRESHOLD_BYTES (8 MiB): the sealed prefix, once
     /// truncatable, is physically rewritten and the file shrinks by the sealed bytes.
     private static final int EVENTS = 200;
     private static final int PAYLOAD = 70 * 1024;
@@ -95,6 +96,10 @@ class WalTruncationDurableBoundBootTest {
         // sealing phase below must stay well inside it.
         node.start().await(START_BOUND).onFailure(cause -> fail("start must succeed: " + cause.message()));
         var manager = node.streamPartitionManager();
+        // #1555: this single-node harness never forms consensus (see createStream), so the owner promotion gate —
+        // which requires an active consensus engine and a fresh ownership view — would refuse every append. The
+        // test pins WAL truncation, not ownership, so it admits the owner directly.
+        manager.ownerServeGate((_, _) -> Result.unitResult());
         var snapshots = streamsSnapshotManager();
 
         createStream(manager);

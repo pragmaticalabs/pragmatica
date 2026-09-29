@@ -17,9 +17,9 @@ import org.pragmatica.lang.Cause;
 /// `DEPLOYMENT_FAILED` record, so a slice that cannot get the guarantees it declared fails to start
 /// instead of starting wrong.
 public sealed interface EntityProvisioningError extends Cause {
-    /// `replication_factor` must be at least one — it becomes the backing stream's `replicas`, the total
-    /// copies of each partition INCLUDING the owner, and a partition with no copies has no owner to write
-    /// to.
+    /// `replication_factor` must be at least 3 (#1547, the stream replication minimum) — it becomes the
+    /// backing stream's `replicas`, the total copies of each partition INCLUDING the owner, and under
+    /// terminal removal a dead owner never returns, so fewer copies lose its partitions.
     ///
     /// **This replaced `ReplicationNotSupported` in #345 I3.** Until I3 the field was refused above `1`,
     /// because the entity committed to a single process-local `StorageEngine` and could not replicate
@@ -30,7 +30,7 @@ public sealed interface EntityProvisioningError extends Cause {
     record InvalidReplicationFactor(int requested) implements EntityProvisioningError {
         @Override
         public String message() {
-            return "Durable entity replication_factor = " + requested + " is invalid: must be at least 1";
+            return "Durable entity replication_factor = " + requested + " is invalid: must be at least 3";
         }
     }
 

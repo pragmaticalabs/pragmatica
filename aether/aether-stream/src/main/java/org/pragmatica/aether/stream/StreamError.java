@@ -41,7 +41,12 @@ public sealed interface StreamError extends Cause {
         /// A batch run the ring cannot hold as one contiguous unit because one of its events is larger
         /// than the frozen ring can ever allocate (#1287). Internal routing signal: the publish path then
         /// publishes that run's events one by one, so each gets the single-publish outcome.
-        RUN_DOES_NOT_FIT("Batch run holds an event larger than the ring can allocate");
+        RUN_DOES_NOT_FIT("Batch run holds an event larger than the ring can allocate"),
+        /// #1604: this node's durable tier for sealed segments is at or above [SegmentTierPressure#REFUSE_AT].
+        /// Refused before the append takes an offset; clears as retention reclaims space. Recovery: raise
+        /// `[streaming] segment_disk_max_bytes` or add disk, or shorten retention.
+        SEGMENT_TIER_FULL("Durable segment tier nearly full on this node: new publishes are refused until retention "
+                         + "reclaims space, so the WAL disk cannot fill with records that cannot be sealed");
         private final String message;
         General(String message) {
             this.message = message;
@@ -57,7 +62,7 @@ public sealed interface StreamError extends Cause {
         /// sealer spills to WAL-backed ranges instead and never raises it.
         @Override
         public boolean transientCapacity() {
-            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND;
+            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND || this == SEGMENT_TIER_FULL;
         }
     }
 
@@ -231,6 +236,43 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A retention count the ring cannot index (#1549): the ring's index is sized from `maxCount`, and a count
+    /// past [OffHeapRingBuffer#MAX_CAPACITY] overflows the allocation size. Rejected PRE-COMMIT on create
+    /// rather than built over a truncated index; a fatal config error, never retried.
+    record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' retention max-count %d exceeds the indexable ring capacity %d".formatted(streamName,
+                                                                                                         maxCount,
+                                                                                                         maxCapacity);
+        }
+    }
+
+    /// A retention bound below 1 (#1549): a count of 0 divided by zero and a negative count requested a
+    /// negative allocation — both threw out of stream creation — and a byte or age bound of 0 creates a
+    /// stream that refuses or immediately evicts every event. Rejected PRE-COMMIT on create; a fatal config
+    /// error, never retried. `bound` is `max-count`, `max-bytes` or `max-age`.
+    record RetentionBoundInvalid(String streamName, String bound, long value) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' retention %s = %d is invalid: it must be at least 1".formatted(streamName, bound, value);
+        }
+    }
+
+    /// An APP stream created with fewer than `StreamConfig.MIN_REPLICAS` copies (#1547). The engine
+    /// backstop behind every mint path — blueprint parser, durable topics, durable entities and the
+    /// management defaults each refuse or default above it first, so this names a path that bypassed
+    /// them. Rejected PRE-COMMIT on the creating node, never clamped; a fatal config error, never retried.
+    /// System streams are exempt: their factor is the cluster size.
+    record ReplicasBelowMinimum(String streamName, int replicas, int minimum) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares replicas=%d, below the stream replication minimum of %d".formatted(streamName,
+                                                                                                            replicas,
+                                                                                                            minimum);
+        }
+    }
+
     /// Cluster-wide aggregate partition-cap breach (#265 increment 4, spec §7/§10/§11): admitting this stream
     /// would push the cluster's total materialized-ring count (Σ `partitions × replicas` across every committed
     /// stream plus this one) past the aggregate guard `100 × nodes × maxDeclaredReplicas` — the Kafka-style
@@ -319,6 +361,19 @@ public sealed interface StreamError extends Cause {
             return "Stream append refused for %s[%d]: the committed owner is %s, not this node".formatted(streamName,
                                                                                                           partition,
                                                                                                           committedOwner);
+        }
+    }
+
+    /// Owner promotion gate refusal (#1555): this node is the owner of `(streamName, partition)` by placement or
+    /// by the committed record, but it has not yet completed promotion — a fresh committed view naming itself
+    /// and a catch-up to every live holder's watermark ([OwnerActivation]). Until then it neither appends nor
+    /// serves reads as owner. Transient: promotion runs on demand and completes within a probe/backfill round,
+    /// or stays blocked while a live holder is unreachable until that holder is declared dead.
+    record OwnerNotActivated(String streamName, int partition) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream partition %s[%d] is not yet promoted on this node (fresh ownership view and catch-up pending)".formatted(streamName,
+                                                                                                                                    partition);
         }
     }
 

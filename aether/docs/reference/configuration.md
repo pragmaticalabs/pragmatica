@@ -526,7 +526,10 @@ the last dash — that was identifier parsing rather than zone awareness, and it
 `[worker] zone` is a **different knob** from the `AETHER_ZONE` environment variable, and only the latter is live:
 `Main` maps `AETHER_ZONE` onto `NodeInfo.LABEL_ZONE`, the Hello handshake propagates that label into
 `SwimMember.labels`, and it is read for observability by `ClusterTopologyManagerRecord` and `ClusterTopologyRoutes`.
-`AETHER_ZONE` is carried to every provisioned node via `ClusterIdentityEnv.IDENTITY_VARS`.
+`AETHER_ZONE` is stamped on every provisioned node from that node's own source, never inherited from the
+provisioning host (#1650): the source's single configured zone, or nothing for a source listing several `zones`,
+because the landing zone is chosen by capacity rotation after the node's user-data is rendered. `AETHER_SOURCE` is
+stamped the same way, always.
 
 Workers self-organize into groups deterministically from SWIM membership. Same membership produces identical groups on every worker — no coordination needed. Each group elects its own governor (lowest ALIVE NodeId).
 
@@ -578,6 +581,7 @@ read_forward_timeout = "2s"
 max_read_response_bytes = "28MB"
 reshuffle_concurrency = 2
 caught_up_max_lag_offsets = 1024
+# segment_disk_max_bytes = "200GB"   # unset: derived from the disk at boot
 ```
 
 | Field | Type | Default | Description |
@@ -587,6 +591,7 @@ caught_up_max_lag_offsets = 1024
 | `max_read_response_bytes` | data size | `28MB` | Cap on a single forwarded-read response |
 | `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
 | `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
+| `segment_disk_max_bytes` | data size | derived | Cap on this node's local-disk tier for sealed stream segments. Unset (or `0`): 40% of the usable space on the filesystem holding the stream data directory at boot, clamped to at least 1 GiB and at most usable space minus 2 GiB (the WAL usually shares the disk); the chosen value is logged at INFO. A value above the usable space is kept, with a WARN. Must be `>= 0` |
 
 `reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
 partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition

@@ -333,13 +333,11 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                             Class<T> resourceType,
                                                             String configSection,
                                                             Option<ProvisioningContext> contextOpt) {
-        return loadConfig(configSection,
-                          factoryList.getFirst().configType(),
-                          contextOpt).flatMap(config -> selectAndInvoke(factoryList,
-                                                                        config,
-                                                                        resourceType,
-                                                                        configSection,
-                                                                        contextOpt));
+        return loadConfig(configSection, factoryList.getFirst(), contextOpt).flatMap(config -> selectAndInvoke(factoryList,
+                                                                                                               config,
+                                                                                                               resourceType,
+                                                                                                               configSection,
+                                                                                                               contextOpt));
     }
 
     /// Select the factory whose `supports()` matches and REMEMBER it alongside the resource.
@@ -385,6 +383,46 @@ public final class SpiResourceProvider implements ResourceProvider {
         return ResourceCapacityExhausted.isTransientCapacity(cause)
                ? new SliceLoadingFailure.Intermittent.ResourceUnavailable(resourceType.getSimpleName(), cause)
                : new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(), configSection, cause);
+    }
+
+    private <T, C> Promise<C> loadConfig(String section,
+                                         ResourceFactory<T, C> factory,
+                                         Option<ProvisioningContext> contextOpt) {
+        return factory.sectionBinder()
+                      .map(binder -> bindOrRefuse(binder, factory, section, contextOpt))
+                      .or(() -> loadConfig(section,
+                                           factory.configType(),
+                                           contextOpt));
+    }
+
+    private static <T, C> Promise<C> bindOrRefuse(ResourceFactory.SectionBinder<C> binder,
+                                                  ResourceFactory<T, C> factory,
+                                                  String section,
+                                                  Option<ProvisioningContext> contextOpt) {
+        return compositeOf(contextOpt).map(composite -> bindSection(binder, composite, section))
+                          .or(() -> noProviderForSectionBinder(factory, section));
+    }
+
+    private static <T, C> Promise<C> noProviderForSectionBinder(ResourceFactory<T, C> factory, String section) {
+        return new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
+                                                                 new ResourceProvisioningError.SectionBinderNeedsProvider(factory.resourceType(),
+                                                                                                                          section)).promise();
+    }
+
+    private static <C> Promise<C> bindSection(ResourceFactory.SectionBinder<C> binder,
+                                              ConfigurationProvider composite,
+                                              String section) {
+        return binder.bind(composite, section)
+                     .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
+                     .async();
+    }
+
+    /// #1549: a factory's own section binder reads the slice's configuration provider. With no provider in the
+    /// context such a factory is REFUSED ([ResourceProvisioningError.SectionBinderNeedsProvider]) — never
+    /// handed to the record binder, which would silently default the section.
+    private static Option<ConfigurationProvider> compositeOf(Option<ProvisioningContext> contextOpt) {
+        return contextOpt.flatMap(context -> context.extension(ConfigurationProvider.class)
+                                                    .option());
     }
 
     @SuppressWarnings("unchecked")
