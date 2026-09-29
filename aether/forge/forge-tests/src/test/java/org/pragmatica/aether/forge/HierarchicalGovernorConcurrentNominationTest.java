@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.ember.EmberCluster;
@@ -20,7 +21,9 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.AfterEach;
@@ -34,8 +37,10 @@ import static org.awaitility.Awaitility.await;
 
 
 /// Every worker of one community nominates itself through `GovernorAuthorityMessage.Request` over real
-/// transport, in rounds sent back to back, with bounded retries. Every reply must name the same single
-/// governor and the same positive community term as the committed announcement.
+/// transport, with bounded retries. Each round starts every worker's send before awaiting any send outcome,
+/// so the nominations are in flight together; whether the leader's handlers overlap is not observed. Every
+/// reply that carries an authority, across all rounds, must name the same single governor and the same
+/// positive community term as the committed announcement.
 ///
 /// This is the nomination half of the former `HierarchicalGovernorConcurrencyRestartTest`. Its other half
 /// restarted the cores over preserved journals, a mode #1545 removed with durable control storage.
@@ -63,12 +68,16 @@ class HierarchicalGovernorConcurrentNominationTest {
 
         assignCommunity(workers);
         var replies = new ConcurrentHashMap<NodeId, GovernorAuthorityMessage.Response>();
+        var history = new ConcurrentLinkedQueue<GovernorAuthorityMessage.Response>();
 
         workers.forEach(worker -> worker.setInboundFaultFilter((_, message) -> {
             if (message instanceof GovernorAuthorityMessage.Response response
                 && response.communityId()
                            .equals(COMMUNITY)
-                && response.requestId() >= REQUEST_BASE) replies.put(worker.self(), response);
+                && response.requestId() >= REQUEST_BASE) {
+                replies.put(worker.self(), response);
+                history.add(response);
+            }
 
             return true;
         }));
@@ -86,6 +95,8 @@ class HierarchicalGovernorConcurrentNominationTest {
 
                         assertThat(attempt).as("bounded concurrent nomination retries")
                                   .isLessThanOrEqualTo(60);
+                        var sends = new ArrayList<Promise<WriteOutcome>>();
+
                         for (int index = 0; index < workers.size(); index++) {
                         var worker = workers.get(index);
                         var request = new GovernorAuthorityMessage.Request(worker.self(),
@@ -94,33 +105,22 @@ class HierarchicalGovernorConcurrentNominationTest {
                                                                            0,
                                                                            "");
 
-                        assertThat(HierarchyAuthorityAcceptanceTest.runtime(worker)
-                                                                   .network()
-                                                                   .sendOutcome(leader().self(),
-                                                                                request)
-                                                                   .await(BUDGET)
-                                                                   .unwrap()
-                                                                   .isSent()).isTrue();
+                        sends.add(HierarchyAuthorityAcceptanceTest.runtime(worker)
+                                                                  .network()
+                                                                  .sendOutcome(leader().self(),
+                                                                               request));
                     }
+
+                        sends.forEach(send -> assertThat(send.await(BUDGET).unwrap().isSent()).isTrue());
 
                         return false;
                     });
         var committed = authority();
+        var granted = history.stream().flatMap(response -> response.authority()
+                                                                   .stream()).toList();
 
-        assertThat(replies.values()
-                          .stream()
-                          .map(response -> response.authority()
-                                                   .unwrap()
-                                                   .governorId())
-                          .distinct()
-                          .toList()).containsExactly(committed.governorId());
-        assertThat(replies.values()
-                          .stream()
-                          .map(response -> response.authority()
-                                                   .unwrap()
-                                                   .communityTerm())
-                          .distinct()
-                          .toList()).containsExactly(committed.communityTerm());
+        assertThat(granted.stream().map(value -> value.governorId()).distinct().toList()).containsExactly(committed.governorId());
+        assertThat(granted.stream().map(value -> value.communityTerm()).distinct().toList()).containsExactly(committed.communityTerm());
         assertThat(committed.communityTerm()).isPositive();
     }
 
