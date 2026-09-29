@@ -143,6 +143,12 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     /// Get the primary and replica nodes for a partition.
     /// Returns up to replicaCount nodes, starting with primary.
     public List<N> nodesFor(Partition partition, int replicaCount) {
+        return nodesForPosition(positionOf(partition), replicaCount);
+    }
+
+    /// Up to replicaCount nodes met walking clockwise from ring position `hash`, starting with the
+    /// primary. Package-private so a test can address an exact ring point (#1324).
+    List<N> nodesForPosition(int hash, int replicaCount) {
         lock.readLock().lock();
         try {
             if (ring.isEmpty()) {
@@ -153,7 +159,6 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
                 return List.of();
             }
 
-            int hash = positionOf(partition);
             Set<N> seen = new LinkedHashSet<>();
             // Start from the hash position and walk clockwise
             int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
@@ -246,6 +251,16 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         }
     }
 
+    /// The nodes holding a virtual node exactly at ring point `point`; empty when there is none (#1324).
+    Set<N> nodesAtPoint(int point) {
+        lock.readLock().lock();
+        try {
+            return Option.option(ring.get(point)).map(node -> Set.of(node)).or(Set.of());
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
     private N getNodeForHash(int hash) {
         int key = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
@@ -276,7 +291,8 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         return h;
     }
 
-    private static int hash(String data) {
+    /// Package-private so a test can pin a real collision against this exact function (#1324).
+    static int hash(String data) {
         return hash(data.getBytes(StandardCharsets.UTF_8));
     }
 }
