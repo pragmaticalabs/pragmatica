@@ -1155,6 +1155,26 @@ public class AlertManager {
                                                                                                                                  cleared.reason()));
     }
 
+    /// #1564: resolve every injected alert named `name`. For a node-raised alert whose condition has cleared (the
+    /// `cluster-events-registration-refused` refusal, once a corrected cluster config commits the stream), so the
+    /// alert does not outlive its cause on `/api/alerts/active`. Returns how many were resolved.
+    @Contract
+    public int clearInjected(String name) {
+        var resolved = injectedAlerts.values()
+                                     .stream()
+                                     .filter(alert -> alert.name()
+                                                           .equals(name))
+                                     .map(InjectedAlert::alertId)
+                                     .toList();
+
+        resolved.forEach(injectedAlerts::remove);
+        if (!resolved.isEmpty()) {
+            log.info("Resolved {} injected alert(s) named {}", resolved.size(), name);
+        }
+
+        return resolved.size();
+    }
+
     public List<AlertEvent.NodeHealthAlert> getActiveNodeHealthAlerts() {
         return List.copyOf(activeNodeHealthAlerts.values());
     }

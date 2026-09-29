@@ -5831,9 +5831,13 @@ dispatch]` That `400` is the single publish; the batch form reports the same con
 A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
 for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
 registers only after its config commits (the default `confirmation_factor` is 2 since #1564) — answers
-**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. The batch form
-reports the item `OUTCOME_UNKNOWN` with the cause. `[mechanism: ManagementServerError.PublishRetryable; pinned by
-StreamApiRoutesPublishPartitionTest]`
+**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. This holds on the
+partition's owner and on a non-owner that forwards the publish: the owner answers the forward as retryable, so the
+forwarder bounded-retries and then answers 503 too. The batch form reports the item `OUTCOME_UNKNOWN` with the cause —
+conservative, since nothing was written, but a batch item does not distinguish a refusal before the append from an
+unknown outcome after it; a retry with the same message ID is safe either way.
+`[mechanism: ManagementServerError.PublishRetryable, StreamForwardHandler retryable floor refusal; pinned by
+StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest]`
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE

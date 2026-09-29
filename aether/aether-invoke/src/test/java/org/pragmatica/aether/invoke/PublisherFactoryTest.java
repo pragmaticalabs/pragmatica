@@ -211,10 +211,16 @@ class PublisherFactoryTest {
                 }
 
                 assertEquals(3, events.size(), "RF 1 declared raises all three warnings");
-                events.forEach(event -> {
-                    assertEquals(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING, event.code());
-                    assertEquals("topic 'orders'", event.subject());
-                });
+                events.forEach(event -> assertEquals("topic 'orders'", event.subject()));
+                assertEquals(1,
+                             events.stream()
+                                   .filter(event -> event.code() == org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE)
+                                   .count(),
+                             "the LOUD RF-below-3 warning has its own CRITICAL code");
+                assertEquals(2,
+                             events.stream()
+                                   .filter(event -> event.code() == org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING)
+                                   .count());
             } finally {
                 manager.close();
             }

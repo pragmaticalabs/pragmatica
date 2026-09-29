@@ -72,6 +72,25 @@ class AlertManagerInjectTest {
                    .await();
         }
 
+        /// #1564 (v1680 N-r3-1): a node-raised alert is resolved by name once its condition clears, so it does not
+        /// outlive its cause on `/api/alerts/active`; an alert of another name is left alone.
+        @Test
+        void clearInjected_removesEveryAlertOfThatName_andNoOther() {
+            var manager = newManager();
+
+            manager.inject("cluster-events-registration-refused", "CRITICAL", "refused", Option.empty(), Option.empty()).await();
+            manager.inject("cluster-events-registration-refused", "CRITICAL", "refused again", Option.empty(), Option.empty()).await();
+            manager.inject("other-alert", "WARNING", "unrelated", Option.empty(), Option.empty()).await();
+
+            assertEquals(2, manager.clearInjected("cluster-events-registration-refused"));
+            var activeJson = manager.activeAlertsAsJson();
+            assertTrue(!activeJson.contains("\"name\":\"cluster-events-registration-refused\""),
+                       "the resolved alerts must leave the active list: actual=" + activeJson);
+            assertTrue(activeJson.contains("\"name\":\"other-alert\""),
+                       "an alert of another name stays: actual=" + activeJson);
+            assertEquals(0, manager.clearInjected("cluster-events-registration-refused"));
+        }
+
         @Test
         void inject_entryVisibleInActiveAlertsJson_andHistoryJson() {
             var manager = newManager();

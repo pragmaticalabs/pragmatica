@@ -5431,7 +5431,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                AetherValue.ClusterConfigValue.class)).flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
                                                                                 streamNamespacesService::bootstrap,
                                                                                 cause -> raiseClusterEventsRefusal(operatorWarningSink,
-                                                                                                                   cause));
+                                                                                                                   alertManager,
+                                                                                                                   cause),
+                                                                                () -> alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code()));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  systemStreamRegistrar::onLeaderChange));
@@ -6031,17 +6033,25 @@ public interface AetherNode extends ManageableNode {
 
     /// #1564 B1: the operator-visible half of a refused `system:cluster-events` registration, a CRITICAL
     /// `cluster-events-registration-refused` operator warning (#1617, R10): an ERROR log, plus a cluster event. The
-    /// event is offered to the very stream whose registration was refused, so on this path the ERROR log is the
-    /// report the operator can rely on; the event lands only once cluster-events exists (redelivery holds it for
-    /// its horizon).
+    /// event is offered to the very stream whose registration was refused, so it lands only once cluster-events
+    /// exists. So the refusal is ALSO an injected CRITICAL alert on `/api/alerts/active` (v1680 N-r3-1), which does not
+    /// depend on the stream; the registrar's recovery sink resolves it once a corrected config commits the stream.
     @Contract
-    private static void raiseClusterEventsRefusal(OperatorWarningSink sink, Cause cause) {
+    private static void raiseClusterEventsRefusal(OperatorWarningSink sink, AlertManager alertManager, Cause cause) {
         OperatorWarnings.raise(LOG,
                                sink,
                                OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED,
                                "system:cluster-events",
                                "system:cluster-events was not registered: {} — correct [replication.cluster_events] and re-apply the cluster config",
                                cause.message());
+        alertManager.inject(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),
+                            "CRITICAL",
+                            "system:cluster-events was not registered: " + cause.message()
+                           + " — correct [replication.cluster_events] and re-apply the cluster config",
+                            Option.none(),
+                            Option.none())
+                    .onFailure(failure -> LOG.warn("Cluster-events refusal alert injection failed: {}",
+                                                   failure.message()));
     }
 
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —

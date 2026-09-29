@@ -171,7 +171,9 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
         resolved.warnings()
                 .forEach(warning -> OperatorWarnings.raise(LOG,
                                                            sink,
-                                                           OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                           warning.loud()
+                                                           ? OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE
+                                                           : OperatorWarningCode.REPLICATION_POLICY_WARNING,
                                                            resource,
                                                            "{}durable entity replication warning [{}]: {}",
                                                            warning.loud()

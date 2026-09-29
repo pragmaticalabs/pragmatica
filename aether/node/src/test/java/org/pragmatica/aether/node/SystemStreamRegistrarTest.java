@@ -290,6 +290,53 @@ class SystemStreamRegistrarTest {
             assertThat(scheduler.hasPending()).as("a committed leg is never re-armed").isFalse();
         }
 
+        /// v1680 N-r3-1: the refusal is cleared once the re-armed leg commits — the recovery sink runs exactly once,
+        /// and never for a leg that was not refused.
+        @Test
+        void recoverySink_runsOnceWhenARefusedLegCommits_andNeverOtherwise() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(recoveries.get()).as("a refusal is not a recovery").isZero();
+
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+            assertThat(recoveries.get()).as("the re-armed leg committed").isEqualTo(1);
+
+            registrar.onClusterConfigChanged();
+            assertThat(scheduler.hasPending()).isFalse();
+            assertThat(recoveries.get()).as("a committed leg recovers once").isEqualTo(1);
+        }
+
+        @Test
+        void recoverySink_neverRunsForALegThatWasNotRefused() {
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).isTrue();
+            assertThat(recoveries.get()).isZero();
+        }
+
         @Test
         void onLeaderChange_bootstrapTransientFailure_retriedIndependently() {
             // createStream commits immediately; only the bootstrap leg is transiently failing. The

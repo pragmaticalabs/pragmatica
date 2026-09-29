@@ -42,7 +42,10 @@ class OperatorWarningWiringTest {
 
         assertThat(code).contains("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
         assertThat(code).contains("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink);");
-        assertThat(code).contains("cause->raiseClusterEventsRefusal(operatorWarningSink,cause)");
+        assertThat(code).contains("cause->raiseClusterEventsRefusal(operatorWarningSink,alertManager,cause)");
+        // v1680 N-r3-1: the refusal is also a REST-visible alert, resolved when a corrected config commits the stream.
+        assertThat(code).contains("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
+        assertThat(code).contains("alertManager.inject(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),\"CRITICAL\",");
     }
 
     /// #1564 N2: the cluster-events local partition built at construction takes the committed
