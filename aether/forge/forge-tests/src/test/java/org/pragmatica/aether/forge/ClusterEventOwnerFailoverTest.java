@@ -66,10 +66,12 @@ class ClusterEventOwnerFailoverTest {
     /// are deleted now that #1555 has landed.) Its retry count pins that held events are re-sent, by the 1 s tick OR
     /// the new owner's drain; it does not isolate the tick, which the Ember NO-TICK mutation arm pins on its own.
     /// The ownership-change drain is not observed here: with #1555 the dead owner is replaced before any event
-    /// waits, so there is nothing for a drain to re-send. It is pinned by the Ember NO-DRAIN-ROUTE mutation arm (run
-    /// on a pre-#1555 head) and, for the aggregator's handling, by the unit tests
+    /// waits, so there is nothing for a drain to re-send. [unverified: ownership-change drain in a with-#1555 cluster]
+    /// The aggregator's handling of the put is pinned by the unit tests
     /// `ClusterEventAggregatorTest.onStreamPartitionOwnershipPut_clusterEventsPartition0_drainsAtOnce_otherPutsDoNot`
-    /// and `ClusterEventRedeliveryTest.redeliverAll_ownerChanged_resendsBeforeTheBackoff`.
+    /// and `ClusterEventRedeliveryTest.redeliverAll_ownerChanged_resendsBeforeTheBackoff`, which call it directly, so
+    /// they cannot see AetherNode's route to it: removing that route leaves all of aether/node green. The route was
+    /// pinned only by the Ember NO-DRAIN-ROUTE mutation arm, on a head without #1555.
     @Test
     void eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost() {
         startSettledCluster();
