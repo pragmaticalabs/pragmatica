@@ -2456,8 +2456,7 @@ public class AetherCli implements Runnable {
                     return;
                 }
 
-                RejectedStreamBindings.lines(response).forEach(System.out::println);
-                DeployWarnings.lines(response).forEach(System.out::println);
+                DeployWarnings.publishTableFooter(response).forEach(System.out::println);
             }
         }
 

@@ -105,6 +105,16 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
+    /// The node supplied no [org.pragmatica.aether.slice.ReplicationContext.Source], so the section's factors cannot be
+    /// resolved against the committed cluster defaults. Refused rather than resolved against a guess (#1564).
+    record ReplicationContextUnavailable(String alias) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' cannot resolve its replication factors: the node supplies no replication context";
+        }
+    }
+
     /// The section's `replication_factor`/`confirmation_factor` refused by [org.pragmatica.aether.slice.ReplicationDeclaration#resolve]
     /// (#1564); `cause` is the typed [org.pragmatica.aether.slice.ReplicationFactorsError].
     record ReplicationRefused(String alias, Cause cause) implements StreamDeclarationError {

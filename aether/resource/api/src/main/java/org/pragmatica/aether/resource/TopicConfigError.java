@@ -37,6 +37,16 @@ public sealed interface TopicConfigError extends Cause {
         }
     }
 
+    /// The node supplied no [org.pragmatica.aether.slice.ReplicationContext.Source], so a durable topic's factors
+    /// cannot be resolved against the committed cluster defaults. Refused rather than resolved against a guess (#1564).
+    record ReplicationContextUnavailable(String topicName) implements TopicConfigError {
+        @Override
+        public String message() {
+            return "durable topic '" + topicName
+                 + "' cannot resolve its replication factors: the node supplies no replication context";
+        }
+    }
+
     /// Stream knobs on an ephemeral topic are inert — nothing reads them, so accepting them would
     /// promise durability the runtime does not provide (the config-honesty stance of #576: reject
     /// loudly instead of silently ignoring).

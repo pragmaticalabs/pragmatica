@@ -9,6 +9,7 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.TopicConfig;
+import org.pragmatica.aether.resource.TopicConfigError;
 import org.pragmatica.aether.resource.TopicDurability;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
@@ -60,6 +61,7 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
     private static Result<Option<DurableTopicSpec>> durableSpec(TopicConfig config, ProvisioningContext context) {
         return config.durability() == TopicDurability.DURABLE
                ? context.extension(ReplicationContext.Source.class)
+                        .mapError(_ -> new TopicConfigError.ReplicationContextUnavailable(config.topicName()))
                         .flatMap(ReplicationContext.Source::current)
                         .flatMap(config::durableSpec)
                         .onSuccess(spec -> spec.onPresent(durable -> logWarnings(config, durable)))

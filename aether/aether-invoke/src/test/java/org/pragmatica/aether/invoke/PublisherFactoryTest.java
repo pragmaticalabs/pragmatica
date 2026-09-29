@@ -199,7 +199,8 @@ class PublisherFactoryTest {
                 factory.provision(config, context)
                        .await()
                        .onSuccess(_ -> fail("a durable topic must not provision without the replication context"))
-                       .onFailure(cause -> assertTrue(cause.message().contains("Source"), cause.message()));
+                       .onFailure(cause -> assertTrue(cause instanceof org.pragmatica.aether.resource.TopicConfigError.ReplicationContextUnavailable,
+                                                      cause.message()));
                 assertTrue(manager.partitionBuffer("topic:default:orders:1.0.0", 0).isEmpty());
             } finally {
                 manager.close();

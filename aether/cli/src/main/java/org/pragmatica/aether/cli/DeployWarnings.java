@@ -19,6 +19,16 @@ import tools.jackson.databind.JsonNode;
 public sealed interface DeployWarnings {
     JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
+    /// What the TABLE output of `aether blueprints publish` prints after its success line: the rejected stream
+    /// bindings (#1336), then the deploy warnings (#1564) — the only place a TABLE operator sees either.
+    static List<String> publishTableFooter(String json) {
+        var lines = new ArrayList<>(RejectedStreamBindings.lines(json));
+
+        lines.addAll(lines(json));
+
+        return List.copyOf(lines);
+    }
+
     /// One line per deploy warning (#1564), in response order; empty when the key is absent or the body does
     /// not parse (the caller's formatter has already surfaced a parse problem by then).
     static List<String> lines(String json) {

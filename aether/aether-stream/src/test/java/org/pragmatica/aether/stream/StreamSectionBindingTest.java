@@ -542,6 +542,20 @@ class StreamSectionBindingTest {
                                                                                                                                                                                                               3)))));
         }
 
+        /// N8: a node that supplies no replication context refuses the bind with a TYPED cause naming the alias,
+        /// never resolving the section against a guessed default.
+        @Test
+        void bind_withoutAReplicationSource_isRefusedTyped() {
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf("""
+                                                                                    [streams.orders]
+                                                                                    partitions = 2
+                                                                                    """), SECTION, ProvisioningContext.provisioningContext())
+                                                                   .onSuccess(config -> fail("no replication source must be refused, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicationContextUnavailable(ALIAS))));
+        }
+
         /// V5: the declaration's warnings are LOGGED at activation — the LOUD RF-below-3 warning among them.
         @Test
         void bind_declaredFactorBelowThree_logsTheLoudWarning() {

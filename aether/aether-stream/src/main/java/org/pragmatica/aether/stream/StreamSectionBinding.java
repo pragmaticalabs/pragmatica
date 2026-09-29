@@ -33,6 +33,8 @@ public sealed interface StreamSectionBinding {
                                                   String section,
                                                   ProvisioningContext context) {
         return context.extension(ReplicationContext.Source.class)
+                      .mapError(_ -> new StreamDeclarationError.ReplicationContextUnavailable(StreamSection.providerSection(provider,
+                                                                                                                            section).alias()))
                       .flatMap(ReplicationContext.Source::current)
                       .flatMap(replication -> bindAgainst(provider, section, replication));
     }

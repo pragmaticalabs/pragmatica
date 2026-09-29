@@ -39,6 +39,11 @@
   the committed value the node has applied, not only its local entry, so a node that never materialized the stream
   refuses instead of publishing its own factors over the committed ones.
   [mechanism: pinned by `DeclaredStreamPolicyTest`, `DurableTopicSubstrateTest` (topic and dead-letter stream)]
+- **A node that supplies no replication context refuses, typed, for every kind**: `ReplicationContextUnavailable` on
+  `StreamDeclarationError`, `TopicConfigError` and `EntityProvisioningError`, instead of an untyped cause for streams
+  and topics. `system:cluster-events`' local partition, created at node construction, now carries the committed
+  `[replication.cluster_events]` factors instead of a hardcoded CF 1.
+  [mechanism: pinned by `StreamSectionBindingTest`, `PublisherFactoryTest`, `DurableEntityFactoryTest`]
 - **Durable topics: decision 1's fixed CF == RF is superseded** — CF < RF is accepted, lossless through #1555's
   promotion gate; the dead-letter stream inherits both factors.
 - **Deploy warnings now reach the operator.** An explicitly declared RF below 3 (LOUD), CF == RF and CF == 1 are
