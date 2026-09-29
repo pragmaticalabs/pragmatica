@@ -80,9 +80,13 @@ nothing from then on; a push race is settled by git's fast-forward check, and th
 `[verified: KvBackupServiceTest.Fork]` **Detection is on the second writer only:** `BACKUP_FORKED` on a
 cluster means another live cluster with the same lineage and incarnation owns the backup head; that other
 cluster shows NOTHING and keeps backing up. The FORKED cluster's state is not being backed up. Resolve it
-by stopping the FORKED cluster, or by running `aether backup declare-genesis` on it: that moves it to a new
-incarnation and instance of the SAME lineage, which then supersedes the other cluster's head — so run it
-only on the cluster whose state should continue, and stop the other one.
+on the FORKED cluster in one of three ways:
+
+| Resolution | Consequence |
+|---|---|
+| Point its `[backup]` at a **different** `path` / `remote`, and restart it | Both clusters back up, each to its own remote. The FORKED cluster's new remote starts with its own history. |
+| Run `aether backup declare-genesis` on it | A **takeover**: it moves to a new incarnation and instance of the SAME lineage, and its state replaces the other cluster's head. The other cluster then stops backing up — for good — and raises `BACKUP_HEAD_AHEAD` after 30 s, saying the head is at a higher incarnation it will never pass `[verified: KvBackupServiceTest.Fork]`. Do this only for the cluster whose state should continue, and then stop the other one or re-point it. |
+| Stop it | Nothing changes for the other cluster, which keeps backing up. |
 
 **`restore = "fresh"` against an existing backup** starts a new lineage, and its backup is then GATED
 (`BACKUP_GATED`) until `aether backup declare-genesis` makes it the head; the old lineage stays in git
@@ -193,7 +197,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster instance holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
-| `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s | Nothing is backed up meanwhile; find the other writer of this lineage |
+| `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s; nothing is backed up meanwhile | If the warning names a **higher incarnation**, another cluster took over this lineage's backup (a `declare-genesis` or a later restore) and this cluster will never write again: stop it or point its `[backup]` elsewhere. At the **same** incarnation, a later revision of this cluster holds the head; it writes again once its revision passes the head's |
 | `BACKUP_HEAD_REPLACED` | This cluster's state replaced a newer head | The replaced commit is in git history; inspect it |
 | `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |
 | `BACKUP_PUSH_FAILING` | Commits have not reached the remote for 60 s | Check remote, credentials, network |

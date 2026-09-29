@@ -735,23 +735,33 @@ public final class KvBackupService {
         scheduleRetry();
     }
 
+    /// True in both ways a head of this lineage can stay ahead (v1533 finding 2). At a HIGHER incarnation, another
+    /// cluster moved this lineage on (a `declare-genesis` or a later restore took over the head); this cluster can
+    /// never pass it by revision, so it will not write again. At the SAME incarnation — necessarily this cluster's
+    /// own instance, another instance is FORKED — a later revision of it holds the head, and once this cluster's
+    /// revision passes it, its state replaces that head.
     private static String headAheadDetail(Outcome outcome, long seconds) {
-        return "the backup head (incarnation " + outcome.head()
-                                                        .map(BackupHeader::incarnation)
-                                                        .or(0L)
-             + ", revision " + outcome.head()
-                                      .map(BackupHeader::revision)
-                                      .or(0L)
-             + ") has been ahead of this cluster's state (incarnation " + outcome.ours()
-                                                                                 .map(BackupHeader::incarnation)
-                                                                                 .or(0L)
-             + ", revision " + outcome.ours()
-                                      .map(BackupHeader::revision)
-                                      .or(0L)
-             + ") for " + seconds
-             + "s, so nothing is being backed up; another cluster may be writing this lineage and incarnation"
-             + " to the same remote (for example, two clusters restored from the same backup at once). Once this"
-             + " cluster's revision passes the head's, its state REPLACES that head (git history keeps it)";
+        var headIncarnation = outcome.head().map(BackupHeader::incarnation).or(0L);
+        var ourIncarnation = outcome.ours().map(BackupHeader::incarnation).or(0L);
+        var positions = "the backup head (incarnation " + headIncarnation
+                      + ", instance " + outcome.head().map(BackupHeader::instanceId).or("?")
+                      + ", revision " + outcome.head().map(BackupHeader::revision).or(0L)
+                      + ") has been ahead of this cluster's state (incarnation " + ourIncarnation
+                      + ", instance " + outcome.ours().map(BackupHeader::instanceId).or("?")
+                      + ", revision " + outcome.ours().map(BackupHeader::revision).or(0L)
+                      + ") for " + seconds
+                      + "s, and this cluster does not write while the head is ahead, so nothing is"
+                      + " being backed up";
+
+        return headIncarnation > ourIncarnation
+               ? positions
+                + "; the head is at a HIGHER incarnation of this lineage: another cluster took over this"
+                + " lineage's backup (a declare-genesis or a later restore) and this cluster will never pass it — stop"
+                + " this cluster, or point its [backup] at a different path or remote"
+               : positions
+                + "; a later revision of this same cluster instance holds the head (a previous leader's"
+                + " write, or this cluster's state went back). Once this cluster's revision passes the head's, its"
+                + " state REPLACES that head (git history keeps it)";
     }
 
     @Contract

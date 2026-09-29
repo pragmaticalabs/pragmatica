@@ -591,6 +591,32 @@ class KvBackupServiceTest {
                                 .contains(Code.BACKUP_FORKED);
         }
 
+        /// The head owner's side after the FORKED cluster declared genesis (v1533 finding 2): the head is now a
+        /// HIGHER incarnation of the same lineage. This cluster goes HEAD_AHEAD for good, whatever its revision,
+        /// and the warning says so instead of promising that its state will replace the head.
+        @Test
+        void afterAnotherClusterTakesOverTheLineage_theHeadAheadWarningSaysItNeverCatchesUp() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 2, OTHER_INSTANCE, 5));
+            var service = leaderService(Option.some(remote));
+
+            for (int i = 0; i < 20; i++) {
+                put(service, ConfigKey.forKey("x" + i), ConfigValue.configValue("x" + i, "v"));
+            }
+            scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
+            scheduler.advance(3 * TIMING.maxRetryMillis());
+
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.HEAD_AHEAD);
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD);
+            assertThat(warnings.getFirst()
+                               .detail()).contains("HIGHER incarnation", "never pass it", OTHER_INSTANCE)
+                                         .doesNotContain("REPLACES");
+            assertThat(commitCount(remote)).as("never written, though this cluster's revision is past the head's")
+                                           .isEqualTo(1);
+        }
+
         /// The legitimate path the instance check must not break: a new leader of the SAME instance, whose
         /// repository lacks the previous leader's commit, writes over the head it does not contain.
         @Test
