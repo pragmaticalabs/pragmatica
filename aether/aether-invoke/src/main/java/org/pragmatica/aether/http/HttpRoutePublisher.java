@@ -760,8 +760,81 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         var overrides = activeOverrides.get();
 
         return selectRoute(route -> route.httpMethod()
-                                         .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())).map(entry -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(entry.getValue(),
+                                         .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())).map(entry -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(servedDefinition(entry,
+                                                                                                                                                                                                                           httpMethod,
+                                                                                                                                                                                                                           path),
                                                                                                                                                                                                           overrides)));
+    }
+
+    /// #1678: sibling routes of one slice share a base path (`GET /orders/{id}` and `GET /orders/{id}/admin` are
+    /// both `/orders/`), so the prefix pick above names the slice but not the route. The policy is read from the
+    /// route the slice's own router SERVES this request with -- its arity- and spacer-aware match -- instead of
+    /// from whichever sibling was listed first. No match (the router would answer 404) or several (header-mode
+    /// versions) resolve to the STRICTEST candidate, so an ambiguity fails closed.
+    private HttpRouteDefinition servedDefinition(Map.Entry<Artifact, HttpRouteDefinition> entry,
+                                                 String httpMethod,
+                                                 String path) {
+        var definition = entry.getValue();
+        var matched = Option.option(sliceRouters.get(entry.getKey()))
+                            .map(router -> router.routesMatching(httpMethod, routerPath(path)))
+                            .or(List.of())
+                            .stream()
+                            .map(HttpRoutePublisherImpl::declaredPolicy)
+                            .toList();
+        var candidates = matched.isEmpty()
+                         ? siblingPolicies(entry.getKey(), definition)
+                         : matched;
+
+        return HttpRouteDefinition.httpRouteDefinition(definition.httpMethod(),
+                                                       definition.pathPrefix(),
+                                                       definition.artifactCoord(),
+                                                       definition.sliceMethod(),
+                                                       strictest(candidates).or(definition.security()));
+    }
+
+    private List<SecurityPolicy> siblingPolicies(Artifact artifact, HttpRouteDefinition definition) {
+        return Option.option(publishedRoutes.get(artifact))
+                     .or(List.of())
+                     .stream()
+                     .filter(route -> route.httpMethod()
+                                           .equalsIgnoreCase(definition.httpMethod()) && route.pathPrefix()
+                                                                                              .equals(definition.pathPrefix()))
+                     .map(HttpRouteDefinition::security)
+                     .toList();
+    }
+
+    private static SecurityPolicy declaredPolicy(Route<?> route) {
+        return route.security() instanceof SecurityPolicy policy
+               ? policy
+               : SecurityPolicy.unspecified();
+    }
+
+    /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
+    /// equal strengths are ordered by the canonical string so the answer is the same on every node.
+    private static Option<SecurityPolicy> strictest(List<SecurityPolicy> policies) {
+        return Option.from(policies.stream()
+                                   .max(Comparator.comparingInt(HttpRoutePublisherImpl::strictness)
+                                                  .thenComparing(SecurityPolicy::asString)));
+    }
+
+    private static int strictness(SecurityPolicy policy) {
+        return switch (policy) {
+            case SecurityPolicy.Public _ -> 0;
+            case SecurityPolicy.Unspecified _ -> 1;
+            default -> policy.strength() + 2;
+        };
+    }
+
+    /// The router matches a request path as the client sent it; `findLocalRoute` callers pass the normalized
+    /// form, whose added trailing slash would read as an extra empty segment.
+    private static String routerPath(String path) {
+        var stripped = Option.option(path)
+                             .map(String::strip)
+                             .or("/");
+
+        return stripped.length() > 1 && stripped.endsWith("/")
+               ? stripped.substring(0, stripped.length() - 1)
+               : stripped;
     }
 
     private String normalizePath(String path) {

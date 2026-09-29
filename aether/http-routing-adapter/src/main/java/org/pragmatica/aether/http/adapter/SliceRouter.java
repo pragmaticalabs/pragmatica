@@ -71,6 +71,15 @@ public interface SliceRouter {
     /// @return a router dispatching over the decorated routes
     SliceRouter withInvocationCells(RouteDecorator decorator);
 
+    /// #1678: the routes this router could serve `(httpMethod, path)` with -- the SAME arity- and spacer-aware match
+    /// [#handle] dispatches through, so the policy that authorizes a request can be read from the route that serves
+    /// it rather than from a sibling sharing its base path. In header mode the version is chosen per request by a
+    /// header this call does not see, so every version's match is returned and the caller takes the strictest.
+    /// Empty when nothing matches; the default is empty for routers that expose no routes (test doubles).
+    default List<Route<?>> routesMatching(String httpMethod, String path) {
+        return List.of();
+    }
+
     static SliceRouter sliceRouter(RouteSource routes, ErrorMapper errorMapper, JsonMapper jsonMapper) {
         return sliceRouter(routes, errorMapper, jsonMapper, RouteMountMode.pathMode());
     }
@@ -132,6 +141,26 @@ public interface SliceRouter {
                                        sliceName,
                                        metricsSink,
                                        decorated);
+            }
+
+            @Override
+            public List<Route<?>> routesMatching(String httpMethod, String path) {
+                return parseMethod(httpMethod).map(method -> matchesFor(method, path))
+                                  .or(List.of());
+            }
+
+            private List<Route<?>> matchesFor(HttpMethod method, String path) {
+                if (mountMode.isHeaderMode() && versionRegistry.isVersioned()) {
+                    return versionedRouters.values()
+                                           .stream()
+                                           .flatMap(router -> router.findRoute(method, path)
+                                                                    .stream())
+                                           .toList();
+                }
+
+                return requestRouter.findRoute(method, path)
+                                    .stream()
+                                    .toList();
             }
 
             @Override

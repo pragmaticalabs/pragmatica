@@ -3,3 +3,5 @@ org.pragmatica.aether.http.CurrentRouteContractSliceRoutes
 org.pragmatica.aether.http.StaleNonPublicRouteContractSliceRoutes
 org.pragmatica.aether.http.RouteAgreementSliceRoutes
 org.pragmatica.aether.http.OutcomeRouteSliceRoutes
+org.pragmatica.aether.http.SiblingRouteSliceRoutes$PublicFirst
+org.pragmatica.aether.http.SiblingRouteSliceRoutes$AdminFirst
