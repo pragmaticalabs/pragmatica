@@ -130,12 +130,12 @@ class HierarchyPeerPolicyTest {
         var policy = HierarchyPeerPolicy.hierarchyPeerPolicy(self, false);
         policy.refresh(Set.of(seed), Set.of(), Set.of(), Option.none(), Option.none(), Set.of(seed));
         assertThat(policy.isConnectionInitiator(seed, true, false, false)).isFalse();
-        assertThat(policy.initiatesCoreBootstrap(false, true)).isTrue();
-        assertThat(policy.initiatesCoreBootstrap(false, false)).isFalse();
-        assertThat(policy.initiatesCoreBootstrap(true, true)).isFalse();
+        assertThat(policy.initiatesCoreBootstrap(true, true)).isTrue();
+        assertThat(policy.initiatesCoreBootstrap(true, false)).isFalse();
+        assertThat(policy.initiatesCoreBootstrap(false, true)).isFalse();
         assertThat(policy.current().get().swimPeers()).containsExactlyInAnyOrder(seed, self);
         assertThat(HierarchyPeerPolicy.hierarchyPeerPolicy(self, true)
-                                      .initiatesCoreBootstrap(false, true)).isFalse();
+                                      .initiatesCoreBootstrap(true, true)).isFalse();
     }
 
     private static Set<NodeId> ids(String prefix, int size) {
