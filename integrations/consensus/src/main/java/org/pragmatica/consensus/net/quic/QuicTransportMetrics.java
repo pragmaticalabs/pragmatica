@@ -31,6 +31,8 @@ public final class QuicTransportMetrics {
     private final AtomicInteger activeConnections = new AtomicInteger(0);
     private final LongAdder handshakeTotal = new LongAdder();
     private final LongAdder handshakeFailures = new LongAdder();
+    /// #1578: dials abandoned before their QUIC handshake because the peer went CONNECTED over another link.
+    private final LongAdder dialsAbandoned = new LongAdder();
     private final LongAdder messagesSent = new LongAdder();
     private final LongAdder messagesReceived = new LongAdder();
     private final LongAdder writeFailures = new LongAdder();
@@ -105,6 +107,11 @@ public final class QuicTransportMetrics {
     @Contract
     public void onHandshakeFailure() {
         handshakeFailures.increment();
+    }
+
+    @Contract
+    public void onDialAbandoned() {
+        dialsAbandoned.increment();
     }
 
     @Contract
@@ -230,6 +237,7 @@ public final class QuicTransportMetrics {
         metrics.put("quic_active_connections", activeConnections.get());
         metrics.put("quic_handshake_total", handshakeTotal.sum());
         metrics.put("quic_handshake_failures_total", handshakeFailures.sum());
+        metrics.put("quic_dial_abandoned_total", dialsAbandoned.sum());
         metrics.put("quic_messages_sent_total", messagesSent.sum());
         metrics.put("quic_messages_received_total", messagesReceived.sum());
         metrics.put("quic_write_failures_total", writeFailures.sum());
@@ -265,6 +273,10 @@ public final class QuicTransportMetrics {
 
     public long handshakeFailureCount() {
         return handshakeFailures.sum();
+    }
+
+    public long dialAbandonedCount() {
+        return dialsAbandoned.sum();
     }
 
     public long messagesSentCount() {

@@ -1385,7 +1385,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
         onPeerConnected(connection, dialed.address(), dialed.labels(), "dial attempt #" + attempt);
     }
 
+    private void abandonPendingDial(NodeId peerId) {
+        var clientRef = client;
+
+        if (clientRef != null) {
+            clientRef.abandonPendingDial(peerId);
+        }
+    }
+
     private void onDialFailed(NodeInfo peer, Cause cause, long attempt) {
+        // #1578: an attempt abandoned because the peer is already CONNECTED over another link is not a
+        // failure — the connect-failure path would evict, count a handshake failure and report the peer.
+        if (cause instanceof QuicTransportError.DialAbandoned) {
+            quicMetrics.onDialAbandoned();
+            log.info("Dial journal: attempt #{} to {} abandoned: connected over another link", attempt, peer.id());
+
+            return;
+        }
+
         log.info("Dial journal: attempt #{} to {} failed: {}", attempt, peer.id(), cause.message());
         onConnectFailed(peer, cause);
     }
@@ -1585,6 +1602,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // missing-peer reconciler backoff (handles the asymmetric-handshake recovery path).
         resetReconnectBackoff(peerId);
         state.resetReconcileBackoff();
+        // #1578: the peer is CONNECTED, so our own dial to it that has not passed its QUIC handshake is dropped
+        // rather than left to complete late and supersede this link (the late designated dial of #1554's
+        // skewed cold start: a second handshake per pair). An attempt already past its handshake is untouched.
+        abandonPendingDial(peerId);
         // Fix D.1: a successful attach means the peer is no longer livelocking against a tombstone —
         // drop its rejection counter so a future fresh tombstone starts counting from zero.
         tombstoneRejectionCount.remove(peerId);
@@ -2902,6 +2923,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     void dialForTests(NodeInfo peer, boolean forceInitiate) {
         connectPeer(peer, forceInitiate);
+    }
+
+    /// Package-private test seam — the #1578 abandon an attach performs, invoked directly, so a test can aim it at
+    /// an attempt in a chosen stage (e.g. past its QUIC handshake, Hello unanswered).
+    void abandonPendingDialForTests(NodeId peerId) {
+        abandonPendingDial(peerId);
     }
 
     /// Package-private test seam — the offline-buffer occupancy of a peer's PeerState (0 when the peer has
