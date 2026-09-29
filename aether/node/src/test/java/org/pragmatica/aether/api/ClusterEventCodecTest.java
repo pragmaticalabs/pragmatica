@@ -8,6 +8,7 @@ import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.ThresholdBreached;
 import org.pragmatica.aether.api.ClusterEvent.ThresholdCleared;
+import org.pragmatica.aether.api.ClusterEvent.OperatorWarning;
 import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
 import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
@@ -357,7 +358,8 @@ class ClusterEventCodecTest {
                        new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d),
                        new ScaleCapped(ts, sev, "ScaleCapped", d),
                        new ThresholdBreached(ts, sev, "ThresholdBreached", d),
-                       new ThresholdCleared(ts, sev, "ThresholdCleared", d));
+                       new ThresholdCleared(ts, sev, "ThresholdCleared", d),
+                       new OperatorWarning(ts, sev, "OperatorWarning", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.

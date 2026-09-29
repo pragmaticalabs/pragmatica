@@ -13,6 +13,7 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.MarketOptions;
+import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
@@ -397,6 +398,70 @@ class DockerComputeProviderTest {
             assertThat(command).contains("aether.role=worker");
             var roleCount = command.stream().filter(arg -> arg.startsWith("AETHER_ROLE=")).count();
             assertThat(roleCount).isEqualTo(1);
+        }
+
+        /// #1650: AETHER_SOURCE and AETHER_ZONE are the node's OWN -- its provision context's source and the zone
+        /// this request resolved to -- emitted once, so the leader's own values (in its process env) never reach
+        /// the node it mints. A node learns its source only from this variable.
+        @Test
+        void buildRunCommand_stampsTheContextSourceAndResolvedZone_exactlyOnce() {
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "worker", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx)
+                                    .unwrap()
+                                    .withPlacement(PlacementHint.zoneHint("zone-b"));
+
+            provider.provision(spec).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            assertThat(command).contains("AETHER_SOURCE=eu-west", "AETHER_ZONE=zone-b");
+            assertThat(command.stream().filter(arg -> arg.startsWith("AETHER_SOURCE=")).count()).isEqualTo(1);
+            assertThat(command.stream().filter(arg -> arg.startsWith("AETHER_ZONE=")).count()).isEqualTo(1);
+        }
+
+        /// No resolved zone: AETHER_ZONE is absent, never filled from the provisioning host's env.
+        @Test
+        void buildRunCommand_noResolvedZone_emitsNoZone() {
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "worker", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
+
+            provider.provision(spec).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            assertThat(command).contains("AETHER_SOURCE=eu-west");
+            assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
+        }
+
+        /// #1650 F3 (v1650 MF): the same claim against a provisioning host that DOES export its own source and
+        /// zone, injected rather than read from the build machine's env -- so the host-env filter is exercised
+        /// wherever the test runs. The allow-listed cluster secret still arrives from the host (positive control:
+        /// the injected env is really consulted).
+        @Test
+        void buildRunCommand_hostExportsItsOwnSourceAndZone_nodeGetsNeither() {
+            var hostEnv = Map.of("AETHER_SOURCE", "leader-source",
+                                 "AETHER_ZONE", "leader-zone",
+                                 "AETHER_CLUSTER_SECRET", "host-secret");
+            var hostileProvider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, hostEnv::get).unwrap();
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "worker", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
+
+            hostileProvider.provision(spec).await()
+                           .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            assertThat(command).as("CONTROL: the injected host env is consulted").contains("AETHER_CLUSTER_SECRET=host-secret");
+            assertThat(command.stream().filter(arg -> arg.startsWith("AETHER_SOURCE=")).toList()).containsExactly("AETHER_SOURCE=eu-west");
+            assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
         }
 
         @Test

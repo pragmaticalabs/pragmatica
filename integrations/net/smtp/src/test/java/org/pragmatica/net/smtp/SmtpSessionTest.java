@@ -208,6 +208,60 @@ class SmtpSessionTest {
         }
     }
 
+    /// #1203: the command timeout ALWAYS fires (`promise.async(commandTimeout, …)`), including after the
+    /// promise succeeded. After DATA is accepted the promise is resolved but the session still waits for the
+    /// reply to QUIT; if that never comes, the timeout is the only thing that closes the socket. So a resolved
+    /// promise must not make the timeout a no-op, and the timeout must not overturn the success either.
+    @Nested
+    class TimeoutAfterSuccess {
+        @Test
+        void onTimeout_afterDataAcceptedWhileAwaitingQuit_closesTheSocket_andKeepsTheSuccess() {
+            var session = sessionAwaitingQuitAfterSuccess();
+
+            session.onTimeout(new SmtpError.Timeout("SMTP session timed out"));
+
+            assertThat(channel.isOpen()).as("the timeout closes a socket still waiting for the QUIT reply").isFalse();
+            assertThat(session.state()).isEqualTo(SmtpSession.State.DONE);
+            assertThat(promise.await().isSuccess()).as("the send already succeeded; the timeout does not overturn it")
+                                                   .isTrue();
+        }
+
+        @Test
+        void onTimeout_afterQuitReply_changesNothing() {
+            var session = sessionAwaitingQuitAfterSuccess();
+
+            session.handleResponse(221, "Bye");
+            session.onTimeout(new SmtpError.Timeout("SMTP session timed out"));
+
+            assertThat(channel.isOpen()).isFalse();
+            assertThat(promise.await().isSuccess()).isTrue();
+        }
+
+        private SmtpSession sessionAwaitingQuitAfterSuccess() {
+            var config = smtpConfig("localhost", 25).withTlsMode(SmtpTlsMode.NONE);
+            var msg = smtpMessage("a@b.com", List.of("c@d.com"), "Sub", "Body");
+            var session = createSession(config, msg);
+
+            session.handleResponse(220, "Welcome");
+            readOutbound();
+            session.handleResponse(250, "OK");         // EHLO
+            readOutbound();
+            session.handleResponse(250, "OK");         // MAIL FROM
+            readOutbound();
+            session.handleResponse(250, "OK");         // RCPT TO
+            readOutbound();
+            session.handleResponse(354, "Go ahead");   // DATA
+            readOutbound();
+            session.handleResponse(250, "Queued");      // DATA content accepted: success, QUIT sent
+
+            assertThat(promise.isResolved()).as("control: the send succeeded").isTrue();
+            assertThat(session.state()).as("control: awaiting the QUIT reply").isEqualTo(SmtpSession.State.QUIT);
+            assertThat(channel.isOpen()).as("control: the socket is still open").isTrue();
+
+            return session;
+        }
+    }
+
     private String readOutbound() {
         var msg = channel.readOutbound();
         return msg != null ? msg.toString() : "";
