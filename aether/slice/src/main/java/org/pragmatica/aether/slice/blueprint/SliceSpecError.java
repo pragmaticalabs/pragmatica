@@ -27,6 +27,6 @@ public sealed interface SliceSpecError extends Cause {
     record MinAvailableBelowFloor(Artifact artifact, int minAvailable, String message) implements SliceSpecError {
         static final Fn2<MinAvailableBelowFloor, Artifact, Integer> FACTORY = Causes.forTwoValues("Slice %s declares minAvailable = %s; a blueprint slice must keep at least " + SliceSpec.MIN_AVAILABLE
                                                                                                  + " instances available",
-                                                                                                 MinAvailableBelowFloor::new);
+                                                                                                  MinAvailableBelowFloor::new);
     }
 }

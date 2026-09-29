@@ -26,12 +26,12 @@ public sealed interface ScaleRouteError extends Cause, HttpStatusAware {
     record InstancesBelowFloor(int requested, String message) implements ScaleRouteError {
         static final Fn1<InstancesBelowFloor, Integer> FACTORY = Causes.forOneValue("Requested %s instances; a slice must run at least " + SliceSpec.MIN_INSTANCES
                                                                                    + " instances",
-                                                                                   InstancesBelowFloor::new);
+                                                                                    InstancesBelowFloor::new);
     }
 
     /// Fewer instances than the slice's own `minAvailable`.
     record InstancesBelowMinAvailable(int requested, int minAvailable, String message) implements ScaleRouteError {
         static final Fn2<InstancesBelowMinAvailable, Integer, Integer> FACTORY = Causes.forTwoValues("Requested %s instances but the slice's minAvailable is %s",
-                                                                                                    InstancesBelowMinAvailable::new);
+                                                                                                     InstancesBelowMinAvailable::new);
     }
 }

@@ -174,8 +174,7 @@ public final class SliceRoutes implements RouteSource {
     /// #1495 (owner ruling): no slice is scaled below [SliceSpec#MIN_INSTANCES] at runtime either.
     private static Result<Unit> guardInstanceFloor(int requestedInstances) {
         return requestedInstances < SliceSpec.MIN_INSTANCES
-               ? ScaleRouteError.InstancesBelowFloor.FACTORY.apply(requestedInstances)
-                                                          .result()
+               ? ScaleRouteError.InstancesBelowFloor.FACTORY.apply(requestedInstances).result()
                : Result.unitResult();
     }
 
@@ -197,8 +196,7 @@ public final class SliceRoutes implements RouteSource {
                    .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
                    .map(min -> requestedInstances >= min
                                ? Promise.unitPromise()
-                               : ScaleRouteError.InstancesBelowMinAvailable.FACTORY.apply(requestedInstances, min)
-                                                                                .<Unit> promise())
+                               : ScaleRouteError.InstancesBelowMinAvailable.FACTORY.apply(requestedInstances, min).<Unit> promise())
                    .or(Promise.unitPromise());
     }
 
