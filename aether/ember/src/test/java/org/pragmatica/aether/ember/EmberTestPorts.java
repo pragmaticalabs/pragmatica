@@ -76,7 +76,16 @@ final class EmberTestPorts {
 
     /// A started cluster on a free block. `clusterAt` builds the (unstarted) cluster for a base port.
     static EmberCluster startedCluster(Block block, IntFunction<EmberCluster> clusterAt, TimeSpan startBound) {
-        return startedCluster(clusterAt, startBound, attempted -> freeBase(block, attempted));
+        return startedCluster(block, clusterAt, EmberCluster::start, EmberCluster::stop, startBound);
+    }
+
+    /// The block's retry path over any cluster type: the production base choice, excluding every attempted base.
+    static <C> C startedCluster(Block block,
+                                IntFunction<C> clusterAt,
+                                Function<C, Promise<Unit>> start,
+                                Function<C, Promise<Unit>> stop,
+                                TimeSpan startBound) {
+        return startedCluster(clusterAt, start, stop, startBound, attempted -> freeBase(block, attempted));
     }
 
     /// As above, with the base choice given the bases already attempted (a seam for EmberTestPortsTest).

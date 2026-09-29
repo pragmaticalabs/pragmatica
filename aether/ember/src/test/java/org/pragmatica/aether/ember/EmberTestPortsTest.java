@@ -145,6 +145,28 @@ class EmberTestPortsTest {
         assertThat(built).hasSize(EmberTestPorts.START_ATTEMPTS);
     }
 
+    /// #1707 review: the Block overload's own base choice excludes a base that lost its bind. The clusters are stubs
+    /// that bind nothing, so the failed base is still free when the retry probes; only the exclusion moves the retry.
+    @Test
+    void startedCluster_blockOverload_retryExcludesTheFailedBase() {
+        var bases = new ArrayList<Integer>();
+
+        var started = EmberTestPorts.startedCluster(BLOCK,
+                                                    base -> {
+                                                        bases.add(base);
+                                                        return base;
+                                                    },
+                                                    _ -> bases.size() == 1
+                                                         ? BIND_COLLISION.<Unit>promise()
+                                                         : Promise.success(Unit.unit()),
+                                                    _ -> Promise.success(Unit.unit()),
+                                                    START_BOUND);
+
+        assertThat(bases).as("control: the first start collided, so a retry happened").hasSize(2);
+        assertThat(bases.get(1)).isNotEqualTo(bases.get(0));
+        assertThat(started).isEqualTo(bases.get(1));
+    }
+
     /// #1707 review: a base that lost a bind is excluded from the next attempt, even once the colliding port is free.
     @Test
     void freeBase_excludedBase_isNotChosenAgain() {
