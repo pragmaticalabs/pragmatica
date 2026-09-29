@@ -48,6 +48,7 @@ import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
 import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
+import org.pragmatica.aether.deployment.validation.StreamValidationWarning;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -256,12 +257,36 @@ class BlueprintDeployStatusTest {
         assertThat(body).contains("\"status\":\"applied\"").doesNotContain("rejectedStreamBindings");
     }
 
+    /// #1564: a deploy-time warning — here the LOUD replication warning — reaches the operator in the JSON body, by
+    /// field and rule (owner ruling: loud warnings reach the operator, not only a node log).
+    @Test
+    void bodyRoute_carriesEveryDeployWarning_inTheJsonBody() {
+        var warning = StreamValidationWarning.streamValidationWarning("[streams.orders]",
+                                                                      "replication-factor-below-three",
+                                                                      "stream 'orders' (replication_factor=2, confirmation_factor=2): replication_factor is below 3");
+        var body = routeBody(ManagementRoute.BLUEPRINT_PUBLISH_BODY.prefix(),
+                             "id = \"org.example:orders-app:1.0.0\"\n",
+                             List.of(),
+                             List.of(warning));
+
+        assertThat(body).contains("\"warnings\"")
+                        .contains("\"field\":\"[streams.orders]\"")
+                        .contains("\"rule\":\"replication-factor-below-three\"");
+    }
+
     private static final List<StreamValidationFailure> REJECTED = List.of(StreamValidationFailure.streamValidationFailure("[streams.audit-events]",
                                                                                                                           "version-and-source-mutually-exclusive",
                                                                                                                           "Stream resource 'audit-events' must not set both 'source' and 'version'"));
 
     private static String routeBody(String path, String requestBody, List<StreamValidationFailure> rejected) {
-        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> nodeOver(Map.of(), rejected)));
+        return routeBody(path, requestBody, rejected, List.of());
+    }
+
+    private static String routeBody(String path,
+                                    String requestBody,
+                                    List<StreamValidationFailure> rejected,
+                                    List<StreamValidationWarning> warnings) {
+        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> nodeOver(Map.of(), rejected, warnings)));
         var recorder = new RecordingResponseWriter();
 
         assertThat(router.handle(postRequest(path, requestBody), recorder)).as("the router must own " + path).isTrue();
@@ -358,7 +383,13 @@ class BlueprintDeployStatusTest {
 
     private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed,
                                            List<StreamValidationFailure> rejected) {
-        return new DeployManageableNode(fixedBlueprintService(rejected), deploymentMapOver(deployed), noopAppHttpServer());
+        return nodeOver(deployed, rejected, List.of());
+    }
+
+    private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed,
+                                           List<StreamValidationFailure> rejected,
+                                           List<StreamValidationWarning> warnings) {
+        return new DeployManageableNode(fixedBlueprintService(rejected, warnings), deploymentMapOver(deployed), noopAppHttpServer());
     }
 
     /// The sealed `DeploymentMap` interface refuses `Proxy.newProxyInstance` (the JDK rejects dynamic
@@ -389,21 +420,22 @@ class BlueprintDeployStatusTest {
         return new NoopAppHttpServer();
     }
 
-    private static BlueprintService fixedBlueprintService(List<StreamValidationFailure> rejected) {
+    private static BlueprintService fixedBlueprintService(List<StreamValidationFailure> rejected,
+                                                          List<StreamValidationWarning> warnings) {
         return new BlueprintService() {
             @Override
             public Promise<PublishedBlueprint> publish(String dsl) {
-                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected));
+                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected, warnings));
             }
 
             @Override
             public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) {
-                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected));
+                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected, warnings));
             }
 
             @Override
             public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
-                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected));
+                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected, warnings));
             }
 
             @Override

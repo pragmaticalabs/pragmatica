@@ -103,7 +103,7 @@ class SealedHistoryRecoveryTest {
                                                                              Option.none(),
                                                                              index::lastSealedOffset);
             substrate = substrate(partitionManager, sealer);
-            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
             appendRecords(substrate);
             awaitAllSealed(sealer);
         }
@@ -167,7 +167,7 @@ class SealedHistoryRecoveryTest {
             var partitionManager = sealingManager(sealer);
             var substrate = substrate(partitionManager, sealer);
 
-            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
             appendRecords(substrate);
             var done = new AtomicBoolean(false);
             var earliestBefore = partitionManager.earliestRetainedOffset(STREAM, PARTITION);
@@ -206,7 +206,7 @@ class SealedHistoryRecoveryTest {
             var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
             var substrate = substrate(sealingManager(sealer), sealer);
 
-            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
             appendRecords(substrate);
             awaitAllSealed(sealer);
             reclaimPrefix();
@@ -226,7 +226,7 @@ class SealedHistoryRecoveryTest {
             var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
             var substrate = substrate(sealingManager(sealer), sealer);
 
-            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
             appendRecords(substrate);
             awaitAllSealed(sealer);
             var fold = EntityFold.entityFold(KEYSPACE, withCheckpoint(substrate, reclaimPrefix()));
@@ -249,7 +249,7 @@ class SealedHistoryRecoveryTest {
                                                                                     index::lastSealedOffset),
                                       EvictionListener.NOOP);
 
-            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
             appendRecords(substrate);
             var ringEarliest = substrate.earliestRetainedOffset(KEYSPACE, PARTITION);
 
@@ -373,7 +373,7 @@ class SealedHistoryRecoveryTest {
                                                                                 Option.none(),
                                                                                 index::lastSealedOffset),
                                   sealer);
-            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
             appendRecords(substrate);
         }
 
@@ -434,7 +434,7 @@ class SealedHistoryRecoveryTest {
                                                                              Option.none(),
                                                                              index::lastSealedOffset);
             substrate = substrate(partitionManager, EvictionListener.NOOP);
-            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
             appendRecords(substrate);
             ringEarliest = partitionManager.earliestRetainedOffset(STREAM, PARTITION);
         }
