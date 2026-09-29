@@ -3,12 +3,11 @@
 # `order-events` backs the #386 D5 context-carrying subscriber fixture
 # (com.example.durabletopic.DurableOrderSlice). The slice-processor reads `durability` from this
 # file at annotation-processing time to decide whether a subscriber may declare a MessageContext
-# parameter — see TopicDurabilityLoader. The durable knobs match the spec §3 v1 constraint
-# (replicas >= 3 and min_sync_replicas == replicas) so the declaration is one the runtime binder
-# would also accept.
+# parameter — see TopicDurabilityLoader. The durable knobs (`replication_factor`,
+# `confirmation_factor`, #1564) are ones the runtime binder also accepts.
 [order-events]
 topic_name = "order-events"
 durability = "durable"
 partitions = 4
-replicas = 3
-min_sync_replicas = 3
+replication_factor = 3
+confirmation_factor = 3
