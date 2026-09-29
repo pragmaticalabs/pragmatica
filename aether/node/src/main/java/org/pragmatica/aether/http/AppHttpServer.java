@@ -1515,12 +1515,95 @@ class AppHttpServerAdapter implements AppHttpServer {
             return;
         }
 
+        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath)
+            .onPresent(_ -> serveForwarded(httpCtx, request, network, ser, routerOpt.unwrap(), method, normalizedPath));
+    }
+
+    /// #1659 (v1670): the host RE-AUTHORIZES every forwarded request against the route it will actually serve it by
+    /// -- its own longest local match, with its own committed overrides. The ingress authorized against ITS view:
+    /// while a route or an override propagates, that view can lack a narrower, stricter child route the host already
+    /// serves (`/api/admin/` under a PUBLIC `/api/`), or a stricter override. Authorizing only at the ingress let such
+    /// a request through with no check against the route that served it: fail open. Checked at both ends, a request
+    /// is served only when BOTH policies admit it, so a propagation window in either direction fails closed. The
+    /// forwarded context carries the client's headers, so the credential is the one the ingress saw. A refusal goes
+    /// back as the same 401/403 problem response the ingress would send, so the client sees the status.
+    private Option<Unit> reauthorizeForwarded(HttpRequestContext httpCtx,
+                                              HttpForwardRequest request,
+                                              ClusterNetwork network,
+                                              Serializer ser,
+                                              String method,
+                                              String normalizedPath) {
+        var policy = resolveEffectivePolicy(method, normalizedPath, context.currentRoutes());
+
+        if (requiresAuthentication(policy) && config.securityMode() == SecurityMode.NONE) {
+            refuseForwarded(SecurityError.NO_VALIDATOR_CONFIGURED, httpCtx, request, network, ser, method);
+
+            return Option.none();
+        }
+
+        return securityValidator.validate(httpCtx, policy)
+                                .flatMap(ctx -> enforceRoleIfRequired(ctx, policy))
+                                .onFailure(cause -> refuseForwarded(cause, httpCtx, request, network, ser, method))
+                                .option()
+                                .map(_ -> Unit.unit());
+    }
+
+    @Contract
+    private void refuseForwarded(Cause cause,
+                                 HttpRequestContext httpCtx,
+                                 HttpForwardRequest request,
+                                 ClusterNetwork network,
+                                 Serializer ser,
+                                 String method) {
+        var statusAndMessage = mapSecurityError(cause);
+        var status = statusAndMessage.status();
+        var problem = ProblemDetail.problemDetail(status, statusAndMessage.clientMessage(), httpCtx.path(), request.requestId());
+
+        log.warn("[{}] Forwarded {} {} refused by this host's own authorization: {}",
+                 request.requestId(),
+                 method,
+                 httpCtx.path(),
+                 cause.message());
+        recordSecurityDenial(cause, httpCtx.path(), request.requestId(), method);
+        JSON_MAPPER.writeAsString(problem)
+                   .onSuccess(json -> sendForwardSuccess(network,
+                                                         request,
+                                                         ser,
+                                                         HttpResponseData.httpResponseData(status.code(),
+                                                                                           refusalHeaders(status),
+                                                                                           json.getBytes(StandardCharsets.UTF_8))))
+                   .onFailure(serializationFailure -> sendForwardError(network,
+                                                                       request,
+                                                                       "Forwarded request refused: " + statusAndMessage.clientMessage()));
+    }
+
+    private Map<String, String> refusalHeaders(HttpStatus status) {
+        var contentType = Map.entry("Content-Type", "application/problem+json");
+
+        return switch (config.securityMode()) {
+            case JWT -> status == HttpStatus.UNAUTHORIZED
+                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "Bearer realm=\"Aether\""))
+                        : Map.ofEntries(contentType);
+            case API_KEY -> status == HttpStatus.UNAUTHORIZED
+                            ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "ApiKey realm=\"Aether\""))
+                            : Map.ofEntries(contentType);
+            case NONE -> Map.ofEntries(contentType);
+        };
+    }
+
+    @Contract
+    private void serveForwarded(HttpRequestContext httpCtx,
+                                HttpForwardRequest request,
+                                ClusterNetwork network,
+                                Serializer ser,
+                                SliceRouter router,
+                                String method,
+                                String normalizedPath) {
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(this::recordMetricsStart);
-        invocationAdmission.execute(() -> routerOpt.unwrap()
-                                                   .handle(httpCtx),
+        invocationAdmission.execute(() -> router.handle(httpCtx),
                                     result -> emitForwardResult(result,
                                                                 network,
                                                                 request,
