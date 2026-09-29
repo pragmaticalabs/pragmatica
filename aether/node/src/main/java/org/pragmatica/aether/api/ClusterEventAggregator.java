@@ -347,7 +347,7 @@ public final class ClusterEventAggregator {
     }
 
     /// A page of the log from an offset: the events at `[from, nextOffset)` in log order, as stored (not
-    /// de-duplicated or sorted: the event feed does both against what it has already sent).
+    /// de-duplicated or sorted: the event feed de-duplicates against what it has already sent and sends in log order).
     public record EventPage(List<ClusterEvent> events, long nextOffset) {}
 
     /// #1653: the event feed's incremental read. Reads from `fromOffset` (clamped up to the oldest retained offset)
