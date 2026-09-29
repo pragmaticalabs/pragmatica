@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
@@ -110,6 +111,33 @@ class ClusterEventRedeliveryTest {
         redelivery.redeliver(true);
 
         assertThat(landed).hasSize(1);
+    }
+
+    /// #1653 (v1640 N10): the failures an old owner's publish sees during an ownership handover are retryable, not
+    /// permanent: the event is held, not dropped, and lands once the partition's new owner is known. Classification
+    /// ([ClusterEventRedelivery#isPermanent]) is the only cause-dependent step, so one test per cause pins it; the
+    /// publisher-not-bound cause is pinned end to end by `ClusterEventAggregatorTest`'s handover test.
+    @Test
+    void deliver_partitionNotLocalDuringAHandover_isHeld_andLandsOnTheOwnerChange() {
+        assertHeldThenLandsOnTheOwnerChange(StreamError.General.PARTITION_NOT_LOCAL);
+    }
+
+    @Test
+    void deliver_remotePublishRetryableDuringAHandover_isHeld_andLandsOnTheOwnerChange() {
+        assertHeldThenLandsOnTheOwnerChange(new StreamForwardError.RemotePublishRetryable("owner has not applied the config yet"));
+    }
+
+    private void assertHeldThenLandsOnTheOwnerChange(Cause cause) {
+        fail(1, cause);
+        redelivery.deliver(event("handover"));
+
+        assertThat(redelivery.dropped(PERMANENT)).as("not dropped as permanent").isZero();
+        assertThat(redelivery.waiting()).as("held for redelivery").isEqualTo(1);
+
+        redelivery.redeliver(true);
+
+        assertThat(landed).extracting(ClusterEvent::summary).containsExactly("handover");
+        assertThat(redelivery.waiting()).isZero();
     }
 
     @Test
