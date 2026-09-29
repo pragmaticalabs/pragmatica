@@ -52,6 +52,7 @@ jobs:
         if: always()
         with:
           name: test-results
+          if-no-files-found: error
           path: |
             **/target/surefire-reports/*.xml
             **/target/failsafe-reports/*.xml
@@ -95,6 +96,7 @@ jobs:
         if: always()
         with:
           name: forge-test-results
+          if-no-files-found: error
           path: |
             aether/forge/forge-tests/target/failsafe-reports/*.xml
           retention-days: 7
