@@ -202,8 +202,10 @@ public final class LeaderReconciler {
     /// Keeping both avoids losing a full-membership interval before a departure or a target increase.
     private final MembershipFsm membershipFsm;
     private final IntSupplier configuredCoreCountSupplier;
-    /// Leader-term supplier (monotonic, incremented once per election). A value `> 1` on
-    /// activation means a prior leader existed → this leadership was gained via RE-ELECTION
+    /// Leader-term supplier: the committed `viewSequence` of the election that named this node
+    /// (`LeaderTerm.committedTerm()`, #1559 — readable at activation, before the leader-gain edge
+    /// adopts it). A fresh cluster's first election commits 1; a value `> 1` on activation means a
+    /// prior leader existed → this leadership was gained via RE-ELECTION
     /// (the cluster formed under a prior leader), so [`#reachedFullMembership`] is pre-latched
     /// on activation to avoid wedging in cold-start suppression on an already-formed cluster.
     private final Supplier<Long> leaderTermSupplier;

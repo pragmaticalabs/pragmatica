@@ -91,12 +91,48 @@ There are **50** `AetherKey` record types (not ~40 as originally estimated), eac
 - **Triggers — lifecycle only, never on commit:** `persistence.save(...)` is called from exactly three engine transitions in `RabiaEngine.java` — quorum-loss pause (`doPauseForQuorumLoss`, `:526`), membership reconfigure (`reconfigure`, `:604` — this save writes an **empty state at `Phase.ZERO`**, not a snapshot of the pre-reconfigure state), and graceful stop (`shutdownAndReset`, `:634`) — plus a re-persist immediately after a restore-from-disk (`applyRestoredState`, `:1297`), which is an echo of a load, not an independent trigger.
 - **Payload is not structured/diffable TOML.** `feature-catalog.md:122` currently claims "Cluster metadata serialized to TOML file... Git provides versioning, history, diffs." In fact `AetherNode::snapshotToBase64`/`::base64ToSnapshot` are wired as the `snapshotToToml`/`tomlToSnapshot` hooks (`AetherNode.java:613-620`), so the on-disk file is `"# Phase: N\n" + Base64(rawBytes)` (`GitBackedPersistence.save`), and the raw bytes come from a generic `serializer.encode(new HashMap<>(storage))` (`KVStore.makeSnapshot`, `integrations/cluster/.../KVStore.java:210-212`) — a per-key structured dump never happens on this path. An opaque base64 blob is not meaningfully diffable; `feature-catalog.md` (row 206, `KV-Store durable backup`) already states this correction — no outstanding sync between the two docs.
 - **There is no backup API or CLI (#676).** `POST|GET /api/v1/backups` and the `backup`/`backups` command trees were wired to `BackupService.disabled()` at both node-construction sites, and no other implementation of that interface ever existed (`git log -S'implements BackupService'` finds only the introducing commit `1dc452bf0`, whose sole implementor is the disabled record) — every call returned `backup-disabled` in every configuration. The surface was removed rather than wired: a real service needs leader-coordinated snapshot/restore against live consensus (#660 territory), not a route. The on-disk snapshot is written to a sibling temp file, fsynced and renamed over `state.toml`, so an interrupted save leaves the previous snapshot intact (`GitBackedPersistenceTest`); the git history in `[backup] path` is the list of backups.
+- **The old path's read side RESTORES — it is not detect-only.** With `[backup]` set, a restarting node
+  installs a whole consensus snapshot at boot through sync adoption: the most advanced state among its
+  sync responders, or — when every responder is behind it — its OWN persisted snapshot
+  (`RabiaEngine.adoptCollectedState` → `activateWithoutAdoption` → `restoreOwnState`, #1020). Only the
+  boot future-history check (§6.4) is detect-only. `[verified: ApiKeyFullRestartForgeTest]` — a minted
+  API key survives a full graceful restart on every node, including the one whose snapshot was ahead of
+  its responders.
+- **Interim hazards of the old path, removed by #1533 with the path itself** `[mechanism: read from code]`:
+  - it restores the WHOLE KV, runtime keys included (for example `StreamPartitionOwnershipKey`),
+    contrary to the #1530 classification and the OQ-25 reversal;
+  - it restores `ClusterIncarnationKey` as it was and never advances it, so an incarnation increase on
+    cold restart is NOT guaranteed until #1533;
+  - it ignores `[backup] enabled` (only a non-blank path selects it; Ember passes `enabled = false`
+    with a path), and `[backup] interval` has no reader;
+  - (d) a cold restart restored from an OLDER snapshot comes back with the same lineage and incarnation
+    and a lower revision than the change-triggered backup head. While the head is ahead nothing is backed
+    up and the head is never written over; the only signal is one `BACKUP_HEAD_AHEAD` warning per episode
+    once the stall outlasts 30 s. Once this cluster's revision overtakes the head's, its state is written
+    OVER the newer head — replaced, not merely delayed — and git history keeps the replaced commit; the
+    replacement raises `BACKUP_HEAD_REPLACED` (WARN, naming the replaced revision), never an all-clear
+    `[verified: KvBackupServiceTest.Lineage#afterAnOldPathRestart_theStallIsWarned_andTheOvertakingStateReplacesTheHead]`
+    (unit level, real git; no multi-node run).
+- **The change-triggered backup (#1532)** is a separate, leader-only git repository at
+  `<path>/kv-backup`, written only when `[backup] enabled = true`; it backs up cluster-state keys only
+  and nothing reads it back until #1533 `[design intent — unverified]`. **The remote's lineage changes
+  only by an operator declaration** (`aether backup declare-genesis`, which commits a declaration for
+  exactly this cluster's lineage and incarnation): a head of any other lineage is gated, whatever the
+  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. A head of this cluster's own lineage that is ahead of its state is never written over while it is
+  ahead; routine lag after a leader change resolves by itself, and a stall longer than 30 s (monotonic
+  clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`
+  `[unverified: a false-positive BACKUP_HEAD_AHEAD WARN needs >30 s apply lag in a newly elected leader;
+  election catch-up criterion not checked]`.
+  `declare-genesis` never moves this cluster's incarnation backwards (it commits `max(own, head) + 1`,
+  witnessed on the incarnation it read, so a concurrent write makes it refuse instead of being
+  overwritten) and is safe to re-run after any push failure `[verified: KvBackupServiceTest.Genesis]`. The release does not cut with
+  both paths live: #1533 deletes the old one.
 
 **Declared vs. derivable — the type system is the authoritative split (#1530).** Every `AetherKey` is either `AetherKey.ClusterStateKey` (cluster state, carried in a KV backup for a whole-cluster cold restart) or `AetherKey.RuntimeKey` (rebuilt by the running cluster, never backed up); `AetherKey` permits nothing else, so a new key cannot skip the choice `[mechanism: sealed interface AetherKey permits ClusterStateKey, RuntimeKey]`. `ConfigKey` backs up only its cluster-wide rows (`ConfigKey.isBackedUp()` is false for node-scoped overrides). The backup format is `BackupEntryCodec` (#1531). The earlier hand-maintained `EphemeralKeys` set and the TOML `KVStoreSerializer` it served are deleted — neither had a production caller. The split is pinned by `BackupKeyClassificationTest` (no backed-up key or value may reach a `NodeId` outside a commented allowlist), which is a unit-level pin, not a live-path verification: no restore path consumes a backup yet `[design intent — unverified]`.
 
 **Dead key types, deleted (#1530):** `StorageBlockKey`, `StorageRefKey`, `CloudCredentialsKey`, `StreamMetadataKey`, `AbTestRoutingKey`, with their value records — no production writer or reader. Their wire tags stay pinned as RETIRED in `SystemTags` so they are never reused. `StreamPartitionAssignmentKey` was removed earlier by #1271.
 
-**Wired end to end: `GossipKeyRotationKey` (#683).** An emergency rotation is operator-triggered: `POST /cluster/gossip-key/rotate` (`GossipKeyRoutes.rotate`; CLI `aether cluster rotate-gossip-key`) writes the key through consensus and confirms that the committed record is the one it wrote. Every node applies it through the `GossipKeyRotationKey` subscription to `GossipKeyRotationHandler::onGossipKeyRotationPut` in `AetherNode`, the sole delivery path (a late joiner receives the current rotation as a replayed put). For backups it is runtime state (#1530): a whole-cluster cold restart does not restore it, so an emergency rotation is reverted and the gossip key is regenerated on restore `[design intent — unverified]`.
+**Wired end to end: `GossipKeyRotationKey` (#683).** An emergency rotation is operator-triggered: `POST /cluster/gossip-key/rotate` (`GossipKeyRoutes.rotate`; CLI `aether cluster rotate-gossip-key`) writes the key through consensus and confirms that the committed record is the one it wrote. Every node applies it through the `GossipKeyRotationKey` subscription to `GossipKeyRotationHandler::onGossipKeyRotationPut` in `AetherNode`, the sole delivery path (a late joiner receives the current rotation as a replayed put). For backups it is runtime state (#1530): the change-triggered backup excludes it, so a restore from that backup (#1533) reverts an emergency rotation and the gossip key is regenerated `[design intent — unverified]`. Until #1533 removes it, the old consensus-snapshot path still restores it with the whole KV.
 
 **Earned key types, spot-checked:**
 - `StreamCursorCheckpointKey` — resolved via `ClusterCursorStore` (see §4 row 19); the ticket's original "may not be durable" guess is superseded. Since #1271 it is `AssignmentGuarded`: the applier admits a write only from the committed `ConsumerAssignmentKey` assignee at that record's epoch (`KVStore.unassignedWrite`).
