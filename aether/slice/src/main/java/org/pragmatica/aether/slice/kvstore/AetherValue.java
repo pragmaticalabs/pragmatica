@@ -1287,7 +1287,13 @@ public sealed interface AetherValue {
                                  int weight,
                                  long registeredAt,
                                  String security,
-                                 String declaredSecurity) {
+                                 String declaredSecurity,
+                                 int pathArity,
+                                 List<String> spacers) {
+            public RouteEntry {
+                spacers = List.copyOf(spacers);
+            }
+
             public static RouteEntry activeRoute(String httpMethod,
                                                  String pathPrefix,
                                                  String sliceMethod,
@@ -1300,6 +1306,19 @@ public sealed interface AetherValue {
                                                  String sliceMethod,
                                                  String security,
                                                  String declaredSecurity) {
+                return activeRoute(httpMethod, pathPrefix, sliceMethod, security, declaredSecurity, 0, List.of());
+            }
+
+            /// #1678: `pathArity` and `spacers` are the route's SHAPE beyond its base path. Sibling routes of one
+            /// slice share `pathPrefix` (`GET /orders/{id}` and `GET /orders/{id}/admin` are both `/orders/`); the
+            /// shape is what lets a node that does not host the route pick the sibling a request is served by.
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security,
+                                                 String declaredSecurity,
+                                                 int pathArity,
+                                                 List<String> spacers) {
                 return new RouteEntry(httpMethod,
                                       pathPrefix,
                                       sliceMethod,
@@ -1307,7 +1326,9 @@ public sealed interface AetherValue {
                                       100,
                                       System.currentTimeMillis(),
                                       security,
-                                      declaredSecurity);
+                                      declaredSecurity,
+                                      pathArity,
+                                      spacers);
             }
 
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
