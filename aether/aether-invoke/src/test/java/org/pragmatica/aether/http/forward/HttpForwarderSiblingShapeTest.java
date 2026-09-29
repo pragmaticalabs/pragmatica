@@ -71,9 +71,13 @@ class HttpForwarderSiblingShapeTest {
         var admin = registry.allRoutes()
                             .getFirst()
                             .servingShape("/orders/5/admin");
-        var ctx = HttpRequestContext.httpRequestContext("/orders/5/admin", "GET", Map.of(), Map.of(), "req-sibling");
+        // Several forwards, so the round-robin initial pick rotates through every candidate it was handed -- a
+        // candidate set spanning the whole base would reach A or C within these.
+        for (var i = 0; i < 6; i++) {
+            var ctx = HttpRequestContext.httpRequestContext("/orders/5/admin", "GET", Map.of(), Map.of(), "req-sibling-" + i);
 
-        forwarder.forward(ctx, admin, "req-sibling").await();
+            forwarder.forward(ctx, admin, "req-sibling-" + i).await();
+        }
 
         assertThat(network.sendTargets()).as("CONTROL: the forward was retried at least once").hasSizeGreaterThan(1);
         assertThat(network.distinctSendTargets()).as("only the nodes serving the admin sibling, retries included")
