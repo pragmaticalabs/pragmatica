@@ -380,6 +380,8 @@ public interface AetherNode extends ManageableNode {
     /// aggregator requests and must stay >= that maxCount so a single fetch covers the full retained
     /// window (the B5a/#239 fix). The default retention maxCount equals this value.
     long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
+    /// How often a node re-sends cluster events whose publish has not landed yet (#1640).
+    TimeSpan CLUSTER_EVENT_REDELIVERY_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// #336 — system property carrying the absolute path of the config file this node loaded
     /// (published by [org.pragmatica.aether.Main] where it resolves `--config=`). The CTM
     /// placeholder-resolution path reads it via [#parseOwnResolvedConfig] to source the leader's own
@@ -3169,6 +3171,11 @@ public interface AetherNode extends ManageableNode {
                                                                             // suppressed. This supplier is what lets the aggregator tell
                                                                             // that hole apart from ordinary non-ownership.
                                                                            );
+        // #1640: a cluster event whose publish did not land (the partition's owner died with it) waits in the
+        // aggregator and is re-sent once a second until it lands or its horizon passes.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,
+                                                                      CLUSTER_EVENT_REDELIVERY_INTERVAL,
+                                                                      CLUSTER_EVENT_REDELIVERY_INTERVAL));
         var placementReconciler = org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler.communityPlacementReconciler(config.self(),
                                                                                                                                      kvStore,
                                                                                                                                      clusterCommandApplier,
@@ -7930,6 +7937,9 @@ public interface AetherNode extends ManageableNode {
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);
+        // #1640: a new cluster-events owner re-sends every event waiting for redelivery at once.
+        kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                              eventAggregator::onStreamPartitionOwnershipPut);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));
