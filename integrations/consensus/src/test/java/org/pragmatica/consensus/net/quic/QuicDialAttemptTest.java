@@ -242,6 +242,9 @@ class QuicDialAttemptTest {
         assertThat(nodes.stream().mapToLong(node -> node.network().quicMetrics().dialAbandonedCount()).sum())
             .as("arming: exactly the four seeds' dials to the late core were abandoned")
             .isEqualTo(late);
+        assertThat(nodes.stream().mapToLong(node -> node.network().quicMetrics().handshakeFailureCount()).sum())
+            .as("no abandoned dial is reported as a connect failure of a CONNECTED peer")
+            .isZero();
         nodes.forEach(node -> assertThat(causes(node.journal())).as("nothing superseded at " + node.id())
                                                                 .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES));
     }

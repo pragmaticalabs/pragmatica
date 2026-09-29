@@ -403,8 +403,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     /// by [#handleBind], which sees the stage.
     private void releaseAbandoned(NodeId peerId, DialAttempt attempt) {
         log.debug("Abandoning pending QUIC dial to {}: the peer is connected over another link", peerId);
-        option(attempt.datagram().get()).onPresent(channel -> releaseDatagram(peerId, channel));
+        // Fail the dial BEFORE closing its socket: the close fails Netty's pending connect on the client event loop
+        // (QuicClosedChannelException → a generic ConnectFailed), and whichever resolves the promise first wins. The
+        // typed cause must win, or the abandoned dial is reported as a connect failure of a CONNECTED peer.
         attempt.promise().fail(QuicTransportError.DialAbandoned.FACTORY.apply(peerId));
+        option(attempt.datagram().get()).onPresent(channel -> releaseDatagram(peerId, channel));
     }
 
     private void releaseDatagram(NodeId peerId, Channel channel) {

@@ -121,6 +121,9 @@ class QuicLateDesignatedDialTest {
             assertThat(lowNet.quicMetrics().dialAbandonedCount())
                 .as("arming: the lower id's own dial was still pending when the peer's link attached, and was abandoned")
                 .isEqualTo(1);
+            assertThat(lowNet.quicMetrics().handshakeFailureCount())
+                .as("the abandoned dial is never reported as a connect failure of the CONNECTED peer")
+                .isZero();
 
             Arrays.stream(StreamType.values())
                   .forEach(lane -> sendProbes(lane, lowNet, low, highNet, high));
