@@ -47,6 +47,19 @@ class ForwardCatchupTransportTest {
         assertThat(source.reads().get()).isEqualTo(3);
     }
 
+    /// #1638 B2: every page received is reported as progress, so a long catch-up is seen as moving. Red under "pages
+    /// are not reported".
+    @Test
+    void requestCatchup_reportsEachPageReceived() {
+        var source = new FakeForwardSource(eventsFrom(0, 5));
+        var transport = forwardCatchupTransport(source, 2);
+        var pages = new AtomicInteger();
+
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L), pages::incrementAndGet).await();
+
+        assertThat(pages.get()).as("one report per forward read").isEqualTo(source.reads().get()).isEqualTo(3);
+    }
+
     @Test
     void requestCatchup_exactMultipleOfBatch_drainsWithTrailingEmptyPage() {
         // 4 events, batch 2 ⇒ [0,1],[2,3] are both full pages, so a 3rd (empty) read is needed.

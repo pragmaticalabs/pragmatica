@@ -23,6 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -231,6 +232,34 @@ class PartitionBackfillTest {
             } finally {
                 pager.shutdownNow();
             }
+        }
+
+        /// #1638 B2: an apply slower than the idle bound in total -- 10 records at 50 ms each against a 200 ms bound --
+        /// keeps its slot, because each applied record is progress. Red under "applied records are not reported".
+        @Test
+        void slowApply_keepsItsSlot_whileRecordsLand() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 9L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var slowAppends = AlignedRecovery.alignedRecovery((stream, partition, offset, payload, timestamp) -> {
+                                                                  LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+
+                                                                  return recovery.appendRecovered(stream,
+                                                                                                  partition,
+                                                                                                  offset,
+                                                                                                  payload,
+                                                                                                  timestamp);
+                                                              },
+                                                              recovery::applyAttributed,
+                                                              recovery::applyUnattributed);
+            var backfill = partitionBackfill(registry,
+                                             slowAppends,
+                                             fixedSource(eventsFrom(0, 10)),
+                                             SELF,
+                                             TimeSpan.timeSpan(200).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).or(-1L))
+                    .as("the slow apply completed rather than timing out").isEqualTo(10L);
         }
 
         /// #1638 B1: a run that lands after its flight timed out must not evict the NEXT flight from the slot. The old
