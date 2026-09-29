@@ -410,7 +410,6 @@ public interface HttpForwarder {
 
                     return resultPromise;
                 }
-
                 // #1678: the identity names the sibling SHAPE too, so a retry re-reads candidates for that sibling only.
                 var routeIdentity = httpMethod + ":" + pathPrefix + shapeKey;
 

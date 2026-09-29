@@ -136,8 +136,7 @@ public interface HttpRouteRegistry {
         RouteInfo withoutSource(RouteSource source) {
             var updated = new HashMap<>(securityBySource);
 
-            updated.keySet()
-                   .removeIf(entry -> entry.publishedBy(source.nodeId(), source.artifact()));
+            updated.keySet().removeIf(entry -> entry.publishedBy(source.nodeId(), source.artifact()));
 
             return new RouteInfo(httpMethod, pathPrefix, updated);
         }
@@ -151,9 +150,8 @@ public interface HttpRouteRegistry {
                                          .stream()
                                          .map(source -> source.shape(pathPrefix))
                                          .distinct()
-                                         .sorted(Comparator.comparingInt(ShapeView::pathParamCount)
-                                                           .thenComparing(shape -> String.join("/",
-                                                                                               shape.spacers())))
+                                         .sorted(Comparator.comparingInt(ShapeView::pathParamCount).thenComparing(shape -> String.join("/",
+                                                                                                                                       shape.spacers())))
                                          .toList();
 
             return RouteShapeSelector.select(shapes, path)
@@ -167,11 +165,7 @@ public interface HttpRouteRegistry {
 
         /// The sibling shape this route is narrowed to, as `#<arity>:<spacer/spacer>`; empty when it spans several.
         public String shapeKey() {
-            var shapes = securityBySource.keySet()
-                                         .stream()
-                                         .map(source -> source.shape(pathPrefix))
-                                         .distinct()
-                                         .toList();
+            var shapes = securityBySource.keySet().stream().map(source -> source.shape(pathPrefix)).distinct().toList();
 
             return shapes.size() == 1
                    ? keyOf(shapes.getFirst())
@@ -186,10 +180,8 @@ public interface HttpRouteRegistry {
                                    pathPrefix,
                                    securityBySource.entrySet()
                                                    .stream()
-                                                   .filter(entry -> keyOf(entry.getKey()
-                                                                               .shape(pathPrefix)).equals(shapeKey))
-                                                   .collect(Collectors.toMap(Map.Entry::getKey,
-                                                                             Map.Entry::getValue)));
+                                                   .filter(entry -> keyOf(entry.getKey().shape(pathPrefix)).equals(shapeKey))
+                                                   .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue)));
         }
 
         private static String keyOf(ShapeView shape) {
@@ -204,8 +196,7 @@ public interface HttpRouteRegistry {
                                                  .filter(entry -> entry.getKey()
                                                                        .shape(pathPrefix)
                                                                        .equals(shape))
-                                                 .collect(Collectors.toMap(Map.Entry::getKey,
-                                                                           Map.Entry::getValue)));
+                                                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue)));
         }
 
         RouteInfo withoutNode(NodeId nodeId) {

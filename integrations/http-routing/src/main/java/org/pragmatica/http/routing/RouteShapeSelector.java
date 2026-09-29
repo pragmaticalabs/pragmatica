@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.pragmatica.lang.Option;
 
+
 /// The ONE rule that picks, among routes sharing a base path, the route a request path is served by (#1678).
 /// [RequestRouter] dispatches through it, and a node authorizing a request for a route it does not host selects
 /// through it too, so the route that is authorized and the route that serves cannot be different siblings.
@@ -70,8 +71,7 @@ public final class RouteShapeSelector {
     /// spacer-free candidate left there is nothing that can serve the path — a miss, not the first
     /// registered route.
     private static <T extends RouteShape> Option<T> findArityMatchingRoute(List<T> candidates, String inputPath) {
-        var trailingSegments = trailingSegmentCount(candidates.getFirst()
-                                                              .path(),
+        var trailingSegments = trailingSegmentCount(candidates.getFirst().path(),
                                                     inputPath);
 
         return Option.from(candidates.stream()

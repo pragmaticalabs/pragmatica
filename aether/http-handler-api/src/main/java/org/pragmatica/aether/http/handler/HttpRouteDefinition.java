@@ -66,7 +66,13 @@ public record HttpRouteDefinition(String httpMethod,
 
     /// The same route with another policy -- an override applied, or the policy of the sibling actually served.
     public HttpRouteDefinition withSecurity(SecurityPolicy newSecurity) {
-        return new HttpRouteDefinition(httpMethod, pathPrefix, artifactCoord, sliceMethod, newSecurity, pathArity, spacers);
+        return new HttpRouteDefinition(httpMethod,
+                                       pathPrefix,
+                                       artifactCoord,
+                                       sliceMethod,
+                                       newSecurity,
+                                       pathArity,
+                                       spacers);
     }
 
     /// [RouteShape]: the base path is the prefix.

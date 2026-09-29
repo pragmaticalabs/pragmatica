@@ -802,11 +802,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                                                .map(route -> new ServedRoute(entry.getKey(),
                                                                                              route)))
                                         .toList();
-        var longest = candidates.stream()
-                                .mapToInt(served -> served.definition()
-                                                          .pathPrefix()
-                                                          .length())
-                                .max();
+        var longest = candidates.stream().mapToInt(served -> served.definition()
+                                                                   .pathPrefix()
+                                                                   .length()).max();
 
         if (longest.isEmpty()) {
             return Option.none();
@@ -819,9 +817,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                              .sorted(Comparator.comparing(served -> served.definition()
                                                                           .artifactCoord()))
                              .toList();
-        var shapes = base.stream()
-                         .map(ServedRoute::definition)
-                         .toList();
+        var shapes = base.stream().map(ServedRoute::definition).toList();
 
         return Option.some(RouteShapeSelector.select(shapes,
                                                      routerPath(path))
@@ -840,22 +836,16 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                             .toList();
 
         return new ServedRoute(served.artifact(),
-                               served.definition()
-                                     .withSecurity(strictest(sameShape).or(served.definition()
-                                                                                 .security())));
+                               served.definition().withSecurity(strictest(sameShape).or(served.definition().security())));
     }
 
     private static ServedRoute strictestOfTheBase(List<ServedRoute> base) {
         var first = base.getFirst();
-        var policies = base.stream()
-                           .map(served -> served.definition()
-                                                .security())
-                           .toList();
+        var policies = base.stream().map(served -> served.definition()
+                                                         .security()).toList();
 
         return new ServedRoute(first.artifact(),
-                               first.definition()
-                                    .withSecurity(strictest(policies).or(first.definition()
-                                                                              .security())));
+                               first.definition().withSecurity(strictest(policies).or(first.definition().security())));
     }
 
     private static boolean sameShape(HttpRouteDefinition left, HttpRouteDefinition right) {
@@ -867,8 +857,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// equal strengths are ordered by the canonical string so the answer is the same on every node.
     private static Option<SecurityPolicy> strictest(List<SecurityPolicy> policies) {
         return Option.from(policies.stream()
-                                   .max(Comparator.comparingInt(HttpRoutePublisherImpl::strictness)
-                                                  .thenComparing(SecurityPolicy::asString)));
+                                   .max(Comparator.comparingInt(HttpRoutePublisherImpl::strictness).thenComparing(SecurityPolicy::asString)));
     }
 
     private static int strictness(SecurityPolicy policy) {
@@ -882,9 +871,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// The router matches a request path as the client sent it; `findLocalRoute` callers pass the normalized
     /// form, whose added trailing slash would read as an extra empty segment.
     private static String routerPath(String path) {
-        var stripped = Option.option(path)
-                             .map(String::strip)
-                             .or("/");
+        var stripped = Option.option(path).map(String::strip).or("/");
 
         return stripped.length() > 1 && stripped.endsWith("/")
                ? stripped.substring(0, stripped.length() - 1)
