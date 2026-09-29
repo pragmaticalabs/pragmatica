@@ -210,6 +210,10 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         }
     }
 
+    /// **Not currently produced** (#927): no production code constructs it. Forward-declared and kept
+    /// because wire tag 263 pins the type; retiring a tag is a codec-table change. Do not build a
+    /// consumer, dashboard or runbook for it until a producer exists — `ClusterEventProducerCensusTest`
+    /// fails the build when one lands, so this note cannot outlive the fact.
     record CommunityScaleRequest(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
         @Override
         public ClusterEvent withDetail(String key, String value) {
@@ -276,6 +280,10 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     }
 
     /// Stream lifecycle event: a stream was registered (spec §13.1).
+    ///
+    /// **Not currently produced** (#927): the spec's emission point was never wired, so no production
+    /// code constructs it (feature catalog: deferred). Forward-declared and kept because wire tag 288
+    /// pins the type. `ClusterEventProducerCensusTest` fails the build when a producer lands.
     record StreamRegistered(HlcTimestamp at,
                             Severity severity,
                             String summary,
@@ -288,6 +296,8 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     }
 
     /// Stream lifecycle event: a stream was deleted (spec §13.2).
+    ///
+    /// **Not currently produced** (#927): as [StreamRegistered]; wire tag 286 pins the type.
     record StreamDeleted(HlcTimestamp at,
                          Severity severity,
                          String summary,
