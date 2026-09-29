@@ -153,7 +153,7 @@ Restart=no
 # DO NOT use Restart=on-failure or Restart=always
 ```
 
-The operator-supplied systemd may be appropriate for launching aether-node on host boot (same role as cloud-init's `docker run`), but it must not respawn on exit.
+The unit must not respawn on exit, and it must not start on host boot either (`systemctl start`, never `enable`) while the node id is fixed per host. A node that has been gone long enough is removed for good, so a rebooted host that relaunched it under the same id would be refused and never rejoin (#1467, #1543). A host that should come back after a reboot rejoins under a NEW node id. Aether's own cloud-init starts the unit without enabling it, and runs its container with `--restart no`.
 
 ### 4.5 Heap exhaustion exits the process — exit code 3
 

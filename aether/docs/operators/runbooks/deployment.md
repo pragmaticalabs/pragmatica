@@ -113,9 +113,11 @@
 4. **Start service**
    ```bash
    systemctl daemon-reload
-   systemctl enable aether
    systemctl start aether
    ```
+   Do not `systemctl enable` the unit. The node id is fixed per host (`--node-id=%H`), and a node that has
+   been gone long enough is removed for good: a rebooted host that restarted it under the same id would be
+   refused. After a reboot, rejoin the host under a NEW node id (deployment-recovery.md §1 and §4.4).
 
 5. **Verify node joined cluster**
    ```bash

@@ -523,10 +523,13 @@ public sealed interface NodeUserDataRenderer {
         sb.append("chmod 0755 ").append(JVM_LAUNCHER_PATH).append("\n\n");
     }
 
-    /// Install and start the unit. `enable --now` both starts it and links it into
-    /// `multi-user.target`, so a rebooted host brings the node back — which is a HOST-level concern
-    /// and distinct from restarting a crashed process, the distinction
-    /// `aether/docs/operators/deployment-recovery.md` §2.3 draws.
+    /// Install and START the unit — never `enable` it. The node id is fixed per VM, and membership is
+    /// terminal-removal: once a node has been gone long enough to be removed, its id can never be admitted
+    /// again. An enabled unit (linked into `multi-user.target`) relaunched a rebooted VM under that removed
+    /// id, so the rejoin was refused and the VM kept billing without ever joining — the same-id hazard
+    /// behind #1467 and #1543. A rebooted host is replaced by CTM auto-heal under a FRESH id, as
+    /// `aether/docs/operators/deployment-recovery.md` §2.3 describes. The container path already runs
+    /// `docker run --restart no` for the same reason.
     private static void appendJvmUnit(StringBuilder sb) {
         sb.append("# --- Install and start the aether-node systemd unit ---\n");
         sb.append("# Restart=no is deliberate: Aether uses terminal-removal membership and CTM auto-heal\n");
@@ -536,7 +539,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append(SystemdUnitTemplate.generateDefault());
         sb.append("AETHER_UNIT\n");
         sb.append("systemctl daemon-reload\n");
-        sb.append("systemctl enable --now ").append(JVM_UNIT_NAME).append("\n\n");
+        sb.append("systemctl start ").append(JVM_UNIT_NAME).append("\n\n");
     }
 
     private static Unit appendEnvFileLine(StringBuilder sb, String name, String value) {

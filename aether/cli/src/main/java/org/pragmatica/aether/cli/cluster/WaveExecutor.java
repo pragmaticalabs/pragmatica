@@ -91,7 +91,7 @@ public final class WaveExecutor {
                                                                                    source,
                                                                                    role,
                                                                                    count,
-                                                                                   desired.cluster().name()))
+                                                                                   desired))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -109,11 +109,7 @@ public final class WaveExecutor {
 
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> rejectSshScaleUp(source, sourceName))
-                           .flatMap(source -> dispatchProvision(sourceName,
-                                                                source,
-                                                                role,
-                                                                delta,
-                                                                desired.cluster().name()))
+                           .flatMap(source -> dispatchProvision(sourceName, source, role, delta, desired))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -132,26 +128,52 @@ public final class WaveExecutor {
                                                                    SourceProfile source,
                                                                    NodeRole role,
                                                                    int count,
-                                                                   ClusterName clusterName) {
+                                                                   ClusterBootstrapConfig desired) {
         return switch (source.type()) {
-            case CLOUD -> resolveCloudAndProvision(sourceName, source, role, count, clusterName);
-            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, clusterName);
+            case CLOUD -> resolveCloudAndProvision(source, role, count, desired);
+            case DOCKER -> resolveDockerAndProvision(sourceName,
+                                                     role,
+                                                     count,
+                                                     source,
+                                                     desired.cluster().name());
             case FORGE -> forgeProvisionPlaceholder(sourceName, role, count);
             case SSH -> sshProvisionPlaceholder(sourceName, role, source);
         };
     }
 
-    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceName sourceName,
-                                                                          SourceProfile source,
+    /// #1695 / #1027: a CLOUD node is provisioned through [WaveNodeProvisioning] — rendered user-data carrying the
+    /// cluster identity and live peers, a freshly minted unique node id, and a zone placement only when the source
+    /// names one — so it boots able to join.
+    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceProfile source,
                                                                           NodeRole role,
                                                                           int count,
-                                                                          ClusterName clusterName) {
-        return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionViaCompute(compute,
-                                                                                                   sourceName,
-                                                                                                   role,
-                                                                                                   count,
-                                                                                                   source,
-                                                                                                   clusterName));
+                                                                          ClusterBootstrapConfig desired) {
+        var clusterName = desired.cluster().name();
+
+        return WaveNodeProvisioning.resolveJoinInputs(clusterName).flatMap(inputs -> ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionCloudNodes(compute,
+                                                                                                                                                                         desired,
+                                                                                                                                                                         source,
+                                                                                                                                                                         role,
+                                                                                                                                                                         count,
+                                                                                                                                                                         inputs)));
+    }
+
+    /// The CLOUD wave provisioning itself, with the provider and the join inputs already resolved. Package-private
+    /// so a test drives the real composition — minted ids, rendered user-data, optional zone — against a fake
+    /// provider.
+    static Result<List<ProvisionedNode>> provisionCloudNodes(ComputeProvider compute,
+                                                             ClusterBootstrapConfig desired,
+                                                             SourceProfile source,
+                                                             NodeRole role,
+                                                             int count,
+                                                             WaveNodeProvisioning.JoinInputs inputs) {
+        return WaveNodeProvisioning.provisionCloud(compute,
+                                                   desired,
+                                                   source,
+                                                   role,
+                                                   count,
+                                                   inputs,
+                                                   WaveNodeProvisioning.mintedIds(desired.cluster().name()));
     }
 
     private static Result<List<ProvisionedNode>> resolveDockerAndProvision(SourceName sourceName,
@@ -415,11 +437,7 @@ public final class WaveExecutor {
                                                                  NodeRole role,
                                                                  ClusterBootstrapConfig desired) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
-                                                                                   source,
-                                                                                   role,
-                                                                                   1,
-                                                                                   desired.cluster().name()))
+                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, 1, desired))
                            .flatMap(nodes -> waitForNewNodes(nodes,
                                                              desired.operations().ports().management()));
     }
@@ -484,11 +502,8 @@ public final class WaveExecutor {
                                                            int managementPort) {
         logAction("~", "  provisioning " + count + " new " + role.value() + " node(s)...");
 
-        return dispatchProvision(sourceName,
-                                 newSource,
-                                 role,
-                                 count,
-                                 desired.cluster().name()).flatMap(nodes -> waitForNewNodes(nodes, managementPort))
+        return dispatchProvision(sourceName, newSource, role, count, desired).flatMap(nodes -> waitForNewNodes(nodes,
+                                                                                                               managementPort))
                                 .flatMap(_ -> drainOldNodes(sourceName, role, count, desired))
                                 .map(count2 -> logAndCount("~",
                                                            "  " + sourceName
