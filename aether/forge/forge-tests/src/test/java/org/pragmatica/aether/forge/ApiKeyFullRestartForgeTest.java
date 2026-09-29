@@ -24,8 +24,10 @@ import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -50,18 +52,20 @@ import static org.awaitility.Awaitility.await;
 /// (owner ruling, 2026-09-28). Restarting the same NodeIds with empty state is not a restart mode (#1543).
 ///
 /// The shape under test:
-/// 1. cluster A (`akr-1..3`) holds cluster state — a minted API key, a deployed slice, the system streams —
+/// 1. cluster A (`akr-1..3`) holds cluster state — a minted API key, a deployed slice, a user stream —
 ///    and its change-triggered backup (#1532) reaches the shared `[backup] remote`;
 /// 2. every node of A stops;
 /// 3. cluster B (`akrb-1..3`, fresh identities) starts with `restore = auto`: genesis forms exactly as a
 ///    regular start does, the leader restores the backup head before any cluster-state write is admitted
 ///    (`BackupRestoreCoordinator`, `RestoreGate`), and the incarnation moves past A's (#1621);
 /// 4. the restored state is live on B: the key is accepted on every node, the slice is ACTIVE on B's
-///    nodes, and nothing names a node of A — placements and stream partition owners are runtime keys, never
-///    backed up, so B assigns its own (`BackupKeyClassificationTest` pins that no backed-up key or value
-///    reaches a NodeId);
-/// 5. the control: cluster C (`akrc-1..3`) with `restore = "fresh"` ignores the backup, and the key is
-///    REFUSED on every node — so the acceptance in 4 is the restore's doing.
+///    nodes, the user stream (restored from its `StreamConfigKey`) has partition owners on B's nodes only, and
+///    nothing names a node of A — placements and stream partition owners are runtime keys, never backed up,
+///    so B assigns its own (`BackupKeyClassificationTest` pins that no backed-up key or value reaches a
+///    NodeId). The USER stream is what makes the stream half evidence of the restore: system streams are
+///    re-seeded by every cluster, restored or not;
+/// 5. the control: cluster C (`akrc-1..3`) with `restore = "fresh"` ignores the backup: the key is REFUSED on
+///    every node and the user stream does not exist — so the acceptance in 4 is the restore's doing.
 ///
 /// Management security is `API_KEY` with one config-declared ADMIN key, because under Ember's default
 /// `SecurityMode.NONE` the management API skips authentication entirely and "accepted" would be
@@ -85,6 +89,7 @@ class ApiKeyFullRestartForgeTest {
     private static final String MINTED_KEY_ID = "first";
     private static final String KEYS_PATH = "/api/v1/cluster/keys";
     private static final String BLUEPRINT_ID = "forge.test:full-restart:1.0.0";
+    private static final String USER_STREAM = "forge.test:restore-probe:1.0.0";
     private static final String SLICE = TestArtifacts.ECHO_SLICE;
     private static final String BACKUP_BRANCH = "kv-backup";
     private static final String BACKUP_FILE = "kv-backup.txt";
@@ -119,8 +124,15 @@ class ApiKeyFullRestartForgeTest {
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
              .until(this::sliceActive);
+        createUserStream();
+        await().alias("the user stream's config is committed on cluster A")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> userStreamConfigured());
         awaitBackupHeadContains("api-key/" + MINTED_KEY_ID);
         awaitBackupHeadContains("app-blueprint/" + BLUEPRINT_ID);
+        awaitBackupHeadContains(StreamConfigKey.streamConfigKey(USER_STREAM)
+                                               .asString());
         var incarnationA = incarnationOf(cluster);
 
         LifecycleAwait.settled("stop of every node of cluster A", cluster, cluster.stop());
@@ -135,15 +147,17 @@ class ApiKeyFullRestartForgeTest {
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
              .until(() -> sliceActive() && sliceInstancesOnlyOn(PREFIX_B));
-        await().alias("every stream partition owner is a node of cluster B")
+        await().alias("the restored user stream has partition owners, all of them nodes of cluster B")
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
-             .until(() -> streamOwnersOnlyOn(PREFIX_B));
+             .until(() -> userStreamOwnersOnlyOn(PREFIX_B));
 
         LifecycleAwait.settled("stop of every node of cluster B", cluster, cluster.stop());
 
         cluster = startCluster(PREFIX_C, RestoreMode.FRESH);
         assertRefused(MINTED_KEY, nodeIds(PREFIX_C));
+        assertThat(userStreamConfigured()).as("a fresh cluster has no user stream").isFalse();
+        assertThat(userStreamOwners()).as("and no owners for it").isEmpty();
     }
 
     // --- clusters -----------------------------------------------------------
@@ -218,7 +232,29 @@ class ApiKeyFullRestartForgeTest {
                                                     .startsWith(prefix + "-"));
     }
 
-    private boolean streamOwnersOnlyOn(String prefix) {
+    private void createUserStream() {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderMgmtPort() + "/api/v1/streams"))
+                                 .header("Content-Type", "application/json")
+                                 .header(API_KEY_HEADER, CONFIG_API_KEY)
+                                 .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"" + USER_STREAM + "\",\"partitions\":2}"))
+                                 .timeout(Duration.ofSeconds(15))
+                                 .build();
+        var response = send(request, "create " + USER_STREAM);
+
+        assertThat(response.statusCode()).as("create %s: %s", USER_STREAM, response.body())
+                  .isEqualTo(200);
+    }
+
+    private boolean userStreamConfigured() {
+        return cluster.allNodes()
+                      .getFirst()
+                      .kvStore()
+                      .getTyped(StreamConfigKey.streamConfigKey(USER_STREAM), StreamConfigValue.class)
+                      .isPresent();
+    }
+
+    private List<String> userStreamOwners() {
         var owners = new ArrayList<String>();
 
         cluster.allNodes()
@@ -226,8 +262,19 @@ class ApiKeyFullRestartForgeTest {
                .kvStore()
                .forEach(StreamPartitionOwnershipKey.class,
                         StreamPartitionOwnershipValue.class,
-                        (key, value) -> owners.add(value.owner()
-                                                        .id()));
+                        (key, value) -> {
+                            if (key.stream()
+                                   .equals(USER_STREAM)) {
+                                owners.add(value.owner()
+                                                .id());
+                            }
+                        });
+
+        return owners;
+    }
+
+    private boolean userStreamOwnersOnlyOn(String prefix) {
+        var owners = userStreamOwners();
 
         return !owners.isEmpty() && owners.stream()
                                           .allMatch(owner -> owner.startsWith(prefix + "-"));
