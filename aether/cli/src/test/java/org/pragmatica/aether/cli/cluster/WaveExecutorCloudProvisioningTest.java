@@ -160,25 +160,47 @@ class WaveExecutorCloudProvisioningTest {
                            .containsExactly(nodeId);
     }
 
-    /// CodeRabbit on #1716: a wave that fails part-way must not lose the nodes it already created. Those VMs are
-    /// running and billing, and their minted ids are not addressable by the rolling paths, so the failure names them
-    /// (node id and server id) for the operator to find.
+    /// CodeRabbit on #1716 (CTO ruling): a wave that fails part-way destroys, best-effort, every VM it already created.
+    /// Those VMs are paid, and their minted ids are unreachable by retry or rollback. Create 2, fail the 3rd: both are
+    /// terminated, and the failure carries the original error plus each node's teardown outcome.
     @Test
-    void provisionCloudNodes_failurePartWay_namesTheNodesAlreadyCreated() {
+    void provisionCloudNodes_failurePartWay_destroysTheVmsItCreated() {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
-        provider.failOnCall = 2;
+        provider.failOnCall = 3;
 
         var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
-        var createdId = provider.specs.getFirst().context().nodeId().unwrap();
 
-        assertThat(provider.specs).as("the wave stops at the failure").hasSize(2);
+        assertThat(provider.specs).as("the wave stops at the failure").hasSize(3);
+        assertThat(provider.terminated).as("every VM this wave created is destroyed").containsExactlyInAnyOrder("vm-1", "vm-2");
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).as("the created, still-running node is named")
-                                                             .contains(createdId)
-                                                             .contains("vm-1")
-                                                             .contains("capacity exhausted (test cause)"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("capacity exhausted (test cause)")
+                                                             .contains("destroyed " + nodeIdOf(provider, 0))
+                                                             .contains("destroyed " + nodeIdOf(provider, 1))
+                                                             .doesNotContain("STILL RUNNING"));
+    }
+
+    /// A destroy that fails leaves a paid VM running: the failure must name it loudly, with provider and server id.
+    @Test
+    void provisionCloudNodes_failurePartWay_namesAVmWhoseDestroyFailedAsStillRunning() {
+        var provider = new CapturingProvider();
+        var desired = parse(ZONED);
+
+        provider.failOnCall = 3;
+        provider.terminateFails = "vm-1";
+
+        var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("STILL RUNNING: hetzner server vm-1")
+                                                             .contains(nodeIdOf(provider, 0))
+                                                             .contains("destroyed " + nodeIdOf(provider, 1))
+                                                             .contains("1 VM(s) are STILL RUNNING"));
+    }
+
+    private static String nodeIdOf(CapturingProvider provider, int index) {
+        return provider.specs.get(index).context().nodeId().unwrap();
     }
 
     /// The peers a wave node dials are the LIVE CORE members from `GET /api/v1/nodes/live`: a worker, a dead core
@@ -210,7 +232,9 @@ class WaveExecutorCloudProvisioningTest {
     /// Captures every spec handed to the provider boundary and answers with a running instance.
     private static final class CapturingProvider implements ComputeProvider {
         private final List<ProvisionSpec> specs = new ArrayList<>();
+        private final List<String> terminated = new ArrayList<>();
         private int failOnCall = 0;
+        private String terminateFails = "";
 
         @Override
         public Promise<InstanceInfo> provision(ProvisionSpec spec) {
@@ -234,6 +258,12 @@ class WaveExecutorCloudProvisioningTest {
 
         @Override
         public Promise<Unit> terminate(InstanceId instanceId) {
+            if (instanceId.value().equals(terminateFails)) {
+                return Promise.failure(org.pragmatica.lang.utils.Causes.cause("provider refused the delete (test cause)"));
+            }
+
+            terminated.add(instanceId.value());
+
             return Promise.unitPromise();
         }
 
