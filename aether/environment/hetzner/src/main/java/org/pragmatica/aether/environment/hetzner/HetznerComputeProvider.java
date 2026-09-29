@@ -39,6 +39,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 
 import org.slf4j.Logger;
@@ -81,6 +82,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
             return SPOT_UNSUPPORTED.promise();
         }
 
+        if (!Verify.Is.present(request.zone())) {
+            return REGION_UNRESOLVED.promise();
+        }
+
         return requireClusterName(request.context()).fold(Cause::promise,
                                                           clusterName -> createLabelled(request, clusterName));
     }
@@ -116,6 +121,16 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                                                                               + "or the provider config. The server would carry no aether-cluster label, which no scoped "
                                                                                                               + "cleanup can find — it would leak as a billable orphan. Set the cluster name on the provisioning "
                                                                                                               + "context (bootstrap/CTM) or export AETHER_CLUSTER_NAME."));
+
+    /// #992 — a blank region never reaches the wire as `"location":""`. `cluster init` requires an explicit
+    /// region, but a config written by any other means reaches this provider too, and Hetzner is the one
+    /// provider whose placement is not already a required credential (AWS/GCP/Azure refuse a blank region at
+    /// factory construction). The check sits here, at the create-server call, rather than in the factory:
+    /// cleanup and discovery build this provider without a region and never place a server. Aether never
+    /// picks a jurisdiction on the operator's behalf.
+    private static final Cause REGION_UNRESOLVED = EnvironmentError.provisionFailed(new RuntimeException("Refusing to provision: no Hetzner region resolved — neither the placement nor `[cloud.compute] region` "
+                                                                                                        + "names a location, so the server would be created with an empty location and land wherever "
+                                                                                                        + "Hetzner chooses. Set the source's region (e.g. `region = \"fsn1\"`)."));
 
     /// Hetzner offers no spot/preemptible product. PF-16 ([ClusterBootstrapConfigValidator]) already
     /// rejects a spot sub-table on Hetzner at parse, so a SPOT request reaching this provider is a
@@ -460,17 +475,27 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .flatMap(clusterWide -> unmanagedOrMissed(clusterWide, cluster, source));
     }
 
+    /// #1503: only INGRESS firewalls count as evidence that the selector missed — those Aether created for a
+    /// source, which carry [#SOURCE_LABEL] as well as the cluster label ([#createIngressFirewall]). A firewall
+    /// that carries only the cluster label (a harness partition firewall, #1500, or one an operator labelled
+    /// by hand) says nothing about this source's ingress; counting it turned every replacement into a
+    /// fail-closed refusal and disabled auto-heal for the whole cluster.
     private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide,
                                                          ClusterName cluster,
                                                          SourceName source) {
-        if (clusterWide.isEmpty()) {
+        var ingress = clusterWide.stream().filter(HetznerComputeProvider::isIngressFirewall).count();
+
+        if (ingress == 0) {
             return ingressUnmanaged(cluster, source);
         }
 
-        return FirewallSelectorMissed.firewallSelectorMissed(cluster,
-                                                             source,
-                                                             clusterWide.size())
-                                     .promise();
+        return FirewallSelectorMissed.firewallSelectorMissed(cluster, source, (int) ingress).promise();
+    }
+
+    private static boolean isIngressFirewall(Firewall firewall) {
+        return Option.option(firewall.labels())
+                     .map(labels -> labels.containsKey(SOURCE_LABEL))
+                     .or(false);
     }
 
     private static Promise<List<Long>> ingressUnmanaged(ClusterName cluster, SourceName source) {
