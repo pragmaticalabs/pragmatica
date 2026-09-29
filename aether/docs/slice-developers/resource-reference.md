@@ -1256,9 +1256,14 @@ public interface OrderService {
 | `cron` | `String` | — | Standard 5-field cron: `minute hour dom month dow` |
 | `execution_mode` | `ExecutionMode` | `single` | `single`: leader-only; `all`: every quorum-participating node |
 
-Exactly one of `interval` or `cron` must be specified. `execution_mode` replaces the earlier
-`leaderOnly: boolean` design — see #272/#273
-[verified: `aether/resource/api/.../ScheduleConfig.java`, `ExecutionMode.java`].
+Exactly one of `interval` or `cron` must be specified; the other key can be left out. Before #1438 an
+omitted key failed the section's bind, and the slice reached ACTIVE with no task published. A section
+with neither key fails the slice's activation (the slice reports FAILED) instead of activating without
+a task. `execution_mode` replaces the earlier `leaderOnly: boolean` design — see #272/#273
+[verified: `aether/resource/api/.../ScheduleConfig.java`, `ExecutionMode.java`; the interval-only,
+cron-only and neither-key shapes below are pinned by
+`aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/node/fsm/NodeDeploymentStateScheduledTaskPublishTest.java`
+through the node's real LOAD → ACTIVE chain, single-node].
 
 ### TOML Examples
 

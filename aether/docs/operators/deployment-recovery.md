@@ -115,7 +115,7 @@ A Docker `--restart unless-stopped` short-circuits steps 1–3, prevents step 4,
 `aether cluster bootstrap` produces:
 - For Hetzner / AWS / GCP / Azure — VMs whose cloud-init runs `docker run --restart no aether-node ...` (current implementation as of `1.0.0-rc1`).
 - For docker / docker-compose test fixtures — `restart: "no"` on the aether-node service.
-- For JVM mode (`type = "jvm"`) — no container at all; cloud-init runs `nohup java -jar aether-node.jar` directly. Process supervision is via `pkill` for restart, not a supervisor.
+- For JVM mode (`type = "jvm"`) — no container. Cloud-init installs an `aether-node.service` systemd unit with `Restart=no`, whose launcher (`/opt/aether/run-node.sh`) runs `exec java -XX:+ExitOnOutOfMemoryError …` (§4.5). The bootstrap's peer re-injection rewrites the unit's env file and runs `systemctl restart aether-node`; nothing pattern-matches a `java` process (#1021).
 
 If you write your own deployment manifests (Kubernetes Pod spec, Nomad job, ECS task definition), apply the equivalent setting. See §5 for k8s.
 

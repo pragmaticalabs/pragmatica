@@ -29,6 +29,9 @@
         <module>pg-showcase</module>
         <module>comprehensive-persistence</module>
         <module>jooq-xml-showcase</module>
+        <!-- #919: step-composition keeps its own groupId and version (run-forge.sh deploys it by those
+             coordinates) but is aggregated here, so the examples build compiles and verifies it. -->
+        <module>step-composition</module>
     </modules>
 
     <build>

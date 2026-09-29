@@ -80,7 +80,8 @@ public record TopicPublisher<T>(String topicName,
                                                                     topicAddress,
                                                                     "slice",
                                                                     publisherSlice));
-        var warnLimiter = RateLimiter.builder().rate(1).period(WARN_PERIOD).timeSource(timeSource);
+        // Constant configuration (one permit per WARN_PERIOD): always representable, so the #1316 refusal cannot occur.
+        var warnLimiter = RateLimiter.builder().rate(1).period(WARN_PERIOD).timeSource(timeSource).unwrap();
 
         return new TopicPublisher<>(topicName,
                                     topicAddress,

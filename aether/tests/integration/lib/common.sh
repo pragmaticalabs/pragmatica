@@ -143,9 +143,28 @@ log_pass()  { echo -e "${GREEN}[PASS]${NC}  $(_log_prefix)$1"; }
 # `return 0` afterwards (a real bug pattern: helpers report failure via log_fail
 # without latching, the caller's last command was an unrelated `true`, and
 # the test was counted as PASS).
+#
+# #1511: the latch is a shell variable, so a [FAIL] from a subshell or a background worker (`( ... ) &`,
+# `$( ... )`) never reached it, and a [FAIL] outside any run_test (cleanup) was not counted at all: the
+# suite reported PASS over its own logged failure. Every [FAIL] is therefore also appended to a
+# per-run file, which subshells share with the process that sourced this library; run_test counts
+# the lines its test added, and print_summary counts the rest against the suite.
+if [ "${HARNESS_FAIL_FILE_OWNER:-}" != "$$" ] || [ ! -f "${HARNESS_FAIL_FILE:-}" ]; then
+    HARNESS_FAIL_FILE=$(mktemp "${TMPDIR:-/tmp}/harness-fail.XXXXXX")
+    HARNESS_FAIL_FILE_OWNER=$$
+    HARNESS_FAIL_CONSUMED=0
+fi
+_harness_fail_lines() {
+    if [ -f "${HARNESS_FAIL_FILE:-}" ]; then
+        wc -l < "$HARNESS_FAIL_FILE" | tr -d ' '
+    else
+        echo 0
+    fi
+}
 log_fail()  {
     echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"
     TEST_FAIL_COUNT=$(( ${TEST_FAIL_COUNT:-0} + 1 ))
+    printf '%s: %s\n' "${TEST_TAG:-outside-a-test}" "$1" >> "${HARNESS_FAIL_FILE:-/dev/null}" 2>/dev/null || true
 }
 log_step()  { echo -e "${BLUE}[STEP]${NC}  $(_log_prefix)$1"; }
 
@@ -1752,7 +1771,8 @@ run_test() {
     # non-zero return (e.g. early in a long test, before later success-coded
     # commands) caused the suite to record PASS while the logs screamed FAIL.
     TEST_FAIL_COUNT=0
-    local t_start t_elapsed fn_rc
+    local t_start t_elapsed fn_rc fails_before fails_logged
+    fails_before=$(_harness_fail_lines)
     t_start=$(date +%s)
     # set -e abort guard: when the test script runs under `set -euo pipefail`, a
     # failing command inside "$fn" (including an unhandled non-zero return from a
@@ -1767,11 +1787,14 @@ run_test() {
     else
         fn_rc=$?
     fi
-    if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -eq 0 ]; then
+    fails_logged=$(( $(_harness_fail_lines) - fails_before ))
+    [ "${TEST_FAIL_COUNT:-0}" -gt "$fails_logged" ] && fails_logged=${TEST_FAIL_COUNT:-0}
+    HARNESS_FAIL_CONSUMED=$(_harness_fail_lines)
+    if [ "$fn_rc" -eq 0 ] && [ "$fails_logged" -eq 0 ]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -gt 0 ]; then
-            log_warn "run_test: '${name}' function returned 0 but emitted ${TEST_FAIL_COUNT} [FAIL] line(s) — recording as FAIL"
+        if [ "$fn_rc" -eq 0 ]; then
+            log_warn "run_test: '${name}' function returned 0 but emitted ${fails_logged} [FAIL] line(s) — recording as FAIL"
         fi
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
@@ -1800,6 +1823,15 @@ skip_test() {
 }
 
 print_summary() {
+    # #1511: [FAIL] lines logged outside any run_test (cleanup, background work that outlived its test)
+    # count against the suite, so the verdict never disagrees with the log.
+    local outside=$(( $(_harness_fail_lines) - ${HARNESS_FAIL_CONSUMED:-0} ))
+    if [ "$outside" -gt 0 ]; then
+        log_warn "print_summary: ${outside} [FAIL] line(s) were logged outside any test — counted as failed:"
+        tail -n "$outside" "$HARNESS_FAIL_FILE" | sed 's/^/    /'
+        TESTS_FAILED=$((TESTS_FAILED + outside))
+        HARNESS_FAIL_CONSUMED=$(_harness_fail_lines)
+    fi
     echo ""
     echo "========================================"
     echo "  PASSED:  ${TESTS_PASSED}"
