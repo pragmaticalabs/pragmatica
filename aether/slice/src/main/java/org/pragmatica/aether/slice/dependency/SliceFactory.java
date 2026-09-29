@@ -190,21 +190,19 @@ public interface SliceFactory {
     /// directions; it used to assert "compiled against an older runtime", the opposite of the truth for a
     /// newer slice.
     private static final String FACTORY_CONTRACT_MISMATCH = " — the factory's signature does not match this runtime's factory"
-                                                           + " contract. A slice built by a different Aether version, older"
-                                                           + " or newer, reaches this state; build the slice with the same"
-                                                           + " Aether version as this runtime";
+                                                          + " contract. A slice built by a different Aether version, older"
+                                                          + " or newer, reaches this state; build the slice with the same"
+                                                          + " Aether version as this runtime";
 
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
                                                                "expected " + expected
-                                                              + " (SliceCreationContext), got " + actual
-                                                              + FACTORY_CONTRACT_MISMATCH);
+                                                              + " (SliceCreationContext), got " + actual + FACTORY_CONTRACT_MISMATCH);
     }
 
     private static Cause firstParameterMustBeCreationContext(String methodName, String actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
-                                                               "factory parameter 0 must be SliceCreationContext, got " + actual
-                                                              + FACTORY_CONTRACT_MISMATCH);
+                                                               "factory parameter 0 must be SliceCreationContext, got " + actual + FACTORY_CONTRACT_MISMATCH);
     }
 
     /// Two causes produce this state and nothing observable here separates them: the class was removed
@@ -217,18 +215,18 @@ public interface SliceFactory {
     /// fine, and a rebuild against the older jar would not even compile (#758).
     private static Cause servedPackageLacksClass(String context, String missingClass, ClassLoader owner) {
         return new SliceLoadingFailure.Fatal.ServedPackageLacksClass(context,
-                                                               "slice references class " + missingClass
-                                                              + ", whose package " + packageOf(missingClass)
-                                                              + " is served by " + loaderLabel(owner)
-                                                              + " but the class is not" + loadedArtifacts(owner)
-                                                              + ". Two causes are indistinguishable from here: the class was"
-                                                              + " REMOVED by a runtime or artifact upgrade, in which case"
-                                                              + " rebuild against this runtime version; or that loader serves"
-                                                              + " a DIFFERENT VERSION of the artifact than the slice was built"
-                                                              + " against, in which case reconcile the version and do NOT"
-                                                              + " rebuild. Compare the versions above with the slice's declared"
-                                                              + " dependencies in META-INF/dependencies/<FactoryClass> before"
-                                                              + " choosing (#758).");
+                                                                     "slice references class " + missingClass
+                                                                    + ", whose package " + packageOf(missingClass)
+                                                                    + " is served by " + loaderLabel(owner)
+                                                                    + " but the class is not" + loadedArtifacts(owner)
+                                                                    + ". Two causes are indistinguishable from here: the class was"
+                                                                    + " REMOVED by a runtime or artifact upgrade, in which case"
+                                                                    + " rebuild against this runtime version; or that loader serves"
+                                                                    + " a DIFFERENT VERSION of the artifact than the slice was built"
+                                                                    + " against, in which case reconcile the version and do NOT"
+                                                                    + " rebuild. Compare the versions above with the slice's declared"
+                                                                    + " dependencies in META-INF/dependencies/<FactoryClass> before"
+                                                                    + " choosing (#758).");
     }
 
     /// The artifact versions a [SharedLibraryClassLoader] has loaded: the evidence an operator needs
