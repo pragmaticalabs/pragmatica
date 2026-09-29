@@ -249,9 +249,25 @@ class StreamCreateCatalogRegistrationTest {
                                                        (_, method, _) -> stubbed(method.getName(), manager));
     }
 
+    /// #1564: the management create path reads the committed cluster config for its replication defaults; an empty
+    /// store is the "no committed config yet" case — the built-in RF 3 / CF 2.
+    private static final org.pragmatica.cluster.state.kvstore.KVStore<org.pragmatica.aether.slice.kvstore.AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue> EMPTY_KV =
+        new org.pragmatica.cluster.state.kvstore.KVStore<>(org.pragmatica.messaging.MessageRouter.mutable(),
+                                                           new org.pragmatica.serialization.Serializer() {
+                                                               @Override
+                                                               public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+                                                           },
+                                                           new org.pragmatica.serialization.Deserializer() {
+                                                               @Override
+                                                               public <T> T read(io.netty.buffer.ByteBuf byteBuf) {
+                                                                   return null;
+                                                               }
+                                                           });
+
     private static Object stubbed(String method, StreamPartitionManager manager) {
         return switch (method) {
             case "streamPartitionManager" -> manager;
+            case "kvStore" -> EMPTY_KV;
             default -> throw new UnsupportedOperationException("Not stubbed in test proxy: " + method);
         };
     }

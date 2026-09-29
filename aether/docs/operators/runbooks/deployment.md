@@ -103,6 +103,8 @@
      --peers=node1:8090,node2:8090,node3:8090
    # Restart must stay "no": a crashed node must not rejoin under the same id.
    # Recovery is a replacement with a NEW node id — see deployment-recovery.md §1 and §4.5.
+   # %H is the hostname, so this id is tied to the host: once the node has been removed (a crash,
+   # or a reboot long enough to be declared FAULTY), this host can never rejoin under it (#1467).
    Restart=no
 
    [Install]
@@ -113,9 +115,12 @@
 4. **Start service**
    ```bash
    systemctl daemon-reload
-   systemctl enable aether
    systemctl start aether
    ```
+   Do **not** `systemctl enable` this unit. Start-on-boot would relaunch a rebooted host under its old
+   `%H` id. By then the cluster has removed that id, refuses the rejoin, and the node starts but never
+   joins (#1467). After a reboot or rebuild, bring the host back as a replacement node with a new
+   `--node-id`.
 
 5. **Verify node joined cluster**
    ```bash

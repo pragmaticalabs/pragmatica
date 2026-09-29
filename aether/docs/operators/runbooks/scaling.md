@@ -18,7 +18,7 @@
 
 1. **Start new node with cluster configuration**
    ```bash
-   java -jar aether-node.jar \
+   java -XX:+ExitOnOutOfMemoryError -jar aether-node.jar \
      --node-id=node4 \
      --port=8090 \
      --peers=node1:8090,node2:8090,node3:8090

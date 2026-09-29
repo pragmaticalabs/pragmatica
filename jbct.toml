@@ -10,6 +10,8 @@ failOnWarning = false
 # that conflict with JBCT rules. @Contract suppression has a known bug with /// doc comments.
 # Generated PEG parsers: produced by peglib-maven-plugin from .peg grammar files; should
 # not be subject to JBCT rules and would generate substantial diagnostic noise if linted.
+# The jbct-parser output is excluded by DIRECTORY (main v6/, not the hand-written v6 tests), never
+# by file name: a file list goes stale the moment the generator emits a new file (#989).
 excludes = [
     "**/pg/codegen/processor/QueryAnnotationProcessor.java",
     "**/pg/codegen/processor/TypeMirrorResolver.java",
@@ -17,7 +19,8 @@ excludes = [
     "**/pg/maven/LintMojo.java",
     "**/pg/maven/GenerateMojo.java",
     "**/aether/pg/parser/PgSqlParser.java",
-    "**/jbct/parser/Java25Parser.java"
+    "**/jbct/parser/Java25Parser.java",
+    "**/src/main/java/org/pragmatica/jbct/parser/v6/**"
 ]
 
 [lint.rules]

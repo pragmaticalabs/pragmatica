@@ -46,9 +46,10 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// [#assertsConvergence] hooks.
 ///
 /// Topology: the `test-stream-repl` blueprint (`streams.repl-failover-events`, partitions=1,
-/// replicas=3, min-sync-replicas=2; replicas=2 before #1547). The declared min-sync is meant to make each
-/// publish await a replica ack, but it does not reach the runtime until #1549, so a successful pre-kill
-/// batch does not by itself prove a replica is in sync; the CAUGHT_UP gate below does.
+/// replication_factor=3, confirmation_factor=2 — named `replicas`/`min-sync-replicas` before #1564; replicas=2
+/// before #1547). The declared confirmation factor makes each publish await a replica ack (it did not reach the
+/// runtime before #1549), so a successful pre-kill batch shows SOME peer acked, not which one; the CAUGHT_UP
+/// gate below identifies the in-sync replica.
 ///
 /// The flow mirrors the cloud script phase-for-phase: deploy the RF=2 blueprint → gate on the replica
 /// set being PLACED (owner + >=1 non-owner) → publish N and confirm the full history is readable →

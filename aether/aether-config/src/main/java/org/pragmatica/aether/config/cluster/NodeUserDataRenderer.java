@@ -434,7 +434,7 @@ public sealed interface NodeUserDataRenderer {
     ///
     /// Three files, in the order the unit needs them:
     ///  - [#JVM_ENV_FILE_PATH] — the identity allow-list plus the values resolved on the box. Written
-    ///    BEFORE the unit is enabled, `0600`, because it carries AETHER_CLUSTER_SECRET (#287's reason
+    ///    BEFORE the unit is started, `0600`, because it carries AETHER_CLUSTER_SECRET (#287's reason
     ///    for the `aether.toml` mode, same secret).
     ///  - [#JVM_LAUNCHER_PATH] — the launcher, carrying the empty-PEERS conditional verbatim from the
     ///    old launch, so the invocation is unchanged and only its supervisor is new. It `exec`s the
@@ -523,10 +523,14 @@ public sealed interface NodeUserDataRenderer {
         sb.append("chmod 0755 ").append(JVM_LAUNCHER_PATH).append("\n\n");
     }
 
-    /// Install and start the unit. `enable --now` both starts it and links it into
-    /// `multi-user.target`, so a rebooted host brings the node back — which is a HOST-level concern
-    /// and distinct from restarting a crashed process, the distinction
-    /// `aether/docs/operators/deployment-recovery.md` §2.3 draws.
+    /// Install and START the unit — never `enable` it. The node id is fixed per VM, and membership is
+    /// terminal-removal: once a node has been gone long enough to be removed, its id can never be admitted
+    /// again. An enabled unit (linked into `multi-user.target`) relaunched a rebooted VM under that removed
+    /// id, so the rejoin was refused and the VM kept billing without ever joining — the same-id hazard
+    /// behind #1467 and #1543. A rebooted host is replaced by CTM auto-heal under a FRESH id, and a host-level
+    /// unit must not start on boot while the id is fixed (`aether/docs/operators/deployment-recovery.md` §2.3 and
+    /// §4.4). The container path already runs
+    /// `docker run --restart no` for the same reason.
     private static void appendJvmUnit(StringBuilder sb) {
         sb.append("# --- Install and start the aether-node systemd unit ---\n");
         sb.append("# Restart=no is deliberate: Aether uses terminal-removal membership and CTM auto-heal\n");
@@ -536,7 +540,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append(SystemdUnitTemplate.generateDefault());
         sb.append("AETHER_UNIT\n");
         sb.append("systemctl daemon-reload\n");
-        sb.append("systemctl enable --now ").append(JVM_UNIT_NAME).append("\n\n");
+        sb.append("systemctl start ").append(JVM_UNIT_NAME).append("\n\n");
     }
 
     private static Unit appendEnvFileLine(StringBuilder sb, String name, String value) {

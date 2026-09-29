@@ -16,6 +16,7 @@ import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.function.ToIntFunction;
 
+import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -38,8 +39,9 @@ import static org.assertj.core.api.Assertions.fail;
 /// `base + appOffset` (app HTTP), all TCP, plus SWIM's UDP port at QUIC port + [#SWIM_PORT_OFFSET].
 final class EmberTestPorts {
     private static final Logger log = LoggerFactory.getLogger(EmberTestPorts.class);
-    /// SWIM binds UDP at the node's cluster port plus this (`SwimHealthState.SWIM_PORT_OFFSET`).
-    static final int SWIM_PORT_OFFSET = 100;
+    /// SWIM binds UDP at the node's cluster port plus this: the production constant itself (AetherNode binds SWIM at
+    /// `port + CoreSwimHealthDetector.SWIM_PORT_OFFSET`), so the probe cannot drift from the bind (#1698's CI flake).
+    static final int SWIM_PORT_OFFSET = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     static final int START_ATTEMPTS = 5;
 
     /// `reservedOffsets`: further ports (TCP and UDP) the test uses at `base + offset`, e.g. a dead seed's address.

@@ -84,6 +84,14 @@ public sealed interface QuicTransportError extends Cause {
                                                                                  UnresolvedAddress::new);
     }
 
+    /// #1578: a still-pending dial abandoned because the peer went CONNECTED over another link before this
+    /// attempt's QUIC handshake completed. Not a failure of the peer — the dialer drops it quietly, never
+    /// down the connect-failure path (which would evict and report a peer that is connected).
+    record DialAbandoned(NodeId peer, String message) implements QuicTransportError {
+        static final Fn1<DialAbandoned, NodeId> FACTORY = Causes.forOneValue("QUIC dial to %s abandoned: the peer is already connected over another link",
+                                                                             DialAbandoned::new);
+    }
+
     /// Dialer-side Hello identity verification failed (cluster-topology-overhaul spec, Wave 3):
     /// the Hello sender's claimed identity did not match the dialed identity. The connection is
     /// closed un-attached and the dial fails down the normal connect-failure path (backoff and

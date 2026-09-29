@@ -105,23 +105,22 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
-    /// `replicas` below [org.pragmatica.aether.slice.StreamConfig#MIN_REPLICAS] (#1547). Refused rather than clamped: a blueprint that
-    /// asks for fewer copies is told so by name, never silently handed a different replication factor.
-    record ReplicasBelowMinimum(String alias, int replicas, int minimum) implements StreamDeclarationError {
+    /// The node supplied no [org.pragmatica.aether.slice.ReplicationContext.Source], so the section's factors cannot be
+    /// resolved against the committed cluster defaults. Refused rather than resolved against a guess (#1564).
+    record ReplicationContextUnavailable(String alias) implements StreamDeclarationError {
         @Override
         public String message() {
             return "Stream resource '" + alias
-                 + "' declares replicas=" + replicas
-                 + "; the stream replication factor minimum is " + minimum
-                 + " (under terminal node removal a smaller factor loses a dead owner's partitions)";
+                 + "' cannot resolve its replication factors: the node supplies no replication context";
         }
     }
 
-    /// `min-sync-replicas > replicas` (spec §11.x).
-    record ReplicationInvalid(String alias, String detail) implements StreamDeclarationError {
+    /// The section's `replication_factor`/`confirmation_factor` refused by [org.pragmatica.aether.slice.ReplicationDeclaration#resolve]
+    /// (#1564); `cause` is the typed [org.pragmatica.aether.slice.ReplicationFactorsError].
+    record ReplicationRefused(String alias, Cause cause) implements StreamDeclarationError {
         @Override
         public String message() {
-            return "Stream resource '" + alias + "' has " + detail;
+            return "Stream resource '" + alias + "': " + cause.message();
         }
     }
 }

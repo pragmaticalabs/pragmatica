@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.validation;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.lang.Option;
 
@@ -63,7 +64,7 @@ class StreamResourceValidatorTest {
 
             var result = StreamResourceValidator.validate(Option.some(toml),
                                                             APP_ARTIFACT,
-                                                            Map.of("inventory", "consumer"));
+                                                            Map.of("inventory", "consumer"), ReplicationContext.BUILT_IN);
 
             result.onFailure(cause -> fail("Expected success: " + cause.message()))
                   .onSuccess(validated -> assertThat(validated.resources()).containsKey("inventory"));
@@ -151,7 +152,7 @@ class StreamResourceValidatorTest {
 
             var result = StreamResourceValidator.validate(Option.some(toml),
                                                             APP_ARTIFACT,
-                                                            Map.of("orders", "producer"));
+                                                            Map.of("orders", "producer"), ReplicationContext.BUILT_IN);
 
             result.onSuccessRun(() -> fail("Expected failure"))
                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())

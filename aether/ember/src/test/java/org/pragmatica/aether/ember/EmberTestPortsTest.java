@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember;
 
 import java.io.IOException;
+import java.net.DatagramSocket;
 import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.List;
@@ -54,6 +55,7 @@ class EmberTestPortsTest {
     @Timeout(300)
     void startedCluster_portTakenBetweenProbeAndStart_startsOnAFreshBlock() throws IOException {
         var bases = new ArrayList<Integer>();
+        var built = new ArrayList<EmberCluster>();
 
         cluster = EmberTestPorts.startedCluster(BLOCK,
                                                 base -> {
@@ -61,18 +63,21 @@ class EmberTestPortsTest {
                                                     if (bases.size() == 1) {
                                                     taken.add(takeTcp(base + BLOCK.mgmtOffset()));
                                                 }
+                                                    var attempt = emberCluster(3,
+                                                                               base,
+                                                                               base + BLOCK.mgmtOffset(),
+                                                                               base + BLOCK.appOffset(),
+                                                                               "ports");
 
-                                                    return emberCluster(3,
-                                                                        base,
-                                                                        base + BLOCK.mgmtOffset(),
-                                                                        base + BLOCK.appOffset(),
-                                                                        "ports");
+                                                    built.add(attempt);
+                                                    return attempt;
                                                 },
                                                 START_BOUND);
         assertThat(bases).as("control: the first probed block was taken before the cluster bound it, so a second "
                             + "block was needed")
                   .hasSize(2);
         assertThat(bases.get(1)).isNotEqualTo(bases.get(0));
+        assertThat(built.get(0).nodeCount()).as("the collided cluster was stopped (EmberCluster::stop ran)").isZero();
         assertThat(cluster.nodeCount()).isEqualTo(3);
     }
 
@@ -175,6 +180,18 @@ class EmberTestPortsTest {
         assertThat(EmberTestPorts.freeBase(BLOCK, Set.of(first))).isNotEqualTo(first);
     }
 
+    /// #1698's CI flake ("SWIM failed to start on UDP port 38204"): a block whose SWIM UDP port (QUIC port +
+    /// SWIM_PORT_OFFSET) is taken is skipped, even though every TCP port and QUIC UDP port of it is free.
+    @Test
+    void freeBase_swimUdpPortTaken_skipsThatBlock() {
+        var first = EmberTestPorts.freeBase(BLOCK);
+
+        try (var swim = takeUdp(first + EmberTestPorts.SWIM_PORT_OFFSET)) {
+            assertThat(EmberTestPorts.freeBase(BLOCK)).isNotEqualTo(first);
+        }
+        assertThat(EmberTestPorts.freeBase(BLOCK)).as("control: released, the block is free again").isEqualTo(first);
+    }
+
     /// #1707 review: a reserved extra port (EmberWorkerDeadSeedTest's dead seed) is part of the block's check.
     @Test
     void freeBase_reservedOffsetTaken_skipsThatBlock() throws IOException {
@@ -199,6 +216,14 @@ class EmberTestPortsTest {
                                                  + "bind(..) failed: Address already in use")).isTrue();
         assertThat(EmberTestPorts.isBindCollision("Transport failure: java.net.BindException: Address already in use")).isTrue();
         assertThat(EmberTestPorts.isBindCollision("Cluster startup failed: quorum not reached")).isFalse();
+    }
+
+    private static DatagramSocket takeUdp(int port) {
+        try {
+            return new DatagramSocket(port);
+        } catch (IOException e) {
+            throw new AssertionError("could not take UDP port " + port, e);
+        }
     }
 
     private static ServerSocket takeTcp(int port) {
