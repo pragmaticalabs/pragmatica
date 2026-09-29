@@ -94,6 +94,35 @@ class SmtpReplyCodeClassificationTest {
         assertThat(attempts("451 4.7.1 try again later", Stage.MAIL_FROM)).isEqualTo(3);
     }
 
+    /// #1202: the scripted server itself must survive a client that leaves mid-script, or a later attempt meets a
+    /// dead server and the attempt count measures the harness instead of the client.
+    @Test
+    @SuppressWarnings("JBCT-EX-01")
+    void scriptedServer_clientResetsMidScript_nextClientIsStillServed() throws IOException {
+        var connections = new AtomicInteger();
+
+        try (var server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+            Thread.ofPlatform().daemon().start(() -> serve(server, connections, "454 4.7.0 later", Stage.AUTH));
+
+            try (var abandoned = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                abandoned.setSoTimeout(2_000);
+                assertThat(greeting(abandoned)).as("control: the first client is served").startsWith("220");
+                abandoned.setSoLinger(true, 0);
+            }
+
+            try (var next = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                next.setSoTimeout(2_000);
+                assertThat(greeting(next)).as("the next client still gets a greeting").startsWith("220");
+            }
+            assertThat(connections.get()).isEqualTo(2);
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static String greeting(Socket socket) throws IOException {
+        return new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine();
+    }
+
     @SuppressWarnings("JBCT-EX-01")
     private static int attempts(String failReply, Stage failAt) {
         try {
@@ -130,15 +159,14 @@ class SmtpReplyCodeClassificationTest {
 
     @SuppressWarnings({"JBCT-EX-01", "JBCT-LAM-01"})
     private static void serve(ServerSocket server, AtomicInteger connections, String failReply, Stage failAt) {
-        try {
-            while (true) {
-                try (Socket socket = server.accept()) {
-                    connections.incrementAndGet();
-                    session(socket, failReply, failAt);
-                }
+        while (!server.isClosed()) {
+            try (Socket socket = server.accept()) {
+                connections.incrementAndGet();
+                session(socket, failReply, failAt);
+            } catch (IOException _) {
+            // #1202: one client abandoning its session (a reset or broken pipe) ends only that session; the loop
+            // keeps accepting. A closed server ends the loop through the condition above.
             }
-        } catch (IOException _) {
-        // server closed
         }
     }
 
