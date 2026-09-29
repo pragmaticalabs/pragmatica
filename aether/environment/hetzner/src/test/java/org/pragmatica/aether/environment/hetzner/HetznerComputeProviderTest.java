@@ -65,6 +65,14 @@ class HetznerComputeProviderTest {
             "#!/bin/bash\necho hello").unwrap();
     }
 
+    private static HetznerEnvironmentConfig configWithRegion(String region) {
+        return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
+            hetznerConfig("test-token"),
+            "cx22", "ubuntu-24.04", region,
+            List.of(1L, 2L), List.of(10L), List.of(5L),
+            "#!/bin/bash\necho hello").unwrap();
+    }
+
     private static HetznerEnvironmentConfig configWithImage(String image) {
         return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
             hetznerConfig("test-token"),
@@ -237,6 +245,24 @@ class HetznerComputeProviderTest {
             provider.provision(ctmSpec("default")).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.serverType()).isEqualTo("cx22");
+        }
+
+        /// #992: a blank region never reaches the wire as `"location":""`. `cluster init` demands a region,
+        /// but a config written any other way (by hand, templated, an older CLI) reaches the provider too, and
+        /// Hetzner is the one provider whose placement is not already a required credential. Refused before
+        /// any Hetzner call, so no server lands in a location nobody named.
+        @Test
+        void provision_blankRegion_failsBeforeCreateServer() {
+            var regionlessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient, configWithRegion(""))
+                                                           .unwrap();
+
+            var result = regionlessProvider.provision(ctmSpec("default")).await();
+
+            assertThat(result.isFailure()).as("a blank region must refuse the provision: %s", result).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("region"));
+            assertThat(testClient.lastCreateServerRequest)
+                    .as("#992: the create-server call must never be sent with an empty location")
+                    .isNull();
         }
 
         @Test
@@ -1298,6 +1324,20 @@ class HetznerComputeProviderTest {
             return new Firewall(id, "aether-prod-eu-hetzner-eu", List.of(), Map.of());
         }
 
+        /// An Aether ingress firewall as `createIngressFirewall` labels it: cluster AND source.
+        private static Firewall ingressFirewall(long id, String source) {
+            return new Firewall(id,
+                                "aether-prod-eu-" + source,
+                                List.of(),
+                                Map.of("aether-cluster", "prod-eu", "aether-source", source));
+        }
+
+        /// A firewall carrying only the cluster label — not an ingress firewall (a harness partition
+        /// firewall, #1500, or one an operator labelled by hand).
+        private static Firewall clusterLabelledFirewall(long id) {
+            return new Firewall(id, "partition-prod-eu", List.of(), Map.of("aether-cluster", "prod-eu"));
+        }
+
         @Test
         void createFrom_whenConfigCarriesFirewallIds_usesThemWithoutLookup() {
             // The bootstrap path is unchanged: ProviderResolver already threaded the just-created
@@ -1350,7 +1390,7 @@ class HetznerComputeProviderTest {
             // creating the server would produce exactly the publicly-reachable node #444 is about.
             testClient.firewallsBySelector.put("aether-cluster=prod-eu,aether-source=default",
                                                Promise.success(List.of()));
-            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(firewall(91))));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(ingressFirewall(91, "hetzner-eu"))));
 
             replacementProvider().createFrom(replacementRequest(ProvisionContext.DEFAULT_SOURCE_NAME))
                                  .await()
@@ -1360,6 +1400,40 @@ class HetznerComputeProviderTest {
 
             assertThat(testClient.lastCreateServerRequest).as("no server may be created less firewalled than its peers")
                                                           .isNull();
+        }
+
+        /// #1503: a firewall that carries the cluster label but no source label is not an ingress firewall,
+        /// so it is no evidence that the source selector missed one. Counting it made every replacement fail
+        /// closed and disabled auto-heal for the whole cluster (the harness's partition firewalls, #1500).
+        @Test
+        void createFrom_whenClusterHasOnlyNonIngressFirewalls_createsUnfirewalled() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(clusterLabelledFirewall(92))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onFailure(cause -> assertThat(cause).as("#1503: a non-ingress firewall must not block auto-heal")
+                                                                      .isNull());
+
+            assertThat(testClient.lastCreateServerRequest).isNotNull();
+            assertThat(testClient.lastCreateServerRequest.firewalls()).isEmpty();
+        }
+
+        /// #1503 control: a genuine selector miss still fails closed when non-ingress firewalls sit beside it.
+        @Test
+        void createFrom_whenIngressFirewallOfAnotherSourceExistsBesideNonIngress_refusesToCreate() {
+            testClient.firewallsBySelector.put("aether-cluster=prod-eu,aether-source=default",
+                                               Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR,
+                                               Promise.success(List.of(clusterLabelledFirewall(92),
+                                                                       ingressFirewall(91, "hetzner-eu"))));
+
+            replacementProvider().createFrom(replacementRequest(ProvisionContext.DEFAULT_SOURCE_NAME))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("has 1 Aether-managed firewall(s)"));
+
+            assertThat(testClient.lastCreateServerRequest).isNull();
         }
 
         @Test
