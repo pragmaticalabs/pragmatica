@@ -77,7 +77,9 @@ class EmberTestPortsTest {
                             + "block was needed")
                   .hasSize(2);
         assertThat(bases.get(1)).isNotEqualTo(bases.get(0));
-        assertThat(built.get(0).nodeCount()).as("the collided cluster was stopped (EmberCluster::stop ran)").isZero();
+        // The collided cluster holds no nodes. EmberCluster's own abort already stops and clears a failed start (#913),
+        // so the helper's EmberCluster::stop is the backstop: this goes red only when BOTH cleanups are removed.
+        assertThat(built.get(0).nodeCount()).as("the collided cluster left no nodes behind").isZero();
         assertThat(cluster.nodeCount()).isEqualTo(3);
     }
 
