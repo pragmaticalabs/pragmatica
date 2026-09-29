@@ -30,3 +30,4 @@
   PR #1670. Ember `BlueprintSecurityOverrideClusterWideTest`, one instance on three nodes: every node answers 403 after
   the override and 200 after it is withdrawn.]
   [unverified: Ember with nested prefixes or a live propagation window; no fixture slice declares nested prefixes.]
+- **Known gap:** Sibling routes of one slice that share a path prefix are still authorized by one sibling's policy — #1678 (blocking), fixed separately.
