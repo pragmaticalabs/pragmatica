@@ -4,14 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
-import static org.pragmatica.lang.Option.none;
-import static org.pragmatica.lang.Option.some;
 
 
 @Codec
@@ -37,14 +36,37 @@ public record SecurityOverrides(List<Entry> entries, SecurityOverridePolicy poli
         return securityOverrides(parsed, policy);
     }
 
+    /// The MOST SPECIFIC matching entry wins, independent of list order (#1659): the longest path it names, then an
+    /// exact path over a `/*` wildcard naming the same path, then a named method over `*`; list order breaks only a
+    /// complete tie. First-listed-wins let a broad `GET /api/*` listed first shadow a stricter `GET /api/admin/*`,
+    /// and the order of a TOML table carries no security meaning.
     public Option<String> findMatch(String httpMethod, String pathPrefix) {
-        for (var entry : entries) {
-            if (matchesRoute(entry.routePattern(), httpMethod, pathPrefix)) {
-                return some(entry.securityLevel());
-            }
-        }
+        // `max` keeps the FIRST of equally specific entries (BinaryOperator.maxBy), so list order breaks only a tie.
+        return Option.from(entries.stream()
+                                  .filter(entry -> matchesRoute(entry.routePattern(), httpMethod, pathPrefix))
+                                  .max(Comparator.comparingInt(entry -> specificity(entry.routePattern()))))
+                     .map(Entry::securityLevel);
+    }
 
-        return none();
+    /// Path length dominates; at equal length an exact path outranks a wildcard, and a named method outranks `*`.
+    private static int specificity(String pattern) {
+        var parts = splitMethodAndPath(pattern);
+        var wildcard = parts.path()
+                            .endsWith("/*");
+        var path = wildcard
+                   ? parts.path()
+                          .substring(0,
+                                     parts.path()
+                                          .length() - 1)
+                   : normalizePath(parts.path());
+        var exactBonus = wildcard
+                         ? 0
+                         : 2;
+        var methodBonus = "*".equals(parts.method())
+                          ? 0
+                          : 1;
+
+        return path.length() * 4 + exactBonus + methodBonus;
     }
 
     public boolean isEmpty() {

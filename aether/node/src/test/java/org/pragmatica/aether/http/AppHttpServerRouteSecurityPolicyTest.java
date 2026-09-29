@@ -299,6 +299,39 @@ class AppHttpServerRouteSecurityPolicyTest {
         assertThat(response.body()).contains("HTTP forwarding not available");
     }
 
+    /// #1659 (v1670 audit b), through the ingress: the undeclared remote `/api/admin/` is locked to `role:admin` by a
+    /// committed override, and a broader PUBLIC override `/api/*` is ALSO committed. A valid key without the role
+    /// must get 403 whichever of the two is listed first -- first-listed-wins let the PUBLIC parent shadow the child.
+    /// Under the DEFAULT `strengthen_only` policy: `public` is refused on an undeclared route, which then inherits
+    /// the global API-key policy and admits any valid key -- the child's `role:admin` never applies.
+    @Test
+    void remoteRoute_overlappingOverrides_theMostSpecificGoverns_parentListedFirst() throws Exception {
+        assertChildOverrideEnforced(List.of(PARENT_PUBLIC_OVERRIDE, CHILD_ADMIN_OVERRIDE));
+    }
+
+    @Test
+    void remoteRoute_overlappingOverrides_theMostSpecificGoverns_childListedFirst() throws Exception {
+        assertChildOverrideEnforced(List.of(CHILD_ADMIN_OVERRIDE, PARENT_PUBLIC_OVERRIDE));
+    }
+
+    private static final SecurityOverrides.Entry PARENT_PUBLIC_OVERRIDE = SecurityOverrides.Entry.entry("GET /api/*", "public");
+    private static final SecurityOverrides.Entry CHILD_ADMIN_OVERRIDE = SecurityOverrides.Entry.entry("GET /api/admin/*", "role:admin");
+
+    private void assertChildOverrideEnforced(List<SecurityOverrides.Entry> entries) throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRouteOf(TEST_ARTIFACT, "/api/admin/", "UNSPECIFIED"));
+
+        startServer("/local/",
+                    SecurityPolicy.unspecified(),
+                    registry,
+                    SecurityOverrides.securityOverrides(entries, SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+        var response = getWithApiKey("/api/admin/secret", VALID_API_KEY);
+
+        assertThat(response.statusCode()).as("override order %s: %s", entries, response.body()).isEqualTo(403);
+        assertThat(response.body()).contains("role 'admin' required");
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRouteOf(Artifact artifact, String prefix, String security) {
         var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, artifact);
         var route = RouteEntry.activeRoute("GET", prefix, "handle", security, security);
