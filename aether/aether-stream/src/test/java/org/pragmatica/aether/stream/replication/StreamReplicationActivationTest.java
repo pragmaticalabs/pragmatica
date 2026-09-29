@@ -58,7 +58,7 @@ class StreamReplicationActivationTest {
         // Replica side: a manager whose appendRecovered the receive handler drives. Its acks are
         // captured (transport back to the owner).
         replicaManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
-        replicaManager.createStream(StreamConfig.streamConfig(STREAM));
+        replicaManager.createStream(StreamConfig.streamConfig(STREAM).withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 1)));
         ReplicationTransport ackTransport = (target, message) -> acksToOwner.add(message);
         var receiveHandler = replicationReceiveHandler(REPLICA, replicaManager::appendRecovered, ackTransport);
 
@@ -74,7 +74,7 @@ class StreamReplicationActivationTest {
         };
         var ownerReplication = replicationManager(OWNER, ownerRegistry, loopback);
         ownerManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, ownerReplication);
-        ownerManager.createStream(StreamConfig.streamConfig(STREAM));
+        ownerManager.createStream(StreamConfig.streamConfig(STREAM).withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 1)));
     }
 
     @AfterEach

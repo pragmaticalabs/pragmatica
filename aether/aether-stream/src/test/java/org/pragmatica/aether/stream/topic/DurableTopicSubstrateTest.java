@@ -42,8 +42,7 @@ class DurableTopicSubstrateTest {
 
     private static DurableTopicSpec spec(int partitions, int replicas, String retention) {
         return DurableTopicSpec.durableTopicSpec(partitions,
-                                                 replicas,
-                                                 replicas,
+                                                 new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(replicas, replicas), java.util.List.of()),
                                                  TimeSpan.timeSpan(retention).unwrap())
                                .unwrap();
     }
@@ -64,6 +63,27 @@ class DurableTopicSubstrateTest {
                  .onFailure(cause -> fail("repeat activation must succeed: " + cause.message()));
     }
 
+    /// #1564 R8 pin (topics): before #1564 a redeclared topic with different factors silently kept the committed ones
+    /// (`STREAM_ALREADY_EXISTS` was tolerated). It is now refused, typed. Mutation "tolerate a changed policy in
+    /// createDeclaredStream" turns this red.
+    @Test
+    void activateTopic_redeclaredWithDifferentFactors_isRefused() {
+        substrate.activateTopic(ADDRESS, spec(1, 3, "7d")).onFailure(cause -> fail(cause.message()));
+
+        substrate.activateTopic(ADDRESS, specWith(1, 3, 2, "7d"))
+                 .onSuccess(_ -> fail("a changed replication policy must be refused, not silently kept"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.aether.slice.ReplicationFactorsError.ChangedOnLiveResource.class));
+    }
+
+    private static DurableTopicSpec specWith(int partitions, int factor, int confirmation, String retention) {
+        return DurableTopicSpec.durableTopicSpec(partitions,
+                                                 new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(factor,
+                                                                                                                                                                  confirmation),
+                                                                                                                  java.util.List.of()),
+                                                 TimeSpan.timeSpan(retention).unwrap())
+                               .unwrap();
+    }
+
     @Test
     void topicStreamConfig_carriesDeclaredKnobs_andTimeBoundedRetention() {
         var config = DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(4, 3, "7d"));
@@ -71,8 +91,8 @@ class DurableTopicSubstrateTest {
 
         assertThat(config.name()).isEqualTo("topic:" + ADDRESS);
         assertThat(config.partitions()).isEqualTo(4);
-        assertThat(config.replicas()).isEqualTo(3);
-        assertThat(config.minSyncReplicas()).isEqualTo(3);
+        assertThat(config.replicationFactor()).isEqualTo(3);
+        assertThat(config.confirmationFactor()).isEqualTo(3);
         assertThat(config.autoOffsetReset()).isEqualTo("earliest");
         assertThat(config.retention().maxAgeMs()).isEqualTo(TimeSpan.timeSpan("7d").unwrap().toMillis());
         // Count/byte caps are RING-SIZING inputs (buildRing hands them to OffHeapRingBuffer as
@@ -88,8 +108,8 @@ class DurableTopicSubstrateTest {
 
         assertThat(config.name()).isEqualTo("topic:" + ADDRESS + ".dlq");
         assertThat(config.partitions()).isEqualTo(1);
-        assertThat(config.replicas()).isEqualTo(3);
-        assertThat(config.minSyncReplicas()).isEqualTo(3);
+        assertThat(config.replicationFactor()).isEqualTo(3);
+        assertThat(config.confirmationFactor()).isEqualTo(3);
         assertThat(config.retention().maxAgeMs()).isEqualTo(DurableTopicSubstrate.DLQ_RETENTION_DEFAULT.toMillis());
     }
 }

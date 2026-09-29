@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -96,21 +97,38 @@ class StreamPartitionCapTest {
         }
     }
 
-    /// #1547 engine backstop: whatever path minted the config, an APP stream is never created below the
-    /// stream replication minimum; a system stream's factor is the cluster size, so it is exempt.
+    /// #1564 R5 engine backstop: whatever path minted the config, the engine refuses only a pair outside
+    /// `1 <= confirmation_factor <= replication_factor`. "A factor below 3 only when declared" is a DECLARATION rule
+    /// (ReplicationDeclaration), so the engine accepts an RF of 2 a declaration let through.
     @Nested
-    class ReplicationMinimum {
+    class ReplicationBackstop {
 
         @Test
-        void createStream_rejected_whenAppStreamDeclaresFewerThanThreeReplicas() {
+        void createStream_rejected_whenConfirmationExceedsFactor() {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             manager.placementRoleSupplier((_, _) -> Role.NONE);
             try {
-                manager.createStream(replicasConfig("thin", 2))
-                       .onSuccess(_ -> fail("Expected ReplicasBelowMinimum"))
-                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicasBelowMinimum("thin", 2, 3)));
+                manager.createStream(replicasConfig("thin", 2, 3))
+                       .onSuccess(_ -> fail("Expected ReplicationRefused"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicationRefused("thin",
+                                                                                                        new ReplicationFactorsError.ConfirmationOutOfRange(2,
+                                                                                                                                                           3))));
 
                 assertThat(manager.hydrationSnapshot().streams()).isEmpty();
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// Mutation "restore the engine's RF >= 3 refusal" turns this red.
+        @Test
+        void createStream_accepted_forADeclaredFactorBelowThree() {
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            manager.placementRoleSupplier((_, _) -> Role.NONE);
+            try {
+                manager.createStream(replicasConfig("thin", 2, 1)).onFailure(cause -> fail(cause.message()));
+
+                assertThat(manager.hydrationSnapshot().streams()).hasSize(1);
             } finally {
                 manager.close();
             }
@@ -121,8 +139,8 @@ class StreamPartitionCapTest {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             manager.placementRoleSupplier((_, _) -> Role.NONE);
             try {
-                manager.createStream(replicasConfig("app", 3)).onFailure(cause -> fail(cause.message()));
-                manager.createStream(replicasConfig("system:audit", 1)).onFailure(cause -> fail(cause.message()));
+                manager.createStream(replicasConfig("app", 3, 2)).onFailure(cause -> fail(cause.message()));
+                manager.createStream(replicasConfig("system:audit", 1, 1)).onFailure(cause -> fail(cause.message()));
 
                 assertThat(manager.hydrationSnapshot().streams()).hasSize(2);
             } finally {
@@ -130,7 +148,7 @@ class StreamPartitionCapTest {
             }
         }
 
-        private static StreamConfig replicasConfig(String name, int replicas) {
+        private static StreamConfig replicasConfig(String name, int replicas, int confirmation) {
             var defaults = capConfig(name, 1);
 
             return StreamConfig.streamConfig(name,
@@ -140,7 +158,7 @@ class StreamPartitionCapTest {
                                              defaults.maxEventSizeBytes(),
                                              defaults.consistencyMode(),
                                              replicas,
-                                             0,
+                                             confirmation,
                                              defaults.compression(),
                                              defaults.encryptionKeyId());
         }
