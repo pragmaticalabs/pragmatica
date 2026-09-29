@@ -1053,22 +1053,22 @@ public sealed interface AetherValue {
     /// Remove-then-Put to bypass the fence; a restore's monotonicity comes from the floor in
     /// `ClusterIncarnation.restoreCommands`, not from this fence.
     ///
-    /// `instanceId` (#1533) names this running cluster instance. It is minted with every new incarnation — at
+    /// `incarnationId` (#1533) names this running cluster instance. It is minted with every new incarnation — at
     /// genesis, at a restore and at `declare-genesis` — and is replicated state, so a leader change keeps it.
     /// Two clusters that reach the same `(lineageId, incarnation)` independently (restored from the same
     /// backup at once) differ in it, and the backup refuses to let either replace the other's head.
-    record ClusterIncarnationValue(String lineageId, long incarnation, String instanceId) implements AetherValue, VersionFenced {
+    record ClusterIncarnationValue(String lineageId, long incarnation, String incarnationId) implements AetherValue, VersionFenced {
         public static final long GENESIS = 1L;
 
         public static ClusterIncarnationValue clusterIncarnationValue(String lineageId,
                                                                       long incarnation,
-                                                                      String instanceId) {
-            return new ClusterIncarnationValue(lineageId, incarnation, instanceId);
+                                                                      String incarnationId) {
+            return new ClusterIncarnationValue(lineageId, incarnation, incarnationId);
         }
 
         /// A brand-new cluster: a fresh lineage at the first incarnation, as a fresh instance.
-        public static ClusterIncarnationValue genesis(String lineageId, String instanceId) {
-            return new ClusterIncarnationValue(lineageId, GENESIS, instanceId);
+        public static ClusterIncarnationValue genesis(String lineageId, String incarnationId) {
+            return new ClusterIncarnationValue(lineageId, GENESIS, incarnationId);
         }
 
         @Override

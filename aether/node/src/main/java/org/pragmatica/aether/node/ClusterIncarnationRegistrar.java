@@ -106,7 +106,7 @@ public final class ClusterIncarnationRegistrar {
                                  .or(NOT_YET_COMMITTED::promise);
     }
 
-    /// A fresh ULID: the genesis lineage and the genesis instance id each take one.
+    /// A fresh ULID: the genesis lineage and the genesis incarnation id each take one.
     private static String freshId() {
         return ULID.ulid().encoded();
     }

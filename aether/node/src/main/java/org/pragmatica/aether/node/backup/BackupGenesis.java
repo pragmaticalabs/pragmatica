@@ -37,7 +37,7 @@ import org.pragmatica.utility.ULID;
 /// It refuses a head of this cluster's own lineage — that is either already this cluster's backup, or AHEAD
 /// of it, in which case the right action is a restore (#1533) and declaring genesis would throw that state
 /// away — with one exception: a FORKED head, the same lineage and incarnation written by another cluster
-/// instance (#1533). Declaring genesis is how the operator picks the cluster whose state continues.
+/// incarnation id (#1533). Declaring genesis is how the operator picks the cluster whose state continues.
 public record BackupGenesis(KvBackupService service) {
     public static BackupGenesis backupGenesis(KvBackupService service) {
         return new BackupGenesis(service);
@@ -212,18 +212,18 @@ public record BackupGenesis(KvBackupService service) {
                       .flatMap(results -> confirm(results, transactionId, next, head));
     }
 
-    /// #1533: the head is this cluster's lineage and incarnation, written by ANOTHER cluster instance — a
+    /// #1533: the head is this cluster's lineage and incarnation, written by ANOTHER cluster (a different incarnation id) — a
     /// fork. Declaring genesis is how the operator picks this cluster to continue: it moves to a new
-    /// incarnation and instance, which then supersedes the forked head as a successor.
+    /// incarnation and incarnation id, which then supersedes the forked head as a successor.
     private static boolean isForkedBy(BackupHeader head, ClusterIncarnationValue current) {
-        return head.incarnation() == current.incarnation() && !head.instanceId()
-                                                                   .equals(current.instanceId());
+        return head.incarnation() == current.incarnation() && !head.incarnationId()
+                                                                   .equals(current.incarnationId());
     }
 
     private Promise<GenesisDeclared> refuseSameLineage(ClusterIncarnationValue current, BackupHeader head) {
         var ours = BackupHeader.backupHeader(current.lineageId(),
                                              current.incarnation(),
-                                             current.instanceId(),
+                                             current.incarnationId(),
                                              service.kvStore().committedRevision());
 
         return head.isAhead(ours)

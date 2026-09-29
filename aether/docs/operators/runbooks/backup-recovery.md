@@ -72,10 +72,10 @@ two exits; the restore retries with backoff capped at 60 s. Exits: fix the remot
 `[backup] restore = "fresh"` to abandon the backup `[verified: BackupRestoreCoordinatorTest.Blocked,
 EmberKvBackupRestoreTest]`.
 
-**Hazard — restoring the same backup into two live clusters.** Each restore mints a new cluster instance
-id (#1533), so two clusters restored from the same head at the same time reach the same lineage and
-incarnation as different instances. The backup refuses to let either one replace the other's head:
-whichever cluster finds the other's head raises `BACKUP_FORKED`, naming both instance ids, and backs up
+**Hazard — restoring the same backup into two live clusters.** Each restore mints a new incarnation id
+(#1529 part 2), so two clusters restored from the same head at the same time reach the same lineage and
+incarnation under different incarnation ids. The backup refuses to let either one replace the other's head:
+whichever cluster finds the other's head raises `BACKUP_FORKED`, naming both incarnation ids, and backs up
 nothing from then on; a push race is settled by git's fast-forward check, and the loser ends FORKED.
 `[verified: KvBackupServiceTest.Fork]` **Detection is on the second writer only:** `BACKUP_FORKED` on a
 cluster means another live cluster with the same lineage and incarnation owns the backup head; that other
@@ -85,7 +85,7 @@ on the FORKED cluster in one of three ways:
 | Resolution | Consequence |
 |---|---|
 | Point its `[backup]` at a **different** `path` / `remote`, and restart it | Both clusters back up, each to its own remote. The FORKED cluster's new remote starts with its own history. |
-| Run `aether backup declare-genesis` on it | A **takeover**: it moves to a new incarnation and instance of the SAME lineage, and its state replaces the other cluster's head. The other cluster then stops backing up — for good — and raises `BACKUP_HEAD_AHEAD` after 30 s, saying the head is at a higher incarnation it will never pass `[verified: KvBackupServiceTest.Fork]`. Do this only for the cluster whose state should continue, and then stop the other one or re-point it. |
+| Run `aether backup declare-genesis` on it | A **takeover**: it moves to a new incarnation (and incarnation id) of the SAME lineage, and its state replaces the other cluster's head. The other cluster then stops backing up — for good — and raises `BACKUP_HEAD_AHEAD` after 30 s, saying the head is at a higher incarnation it will never pass `[verified: KvBackupServiceTest.Fork]`. Do this only for the cluster whose state should continue, and then stop the other one or re-point it. |
 | Stop it | Nothing changes for the other cluster, which keeps backing up. |
 
 **`restore = "fresh"` against an existing backup** starts a new lineage, and its backup is then GATED
@@ -196,7 +196,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 | Code | Meaning | Operator action |
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
-| `BACKUP_FORKED` | Another cluster instance holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
+| `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
 | `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s; nothing is backed up meanwhile | If the warning names a **higher incarnation**, another cluster took over this lineage's backup (a `declare-genesis` or a later restore) and this cluster will never write again: stop it or point its `[backup]` elsewhere. At the **same** incarnation, a later revision of this cluster holds the head; it writes again once its revision passes the head's |
 | `BACKUP_HEAD_REPLACED` | This cluster's state replaced a newer head | The replaced commit is in git history; inspect it |
 | `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |

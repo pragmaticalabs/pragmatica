@@ -353,7 +353,7 @@ public final class KvBackupService {
         var matcher = SUBJECT.matcher(subject);
 
         if (matcher.matches()) {
-            // The subject names no instance; the floor reads only lineage and incarnation.
+            // The subject names no incarnation id; the floor reads only lineage and incarnation.
             return success(Option.some(BackupHeader.backupHeader(matcher.group(1),
                                                                  Long.parseLong(matcher.group(2)),
                                                                  "",
@@ -694,16 +694,16 @@ public final class KvBackupService {
                       .or("the backup head belongs to another lineage; run `" + DECLARE_GENESIS_COMMAND + "`");
     }
 
-    /// #1533: another cluster instance holds the head at this cluster's own lineage and incarnation. Neither
+    /// #1533: another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation. Neither
     /// is written over the other; an operator decides which history continues.
     private static String forkedDetail(Outcome outcome) {
-        return "the backup head was written by ANOTHER cluster instance at this cluster's own lineage and incarnation"
-             + " (head: instance " + outcome.head()
-                                            .map(BackupHeader::instanceId)
-                                            .or("?")
-             + ", this cluster: instance " + outcome.ours()
-                                                    .map(BackupHeader::instanceId)
-                                                    .or("?")
+        return "the backup head was written by ANOTHER cluster (a different incarnation id) at this cluster's own lineage and incarnation"
+             + " (head: incarnation id " + outcome.head()
+                                                  .map(BackupHeader::incarnationId)
+                                                  .or("?")
+             + ", this cluster: incarnation id " + outcome.ours()
+                                                          .map(BackupHeader::incarnationId)
+                                                          .or("?")
              + ", lineage " + outcome.ours()
                                      .map(BackupHeader::lineageId)
                                      .or("?")
@@ -738,16 +738,16 @@ public final class KvBackupService {
     /// True in both ways a head of this lineage can stay ahead (v1533 finding 2). At a HIGHER incarnation, another
     /// cluster moved this lineage on (a `declare-genesis` or a later restore took over the head); this cluster can
     /// never pass it by revision, so it will not write again. At the SAME incarnation — necessarily this cluster's
-    /// own instance, another instance is FORKED — a later revision of it holds the head, and once this cluster's
+    /// own incarnation id, another one is FORKED — a later revision of it holds the head, and once this cluster's
     /// revision passes it, its state replaces that head.
     private static String headAheadDetail(Outcome outcome, long seconds) {
         var headIncarnation = outcome.head().map(BackupHeader::incarnation).or(0L);
         var ourIncarnation = outcome.ours().map(BackupHeader::incarnation).or(0L);
         var positions = "the backup head (incarnation " + headIncarnation
-                      + ", instance " + outcome.head().map(BackupHeader::instanceId).or("?")
+                      + ", incarnation id " + outcome.head().map(BackupHeader::incarnationId).or("?")
                       + ", revision " + outcome.head().map(BackupHeader::revision).or(0L)
                       + ") has been ahead of this cluster's state (incarnation " + ourIncarnation
-                      + ", instance " + outcome.ours().map(BackupHeader::instanceId).or("?")
+                      + ", incarnation id " + outcome.ours().map(BackupHeader::incarnationId).or("?")
                       + ", revision " + outcome.ours().map(BackupHeader::revision).or(0L)
                       + ") for " + seconds
                       + "s, and this cluster does not write while the head is ahead, so nothing is"
@@ -759,7 +759,7 @@ public final class KvBackupService {
                 + " lineage's backup (a declare-genesis or a later restore) and this cluster will never pass it — stop"
                 + " this cluster, or point its [backup] at a different path or remote"
                : positions
-                + "; a later revision of this same cluster instance holds the head (a previous leader's"
+                + "; a later revision of this same incarnation (the same incarnation id) holds the head (a previous leader's"
                 + " write, or this cluster's state went back). Once this cluster's revision passes the head's, its"
                 + " state REPLACES that head (git history keeps it)";
     }

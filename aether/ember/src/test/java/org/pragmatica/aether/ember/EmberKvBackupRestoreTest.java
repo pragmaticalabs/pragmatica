@@ -59,7 +59,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// - **§6.4.** Consensus runs in memory, so a node that starts late with an OLD backup of another lineage in
 ///   its directory installs nothing of it: it ends holding the running cluster's lineage.
 class EmberKvBackupRestoreTest {
-    static final String INSTANCE = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
+    static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
@@ -223,7 +223,7 @@ class EmberKvBackupRestoreTest {
 
         entries.put(ConfigKey.forKey("l1-only"), ConfigValue.configValue("l1-only", "v"));
         entries.put(ClusterIncarnationKey.clusterIncarnationKey(),
-                    ClusterIncarnationValue.clusterIncarnationValue(OLD_LINEAGE, 7, INSTANCE));
+                    ClusterIncarnationValue.clusterIncarnationValue(OLD_LINEAGE, 7, INCARNATION_ID));
         try {
             Files.createDirectories(repository);
             git(repository, "init", "--quiet", "--initial-branch=kv-backup");

@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// genesis, and a restore keeps the restored lineage while moving to the next incarnation — the
 /// operations run against a real [KVStore] applier, whose version fence is what makes them safe.
 class ClusterIncarnationTest {
-    static final String INSTANCE = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
+    static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final ClusterIncarnationKey KEY = ClusterIncarnationKey.clusterIncarnationKey();
 
     private KVStore<AetherKey, AetherValue> kvStore;
@@ -60,7 +60,7 @@ class ClusterIncarnationTest {
 
         @Test
         void current_isTheCommittedIncarnation() {
-            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 4, INSTANCE)));
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 4, INCARNATION_ID)));
 
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
         }
@@ -73,14 +73,14 @@ class ClusterIncarnationTest {
             ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-new")
                               .onPresent(ClusterIncarnationTest.this::apply);
 
-            // The one fresh-id supplier mints both the lineage and the instance.
+            // The one fresh-id supplier mints both the lineage and the incarnation id.
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.genesis("lineage-new", "lineage-new")));
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(ClusterIncarnationValue.GENESIS);
         }
 
         @Test
         void genesisCommand_isAbsent_onceAnIncarnationExists() {
-            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-restored", 7, INSTANCE)));
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-restored", 7, INCARNATION_ID)));
 
             assertThat(ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-new")
                                          .isPresent()).isFalse();
@@ -107,13 +107,13 @@ class ClusterIncarnationTest {
     class Restore {
         @Test
         void restoreCommands_keepTheRestoredLineage_atTheNextIncarnation() {
-            var restored = ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, INSTANCE);
+            var restored = ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, INCARNATION_ID);
 
-            ClusterIncarnation.restoreCommands(restored, restored.incarnation(), INSTANCE)
+            ClusterIncarnation.restoreCommands(restored, restored.incarnation(), INCARNATION_ID)
                               .forEach(ClusterIncarnationTest.this::apply);
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup",
-                                                                                                                                     6, INSTANCE)));
+                                                                                                                                     6, INCARNATION_ID)));
         }
 
         /// A cold-restarted cluster mints its own genesis before the restore runs. The restore must still
@@ -123,30 +123,30 @@ class ClusterIncarnationTest {
             ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-fresh")
                               .onPresent(ClusterIncarnationTest.this::apply);
 
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, INSTANCE),
-                                                          5, INSTANCE));
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, INCARNATION_ID),
+                                                          5, INCARNATION_ID));
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup",
-                                                                                                                                     6, INSTANCE)));
+                                                                                                                                     6, INCARNATION_ID)));
         }
 
         /// Restoring an OLDER backup of the lineage must not move the incarnation backwards: the live
         /// cluster is at L@7, the operator restores L@3, and the result is L@8, not L@4.
         @Test
         void restoreOfAnOlderBackup_landsAboveTheHighestRecorded_notBelowIt() {
-            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("L1", 7, INSTANCE)));
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("L1", 7, INCARNATION_ID)));
 
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 3, INSTANCE), 7, INSTANCE));
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 3, INCARNATION_ID), 7, INCARNATION_ID));
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1",
-                                                                                                                                     8, INSTANCE)));
+                                                                                                                                     8, INCARNATION_ID)));
         }
 
         /// The backup store holds L@5..7 and the operator restores L@5: committing L@6 would REUSE a number
         /// that already names another history. The floor lands it at L@8.
         @Test
         void restoreOfAMiddleBackup_neverReusesARecordedIncarnation() {
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, INSTANCE), 7, INSTANCE));
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, INCARNATION_ID), 7, INCARNATION_ID));
 
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
@@ -155,17 +155,17 @@ class ClusterIncarnationTest {
         /// (adopted from v1621's probe `OK_floorBelowRestored_landsAtRestoredPlusOne`).
         @Test
         void restoreWithAFloorBelowTheRestored_landsAtRestoredPlusOne() {
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, INSTANCE), 3, INSTANCE));
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, INCARNATION_ID), 3, INCARNATION_ID));
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1",
-                                                                                                                                     6, INSTANCE)));
+                                                                                                                                     6, INCARNATION_ID)));
         }
 
         /// The fence the restore sidesteps with its Remove: a plain successor-skipping write is refused.
         @Test
         void aNonSuccessorWrite_isRefused() {
-            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 1, INSTANCE)));
-            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-b", 5, INSTANCE)));
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 1, INCARNATION_ID)));
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-b", 5, INCARNATION_ID)));
 
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(1);
         }
@@ -198,7 +198,7 @@ class ClusterIncarnationTest {
 
         @Test
         void existingIncarnation_isLeftAlone() {
-            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-restored", 7, INSTANCE)));
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-restored", 7, INCARNATION_ID)));
             var registrar = registrar(this::applyToStore);
 
             registrar.onLeaderChange(leaderChange(true));

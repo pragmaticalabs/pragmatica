@@ -18,7 +18,7 @@ public record BackupWarning(Code code, String detail) {
     public enum Code {
         /// A foreign or older lineage holds the backup head; this cluster will not overwrite it.
         BACKUP_GATED,
-        /// #1533: another cluster instance holds the head at this cluster's own lineage and incarnation (two
+        /// #1533: another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two
         /// clusters restored from the same backup); neither is written over the other.
         BACKUP_FORKED,
         /// The head of this cluster's own lineage has stayed ahead of its state past the bound: nothing is

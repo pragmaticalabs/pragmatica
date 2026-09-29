@@ -45,7 +45,7 @@ public sealed interface ClusterIncarnation {
     /// The genesis write for a cluster with no committed incarnation; absent once one exists. Racing
     /// mints resolve first-wins in the applier ([ClusterIncarnationValue] is version-fenced), so a caller
     /// confirms by re-reading [#committed] rather than trusting that its own write landed. `freshId` mints
-    /// both the lineage and the instance id.
+    /// both the lineage and the incarnation id.
     static Option<KVCommand<AetherKey>> genesisCommand(KVStore<AetherKey, AetherValue> kvStore,
                                                        Supplier<String> freshId) {
         return committed(kvStore).isPresent()
@@ -70,14 +70,14 @@ public sealed interface ClusterIncarnation {
     /// already minted its own genesis before the restore ran, which the successor fence would refuse.
     /// This bypasses the fence by design; monotonicity here comes from the floor.
     ///
-    /// `instanceId` is freshly minted by the caller: the restored cluster is a new instance (#1533).
+    /// `incarnationId` is freshly minted by the caller: a restore starts a new incarnation (#1533).
     static List<KVCommand<AetherKey>> restoreCommands(ClusterIncarnationValue restored,
                                                       long highestRecordedForLineage,
-                                                      String instanceId) {
+                                                      String incarnationId) {
         var next = Math.max(restored.incarnation(), highestRecordedForLineage) + 1;
 
         return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()),
-                       put(ClusterIncarnationValue.clusterIncarnationValue(restored.lineageId(), next, instanceId)));
+                       put(ClusterIncarnationValue.clusterIncarnationValue(restored.lineageId(), next, incarnationId)));
     }
 
     /// The incarnation `aether backup declare-genesis` moves this cluster to (#1532): its own lineage, past
@@ -86,15 +86,15 @@ public sealed interface ClusterIncarnation {
     /// over another lineage's head at 3 goes to L@10, never L@4, which would reuse an incarnation L already
     /// ran; and a cluster at L@1 over a history that recorded L@7 goes to L@8, never L@4.
     ///
-    /// `instanceId` is freshly minted by the caller: a declaration starts a new instance (#1533).
+    /// `incarnationId` is freshly minted by the caller: a declaration starts a new incarnation (#1533).
     static ClusterIncarnationValue superseding(ClusterIncarnationValue current,
                                                long headIncarnation,
                                                long highestRecordedForLineage,
-                                               String instanceId) {
+                                               String incarnationId) {
         var next = Math.max(Math.max(current.incarnation(), headIncarnation),
                             highestRecordedForLineage) + 1;
 
-        return ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(), next, instanceId);
+        return ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(), next, incarnationId);
     }
 
     /// The declaration's write, as two leader transactions submitted in ONE batch and applied in order. The
