@@ -434,7 +434,7 @@ public sealed interface NodeUserDataRenderer {
     ///
     /// Three files, in the order the unit needs them:
     ///  - [#JVM_ENV_FILE_PATH] — the identity allow-list plus the values resolved on the box. Written
-    ///    BEFORE the unit is enabled, `0600`, because it carries AETHER_CLUSTER_SECRET (#287's reason
+    ///    BEFORE the unit is started, `0600`, because it carries AETHER_CLUSTER_SECRET (#287's reason
     ///    for the `aether.toml` mode, same secret).
     ///  - [#JVM_LAUNCHER_PATH] — the launcher, carrying the empty-PEERS conditional verbatim from the
     ///    old launch, so the invocation is unchanged and only its supervisor is new. It `exec`s the

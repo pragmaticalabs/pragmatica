@@ -85,7 +85,7 @@ Aether takes the second view. Empirically, the second view is right for distribu
 
 The single argument for `--restart unless-stopped` is "if the Docker daemon restarts (host reboot), the container should come back automatically."
 
-Aether's answer: that's a host-level concern, handled at host level. If the host reboots, CTM observes the node missing and provisions a replacement. If the operator wants the same VM to come back, they provision a systemd unit at host level — but that systemd unit must also have `Restart=no`. The job of "make the host bring up an aether-node on boot" is distinct from "auto-restart the process if it exits."
+Aether's answer: a reboot is a process death, and a dead NodeId never returns under the same id. If the host reboots, CTM observes the node missing and provisions a replacement under a FRESH node id. A host-level unit must therefore neither restart the process (`Restart=no`) nor start it on boot (`systemctl start`, never `enable`) while the node id is fixed per host. Relaunching under the old id is refused once the node has been removed (§4.4). A host that should serve again after a reboot rejoins under a NEW node id.
 
 In practice, most production deployments use immutable VMs/pods: hosts are cattle, not pets. A host that needs to be rebooted to restore a service is replaced, not nursed.
 

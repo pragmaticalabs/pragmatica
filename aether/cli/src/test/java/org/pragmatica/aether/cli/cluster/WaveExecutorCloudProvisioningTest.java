@@ -146,7 +146,8 @@ class WaveExecutorCloudProvisioningTest {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
-        WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS).unwrap();
+        var tracked = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 1, INPUTS)
+                                  .unwrap();
 
         var spec = provider.specs.getFirst();
         var nodeId = spec.context().nodeId().unwrap();
@@ -154,6 +155,9 @@ class WaveExecutorCloudProvisioningTest {
         assertThat(nodeId).doesNotMatch(INDEX_SCHEME);
         assertThat(LIVE_MEMBER_IDS).doesNotContain(nodeId);
         assertThat(spec.userData().or("")).contains("AETHER_NODE_ID=\"" + nodeId + "\"");
+        assertThat(tracked).as("the id apply tracks is the id the node boots under")
+                           .extracting(node -> node.nodeId())
+                           .containsExactly(nodeId);
     }
 
     /// The peers a wave node dials are the LIVE CORE members from `GET /api/v1/nodes/live`: a worker, a dead core
