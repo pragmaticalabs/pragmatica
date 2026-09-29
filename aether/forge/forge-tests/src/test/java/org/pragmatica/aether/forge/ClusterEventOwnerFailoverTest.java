@@ -70,8 +70,9 @@ class ClusterEventOwnerFailoverTest {
     /// The aggregator's handling of the put is pinned by the unit tests
     /// `ClusterEventAggregatorTest.onStreamPartitionOwnershipPut_clusterEventsPartition0_drainsAtOnce_otherPutsDoNot`
     /// and `ClusterEventRedeliveryTest.redeliverAll_ownerChanged_resendsBeforeTheBackoff`, which call it directly, so
-    /// they cannot see AetherNode's route to it: removing that route leaves all of aether/node green. The route was
-    /// pinned only by the Ember NO-DRAIN-ROUTE mutation arm, on a head without #1555.
+    /// they cannot see AetherNode's route to it (removing the route left all 1,965 aether/node testcases green). The
+    /// route's presence in the assembly is pinned by `ClusterEventRedeliveryWiringTest`, which reads the assembly
+    /// source, and its behaviour by the Ember NO-DRAIN-ROUTE mutation arm on a head without #1555.
     @Test
     void eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost() {
         startSettledCluster();
