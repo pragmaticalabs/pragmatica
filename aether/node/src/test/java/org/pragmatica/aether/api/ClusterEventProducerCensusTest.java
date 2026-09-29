@@ -27,7 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The census is two-sided so the allow-list cannot go stale: a listed variant that GAINS a producer
 /// fails too, naming the entry to remove (and the "not currently produced" notes to delete).
 ///
-/// Scanned: every `*.java` under `aether/**/src/main/java` (test fixtures and `target/` excluded), matching both construction forms
+/// Scanned: every `*.java` under `aether/**/src/main/java` (test fixtures and `target/` excluded), with comments
+/// stripped first (#1687 N2: a `new X(` mentioned in a comment is not a producer), matching both construction forms
 /// (`new X(` and `new ClusterEvent.X(`) — the ticket's first census matched only the bare form and
 /// reported two live variants as dead. `ClusterEvent.java` itself is excluded: its only constructions
 /// are the `withDetail` copies, which need an existing instance and so produce nothing.
@@ -84,6 +85,33 @@ class ClusterEventProducerCensusTest {
                                              .allMatch(variants()::contains);
     }
 
+    /// #1687 N2 — the stripper itself: comments go, literals stay. The last row is the reason it is a scanner
+    /// rather than a regex: a `//` inside a string must not swallow the construction after it.
+    @Test
+    void withoutComments_dropsCommentsAndKeepsLiterals() {
+        assertThat(withoutComments("a(); // new StreamDeleted(x)\nb();")).doesNotContain("StreamDeleted")
+                                                                          .contains("a();")
+                                                                          .contains("b();");
+        assertThat(withoutComments("/* new StreamDeleted( */ c();")).doesNotContain("StreamDeleted")
+                                                                    .contains("c();");
+        assertThat(withoutComments("/// new StreamDeleted(\nd();")).doesNotContain("StreamDeleted");
+        assertThat(withoutComments("var u = \"http://x\"; new StreamDeleted(a);")).contains("new StreamDeleted(a);");
+        assertThat(withoutComments("var s = \"/* not a comment */\";")).contains("/* not a comment */");
+    }
+
+    /// #1687 N2, the census's own blind spot as the verifier's m8 showed it: a variant whose only "producer" is a
+    /// comment must still count as unproduced.
+    @Test
+    void isConstructed_ignoresAConstructionThatExistsOnlyInAComment() {
+        var commentedOnly = List.of(withoutComments("class X {\n    // new ClusterEvent.StreamDeleted(null, null, null, null, null);\n"
+                                                    + "    /* new StreamDeleted( */\n}\n"));
+
+        assertThat(isConstructed("StreamDeleted", commentedOnly)).isFalse();
+        assertThat(isConstructed("StreamDeleted", List.of(withoutComments("Object o = new ClusterEvent.StreamDeleted(a, b, c, d, e);"))))
+                  .as("positive control: the same construction as code is found")
+                  .isTrue();
+    }
+
     private static List<String> variants() {
         return Arrays.stream(ClusterEvent.class.getPermittedSubclasses())
                      .filter(type -> type != ExtendedEvent.class)
@@ -116,10 +144,55 @@ class ClusterEventProducerCensusTest {
                                              .toString()
                                              .equals("ClusterEvent.java"))
                         .map(ClusterEventProducerCensusTest::readFile)
+                        .map(ClusterEventProducerCensusTest::withoutComments)
                         .collect(Collectors.toList());
         } catch (IOException e) {
             throw new AssertionError("Cannot walk production sources under " + aetherRoot, e);
         }
+    }
+
+    /// Removes `//` and `/* */` comments, leaving string, char and text-block literals intact, so neither a
+    /// comment mentioning a construction nor a `//` inside a string literal (`"http://…"`) can move the census.
+    static String withoutComments(String source) {
+        var out = new StringBuilder(source.length());
+        var i = 0;
+
+        while (i < source.length()) {
+            var c = source.charAt(i);
+
+            if (source.startsWith("\"\"\"", i)) {
+                var end = source.indexOf("\"\"\"", i + 3);
+                var stop = end < 0 ? source.length() : end + 3;
+                out.append(source, i, stop);
+                i = stop;
+            } else if (c == '"' || c == '\'') {
+                var stop = endOfLiteral(source, i, c);
+                out.append(source, i, stop);
+                i = stop;
+            } else if (source.startsWith("//", i)) {
+                var end = source.indexOf('\n', i);
+                i = end < 0 ? source.length() : end;
+            } else if (source.startsWith("/*", i)) {
+                var end = source.indexOf("*/", i + 2);
+                i = end < 0 ? source.length() : end + 2;
+                out.append(' ');
+            } else {
+                out.append(c);
+                i++;
+            }
+        }
+
+        return out.toString();
+    }
+
+    private static int endOfLiteral(String source, int start, char quote) {
+        var i = start + 1;
+
+        while (i < source.length() && source.charAt(i) != quote && source.charAt(i) != '\n') {
+            i += source.charAt(i) == '\\' ? 2 : 1;
+        }
+
+        return Math.min(i + 1, source.length());
     }
 
     private static String readFile(Path path) {

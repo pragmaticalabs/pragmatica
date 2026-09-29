@@ -1705,13 +1705,13 @@ aether streams consumer-group status orders-workers orders
 aether streams list
 
 # Check stream details
-aether streams status user-events
+aether streams status system:user-events:1.0.0
 
 # Publish a message
-aether streams publish user-events "order_created:12345"
+aether streams publish system:user-events:1.0.0 "order_created:12345"
 
 # Read events from partition 0, starting at offset 100, max 50 events
-aether streams read user-events 0 --since 100 --limit 50
+aether streams read system:user-events:1.0.0 0 --since 100 --limit 50
 ```
 
 ---
