@@ -1295,11 +1295,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // it defaults to peer.address() for non-SWIM-discovered peers, so behavior is unchanged
         // there. peer.address() remains the identity/reporting address everywhere below.
         var dialAddress = peer.resolvedAddress();
+        // #1366: `client` is nulled by stop(); read it ONCE. A stopped network does not dial (no phase
+        // change, so nothing is left CONNECTING), and a stop racing past this read closes the instance
+        // captured here, which fails the dial through the ordinary failure path instead of an NPE.
+        var clientRef = client;
+
+        if (clientRef == null) {
+            log.debug("Not dialing {}: the network is stopped", peerId);
+
+            return;
+        }
         // Resolve the hostname FRESH at dial time, non-blocking, on the Netty resolver. On success
         // we begin CONNECTING and dial the resolved InetAddress (the (InetAddress, port) constructor
         // never re-resolves). On failure we leave the peer untouched (no phase change) — the next
         // reconciler tick re-attempts under the existing backoff.
-        client.resolve(dialAddress.host())
+        clientRef.resolve(dialAddress.host())
               .onSuccess(inetAddress -> dialResolved(peer,
                                                      inetAddress,
                                                      dialAddress.port()))
@@ -1317,6 +1327,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback chain
     private void dialResolved(NodeInfo peer, InetAddress inetAddress, int port) {
         var peerId = peer.id();
+        // #1366: the resolve can complete after stop() nulled `client`. Read it once, BEFORE the peer is
+        // marked CONNECTING, so a stopped network leaves no CONNECTING peer behind and never dereferences null.
+        var clientRef = client;
+
+        if (clientRef == null) {
+            log.debug("Not dialing {} after its address resolved: the network is stopped", peerId);
+
+            return;
+        }
+
         var state = getOrCreatePeer(peerId);
 
         if (!state.beginConnecting(System.nanoTime())) {
@@ -1340,8 +1360,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // over another link first, which abandons this attempt while its QUIC handshake is
         // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
         // it only restarts the attach-grace phase age, see PeerState#markInbound.
-        client.connect(peerId, address)
-              .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
+        clientRef.connect(peerId, address)
+                 .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
               .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
     }
@@ -2938,6 +2958,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Package-private test seam — the #1578 abandon an attach performs, invoked directly, so a test can aim it at
     /// an attempt in a chosen stage (e.g. past its QUIC handshake, Hello unanswered).
+    /// Package-private test seam — the resolve-success continuation, so a test can run it after stop() (#1366).
+    void dialResolvedForTests(NodeInfo peer, InetAddress inetAddress, int port) {
+        dialResolved(peer, inetAddress, port);
+    }
+
     void abandonPendingDialForTests(NodeId peerId) {
         abandonPendingDial(peerId);
     }
