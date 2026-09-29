@@ -47,8 +47,9 @@
   save while the node ran on as though persistence were switched off — so a cluster configured for durability kept
   nothing at all and came back empty, this ticket's symptom by another route. `writeTomlFile` creates it before the
   first write, ahead of `ensureGitInitialized`. This retires limitation (c) as originally written in this PR.
-  [verified: `GitBackedPersistenceTest#save_backupDirectoryDoesNotExist_createsItAndWritesTheState` — 1 red of 810
-  when the directory creation is removed]
+  [verified at the time by `GitBackedPersistenceTest#save_backupDirectoryDoesNotExist_createsItAndWritesTheState`
+  — 1 red of 810 when the directory creation is removed] **Superseded within this release by #1533**, which removes
+  `GitBackedPersistence` and that test; the KV backup's `GitBackupRepository` creates its own directory.
 - **The own-snapshot guard's EQUALITY boundary is now pinned.** The test is `persisted > live`, never `>=`:
   `reconfigure` persists the live, NON-EMPTY state-machine snapshot under `Phase.ZERO` and only then calls
   `stateMachine.reset()`, so a node's disk can hold a non-empty snapshot whose phase equals the live phase, and at

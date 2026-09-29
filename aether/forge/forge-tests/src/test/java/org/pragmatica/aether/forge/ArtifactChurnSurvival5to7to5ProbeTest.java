@@ -530,7 +530,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     // ----- HTTP helpers (scale trigger + slice deploy/resolve) -----
 
     /// Posts the current `ManagementApiResponses.ScaleRequest` shape — `source` / `role` / `count` /
-    /// `expectedVersion` — as `PostRestartSlowRejoinDeficitFillProbeTest` does. A blank `source` asks
+    /// `expectedVersion`. A blank `source` asks
     /// the server to infer it, which succeeds because the Ember cluster declares exactly one source
     /// carrying `core`.
     ///
