@@ -53,7 +53,8 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
         return Result.all(limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, OffHeapRingBuffer.MAX_CAPACITY).flatMap(ClusterEventsLimits::withinReadWindow),
                           limit(environment, MAX_BYTES_VARIABLE, DEFAULT_MAX_BYTES, Long.MAX_VALUE),
                           limit(environment, MAX_AGE_MS_VARIABLE, DEFAULT_MAX_AGE_MS, Long.MAX_VALUE),
-                          limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, Long.MAX_VALUE)).map(ClusterEventsLimits::new);
+                          limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, Long.MAX_VALUE))
+                     .map(ClusterEventsLimits::new);
     }
 
     /// Read from the process environment.
@@ -69,7 +70,9 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
     private static Result<Long> withinReadWindow(long count) {
         return count <= AetherNode.CLUSTER_EVENTS_MAX_RETAINED
                ? success(count)
-               : InvalidLimit.READ_WINDOW_FACTORY.apply(MAX_COUNT_VARIABLE, String.valueOf(count), AetherNode.CLUSTER_EVENTS_MAX_RETAINED)
+               : InvalidLimit.READ_WINDOW_FACTORY.apply(MAX_COUNT_VARIABLE,
+                                                        String.valueOf(count),
+                                                        AetherNode.CLUSTER_EVENTS_MAX_RETAINED)
                                                  .result();
     }
 
@@ -101,6 +104,7 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
                                                                                             + " system:cluster-events:1.0.0 with a bound its stream engine refuses. Unset it for the"
                                                                                             + " default, or set a value in range.",
                                                                                              InvalidLimit::new);
+
         static final Fn3<InvalidLimit, String, String, Long> READ_WINDOW_FACTORY = Causes.forThreeValues("%s='%s' exceeds the cluster-events read window CLUSTER_EVENTS_MAX_RETAINED=%d; a read of"
                                                                                                         + " system:cluster-events:1.0.0 would silently miss the oldest retained events, so the"
                                                                                                         + " node refuses to boot. Unset it for the default, or set a value up to the window.",

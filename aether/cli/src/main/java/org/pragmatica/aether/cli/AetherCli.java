@@ -4209,7 +4209,7 @@ public class AetherCli implements Runnable {
         /// #1480 — the help text for every command that takes a stream address. It used to advertise the
         /// bare-name default #1044 removed, sending operators to the one form the parser refuses.
         static final String STREAM_ADDRESS_HELP = "Stream address: namespace:stream:version. A bare name is refused; "
-                                                  + "use system:<name>:1.0.0 for a system stream";
+                                                + "use system:<name>:1.0.0 for a system stream";
 
         private static Result<ResourceAddress> resolveStreamAddress(String raw) {
             return raw.contains(":")

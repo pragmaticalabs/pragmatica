@@ -138,16 +138,16 @@ public sealed interface ClusterConfigGenerator {
         appendBlank(sb);
         if (split < hosts.size()) {
             appendSection(sb, "source." + SOURCE_NAME + ".worker");
-            appendKvBare(sb, "hosts", renderStringList(hosts.subList(split, hosts.size())));
+            appendKvBare(sb,
+                         "hosts",
+                         renderStringList(hosts.subList(split, hosts.size())));
             appendBlank(sb);
         }
     }
 
     private static void appendCountRoles(StringBuilder sb, ClusterConfigAnswers answers, int core) {
         appendSection(sb, "source." + SOURCE_NAME + ".core");
-        appendKvBare(sb,
-                     "count",
-                     String.valueOf(core));
+        appendKvBare(sb, "count", String.valueOf(core));
         answers.cloud().onPresent(cloud -> appendKv(sb, "instance_type", cloud.instanceType()));
         appendBlank(sb);
         if (answers.topology().worker() > 0) {
