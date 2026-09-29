@@ -19,7 +19,6 @@ import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
-import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -30,7 +29,6 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 import tools.jackson.databind.JsonNode;
 
@@ -93,7 +91,7 @@ sealed interface WaveNodeProvisioning {
                                                                                                                                           spec).await());
 
             if (provisioned.isFailure()) {
-                return provisioned.mapError(cause -> tearDownAfter(compute, source, nodes, cause))
+                return provisioned.mapError(cause -> failedAfter(nodes, cause))
                                   .map(_ -> List.<ProvisionedNode> of());
             }
 
@@ -231,61 +229,25 @@ sealed interface WaveNodeProvisioning {
         return List.copyOf(peers);
     }
 
-    /// A wave that fails part-way tears down, best-effort, every VM it already created, then fails with a cause that
-    /// names the original error and each created node with its teardown outcome. Those VMs are paid, and their minted
-    /// ids are not addressable by the rolling paths, so neither a retry nor rollback would ever reach them. A destroy
-    /// that fails is named as STILL RUNNING, with its provider and server id, so the operator can remove it by hand.
-    /// The scope is this wave only: nodes from an EARLIER completed action of the same apply are kept, because they
-    /// belong to the desired configuration.
-    private static Cause tearDownAfter(ComputeProvider compute,
-                                       SourceProfile source,
-                                       List<ProvisionedNode> created,
-                                       Cause cause) {
+    /// A failure part-way through a wave keeps the nodes already created in its cause. They are running and billing,
+    /// and their minted ids are not addressable by the rolling paths, so the operator must be told which they are.
+    private static Cause failedAfter(List<ProvisionedNode> created, Cause cause) {
         return created.isEmpty()
                ? cause
-               : new WaveProvisioningFailed(providerName(source), cause, teardown(compute, created));
+               : new PartiallyProvisioned(List.copyOf(created), cause);
     }
 
-    private static List<Teardown> teardown(ComputeProvider compute, List<ProvisionedNode> created) {
-        return created.stream()
-                      .map(node -> new Teardown(node,
-                                                InstanceId.instanceId(node.serverId())
-                                                          .async()
-                                                          .flatMap(compute::terminate)
-                                                          .await()))
-                      .toList();
-    }
-
-    private static String providerName(SourceProfile source) {
-        return source.provider()
-                     .map(provider -> provider.value())
-                     .or(source.type().value());
-    }
-
-    /// One created node and the outcome of destroying it.
-    record Teardown(ProvisionedNode node, Result<Unit> outcome) {
-        String describe(String provider) {
-            return outcome.fold(failure -> "STILL RUNNING: " + provider
-                                          + " server " + node.serverId()
-                                          + " (node " + node.nodeId()
-                                          + ", " + node.publicIp()
-                                          + "), destroy failed: " + failure.message(),
-                                _ -> "destroyed " + node.nodeId() + " (" + provider + " server " + node.serverId() + ")");
-        }
-    }
-
-    record WaveProvisioningFailed(String provider, Cause cause, List<Teardown> teardowns) implements Cause {
+    record PartiallyProvisioned(List<ProvisionedNode> created, Cause cause) implements Cause {
         @Override
         public String message() {
-            var outcomes = teardowns.stream().map(teardown -> teardown.describe(provider)).toList();
-            var stillRunning = teardowns.stream().filter(teardown -> teardown.outcome()
-                                                                             .isFailure()).count();
+            var names = created.stream()
+                               .map(node -> node.nodeId() + " (server " + node.serverId() + ", " + node.publicIp() + ")")
+                               .toList();
 
-            return "Provisioning failed: " + cause.message()
-                 + ". Nodes this wave had already created were torn down: " + String.join("; ", outcomes) + (stillRunning == 0
-                                                                                                             ? "."
-                                                                                                             : ". " + stillRunning
-                                                                                                              + " VM(s) are STILL RUNNING and billing; remove them by hand.");
+            return "Provisioning failed after creating " + created.size()
+                 + " node(s) that are still running and billing: " + String.join(", ", names)
+                 + ". Cause: " + cause.message()
+                 + ". Remove them or let them join; a retried apply mints new ids and will not reuse them.";
         }
     }
 
