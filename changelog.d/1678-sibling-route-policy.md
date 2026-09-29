@@ -12,6 +12,6 @@
   - a non-hosting ingress picks the sibling through it from the replicated entries, which now carry the shape;
   - forwarding, retries included, targets only the nodes serving that sibling.
 - When no sibling matches (the host would answer 404), the strongest policy across the base's siblings applies.
-- **Limitation:** security overrides still match on the base path, so an override covers every sibling. An operator
+- **Limitation (#1681):** security overrides still match on the base path, so an override covers every sibling. An operator
   cannot relax or tighten one sibling alone. No route is left open by this.
 - **Wire:** `NodeRoutesValue.RouteEntry` gained `pathArity` and `spacers`. This is pre-GA; no migration path.
