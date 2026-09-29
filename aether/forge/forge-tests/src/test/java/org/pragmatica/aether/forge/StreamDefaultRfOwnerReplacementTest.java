@@ -16,6 +16,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.awaitility.core.ConditionTimeoutException;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -47,17 +48,17 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// the default (and the minimum) 3.
 ///
 /// The fixture is the `test-stream` blueprint, whose `[streams.test-events]` section declares NO
-/// `replicas` key — the replication factor under test is the DEFAULT, resolved by the provisioning config
-/// binder from `StreamConfig.DEFAULT`. The flow: 5-node Ember cluster → deploy → the committed config reads
-/// `replicas = 3` → publish N events → wait until every placed non-owner replica has confirmed the tail →
+/// `replication_factor` key — the replication factor under test is the DEFAULT, resolved at activation from the
+/// committed cluster `[replication]` defaults (built-in 3, #1564). The flow: 5-node Ember cluster → deploy → the committed config reads
+/// `replication_factor = 3` → publish N events → wait until every placed non-owner replica has confirmed the tail →
 /// kill the partition's HRW owner → at least two SURVIVORS still hold all N events → a REPLACEMENT joins
 /// under a fresh node id (terminal removal: the dead identity is never reused).
 ///
 /// What the enabled test proves, precisely: an event that reached the default replica set before the
 /// owner died is still held by the survivors after the owner's terminal removal. It does NOT prove that
-/// every ACKED event survives: with the default `min-sync-replicas` the publish acks on the owner's local
-/// WAL fsync, so an event acked in the replication window before the kill is not covered — that is the
-/// `min-sync-replicas` knob's guarantee, not the replication factor's, and this test waits the window out.
+/// every ACKED event survives — that is the `confirmation_factor`'s guarantee, not the replication factor's
+/// (since #1564 the default CF is 2, so an acked event is also on one peer), and this test waits the replication
+/// window out rather than asserting it.
 /// The acked-record claim, at `replicas = min-sync-replicas = 3`, is #1549's test: a blueprint's
 /// dashed `min-sync-replicas` does not reach the runtime today, so it cannot be declared here.
 ///
@@ -135,10 +136,10 @@ class StreamDefaultRfOwnerReplacementTest {
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> committedConfig().isPresent());
         var committed = committedConfig().unwrap();
         LOG.log(System.Logger.Level.INFO,
-                "#1547 committed config for {0}: replicas={1} minSyncReplicas={2}",
+                "#1547 committed config for {0}: replication_factor={1} confirmation_factor={2}",
                 STREAM_NAME,
-                committed.replicas(),
-                committed.minSyncReplicas());
+                committed.replicationFactor(),
+                committed.confirmationFactor());
 
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> ownerView().isPresent());
         publishBatch(appPort(), "pre", N_EVENTS);
@@ -150,7 +151,7 @@ class StreamDefaultRfOwnerReplacementTest {
         // there are none and this holds as soon as the owner has the tail.
         await().atMost(REPLICATION_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> ownerView().map(view -> placedAndReplicated(view, committed.replicas())).or(false));
+               .until(() -> ownerView().map(view -> placedAndReplicated(view, committed.replicationFactor())).or(false));
         var preKill = ownerView().unwrap();
         killedOwner = preKill.ownerNodeId().or("");
         LOG.log(System.Logger.Level.INFO, "#1547 pre-kill replica set: {0}", preKill);
@@ -161,18 +162,18 @@ class StreamDefaultRfOwnerReplacementTest {
         LOG.log(System.Logger.Level.INFO, "#1547 survivors holding all {0} events after the kill: {1}", N_EVENTS, holders);
         assertThat(holders)
             .describedAs("survivors holding every replicated event after the owner's terminal removal")
-            .hasSizeGreaterThanOrEqualTo(StreamConfig.MIN_REPLICAS - 1);
+            .hasSizeGreaterThanOrEqualTo(ReplicationFactors.BUILT_IN.replicationFactor() - 1);
 
         var replacement = cluster.addNode().await().unwrap();
         assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedOwner);
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
 
-        assertThat(committed.replicas())
+        assertThat(committed.replicationFactor())
             .describedAs("the stream declares no replicas, so the committed factor is the default")
-            .isEqualTo(StreamConfig.MIN_REPLICAS);
+            .isEqualTo(ReplicationFactors.BUILT_IN.replicationFactor());
         assertThat(preKill.replicas())
             .describedAs("the default factor placed owner + 2 peers before the kill")
-            .hasSize(StreamConfig.MIN_REPLICAS);
+            .hasSize(ReplicationFactors.BUILT_IN.replicationFactor());
     }
 
     /// The serving half (#1550 fixed ownership moving off a killed owner). Runs after the test above, on the same

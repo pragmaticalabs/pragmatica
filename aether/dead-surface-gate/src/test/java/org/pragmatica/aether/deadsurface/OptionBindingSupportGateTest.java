@@ -104,6 +104,8 @@ class OptionBindingSupportGateTest {
                                                                          "DatabaseConnectorConfig.r2dbcUrl : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.type : org.pragmatica.lang.Option<org.pragmatica.aether.resource.db.DatabaseType>",
                                                                          "DatabaseConnectorConfig.username : org.pragmatica.lang.Option<java.lang.String>",
+                                                                         "DurableEntityConfig.confirmationFactor : org.pragmatica.lang.Option<java.lang.Integer>",
+                                                                         "DurableEntityConfig.replicationFactor : org.pragmatica.lang.Option<java.lang.Integer>",
                                                                          "HttpClientConfig.backend : org.pragmatica.lang.Option<org.pragmatica.aether.resource.http.HttpClientConfig$HttpBackend>",
                                                                          "HttpClientConfig.baseUrl : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "HttpClientConfig.json : org.pragmatica.lang.Option<org.pragmatica.aether.resource.http.JsonConfig>",
@@ -116,9 +118,9 @@ class OptionBindingSupportGateTest {
                                                                          "RetentionPolicy.tierAwareRetention : org.pragmatica.lang.Option<org.pragmatica.aether.slice.TierAwareRetention>",
                                                                          "SmtpConfig.auth : org.pragmatica.lang.Option<org.pragmatica.net.smtp.SmtpAuth>",
                                                                          "StreamConfig.encryptionKeyId : org.pragmatica.lang.Option<java.lang.String>",
-                                                                         "TopicConfig.minSyncReplicas : org.pragmatica.lang.Option<java.lang.Integer>",
+                                                                         "TopicConfig.confirmationFactor : org.pragmatica.lang.Option<java.lang.Integer>",
                                                                          "TopicConfig.partitions : org.pragmatica.lang.Option<java.lang.Integer>",
-                                                                         "TopicConfig.replicas : org.pragmatica.lang.Option<java.lang.Integer>",
+                                                                         "TopicConfig.replicationFactor : org.pragmatica.lang.Option<java.lang.Integer>",
                                                                          "TopicConfig.retention : org.pragmatica.lang.Option<org.pragmatica.lang.parse.TimeSpan>");
 
     @Test

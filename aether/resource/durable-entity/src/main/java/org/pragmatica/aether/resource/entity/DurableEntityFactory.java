@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.EntityPartitionArc;
@@ -21,6 +24,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationDeclaration;
+import org.pragmatica.aether.slice.ReplicationFactors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -137,6 +143,49 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     private static Result<DurableEntity> fencedEntity(DurableEntityConfig config,
                                                       ProvisioningContext context,
                                                       FenceCollaborators fence) {
+        return resolveReplication(config, context).flatMap(factors -> materializedEntity(config, context, fence, factors));
+    }
+
+    /// #1564: the keyspace's declared factors resolved against the committed cluster defaults and desired core
+    /// count ([ReplicationContext]), the single path from an entity declaration to its log's factors. The
+    /// declaration's warnings are logged here, at activation; the deploy path reports them to the operator.
+    private static Result<ReplicationFactors> resolveReplication(DurableEntityConfig config,
+                                                                 ProvisioningContext context) {
+        return context.extension(ReplicationContext.Source.class)
+                      .mapError(_ -> new EntityProvisioningError.ReplicationContextUnavailable(config.keyspace()))
+                      .flatMap(ReplicationContext.Source::current)
+                      .flatMap(replication -> replication.resolve(config.replication()))
+                      .mapError(EntityProvisioningError.ReplicationRefused::new)
+                      .onSuccess(resolved -> raiseWarnings(config, resolved, context))
+                      .map(ReplicationDeclaration.Resolved::factors);
+    }
+
+    /// #1564 / #1617: raised as `replication-policy-warning` operator warnings through the node's sink, when the
+    /// node supplies one; the WARN log is written either way.
+    private static void raiseWarnings(DurableEntityConfig config,
+                                      ReplicationDeclaration.Resolved resolved,
+                                      ProvisioningContext context) {
+        var resource = "entity keyspace '" + config.keyspace() + "'";
+        var sink = context.extension(OperatorWarningSink.class).or(OperatorWarningSink.logOnly());
+
+        resolved.warnings()
+                .forEach(warning -> OperatorWarnings.raise(LOG,
+                                                           sink,
+                                                           OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                           resource,
+                                                           "{}durable entity replication warning [{}]: {}",
+                                                           warning.loud()
+                                                           ? "LOUD: "
+                                                           : "",
+                                                           warning.code(),
+                                                           warning.message(resource,
+                                                                           resolved.factors())));
+    }
+
+    private static Result<DurableEntity> materializedEntity(DurableEntityConfig config,
+                                                            ProvisioningContext context,
+                                                            FenceCollaborators fence,
+                                                            ReplicationFactors factors) {
         // Declare the keyspace BEFORE handing back the entity. Synchronous and IO-free (see
         // EntityKeyspaceRegistrar): it records intent, and the node's level-triggered driver commits and
         // re-asserts it. Until the leader mints ownership records from it, every write on this entity
@@ -146,8 +195,7 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
         return fence.substrate()
                     .ensureLog(config.keyspace(),
                                config.partitionCount(),
-                               config.replicationFactor(),
-                               config.minSyncReplicas())
+                               factors)
                     .mapError(cause -> new EntityProvisioningError.LogUnavailable(config.keyspace(),
                                                                                   cause))
                     .map(_ -> buildEntity(config, context, fence));

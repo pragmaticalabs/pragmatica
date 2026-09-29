@@ -19,7 +19,7 @@ import static org.pragmatica.lang.Result.success;
 /// Minimal stream-only slice (no database) for the #1549 acked-record owner-kill Forge test.
 ///
 /// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.acked-events`
-/// resource (declared in `resources.toml` with partitions=1, replicas=3, min-sync-replicas=3 and
+/// resource (declared in `resources.toml` with partitions=1, replication_factor=3, confirmation_factor=3 and
 /// count-based retention so a slow consumer is never evicted). A publish acks only after both replicas
 /// hold the event. Exposes two
 /// app-HTTP routes:

@@ -77,7 +77,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// backoff instead of surfacing it as permanent. A `false` value (the default `failureResponse`
     /// factory) means a permanent failure, served exactly as before.
     ///
-    /// `outcomeUnknown` (#1236) marks a failure the owner reported AFTER appending — its min-sync barrier
+    /// `outcomeUnknown` (#1236) marks a failure the owner reported AFTER appending — its confirmation barrier
     /// did not confirm — so the event may be in the log. Without it the sender could only rebuild a
     /// permanent failure and would report "not in the log" for an event that is.
     record PublishForwardResponse(NodeId sender,

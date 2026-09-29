@@ -192,7 +192,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// A6: app-stream overload that wires owner-routed {@link #publish} (forward client + self +
     /// owner-resolver) while keeping the default local read path (no tiered/cursor/registry). Used by
     /// the app `StreamAccessFactory` so a non-owner producer write-forwards to the partition owner. The
-    /// min-sync barrier is the stream's committed `min-sync-replicas`, read live per publish by
+    /// confirmation barrier is the stream's committed `confirmation_factor`, read live per publish by
     /// {@link StreamWriteRouter} (#1263) — no longer a value frozen in at construction.
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
                                                               Serializer serializer,
@@ -569,7 +569,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
 
     /// A6 owner-routed publish, delegated whole to the ONE write operation, {@link StreamWriteRouter} (#1263):
     /// this class only encodes the event and picks its partition. Ownership routing, the STRONG / UNKNOWN refusal
-    /// (#1262), write-forwarding with the bounded retry, the committed-owner redirect (#1230) and the min-sync
+    /// (#1262), write-forwarding with the bounded retry, the committed-owner redirect (#1230) and the confirmation
     /// barrier — read live from the stream's committed config — all live there, shared with the slice
     /// {@link DefaultStreamPublisher} and the management publish, so the three entry points cannot drift.
     /// The owner is this stream's HRW resolver ({@link #resolveOwner}), the same one the read path uses.

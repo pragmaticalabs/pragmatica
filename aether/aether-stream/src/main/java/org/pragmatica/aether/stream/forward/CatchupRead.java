@@ -25,7 +25,7 @@ public sealed interface CatchupRead {
     /// #1383: a replica catch-up read is served from the ring up to the APPENDED head, or — for a prefix the
     /// ring has evicted but this node's tier retains — from the tier, then the ring for the rest of the page.
     /// Before this the read was ring-only, so a replacement replica whose catch-up started below the ring tail
-    /// was answered `CursorExpired` on every redrive and never left SYNCING; with `min-sync` 2 and the original
+    /// was answered `CursorExpired` on every redrive and never left SYNCING; with a confirmation factor of 2 and the original
     /// peer gone, the partition's visible position never advanced again. The tier read is bounded by the
     /// appended head — the replication-read class (#1235), never the consumer's visible bound (#1352) — so the
     /// replica holds every offset it acks and nothing this owner has not appended. A prefix retention has
