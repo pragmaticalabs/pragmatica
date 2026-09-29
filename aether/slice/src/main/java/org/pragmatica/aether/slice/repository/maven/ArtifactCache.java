@@ -36,9 +36,8 @@ import org.slf4j.LoggerFactory;
 /// checked and is trusted, as before.
 final class ArtifactCache {
     private static final Logger log = LoggerFactory.getLogger(ArtifactCache.class);
-
-    private static final List<Sidecar> SIDECARS = List.of(new Sidecar(".sha256", "SHA-256"),
-                                                          new Sidecar(".sha1", "SHA-1"));
+    private static final Sidecar SHA256_SIDECAR = new Sidecar(".sha256", "SHA-256");
+    private static final List<Sidecar> SIDECARS = List.of(SHA256_SIDECAR, new Sidecar(".sha1", "SHA-1"));
 
     private record Sidecar(String suffix, String algorithm) {
         Path of(Path jar) {
@@ -59,11 +58,16 @@ final class ArtifactCache {
         return FileOps.createDirectoriesDurable(directory)
                       .flatMap(_ -> publish(target, content, writer))
                       .flatMap(_ -> digest(content, "SHA-256"))
-                      .flatMap(sha256 -> publish(SIDECARS.getFirst().of(target),
-                                                 sha256.getBytes(StandardCharsets.US_ASCII),
+                      .map(ArtifactCache::ascii)
+                      .flatMap(sha256 -> publish(SHA256_SIDECAR.of(target),
+                                                 sha256,
                                                  writer))
                       .flatMap(_ -> FileOps.forceDirectory(directory))
                       .map(_ -> target);
+    }
+
+    private static byte[] ascii(String hex) {
+        return hex.getBytes(StandardCharsets.US_ASCII);
     }
 
     private static Result<Path> publish(Path target, byte[] content, Fn2<Result<Unit>, Path, byte[]> writer) {
