@@ -122,14 +122,13 @@ public final class ReplicaPlacement {
     }
 
     /// Effective replication factor for an APP stream: `clamp(requested, 1, clusterSize)`, where
-    /// `requested` is the stream's `replicas` knob (total copies INCLUDING the owner). Returns 0 only
+    /// `requested` is the stream's `replication_factor` (total copies INCLUDING the owner). Returns 0 only
     /// when the cluster is empty.
     ///
-    /// Under the two-knob model (#262) `replicas` ALONE determines placement — how many copies exist —
-    /// while the separate `min-sync-replicas` knob governs only the write-ack floor (a synchronous
-    /// publish awaits `min-sync-replicas − 1` DISTINCT NON-SELF acks) and never changes RF. The owner
-    /// is index 0 of the owner-first HRW set, so a `replicas`-sized set holds the owner PLUS
-    /// `replicas − 1` peers. When `min-sync-replicas` exceeds the peers a too-small cluster can
+    /// Under the two-knob model (#262, #1564) `replication_factor` ALONE determines placement — how many copies
+    /// exist — while the separate `confirmation_factor` governs only the write-ack floor (a synchronous
+    /// publish awaits `confirmation_factor − 1` DISTINCT NON-SELF acks) and never changes RF. The owner
+    /// is index 0 of the owner-first HRW set, so an RF-sized set holds the owner PLUS RF − 1 peers. When `confirmation_factor` exceeds the peers a too-small cluster can
     /// provision, the publish fails CLEARLY via [ReplicationManager#ensureReplicaFloor] with
     /// `NOT_ENOUGH_REPLICAS`, before anything is appended, rather than silently under-provisioning (#1236).
     public static int replicationFactor(int requested, int clusterSize) {

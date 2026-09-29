@@ -4,51 +4,58 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
-import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.parse.TimeSpan;
+import java.util.List;
 
-import static org.pragmatica.lang.Result.success;
+import org.pragmatica.aether.slice.ReplicationDeclaration;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationWarning;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.TimeSpan;
 
 
 /// Resolved stream parameters of a DURABLE topic (durable-pubsub-spec §3) — the durable tier's
 /// knobs with declaration defaults applied, valid by construction.
 ///
-/// The v1 durable-config constraint is enforced HERE, at parse (§3): `replicas >= 3` and
-/// `min-sync-replicas == replicas`. `min-sync == replicas` is the configuration whose lossless owner-kill
-/// failover holds by construction (streaming-spec §10.5 scoping); the floor of 3 is the stream
-/// replication minimum (#1547 — under terminal removal a dead owner never returns). Everything outside
-/// it is rejected with a pointer to the spec section rather than accepted and silently weaker. When #411
-/// (multi-survivor union catch-up) lands, the constraint relaxes to `2 <= min-sync <= replicas` by
-/// amending this factory — not silently.
+/// `replication` is the topic's [ReplicationFactors], resolved from its `replication_factor` and
+/// `confirmation_factor` against the committed cluster defaults through [ReplicationDeclaration] (#1564; the
+/// owner ruling, know 267792392, superseded the fixed `confirmation == replication` of know 8fb91f876 — `CF < RF`
+/// is lossless through #1555's promotion gate). `replicationWarnings` are the warnings that declaration raised.
+/// The topic's dead-letter stream inherits both factors.
 ///
 /// A retention under 1 ms (`0s`, `500us`) is refused here too (#1549): the topic's stream holds its
 /// retention in whole milliseconds and refuses a bound below 1 at creation, so accepting it would fail
 /// at the first publish instead of at declaration.
-///
-/// `minSyncReplicas` counts the owner (Kafka `min.insync.replicas` convention, same as
-/// [org.pragmatica.aether.slice.StreamConfig]).
-public record DurableTopicSpec(int partitions, int replicas, int minSyncReplicas, TimeSpan retention) {
+public record DurableTopicSpec(int partitions,
+                               ReplicationFactors replication,
+                               TimeSpan retention,
+                               List<ReplicationWarning> replicationWarnings) {
     public static final int DEFAULT_PARTITIONS = 1;
-    public static final int DEFAULT_REPLICAS = StreamConfig.MIN_REPLICAS;
     public static final TimeSpan DEFAULT_RETENTION = TimeSpan.timeSpan("7d").unwrap();
 
+    public DurableTopicSpec {
+        replicationWarnings = List.copyOf(replicationWarnings);
+    }
+
     public static Result<DurableTopicSpec> durableTopicSpec(int partitions,
-                                                            int replicas,
-                                                            int minSyncReplicas,
+                                                            ReplicationDeclaration.Resolved replication,
                                                             TimeSpan retention) {
+        return checkKnobs(partitions, retention).map(_ -> new DurableTopicSpec(partitions,
+                                                                               replication.factors(),
+                                                                               retention,
+                                                                               replication.warnings()));
+    }
+
+    /// The knobs a declaration decides on its own — checked at bind, before the factors can be resolved.
+    public static Result<Unit> checkKnobs(int partitions, TimeSpan retention) {
         if (partitions < 1) {
             return TopicConfigError.invalidPartitions(partitions).result();
-        }
-
-        if (replicas < StreamConfig.MIN_REPLICAS || minSyncReplicas != replicas) {
-            return TopicConfigError.outsideProvenDurableConfig(replicas, minSyncReplicas).result();
         }
 
         if (retention.toMillis() < 1) {
             return TopicConfigError.retentionBelowOneMillisecond(retention).result();
         }
 
-        return success(new DurableTopicSpec(partitions, replicas, minSyncReplicas, retention));
+        return Result.unitResult();
     }
 }

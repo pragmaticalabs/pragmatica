@@ -50,14 +50,14 @@ import static org.awaitility.Awaitility.await;
 /// a worker-leave, so the directive and roster stayed and no MEMBER_LEFT arrived within 180s. The roster
 /// diff that emits MEMBER_LEFT is pinned in `CommunityLifecycleEventsTest$Roster`.
 ///
-/// Registered in `TEST_PORT_ALLOCATION.md`: cluster 14500-14505, SWIM UDP 14600-14605 (cluster + 100), management
-/// 14700-14705, app HTTP 14800-14805 — below 32768, the start of the Linux ephemeral range, and clear of every
-/// five-digit literal under `src/test` and of the Ember candidate scans.
+/// Registered in `TEST_PORT_ALLOCATION.md`: cluster 12800-12805, SWIM UDP 12900-12905 (cluster + 100), management
+/// 12950-12955, app HTTP 13300-13305 — below 32768, the start of the Linux ephemeral range, and clear of every
+/// other registered row per `tools/check-test-ports.py`.
 @Execution(ExecutionMode.SAME_THREAD)
 class CommunityObservabilityForgeTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final int WORKERS = 3;
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 14500, 14700, 14800, "community-obs");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 12800, 12950, 13300, "community-obs");
     private final HttpClient http = HttpClient.newHttpClient();
 
     @AfterEach

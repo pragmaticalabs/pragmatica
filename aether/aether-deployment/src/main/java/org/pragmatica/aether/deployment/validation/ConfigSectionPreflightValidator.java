@@ -87,6 +87,15 @@ public interface ConfigSectionPreflightValidator {
                                                      loaderView));
     }
 
+    /// #1564: the view the slice loader binds this slice's resource sections from — [#loaderView] over the node
+    /// composite, or the jar's own `resources.toml` layer alone when no node composite is wired (a section the jar
+    /// ships is still bound from it at load). Empty only when there is neither.
+    static Option<ConfigurationProvider> bindingView(SliceJar sliceJar, Option<ConfigurationProvider> nodeComposite) {
+        return nodeComposite.map(composite -> loaderView(sliceJar, composite))
+                            .orElse(() -> SliceStore.sliceIntrinsicLayer(sliceJar.artifact(),
+                                                                         sliceJar.resourcesToml()));
+    }
+
     /// The layers the loader would consult for this slice's resource sections. The `.or(nodeComposite)` is
     /// not an absorbed failure: an unparseable jar `resources.toml` yields no layer at load too, and the
     /// runtime then answers from the node composite alone (see the interface header).

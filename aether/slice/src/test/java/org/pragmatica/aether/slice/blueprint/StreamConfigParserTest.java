@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.ReplicationWarning;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -27,14 +31,14 @@ class StreamConfigParserTest {
 
         @Test
         void emptyInputYieldsEmptyMap() {
-            var result = parseResources("").unwrap();
+            var result = parseResources("", ReplicationFactors.BUILT_IN).unwrap();
 
             assertThat(result).isEmpty();
         }
 
         @Test
         void blankInputYieldsEmptyMap() {
-            var result = parseResources("   \n  ").unwrap();
+            var result = parseResources("   \n  ", ReplicationFactors.BUILT_IN).unwrap();
 
             assertThat(result).isEmpty();
         }
@@ -47,7 +51,7 @@ class StreamConfigParserTest {
                     partitions = 8
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             assertThat(result).containsOnlyKeys("orders");
             var resource = result.get("orders");
@@ -68,7 +72,7 @@ class StreamConfigParserTest {
                     version = "1.0.0"
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             var owned = (StreamResource.Owned) result.get("orders");
             assertThat(owned.config().autoOffsetReset()).isEqualTo("earliest");
@@ -81,7 +85,7 @@ class StreamConfigParserTest {
                     version = "latest"
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             var owned = (StreamResource.Owned) result.get("inventory");
             assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
@@ -94,7 +98,7 @@ class StreamConfigParserTest {
                     source = "io.acme.inventory:stock-updates:2.0.0"
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             assertThat(result).containsOnlyKeys("inventory_feed");
             var resource = result.get("inventory_feed");
@@ -130,7 +134,7 @@ class StreamConfigParserTest {
                     max-event-size = "64KB"
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             assertThat(result).containsOnlyKeys("notifications");
             var resource = result.get("notifications");
@@ -157,7 +161,7 @@ class StreamConfigParserTest {
                     partitions = 2
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             assertThat(result).hasSize(3);
             assertThat(result.get("orders")).isInstanceOf(StreamResource.Owned.class);
@@ -175,7 +179,7 @@ class StreamConfigParserTest {
                     batch-size = 100
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             assertThat(result).containsOnlyKeys("orders");
         }
@@ -192,7 +196,7 @@ class StreamConfigParserTest {
                     source = "io.acme:other:2.0.0"
                     """;
 
-            var result = parseResources(toml);
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN);
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause.message()).contains("must not set both"));
@@ -205,7 +209,7 @@ class StreamConfigParserTest {
                     version = "1.0"
                     """;
 
-            var result = parseResources(toml);
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN);
 
             assertThat(result.isFailure()).isTrue();
         }
@@ -218,7 +222,7 @@ class StreamConfigParserTest {
                     partitions = 2000
                     """;
 
-            var result = parseResources(toml);
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN);
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause.message()).contains("2000").contains("per-stream ceiling of 1024"));
@@ -232,7 +236,7 @@ class StreamConfigParserTest {
                     partitions = 1024
                     """;
 
-            var result = parseResources(toml);
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN);
 
             assertThat(result.isSuccess()).isTrue();
         }
@@ -248,11 +252,11 @@ class StreamConfigParserTest {
                     min_sync_replicas = 2
                     """;
 
-            parseResources(toml).onSuccess(_ -> fail("unknown keys must be refused"))
+            parseResources(toml, ReplicationFactors.BUILT_IN).onSuccess(_ -> fail("unknown keys must be refused"))
                                 .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
                                 .onFailure(cause -> assertThat(((StreamDeclarationError.UnknownStreamKeys) cause).keys())
                                                         .containsExactly("max_event_size_bytes", "min_sync_replicas"))
-                                .onFailure(cause -> assertThat(cause.message()).contains("did you mean 'min-sync-replicas'"));
+                                .onFailure(cause -> assertThat(cause.message()).contains("did you mean 'confirmation_factor'"));
         }
 
         @Test
@@ -263,7 +267,7 @@ class StreamConfigParserTest {
                     partitons = 4
                     """;
 
-            parseResources(toml).onSuccess(_ -> fail("unknown keys must be refused on external sections too"))
+            parseResources(toml, ReplicationFactors.BUILT_IN).onSuccess(_ -> fail("unknown keys must be refused on external sections too"))
                                 .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class));
         }
 
@@ -272,11 +276,11 @@ class StreamConfigParserTest {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
-                    replicas = "three"
+                    replication_factor = "three"
                     """;
 
-            parseResources(toml).onSuccess(_ -> fail("a non-integer replicas must be refused, not defaulted"))
-                                .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.NotAnInteger("orders", "replicas", "three")));
+            parseResources(toml, ReplicationFactors.BUILT_IN).onSuccess(_ -> fail("a non-integer replication_factor must be refused, not defaulted"))
+                                .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.NotAnInteger("orders", "replication_factor", "three")));
         }
 
         /// #1549 (v1557): every value refusal below used to throw, default or wrap once these values reached the
@@ -369,70 +373,83 @@ class StreamConfigParserTest {
                                new StreamDeclarationError.MalformedValue("orders", "retention", "tme", "one of count, time, size, compound"));
         }
 
-        /// #1547: the stream replication factor minimum is 3 — a declared value below it is refused by a
-        /// typed cause naming the stream, the declared value and the minimum; it is never clamped up.
+        /// #1564: a declared factor below 1 is refused by a typed cause naming the stream; it is never clamped up.
         @Test
-        void rejectsReplicasBelowMinimum() {
-            List.of(-1, 0, 1, 2).forEach(StreamConfigParserTest::assertReplicasRefused);
+        void refusesFactorBelowOne() {
+            List.of(-1, 0).forEach(factor -> assertReplicationRefused("replication_factor = " + factor,
+                                                                      new ReplicationFactorsError.FactorBelowOne(factor)));
+        }
+
+        /// #1564 (owner ruling, know 267792392): a factor below 3 is allowed when the stream declares it, with the
+        /// LOUD warning. Before #1564 it was refused (#1547).
+        @Test
+        void acceptsDeclaredFactorBelowThree_withTheLoudWarning() {
+            List.of(1, 2).forEach(factor -> {
+                var toml = owned("replication_factor = " + factor);
+
+                parseResources(toml, ReplicationFactors.BUILT_IN).onFailure(cause -> fail(cause.message()));
+                assertThat(StreamConfigParser.replicationWarnings(toml, ReplicationFactors.BUILT_IN).get("orders"))
+                    .contains(ReplicationWarning.FACTOR_BELOW_THREE);
+            });
+        }
+
+        /// #1564 R5 pin (streams): a factor below 3 that comes from a DEFAULT is refused — only a declaration may go
+        /// below 3. Mutation "drop the explicitness check in ReplicationDeclaration#resolve" turns this red.
+        @Test
+        void refusesDefaultedFactorBelowThree() {
+            parseResources(owned(""), new ReplicationFactors(2, 1)).onSuccess(_ -> fail("a defaulted factor below 3 must be refused"))
+                                                                   .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicationRefused("orders",
+                                                                                                                                                                 new ReplicationFactorsError.ImplicitFactorBelowThree(2))));
         }
 
         @Test
-        void acceptsReplicasAtMinimum() {
-            var toml = """
-                    [streams.orders]
-                    version = "1.0.0"
-                    replicas = 3
-                    """;
-
-            parseResources(toml).onFailure(cause -> fail(cause.message()))
-                                .onSuccess(resources -> assertThat(ownedConfig(resources, "orders").replicas()).isEqualTo(3));
+        void acceptsDeclaredFactors() {
+            parseResources(owned("replication_factor = 3\nconfirmation_factor = 2"), ReplicationFactors.BUILT_IN).onFailure(cause -> fail(cause.message()))
+                                                                                                                .onSuccess(resources -> assertThat(ownedConfig(resources,
+                                                                                                                                                               "orders").replication()).isEqualTo(new ReplicationFactors(3,
+                                                                                                                                                                                                                         2)));
         }
 
-        /// #1547: an absent `replicas` resolves to the minimum, 3 — both in the parser and in
-        /// `StreamConfig.DEFAULT`, which is what the provisioning config binder falls back to for an
-        /// absent key, so the validated and the provisioned default cannot disagree.
+        /// #1564: absent factors take the committed cluster defaults, which a declared value overrides.
         @Test
-        void absentReplicas_defaultsToThree() {
-            var toml = """
-                    [streams.orders]
-                    version = "1.0.0"
-                    """;
+        void absentFactors_takeTheDefaults_andDeclaredValuesOverrideThem() {
+            var clusterDefaults = new ReplicationFactors(5, 3);
 
-            parseResources(toml).onFailure(cause -> fail(cause.message()))
-                                .onSuccess(resources -> assertThat(ownedConfig(resources, "orders").replicas()).isEqualTo(3));
-            assertThat(StreamConfig.DEFAULT.replicas()).isEqualTo(3);
-            assertThat(StreamConfig.streamConfig("orders").replicas()).isEqualTo(3);
-            assertThat(StreamConfig.MIN_REPLICAS).isEqualTo(3);
+            parseResources(owned(""), clusterDefaults).onFailure(cause -> fail(cause.message()))
+                                                      .onSuccess(resources -> assertThat(ownedConfig(resources, "orders").replication()).isEqualTo(clusterDefaults));
+            parseResources(owned("replication_factor = 4"), clusterDefaults).onFailure(cause -> fail(cause.message()))
+                                                                            .onSuccess(resources -> assertThat(ownedConfig(resources,
+                                                                                                                           "orders").replication()).isEqualTo(new ReplicationFactors(4,
+                                                                                                                                                                                     3)));
+            assertThat(StreamConfig.DEFAULT.replication()).isEqualTo(ReplicationFactors.BUILT_IN);
         }
 
         @Test
-        void rejectsMinSyncReplicasExceedingReplicas() {
-            var toml = """
-                    [streams.orders]
-                    version = "1.0.0"
-                    replicas = 3
-                    min-sync-replicas = 4
-                    """;
+        void refusesConfirmationExceedingFactor() {
+            assertReplicationRefused("replication_factor = 3\nconfirmation_factor = 4",
+                                     new ReplicationFactorsError.ConfirmationOutOfRange(3, 4));
+        }
 
-            var result = parseResources(toml);
-
-            assertThat(result.isFailure()).isTrue();
-            result.onFailure(cause -> assertThat(cause.message()).contains("min-sync-replicas")
-                                                                    .contains("replicas"));
+        /// #1564 (finding c): a negative confirmation used to pass the parser and behave as 0.
+        @Test
+        void refusesNegativeConfirmation() {
+            assertReplicationRefused("confirmation_factor = -1", new ReplicationFactorsError.ConfirmationOutOfRange(3, -1));
         }
 
         @Test
-        void acceptsMinSyncReplicasEqualToReplicas() {
-            var toml = """
-                    [streams.orders]
-                    version = "1.0.0"
-                    replicas = 3
-                    min-sync-replicas = 3
-                    """;
+        void acceptsConfirmationEqualToFactor_withTheWarning() {
+            var toml = owned("replication_factor = 3\nconfirmation_factor = 3");
 
-            var result = parseResources(toml);
+            assertThat(parseResources(toml, ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
+            assertThat(StreamConfigParser.replicationWarnings(toml, ReplicationFactors.BUILT_IN).get("orders"))
+                .containsExactly(ReplicationWarning.CONFIRMATION_EQUALS_FACTOR);
+        }
 
-            assertThat(result.isSuccess()).isTrue();
+        /// #1564: the pre-#1564 keys are gone without aliases (pre-GA); each is refused naming its replacement.
+        @Test
+        void refusesTheRemovedReplicationKeys_namingTheirReplacement() {
+            assertThat(unknownKeyMessage("replicas = 3")).contains("did you mean 'replication_factor'");
+            assertThat(unknownKeyMessage("min-sync-replicas = 2")).contains("did you mean 'confirmation_factor'");
         }
 
         @Test
@@ -442,7 +459,7 @@ class StreamConfigParserTest {
                     source = "not-a-valid-address"
                     """;
 
-            var result = parseResources(toml);
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN);
 
             assertThat(result.isFailure()).isTrue();
         }
@@ -455,7 +472,7 @@ class StreamConfigParserTest {
                     version = "latest"
                     """;
 
-            var result = parseResources(toml);
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN);
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause.message()).contains("producer")
@@ -474,7 +491,7 @@ class StreamConfigParserTest {
                     version = "latest"
                     """;
 
-            var result = parseResources(toml);
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN);
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause.message()).contains("both")
@@ -493,7 +510,7 @@ class StreamConfigParserTest {
                     partitions = 4
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             var owned = (StreamResource.Owned) result.get("orders");
             assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(ResourceVersion.resourceVersion(1, 0, 0).unwrap()));
@@ -506,7 +523,7 @@ class StreamConfigParserTest {
                     role = "consumer"
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             var owned = (StreamResource.Owned) result.get("inventory");
             assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
@@ -521,7 +538,7 @@ class StreamConfigParserTest {
                     retention-value = "5m"
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             var owned = (StreamResource.Owned) result.get("notifications");
             assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(ResourceVersion.resourceVersion(1, 0, 0).unwrap()));
@@ -534,7 +551,7 @@ class StreamConfigParserTest {
                     role = "Consumer"
                     """;
 
-            var result = parseResources(toml).unwrap();
+            var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
 
             var owned = (StreamResource.Owned) result.get("inventory");
             assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
@@ -592,24 +609,22 @@ class StreamConfigParserTest {
     private static void assertValueRefused(String lines, StreamDeclarationError expected) {
         var toml = "[streams.orders]\nversion = \"1.0.0\"\n" + lines + "\n";
 
-        parseResources(toml).onSuccess(resources -> fail("expected " + expected + ", parsed " + resources))
+        parseResources(toml, ReplicationFactors.BUILT_IN).onSuccess(resources -> fail("expected " + expected + ", parsed " + resources))
                             .onFailure(cause -> assertThat(cause).isEqualTo(expected));
     }
 
-    private static void assertReplicasRefused(int replicas) {
-        var toml = """
-                [streams.orders]
-                version = "1.0.0"
-                replicas = %d
-                """.formatted(replicas);
+    private static String owned(String lines) {
+        return "[streams.orders]\nversion = \"1.0.0\"\n" + lines + "\n";
+    }
 
-        parseResources(toml).onSuccess(_ -> fail("replicas=" + replicas + " must be refused, not clamped"))
-                            .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicasBelowMinimum("orders",
-                                                                                                                          replicas,
-                                                                                                                          3)))
-                            .onFailure(cause -> assertThat(cause.message()).contains("'orders'")
-                                                                           .contains("replicas=" + replicas)
-                                                                           .contains("minimum is 3"));
+    private static void assertReplicationRefused(String lines, ReplicationFactorsError expected) {
+        parseResources(owned(lines), ReplicationFactors.BUILT_IN).onSuccess(_ -> fail(lines + " must be refused, not clamped"))
+                                                                 .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicationRefused("orders",
+                                                                                                                                                               expected)));
+    }
+
+    private static String unknownKeyMessage(String line) {
+        return parseResources(owned(line), ReplicationFactors.BUILT_IN).fold(cause -> cause.message(), _ -> "accepted");
     }
 
     private static StreamConfig ownedConfig(Map<String, StreamResource> resources, String alias) {

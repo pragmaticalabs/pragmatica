@@ -139,7 +139,7 @@ class StreamWritePathContractTest {
             publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
 
             assertThat(awaitedMinAcks).containsExactly(DECLARED_MIN_SYNC - 1);
-            assertThat(partitionManager.minSyncReplicasFor(STREAM)).as("the raise itself landed").isEqualTo(RAISED_MIN_SYNC);
+            assertThat(partitionManager.confirmationFactorFor(STREAM)).as("the raise itself landed").isEqualTo(RAISED_MIN_SYNC);
         }
 
         @Test

@@ -35,7 +35,7 @@ two things a gate needs to tell apart:
 |------|---------|
 | 0 | Everything collected was analysed, and nothing was found |
 | 1 | Everything collected was analysed, and rule violations (or, with `--fail-on-warning`, warnings) were found |
-| 2 | Some collected file could not be read or parsed, so the run cannot speak for it |
+| 2 | Some collected file could not be read or parsed, so the run cannot speak for it — and, for `lint` only, the run found no Java files at all (#1100) |
 
 **Coverage is stated, never assumed.** A run that could not read every file it collected reports
 `checked 1 of 2 file(s), 1 UNPARSEABLE` in its summary line and never renders as a pass, however
@@ -43,6 +43,20 @@ clean the files it did read were. The same clause appears on the Maven goals' `L
 `Check results (...)` lines, and `score` renders it in its box header
 (`JBCT DENSITY — 5 LOC, 1 of 2 files, 1 UNPARSEABLE`) alongside a `filesUnanalyzed` field in
 `--format json`. Zero findings over a file the tool never analysed is silence, not compliance (#977).
+
+**Machine formats carry their own coverage (#1100).** Most CI SARIF uploaders never read the exit status,
+so `jbct lint --format json|sarif` states in the document itself what the run examined:
+
+- `--format json` emits one object: `collected` (files found), `examined` (files analysed), `skipped`
+  (`{file, reason}` for each file that could not be read or parsed) and `diagnostics`. A clean scan is
+  `jq -e '.examined > 0 and (.skipped | length) == 0 and (.diagnostics | length) == 0'`.
+- `--format sarif` adds `runs[0].invocations[0]`: `executionSuccessful` is `false` when any collected file
+  could not be analysed or when no Java files were found, with one `error` notification per skipped file
+  or one saying that nothing was examined. A clean scan is
+  `jq -e '.runs[0] | .invocations[0].executionSuccessful and (.invocations[0].toolExecutionNotifications | length) == 0 and (.results | length) == 0'`.
+
+A `lint` run that found no Java files exits `2`: examining nothing is a coverage gap, never a pass. `check`,
+`score` and `format --check` still exit `0` in that case.
 
 `shape-census` and `obligations` are reports rather than gates: they still exit 0 over a partial run,
 but each states the gap rather than omitting it silently.

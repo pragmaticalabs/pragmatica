@@ -42,13 +42,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 import org.pragmatica.aether.ember.EmberCluster;
 
-/// #1549 — every ACKED event survives the owner's terminal removal when `min-sync-replicas = replicas`.
+/// #1549 — every ACKED event survives the owner's terminal removal when `confirmation_factor = replication_factor`.
 ///
 /// The fixture is the `test-stream-acked` blueprint: `[streams.acked-events]` declares
-/// `replicas = 3` and `min-sync-replicas = 3`, so a publish acks only after BOTH non-owner replicas hold
+/// `replication_factor = 3` and `confirmation_factor = 3`, so a publish acks only after BOTH non-owner replicas hold
 /// the event. Until #1549 that declaration never reached the runtime — the record binder read
 /// `min_sync_replicas`, found nothing and committed `0`, so every publish acked on the owner alone. The
-/// flow: 5-node Ember cluster → deploy → the committed config reads `replicas = 3, minSyncReplicas = 3` →
+/// flow: 5-node Ember cluster → deploy → the committed config reads `replication_factor = 3, confirmation_factor = 3` →
 /// publish N events, each acked → kill the partition's HRW owner IMMEDIATELY after the last ack, with no
 /// wait for replication → at least two SURVIVORS hold all N acked events → a REPLACEMENT joins under a
 /// fresh node id (terminal removal: the dead identity is never reused) → ownership moves to a surviving
@@ -58,11 +58,11 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// after the kill it does not move (#1550, `StreamOwnerFailoverTest`); this test does not claim otherwise.
 ///
 /// What discriminates, stated because the obvious control does not: with the #1549 binding reverted the
-/// committed config reads `minSyncReplicas = 0`, and the committed-config assertion fails. The data
+/// committed config reads a confirmation factor of `0`, and the committed-config assertion fails. The data
 /// assertions alone would NOT reliably fail in that arm — in-JVM replication usually beats the kill, so an
 /// owner-only ack is usually replicated anyway (measured: the reverted arm still found 20/20 on two
-/// survivors). The acked-record guarantee is therefore carried by the committed `min-sync-replicas` plus
-/// the barrier's mechanism (a publish resolves only after `min-sync − 1` distinct peer acks); this test
+/// survivors). The acked-record guarantee is therefore carried by the committed `confirmation_factor` plus
+/// the barrier's mechanism (a publish resolves only after `CF − 1` distinct peer acks); this test
 /// pins that the knob reaches the runtime and that the data is where the barrier says it is.
 ///
 /// Ember equivalence: the owner kill is [EmberCluster#killNode] (`node.stop()`, a SWIM leave), not a
@@ -131,17 +131,17 @@ class StreamAckedRecordsOwnerKillTest {
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> committedConfig().isPresent());
         var committed = committedConfig().unwrap();
         LOG.log(System.Logger.Level.INFO,
-                "#1549 committed config for {0}: replicas={1} minSyncReplicas={2}",
+                "#1549 committed config for {0}: replication_factor={1} confirmation_factor={2}",
                 STREAM_NAME,
-                committed.replicas(),
-                committed.minSyncReplicas());
+                committed.replicationFactor(),
+                committed.confirmationFactor());
         // Asserted BEFORE the kill as well as after it (v1557): a failure later in the test must not hide
         // whether the declared min-sync reached the runtime — the #1549 claim this test exists to pin.
-        assertThat(committed.minSyncReplicas())
-            .describedAs("the declared min-sync-replicas reaches the committed runtime config, before any kill (#1549)")
+        assertThat(committed.confirmationFactor())
+            .describedAs("the declared confirmation_factor reaches the committed runtime config, before any kill (#1549)")
             .isEqualTo(DECLARED_MIN_SYNC);
-        assertThat(committed.replicas())
-            .describedAs("the declared replicas reach the committed runtime config, before any kill")
+        assertThat(committed.replicationFactor())
+            .describedAs("the declared replication_factor reaches the committed runtime config, before any kill")
             .isEqualTo(DECLARED_REPLICAS);
 
         // Publish only once the full replica set is registered: at min-sync 3 a publish needs both peers.
@@ -167,11 +167,11 @@ class StreamAckedRecordsOwnerKillTest {
         assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedOwner);
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
 
-        assertThat(committed.replicas())
-            .describedAs("the declared replicas reach the committed runtime config")
+        assertThat(committed.replicationFactor())
+            .describedAs("the declared replication_factor reaches the committed runtime config")
             .isEqualTo(DECLARED_REPLICAS);
-        assertThat(committed.minSyncReplicas())
-            .describedAs("the declared min-sync-replicas reaches the committed runtime config (#1549: it was 0)")
+        assertThat(committed.confirmationFactor())
+            .describedAs("the declared confirmation_factor reaches the committed runtime config (#1549: it was 0)")
             .isEqualTo(DECLARED_MIN_SYNC);
 
         replacementId = replacement.id();

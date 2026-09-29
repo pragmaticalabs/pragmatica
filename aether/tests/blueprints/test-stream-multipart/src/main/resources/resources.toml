@@ -11,20 +11,18 @@
 #   - partitions        = 4  -> four independent logs; keyless app publishes round-robin
 #     across them (DefaultStreamPublisher#resolvePartition), so a single publisher instance
 #     spreads events over all four partitions and HRW places their owners across the cluster.
-#   - replicas          = 3  -> replication factor (RF): copies incl owner (owner + 2 replicas),
-#     so every partition has a promotable CAUGHT_UP non-owner replica for owner-kill failover.
-#     3 is the stream replication minimum (#1547); a value below it is refused as a binding at publish.
-#   - min-sync-replicas = 2  -> DECLARED: owner + 1 in-sync peer per write, the durability #430 means
-#     to assert. Until #1549 this key does not reach the runtime (the provisioning binder reads
-#     min_sync_replicas and defaults to 0), so every publish actually acks on the owner alone.
+#   - replication_factor  = 3  -> copies incl owner (owner + 2 replicas), so every partition has a
+#     promotable CAUGHT_UP non-owner replica for owner-kill failover.
+#   - confirmation_factor = 2  -> owner + 1 peer per write, the durability #430 means to assert
+#     (#1564: also the cluster default, declared here so the fixture does not move with it).
 #   - retention  = count     -> count-based eviction (never time-based) so a slow consumer is
 #     never evicted mid-test; retention-value is far larger than any test event count, so
 #     nothing is ever dropped (no spurious CursorExpired).
 
 [streams.multipart-events]
 partitions = 4
-replicas = 3
-min-sync-replicas = 2
+replication_factor = 3
+confirmation_factor = 2
 retention = "count"
 retention-value = "100000"
 max-event-size = "64KB"

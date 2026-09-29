@@ -16,7 +16,7 @@ import org.pragmatica.utility.KSUID;
 
 
 /// The durable tier's typed publisher (durable-pubsub-spec §5): `publish` resolves when the event
-/// is durably appended at the declared floor — owner append plus `min-sync − 1` peer acks, carried
+/// is durably appended at the declared floor — owner append plus `CF − 1` peer acks, carried
 /// by the underlying stream publisher's replication barrier — NOT when subscribers process it.
 /// Publisher latency is bounded by replication latency and is independent of subscribers: the log
 /// severs subscriber processing from the publisher's lifetime, so nothing dangles.
