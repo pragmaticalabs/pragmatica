@@ -104,6 +104,21 @@ class ForgeProxyApiKeyForgeTest {
                    .until(() -> get(keyed, path).status() == HttpStatus.OK);
         }
 
+        // v1533 F2: the versioned POST and DELETE threshold targets, through the same keyed handler.
+        var metric = "forge.1105.test.metric";
+
+        await().alias("keyed proxy POST /api/alerts/thresholds answers 200")
+               .atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> send(keyed,
+                                 HttpMethod.POST,
+                                 "/api/alerts/thresholds",
+                                 "{\"metric\":\"" + metric + "\",\"warning\":0.7,\"critical\":0.9}").status() == HttpStatus.OK);
+        await().alias("keyed proxy DELETE /api/alerts/thresholds/{metric} answers 200")
+               .atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> send(keyed, HttpMethod.DELETE, "/api/alerts/thresholds/" + metric, "").status() == HttpStatus.OK);
+
         var refused = get(keyless, "/api/traces/stats");
 
         assertThat(refused.status()).as("control: a keyless proxy call must be refused by the API_KEY cluster, or the keyed "
@@ -111,6 +126,24 @@ class ForgeProxyApiKeyForgeTest {
                                     .isNotEqualTo(HttpStatus.OK);
         assertThat(refused.body()).as("control: the refusal is the node's authentication, not some other failure")
                                   .containsAnyOf("HTTP 401", "HTTP 403");
+    }
+
+    /// v1533 F1: Forge's own event poll (`ForgeServer.pollNodeEvents`) carries the operator key too. Under `API_KEY`
+    /// the keyed fetch returns a non-empty event timeline; a keyless fetch of the same route is refused in the same run.
+    @Test
+    void forgeEventPoll_carriesTheOperatorKey_andReadsTheTimeline() {
+        var port = cluster.getLeaderManagementPort().unwrap();
+
+        await().alias("keyed event poll returns a non-empty timeline")
+               .atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> ForgeServer.fetchNodeEvents(() -> Option.some(OPERATOR_KEY), port, "")
+                                       .fold(_ -> false, body -> body.startsWith("[") && body.contains("\"type\"")));
+
+        var keyless = ForgeServer.fetchNodeEvents(OperatorKey.none(), port, "");
+
+        assertThat(keyless.isFailure()).as("control: the cluster refuses a keyless event poll").isTrue();
+        keyless.onFailure(cause -> assertThat(cause.message()).containsAnyOf("HTTP 401", "HTTP 403"));
     }
 
     private ForgeApiHandler handler(OperatorKey operatorKey) {
@@ -123,29 +156,30 @@ class ForgeProxyApiKeyForgeTest {
     }
 
     private static Captured get(ForgeApiHandler handler, String path) throws Exception {
+        return send(handler, HttpMethod.GET, path, "");
+    }
+
+    private static Captured send(ForgeApiHandler handler, HttpMethod method, String path, String body) throws Exception {
         var writer = new CapturingWriter();
 
-        handler.handle(new GetRequest(path), writer);
+        handler.handle(new TestRequest(method, path, body), writer);
 
         return writer.captured.get(RESPONSE_SECONDS, TimeUnit.SECONDS);
     }
 
     private record Captured(HttpStatus status, String body) {}
 
-    private record GetRequest(String path) implements HttpRequest {
+    private record TestRequest(HttpMethod method, String path, String payload) implements HttpRequest {
         @Override
         public String requestId() {
             return "forge-1105-test";
         }
 
         @Override
-        public HttpMethod method() {
-            return HttpMethod.GET;
-        }
-
-        @Override
         public Headers headers() {
-            return Headers.empty();
+            return payload.isEmpty()
+                   ? Headers.empty()
+                   : Headers.fromSingleValueMap(Map.of("Content-Type", "application/json"));
         }
 
         @Override
@@ -155,7 +189,7 @@ class ForgeProxyApiKeyForgeTest {
 
         @Override
         public byte[] body() {
-            return new byte[0];
+            return payload.getBytes(StandardCharsets.UTF_8);
         }
     }
 

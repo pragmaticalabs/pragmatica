@@ -21,6 +21,9 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.aether.forge.api.OperatorKey;
+import org.pragmatica.aether.forge.api.NodeHttp;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.ClusterStatus;
 import org.pragmatica.aether.ember.EmberCluster.NodeStatus;
@@ -69,6 +72,11 @@ public final class ForgeServer {
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
+
+    private static final long EVENT_POLL_WARN_INTERVAL_MS = 60_000;
+
+    private final java.util.concurrent.atomic.AtomicLong lastEventPollWarnMs = new java.util.concurrent.atomic.AtomicLong();
+
     private volatile Option<StaticFileHandler> staticHandler = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
@@ -531,20 +539,39 @@ public final class ForgeServer {
     private void pollNodeEvents() {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
-            var uriStr = "http://localhost:" + port + "/api/v1/events";
 
-            if (!lastEventTimestamp.isEmpty()) {
-                uriStr += "?since=" + URLEncoder.encode(lastEventTimestamp, StandardCharsets.UTF_8);
-            }
-
-            var request = HttpRequest.newBuilder().uri(URI.create(uriStr)).GET().timeout(Duration.ofSeconds(2)).build();
-
-            http.sendString(request)
-                .await(TimeSpan.timeSpan(3).seconds())
-                .flatMap(HttpResult::toResult)
-                .onSuccess(this::parseAndMergeEvents);
+            fetchNodeEvents(operatorApiKey::get, port, lastEventTimestamp).onSuccess(this::parseAndMergeEvents)
+                           .onFailure(this::warnEventPollFailed);
         } catch (Exception e) {
-            log.trace("Event polling failed: {}", e.getMessage());
+            warnEventPollFailed(Causes.fromThrowable(e));
+        }
+    }
+
+    /// #1105 follow-up (v1533 F1): Forge's own event poll carries the operator key like every proxied call
+    /// ([NodeHttp]). `/api/v1/events` has no auth exemption, so under `API_KEY` a keyless poll was refused on every
+    /// tick and the dashboard's event timeline stayed silently empty. Package-private so a test drives the real
+    /// request against a keyed cluster.
+    static Result<String> fetchNodeEvents(OperatorKey operatorKey, int port, String since) {
+        var path = since.isEmpty()
+                   ? "/api/v1/events"
+                   : "/api/v1/events?since=" + URLEncoder.encode(since, StandardCharsets.UTF_8);
+        var nodeHttp = NodeHttp.nodeHttp(operatorKey);
+        var request = nodeHttp.request(port, path).GET().timeout(Duration.ofSeconds(2)).build();
+
+        return nodeHttp.sendString(request)
+                       .await(TimeSpan.timeSpan(3).seconds())
+                       .flatMap(HttpResult::toResult);
+    }
+
+    /// A failed poll is no longer swallowed at TRACE: an empty timeline must be explainable. Rate-limited to one WARN
+    /// per minute, because the poll runs every 2 s.
+    private void warnEventPollFailed(Cause cause) {
+        var now = System.currentTimeMillis();
+        var last = lastEventPollWarnMs.get();
+
+        if (now - last >= EVENT_POLL_WARN_INTERVAL_MS && lastEventPollWarnMs.compareAndSet(last, now)) {
+            log.warn("Forge event poll of the cluster failed (the dashboard event timeline will be empty): {}",
+                     cause.message());
         }
     }
 
