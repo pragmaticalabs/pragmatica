@@ -182,7 +182,7 @@ public final class PeerState {
     /// this peer's link, across ALL lanes (transport keepalives, ClusterSync pongs, consensus).
     /// RECEIPT EVIDENCE ONLY (Wave 5): refreshed EXCLUSIVELY by [#markInbound] — the single
     /// inbound funnel (`QuicClusterNetwork.onMessageReceived`, post-blackhole-guard). A dial
-    /// success / attach (including a LATE attach after the per-attempt dial timeout) never
+    /// success / attach (including an attach from EVICTED — a completion after an eviction) never
     /// refreshes it: our OWN outbound handshake completing is not evidence the peer is sending
     /// to us. The CONNECTED-zombie liveness TTL sweep (`QuicClusterNetwork.sweepPeer`) pairs this
     /// receipt clock with the phase age: a link is silent-zombie only when BOTH exceed the TTL,
@@ -438,8 +438,9 @@ public final class PeerState {
     /// CONNECTING → EVICTED transition so the caller emits diagnostics / re-dials exactly once.
     /// No-op (returns `false`) from any other phase — distinct from [#evict], which only handles
     /// the CONNECTED → EVICTED stale-link path. EVICTED is dial-eligible via [#beginConnecting].
-    /// A LATE dial completion after this eviction still attaches normally ([#attach] from
-    /// EVICTED) — provenance decides ACCEPTED vs RECONNECTED.
+    /// A dial whose socket is still open when this eviction happens may complete afterwards and attach
+    /// normally ([#attach] from EVICTED) — provenance decides ACCEPTED vs RECONNECTED. The network's
+    /// per-attempt timeout closes the evicted attempt's socket, so a timed-out attempt never does (#1578).
     public boolean evictStaleConnecting(long nowNanos) {
         var evicted = evictStaleConnectingInternal(nowNanos);
 

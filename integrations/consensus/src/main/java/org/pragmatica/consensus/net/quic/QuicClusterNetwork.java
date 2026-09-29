@@ -1359,8 +1359,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Per-attempt dial-timeout expiry: if the peer is STILL CONNECTING (the dial neither
     /// completed nor failed within the window), force CONNECTING → EVICTED so the reconciler
-    /// re-dials, and route the typed dial-failure event — WITHOUT failing the dial promise,
-    /// so a late completion still attaches (H10).
+    /// re-dials, and route the typed dial-failure event. The timer does not fail the dial promise,
+    /// but the eviction closes this attempt's socket, so the attempt cannot complete late (#1578).
     @SuppressWarnings("JBCT-PAT-01")  // Guard + evict + failure routing
     private void onDialAttemptTimeout(NodeInfo peer) {
         var state = peers.get(peer.id());
@@ -1375,7 +1375,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         router.route(new NetworkServiceMessage.ConnectionFailed(peer.id(),
                                                                 ConnectionError.networkError(peer.address().asString(),
-                                                                                             "per-attempt dial timeout (a late completion may still attach)")));
+                                                                                             "per-attempt dial timeout (the attempt is released)")));
     }
 
     /// Dial-success continuation. Journals the Wave-1 §6.1 dialer expected-vs-actual identity
