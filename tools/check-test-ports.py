@@ -16,6 +16,10 @@ can see each other (#1688 and #1703 both took 14500+; each branch's own grep was
       scan rows ("a-b scan") reserve a .. b+100+S-1 on BOTH protocols.
     ASSUMPTION: management and app-http serve HTTP/1.1 (TCP); a test that switches either to HTTP/3 (UDP) is not modelled.
     A row that cannot be parsed is fatal too: the table is the contract, so an unreadable row must not pass silently.
+    EVERY line starting with "|" (after optional whitespace) other than the header and the separator is a row and must
+    parse: fewer than 5 cells, an empty Test Class or an indented row is fatal. A table set that yields 0 rows exits 2
+    ("EXAMINED NOTHING"), as does a tree with no TEST_PORT_ALLOCATION.md at all. Every such file in the tree is read
+    (glob), so a second table cannot be ignored silently; ranges are compared across all of them.
 (2) Unregistered literals (WARN-ONLY unless --strict). A 4-5 digit number (1024-65535) on a non-comment line of
     */src/test/**/*.java that mentions "port" must fall in a registered range. rc4 already binds fixed ports that
     the table does not list (the table says so itself), so this starts as a report; --strict makes it fatal.
@@ -27,7 +31,9 @@ import os
 import re
 import sys
 
-TABLE = "aether/forge/forge-tests/src/test/resources/TEST_PORT_ALLOCATION.md"
+TABLE = "aether/forge/forge-tests/src/test/resources/TEST_PORT_ALLOCATION.md"   # the one table today
+TABLE_NAME = "TEST_PORT_ALLOCATION.md"
+SKIP_DIRS = (".git", "target", "node_modules", ".m2-local")
 SWIM_PORT_OFFSET = 100
 NUMBER = re.compile(r"(?<![\w.])(\d{4,5})(?![\w.])")
 
@@ -36,16 +42,28 @@ class RowError(Exception):
     pass
 
 
-def parse_table(text):
-    """Rows of the allocation table as dicts: name, ranges [(proto, lo, hi, kind)]."""
+def parse_table(text, source="TEST_PORT_ALLOCATION.md"):
+    """Rows of the allocation table as dicts: name, source, line, ranges [(proto, lo, hi, kind)].
+    Every "|" line other than the header and the separator is a row and must parse (RowError otherwise)."""
     rows = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        if not line.startswith("|"):
+        if not re.match(r"\s*\|", line):
             continue
+        where = "%s:%d" % (source, lineno)
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 5 or cells[0] in ("Test Class", "") or set(cells[0]) <= set("-: "):
-            continue
-        rows.append(parse_row(cells, lineno))
+        if cells and cells[0] == "Test Class":
+            continue                                                         # header
+        if all(re.fullmatch(r":?-+:?", c) for c in cells):
+            continue                                                         # separator
+        if line[0] != "|":
+            raise RowError("%s: an indented table row is not a row of the table; remove the indentation" % where)
+        if len(cells) < 5:
+            raise RowError("%s: %d cell(s); a row needs Test Class | Base Port | Base Mgmt Port | Max Offset | Notes" % (where, len(cells)))
+        if not cells[0]:
+            raise RowError("%s: empty Test Class" % where)
+        row = parse_row(cells, lineno)
+        row["source"] = source
+        rows.append(row)
     return rows
 
 
@@ -87,7 +105,8 @@ def parse_row(cells, lineno):
 
 def overlaps(rows):
     """Pairs of ranges from DIFFERENT rows that share a protocol and at least one port."""
-    flat = [(r["name"], r["line"]) + rng for r in rows for rng in r["ranges"]]
+    # rows are identified by their POSITION, not their line number: two tables can reuse a line number
+    flat = [(r["name"], i) + rng + (r.get("source", "?"), r["line"]) for i, r in enumerate(rows) for rng in r["ranges"]]
     found = []
     for i, a in enumerate(flat):
         for b in flat[i + 1:]:
@@ -122,34 +141,48 @@ def unregistered_literals(root, rows):
     return hits
 
 
+def find_tables(root):
+    found = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
+        if TABLE_NAME in files:
+            found.append(os.path.relpath(os.path.join(d, TABLE_NAME), root))
+    return sorted(found)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--table", default=None)
     ap.add_argument("--strict", action="store_true", help="unregistered literals are fatal")
     args = ap.parse_args(argv)
-    table = args.table or os.path.join(args.root, TABLE)
-    if not os.path.isfile(table):
-        print("check-test-ports: %s not found; EXAMINED NOTHING" % table, file=sys.stderr)
+    tables = [args.table] if args.table else [os.path.join(args.root, t) for t in find_tables(args.root)]
+    if not tables or not all(os.path.isfile(t) for t in tables):
+        print("check-test-ports: no %s found (%s); EXAMINED NOTHING" % (TABLE_NAME, ", ".join(tables) or args.root), file=sys.stderr)
         return 2
+    rows = []
     try:
-        with open(table, encoding="utf-8") as fh:
-            rows = parse_table(fh.read())
+        for t in tables:
+            with open(t, encoding="utf-8") as fh:
+                rows += parse_table(fh.read(), os.path.relpath(t, args.root))
     except RowError as e:
         print("check-test-ports: FAIL unparseable row: %s" % e, file=sys.stderr)
         return 1
+    if not rows:
+        print("check-test-ports: 0 rows parsed from %s; EXAMINED NOTHING" % ", ".join(tables), file=sys.stderr)
+        return 2
     nranges = sum(len(r["ranges"]) for r in rows)
     bad = overlaps(rows)
     for a, b in bad:
-        print("check-test-ports: FAIL overlap %s %s %d-%d (%s, line %d) vs %s %d-%d (%s, line %d)"
-              % (a[2].upper(), a[5], a[3], a[4], a[0], a[1], b[5], b[3], b[4], b[0], b[1]), file=sys.stderr)
+        print("check-test-ports: FAIL overlap %s %s %d-%d (%s, %s:%d) vs %s %d-%d (%s, %s:%d)"
+              % (a[2].upper(), a[5], a[3], a[4], a[0], a[6], a[7], b[5], b[3], b[4], b[0], b[6], b[7]), file=sys.stderr)
     hits = unregistered_literals(args.root, rows)
     files = sorted({h[0] for h in hits})
     for path, n, p in hits:
         print("check-test-ports: %s %s:%d: port-like literal %d is in no registered range"
               % ("FAIL" if args.strict else "WARN", path, n, p))
-    print("check-test-ports: %d row(s), %d range(s); %d overlap(s); %d unregistered literal(s) in %d file(s)%s"
-          % (len(rows), nranges, len(bad), len(hits), len(files), "" if args.strict else " (warn-only)"))
+    print("check-test-ports: %d table(s), %d row(s), %d range(s); %d overlap(s); %d unregistered literal(s) in %d file(s)%s"
+          % (len(tables), len(rows), nranges, len(bad), len(hits), len(files), "" if args.strict else " (warn-only)"))
     return 1 if bad or (args.strict and hits) else 0
 
 

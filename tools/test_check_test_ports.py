@@ -85,6 +85,66 @@ class OverlapTest(unittest.TestCase):
             ctp.parse_table(table(("A", "fifty", "5100", "0", "3 nodes")))
 
 
+def write_tree(root, tables):
+    """tables: {relative path: text}; returns root."""
+    for rel, text in tables.items():
+        os.makedirs(os.path.join(root, os.path.dirname(rel)), exist_ok=True)
+        with open(os.path.join(root, rel), "w", encoding="utf-8") as f:
+            f.write(text)
+    return root
+
+
+class VacuousPassTest(unittest.TestCase):
+    """v1677's B1: every row-shaped line must parse, and a table set with no rows examined nothing."""
+
+    def seeded_real(self, extra_line):
+        return real_table().replace("| ClusterFormationTest ", extra_line + "\n| ClusterFormationTest ", 1)
+
+    def assert_cli(self, text, rc):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(rc, ctp.main(["--root", write_tree(root, {ctp.TABLE: text})]))
+
+    def test_four_cell_row_is_fatal_not_skipped(self):
+        # the realistic slip: a row added without its Notes column, duplicating the 14000 row
+        self.assert_cli(self.seeded_real("| DupTest | 14000 | 14100 | 0 |"), 1)
+
+    def test_indented_row_is_fatal_not_skipped(self):
+        self.assert_cli(self.seeded_real("  | DupTest | 14000 | 14100 | 0 | 5 nodes |"), 1)
+
+    def test_empty_test_class_is_fatal_not_skipped(self):
+        self.assert_cli(self.seeded_real("|  | 14000 | 14100 | 0 | 5 nodes |"), 1)
+
+    def test_header_only_table_examines_nothing(self):
+        self.assert_cli(HEADER, 2)
+
+    def test_file_without_a_table_examines_nothing(self):
+        self.assert_cli("# Forge Test Port Allocation\n\nNo table here.\n", 2)
+
+    def test_control_real_table_still_passes(self):
+        self.assert_cli(real_table(), 0)
+
+
+class GlobTest(unittest.TestCase):
+    def test_every_table_in_the_tree_is_read_and_compared_across_tables(self):
+        second = "aether/ember/src/test/resources/" + ctp.TABLE_NAME
+        with tempfile.TemporaryDirectory() as root:
+            write_tree(root, {ctp.TABLE: table(("A", "14500", "14600", "0", "5 nodes")),
+                              second: table(("B", "14500", "14600", "0", "3 nodes"))})
+            self.assertEqual(sorted([ctp.TABLE, second]), ctp.find_tables(root))
+            self.assertEqual(1, ctp.main(["--root", root]), "a collision BETWEEN two tables must be caught")
+
+    def test_same_line_number_in_two_tables_is_not_the_same_row(self):
+        # both rows sit on line 3 of their files; identity must be the row, not the line number
+        rows = ctp.parse_table(table(("A", "14500", "14600", "0", "5 nodes")), "one.md") \
+             + ctp.parse_table(table(("B", "14500", "14600", "0", "3 nodes")), "two.md")
+        self.assertTrue(ctp.overlaps(rows))
+
+    def test_no_table_anywhere_examines_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "m", "src", "test", "java"))
+            self.assertEqual(2, ctp.main(["--root", root]))
+
+
 class LiteralTest(unittest.TestCase):
     def test_unregistered_port_literal_is_reported_and_registered_one_is_not(self):
         rows = ctp.parse_table(table(("A", "5000", "5100", "0", "3 nodes")))
