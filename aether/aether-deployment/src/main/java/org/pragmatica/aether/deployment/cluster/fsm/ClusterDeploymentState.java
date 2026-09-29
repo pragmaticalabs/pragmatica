@@ -385,7 +385,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void handleAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove,
                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             tx.handle(() -> handleAppBlueprintRemoval(valueRemove.cause().key(),
-                                                      valueRemove.oldValue().isPresent()));
+                                                      valueRemove.value().isPresent()));
         }
 
         private void handleSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove,

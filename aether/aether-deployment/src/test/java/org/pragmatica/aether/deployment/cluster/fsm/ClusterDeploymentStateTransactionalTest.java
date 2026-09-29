@@ -543,8 +543,8 @@ class ClusterDeploymentStateTransactionalTest {
     }
 
     /// #1492 — removing an ABSENT blueprint used to log "App blueprint '<id>' removed". `KVStore.handleRemove`
-    /// publishes a `ValueRemove` with an empty `oldValue` even for a key it never held, and the handler did not
-    /// look. Both arms are driven through the real FSM entry point, differing only in `oldValue`, so a handler
+    /// publishes a `ValueRemove` with an empty `value` even for a key it never held, and the handler did not
+    /// look. Both arms are driven through the real FSM entry point, differing only in `value`, so a handler
     /// that ignores it cannot pass both.
     @Nested
     class AbsentBlueprintRemoval {
