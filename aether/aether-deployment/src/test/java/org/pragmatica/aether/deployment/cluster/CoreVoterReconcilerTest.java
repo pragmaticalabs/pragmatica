@@ -35,15 +35,35 @@ class CoreVoterReconcilerTest {
     }
 
     @Test
-    void unchangedRosterStillRequestsMissingInstallationProof() {
+    void settledRosterRequestsTheChangeOnceWhileItIsInFlight() {
         var calls = new AtomicInteger();
         var pending = Promise.<Unit>promise();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), Option::none, () -> 3, () -> Set.of(A, B, C),
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, D),
             roster -> { calls.incrementAndGet(); return pending; });
         reconciler.reconcile();
         reconciler.reconcile();
         assertThat(calls.get()).isEqualTo(1);
         pending.succeed(Unit.unit());
+    }
+
+    @Test
+    void unsettledRosterWaitsInsteadOfRequestingAnotherChange() {
+        var calls = new AtomicInteger();
+        var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
+            () -> Option.some(CURRENT), Option::none, () -> 3, () -> Set.of(A, B, D),
+            roster -> { calls.incrementAndGet(); return Promise.unitPromise(); });
+        reconciler.reconcile().await();
+        assertThat(calls.get()).as("a pending change or an uncaught-up added member blocks the next one").isZero();
+    }
+
+    @Test
+    void unchangedRosterRequestsNothing() {
+        var calls = new AtomicInteger();
+        var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C),
+            roster -> { calls.incrementAndGet(); return Promise.unitPromise(); });
+        reconciler.reconcile().await();
+        assertThat(calls.get()).isZero();
     }
 }

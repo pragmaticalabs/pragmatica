@@ -38,15 +38,14 @@ public interface RabiaPersistence<C extends Command> {
     /// Save the current state.
     Result<Unit> save(StateMachine<C> stateMachine, Phase lastCommittedPhase, Collection<Batch<C>> pendingBatches);
 
-    /// Atomically saves application state with voting authority. Unsupported adapters fail
-    /// closed once authority changes; retaining only application bytes would reopen old epochs.
+    /// Saves application state together with the voter configuration that governs `nextSlot`.
+    /// Unsupported adapters fail closed once the epoch has advanced past genesis; retaining only
+    /// application bytes would restore a later prefix under the genesis roster.
     default Result<Unit> save(StateMachine<C> stateMachine,
                               Phase nextSlot,
                               Collection<Batch<C>> pending,
-                              VoterAuthority<C> authority) {
-        return authority.configuration()
-                        .epoch() == 0 && authority.handoff()
-                                                  .isEmpty()
+                              VoterConfiguration configuration) {
+        return configuration.epoch() == 0
                ? save(stateMachine, nextSlot, pending)
                : ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result();
     }
@@ -95,12 +94,12 @@ public interface RabiaPersistence<C extends Command> {
             public Result<Unit> save(StateMachine<C> machine,
                                      Phase nextSlot,
                                      Collection<Batch<C>> pending,
-                                     VoterAuthority<C> authority) {
+                                     VoterConfiguration configuration) {
                 return machine.makeSnapshot()
                               .map(snapshot -> new SavedState<>(snapshot,
                                                                 nextSlot,
                                                                 List.copyOf(pending),
-                                                                Option.some(authority)))
+                                                                Option.some(configuration)))
                               .onSuccess(saved -> state.set(Option.some(saved)))
                               .mapToUnit();
             }
@@ -119,7 +118,7 @@ public interface RabiaPersistence<C extends Command> {
     record SavedState<C extends Command>(byte[] snapshot,
                                          Phase lastCommittedPhase,
                                          List<Batch<C>> pendingBatches,
-                                         Option<VoterAuthority<C>> authority) {
+                                         Option<VoterConfiguration> configuration) {
         public SavedState {
             snapshot = snapshot.clone();
             pendingBatches = List.copyOf(pendingBatches);
@@ -152,12 +151,12 @@ public interface RabiaPersistence<C extends Command> {
             return Arrays.equals(snapshot, other.snapshot())
                    && lastCommittedPhase.equals(other.lastCommittedPhase())
                    && pendingBatches.equals(other.pendingBatches())
-                   && authority.equals(other.authority());
+                   && configuration.equals(other.configuration());
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(Arrays.hashCode(snapshot()), lastCommittedPhase(), pendingBatches(), authority());
+            return Objects.hash(Arrays.hashCode(snapshot()), lastCommittedPhase(), pendingBatches(), configuration());
         }
     }
 }
