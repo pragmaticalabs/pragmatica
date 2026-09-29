@@ -102,6 +102,127 @@ class DelegatedStorageAdapterTest {
             .anyMatch(msg -> msg.contains("gc boom"));
     }
 
+    /// #804 — a failed manager deactivation leaves the adapter ACTIVE: a maintenance pass may still be
+    /// scheduled. Mutation that reddens it: flip the flag before (or regardless of) the manager results.
+    @Test
+    void deactivate_garbageCollectorFails_adapterStaysActive() {
+        var adapter = delegatedStorageAdapter(succeedingDemotionManager(), failingGarbageCollector("gc boom"));
+
+        adapter.activate().await();
+        assertThat(adapter.isActive()).as("control: activation succeeded").isTrue();
+        adapter.deactivate().await();
+
+        assertThat(adapter.isActive())
+            .as("#804: a failed garbage-collector deactivation must keep the adapter reporting active")
+            .isTrue();
+    }
+
+    /// Control for the one above: when both managers deactivate, the adapter reports inactive.
+    @Test
+    void deactivate_bothSucceed_adapterReportsInactive() {
+        var demotion = new Recording();
+        var collector = new Recording();
+        var adapter = delegatedStorageAdapter(demotion.demotionManager(Result.success(unit())),
+                                              collector.garbageCollector(Result.success(unit())));
+
+        adapter.activate().await();
+        adapter.deactivate().await();
+
+        assertThat(adapter.isActive()).isFalse();
+        assertThat(demotion.deactivations).isEqualTo(1);
+        assertThat(collector.deactivations).isEqualTo(1);
+    }
+
+    /// #804 addendum — a PARTIAL activation (demotion started, collector failed) must stop the manager that
+    /// started. Before the fix it kept running while the adapter reported inactive, unreachable by any later
+    /// `deactivate()`. Mutation that reddens it: drop the `stopPartiallyActivated` call.
+    @Test
+    void activate_secondManagerFails_stopsTheFirstAndReportsInactive() {
+        var demotion = new Recording();
+        var collector = new Recording();
+        var adapter = delegatedStorageAdapter(demotion.demotionManager(Result.success(unit())),
+                                              collector.garbageCollector(Causes.cause("gc start boom").result()));
+
+        adapter.activate().await();
+
+        assertThat(adapter.isActive()).isFalse();
+        assertThat(demotion.activations).as("control: the demotion manager did start").isEqualTo(1);
+        assertThat(demotion.deactivations)
+            .as("#804: the manager that started is stopped when its partner failed to start")
+            .isEqualTo(1);
+        assertThat(collector.deactivations).as("the manager that never started is not stopped").isZero();
+    }
+
+    /// Counts activate/deactivate calls on a fake manager.
+    private static final class Recording {
+        private int activations;
+        private int deactivations;
+
+        DemotionManager demotionManager(Result<Unit> onActivate) {
+            var self = this;
+            return new DemotionManager() {
+                @Override
+                public int demote() {
+                    return 0;
+                }
+
+                @Override
+                public DemotionStats stats() {
+                    return new DemotionStats(0, 0, 0);
+                }
+
+                @Override
+                public Result<Unit> activate() {
+                    self.activations++;
+                    return onActivate;
+                }
+
+                @Override
+                public Result<Unit> deactivate() {
+                    self.deactivations++;
+                    return Result.success(unit());
+                }
+
+                @Override
+                public boolean isActive() {
+                    return false;
+                }
+            };
+        }
+
+        StorageGarbageCollector garbageCollector(Result<Unit> onActivate) {
+            var self = this;
+            return new StorageGarbageCollector() {
+                @Override
+                public int collectGarbage() {
+                    return 0;
+                }
+
+                @Override
+                public GCStats stats() {
+                    return new GCStats(0, 0);
+                }
+
+                @Override
+                public Result<Unit> activate() {
+                    self.activations++;
+                    return onActivate;
+                }
+
+                @Override
+                public Result<Unit> deactivate() {
+                    self.deactivations++;
+                    return Result.success(unit());
+                }
+
+                @Override
+                public boolean isActive() {
+                    return false;
+                }
+            };
+        }
+    }
+
     // --- Fakes ---
 
     private static DemotionManager succeedingDemotionManager() {
