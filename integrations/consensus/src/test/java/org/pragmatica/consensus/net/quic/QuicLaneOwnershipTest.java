@@ -62,6 +62,7 @@ class QuicLaneOwnershipTest {
     private static final NodeAddress UNUSED_ADDRESS = new NodeAddress("127.0.0.1", 9000);
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(10).seconds();
     private static final StreamType LANE = StreamType.FORWARD;
+    private static final int SILENCE_PROBES = 100;
 
     private final SliceCodec codec = LaneProbe.codec();
     private final List<Object> receivedByAcceptor = new CopyOnWriteArrayList<>();
@@ -175,6 +176,74 @@ class QuicLaneOwnershipTest {
         assertThat(sent - finMarkers().size() - failed.get()).as("0 unaccounted").isZero();
     }
 
+    /// #1578 / i-genesis-stall (s29/i-genesis-stall-report.md): the CI order that stalled genesis. The acceptor's lazy
+    /// CONSENSUS open completes AFTER the dialer registered all its lanes (2-7 ms later on #1653's CI run; the
+    /// forced reproduction opened it 150 ms after the Hello). On rc4 the stand-in displaced the dialer's stream at the
+    /// acceptor, the dialer had no reader for it, and half-closure kept every write "successful": both directions of
+    /// CONSENSUS died with no write failure. Here both ends keep the dialer's stream and every write the writer saw
+    /// succeed is delivered, in both directions.
+    @Test
+    void acceptorOpensConsensusAfterTheDialersLanes_bothEndsKeepOneStream_everyAcknowledgedWriteIsDelivered() {
+        var lane = StreamType.CONSENSUS;
+        var dialerStream = dialerSide.stream(lane).unwrap();
+
+        openLane(acceptorSide.get(), lane);
+
+        awaitTrue(() -> sameStreamAtBothEnds(lane), "both ends resolve CONSENSUS to the same stream");
+        assertThat(acceptorSide.get().stream(lane).unwrap().streamId())
+            .as("the dialer's CONSENSUS stream outranks the acceptor's late stand-in, at both ends")
+            .isEqualTo(dialerStream.streamId());
+        assertEveryAcknowledgedWriteIsRead(acceptorSide.get().stream(lane).unwrap(), ACCEPTOR, lane, "igs-a2d-", receivedByDialer);
+        assertEveryAcknowledgedWriteIsRead(dialerSide.stream(lane).unwrap(), DIALER, lane, "igs-d2a-", receivedByAcceptor);
+    }
+
+    /// #1578 — the silence itself. A stream the acceptor opened must have a reader at the dialer: every write the
+    /// acceptor saw succeed on its stand-in is read. Without the dialer's stream handler the writes still succeed
+    /// (half-closure; nothing fails, nothing backs up) and none is read — delivered 0 of N acknowledged.
+    @Test
+    void acceptorStandIn_everyWriteTheAcceptorSawSucceed_isReadByTheDialer_noSilentAcknowledgement() {
+        var lost = dialerSide.stream(LANE).unwrap();
+        var lostAtAcceptor = acceptorSide.get().stream(LANE).unwrap();
+
+        lost.close().awaitUninterruptibly(AWAIT.millis());
+        awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != lostAtAcceptor).or(true),
+                  "the acceptor releases FORWARD once the dialer's stream for it ends");
+        openLane(acceptorSide.get());
+        var standIn = acceptorSide.get().stream(LANE).unwrap();
+
+        assertThat(standIn.streamId() & 0x1L).as("arming: the writes ride an ACCEPTOR-opened stream").isEqualTo(1L);
+        assertEveryAcknowledgedWriteIsRead(standIn, ACCEPTOR, LANE, "silent-", receivedByDialer);
+    }
+
+    /// Writes `SILENCE_PROBES` markers on `stream` and requires: every write resolves, at least one succeeded
+    /// (arming), and every succeeded write is read at the other end — so a write can fail visibly but never be
+    /// acknowledged and lost.
+    private void assertEveryAcknowledgedWriteIsRead(QuicStreamChannel stream,
+                                                    NodeId sender,
+                                                    StreamType lane,
+                                                    String prefix,
+                                                    List<Object> readBy) {
+        var succeeded = new AtomicInteger();
+        var failed = new AtomicInteger();
+
+        IntStream.range(0, SILENCE_PROBES)
+                 .forEach(i -> stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(sender, lane, prefix + i))))
+                                     .addListener(future -> countWrite(future.isSuccess(), succeeded, failed)));
+
+        awaitTrue(() -> succeeded.get() + failed.get() == SILENCE_PROBES, "every write resolves");
+        assertThat(succeeded.get()).as("arming: writes on the lane succeeded").isPositive();
+        awaitTrue(() -> prefixed(readBy, prefix) == succeeded.get(),
+                  "every acknowledged write is read (read=" + prefixed(readBy, prefix) + " succeeded=" + succeeded.get()
+                  + " failed=" + failed.get() + ")");
+    }
+
+    private static long prefixed(List<Object> received, String prefix) {
+        return markers(received).stream()
+                                .filter(marker -> marker.startsWith(prefix))
+                                .distinct()
+                                .count();
+    }
+
     /// The dialer's FORWARD stream is lost, the acceptor opens a stand-in, and both ends adopt it.
     private void adoptAcceptorStandIn() {
         var lost = dialerSide.stream(LANE).unwrap();
@@ -273,8 +342,12 @@ class QuicLaneOwnershipTest {
     }
 
     private boolean sameStreamAtBothEnds() {
-        var atDialer = dialerSide.stream(LANE);
-        var atAcceptor = acceptorSide.get().stream(LANE);
+        return sameStreamAtBothEnds(LANE);
+    }
+
+    private boolean sameStreamAtBothEnds(StreamType lane) {
+        var atDialer = dialerSide.stream(lane);
+        var atAcceptor = acceptorSide.get().stream(lane);
 
         return atDialer.isPresent() && atAcceptor.isPresent() && atDialer.unwrap().isActive()
                && atAcceptor.unwrap().isActive() && atDialer.unwrap().streamId() == atAcceptor.unwrap().streamId();
@@ -289,13 +362,21 @@ class QuicLaneOwnershipTest {
     }
 
     private static void openLane(QuicPeerConnection connection) {
-        openLaneAsync(connection).orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS).join();
+        openLane(connection, LANE);
+    }
+
+    private static void openLane(QuicPeerConnection connection, StreamType lane) {
+        openLaneAsync(connection, lane).orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS).join();
     }
 
     private static CompletableFuture<Option<QuicStreamChannel>> openLaneAsync(QuicPeerConnection connection) {
+        return openLaneAsync(connection, LANE);
+    }
+
+    private static CompletableFuture<Option<QuicStreamChannel>> openLaneAsync(QuicPeerConnection connection, StreamType lane) {
         var opened = new CompletableFuture<Option<QuicStreamChannel>>();
 
-        connection.openLane(LANE, opened::complete);
+        connection.openLane(lane, opened::complete);
 
         return opened;
     }
