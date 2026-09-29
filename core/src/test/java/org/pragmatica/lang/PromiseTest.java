@@ -353,6 +353,11 @@ public class PromiseTest {
         source.succeed(1);
 
         assertEquals(Result.success(1), derived.get().await(timeSpan(1).seconds()));
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+        while (resolvedWhenActionRan.get() == null && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertNotNull(resolvedWhenActionRan.get(), "control: the action ran");
         assertEquals(Boolean.FALSE, resolvedWhenActionRan.get(), "the action runs before the returned promise resolves");
     }
 
