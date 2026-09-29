@@ -580,8 +580,10 @@ public final class ConfigLoader {
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
         var memoryMaxBytes = parseLong(doc, sectionName, "memory_max_bytes", 256 * 1024 * 1024);
         var diskMaxBytes = parseLong(doc, sectionName, "disk_max_bytes", 10L * 1024 * 1024 * 1024);
-        var diskPath = doc.getString(sectionName, "disk_path").or("/data/aether/storage");
-        var snapshotPath = doc.getString(sectionName, "snapshot_path").or("/data/aether/metadata-snapshots");
+        // #912: one source for the default paths (and the root they honour), not a second copy of the literals.
+        var defaults = StorageConfig.storageConfig();
+        var diskPath = doc.getString(sectionName, "disk_path").or(defaults.diskPath());
+        var snapshotPath = doc.getString(sectionName, "snapshot_path").or(defaults.snapshotPath());
         var mutationThreshold = parseInt(doc, sectionName, "snapshot_mutation_threshold", 1000);
         var snapshotInterval = doc.getString(sectionName, "snapshot_max_interval").or("60s");
         var retentionCount = parseInt(doc, sectionName, "snapshot_retention_count", 5);

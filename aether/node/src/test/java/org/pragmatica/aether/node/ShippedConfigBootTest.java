@@ -14,11 +14,13 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
@@ -43,6 +45,14 @@ class ShippedConfigBootTest {
 
     private AetherNode node;
 
+    /// #912: the shipped config sets no storage path, so the node resolves the production default root. It is
+    /// pointed here instead of `/data/aether`: where `/data` is writable this test used to write `artifacts`,
+    /// `content` and a live stream WAL there, shared by every later run (found by a canary run of the module).
+    @TempDir
+    Path storageRoot;
+
+    private String previousRoot;
+
     @AfterEach
     void tearDown() {
         if (node != null) {
@@ -52,6 +62,20 @@ class ShippedConfigBootTest {
         }
         ConfigService.clear();
         ResourceProvider.clear();
+        restoreDefaultRoot();
+    }
+
+    private void rootDefaultStorageInTempDir() {
+        previousRoot = System.getProperty(StorageConfig.DEFAULT_ROOT_PROPERTY);
+        System.setProperty(StorageConfig.DEFAULT_ROOT_PROPERTY, storageRoot.toString());
+    }
+
+    private void restoreDefaultRoot() {
+        if (previousRoot == null) {
+            System.clearProperty(StorageConfig.DEFAULT_ROOT_PROPERTY);
+        } else {
+            System.setProperty(StorageConfig.DEFAULT_ROOT_PROPERTY, previousRoot);
+        }
     }
 
     /// Non-vacuity: the file really is the shipped one (parsed, `[app-http] enabled = true`), and it
@@ -67,6 +91,7 @@ class ShippedConfigBootTest {
 
     @Test
     void aetherNode_assemblesFromShippedConfig_withoutConsensusPathOrArtifactsStorage() {
+        rootDefaultStorageInTempDir();
         var shipped = shippedConfigPath();
         var provider = ConfigurationProvider.builder()
                                             .withTomlFile(shipped)
@@ -77,6 +102,9 @@ class ShippedConfigBootTest {
                          .unwrap();
 
         assertThat(node.self().id()).startsWith("shipped-config-boot-");
+        assertThat(storageRoot.resolve("stream-segments").resolve(node.self().id().id()))
+            .as("#912: the default storage root the shipped config resolves is the injected one, not /data/aether")
+            .exists();
     }
 
     private static AetherNodeConfig nodeConfig(ConfigurationProvider provider, AetherConfig shipped) {
