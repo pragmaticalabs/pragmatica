@@ -34,7 +34,14 @@ import org.slf4j.LoggerFactory;
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
     private static final Logger log = LoggerFactory.getLogger(KVStore.class);
 
+    /// How often a burst of repeated refusals is summarised in the log.
+    private static final long REFUSAL_SUMMARY_INTERVAL_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+
     private final AtomicLong staleEpochRefusals = new AtomicLong();
+    private final ThrottledWarning refusalWarning = ThrottledWarning.throttledWarning(log::warn,
+                                                                                   System::nanoTime,
+                                                                                   REFUSAL_SUMMARY_INTERVAL_NANOS,
+                                                                                   "stale-epoch write refusals");
     /// Serializes writers and notification delivery without blocking read-only store captures.
     private final Object mutationLock = new Object();
     private final java.util.ArrayDeque<PendingNotification> notifications = new java.util.ArrayDeque<>();
@@ -315,17 +322,24 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// next epoch from the same committed state is refused rather than silently accepted.
     /// A plain `Put` refused by the epoch fence leaves no other trace: no notification, and the caller's
     /// apply still succeeds. A writer whose epoch source lags (#1529: an incarnation mirror behind the commit)
-    /// would refuse itself on every retry in silence, so each refusal is counted ([#staleEpochRefusals]) and
-    /// logged on every replica that applies it.
+    /// would refuse itself on every retry in silence, so each refusal is counted ([#staleEpochRefusals]). The WARN
+    /// is throttled: after a failover every in-flight write of the deposed writer is a refusal on every replica,
+    /// which is normal, so the first refusal of each (incoming, committed) epoch pair is logged in full and the
+    /// repeats are summarised at most once per interval.
     private void reportStaleEpochRefusal(K key, Object incoming) {
         if (incoming instanceof EpochBearing<?> in && storage.get(key) instanceof EpochBearing<?> stored && incomingEpochIsStale(in,
                                                                                                                                 stored)) {
-            log.warn("Refused a stale-epoch write to {}: incoming epoch {} is older than the committed {} (refusals: {})",
-                     key,
-                     in.fenceEpoch(),
-                     stored.fenceEpoch(),
-                     staleEpochRefusals.incrementAndGet());
+            var refusals = staleEpochRefusals.incrementAndGet();
+
+            refusalWarning.report(List.of(in.fenceEpoch(), stored.fenceEpoch()),
+                                  () -> "Refused a stale-epoch write to " + key + ": incoming epoch " + in.fenceEpoch()
+                                        + " is older than the committed " + stored.fenceEpoch() + " (refusals: " + refusals + ")");
         }
+    }
+
+    /// The throttled WARN behind [#reportStaleEpochRefusal], for tests and diagnostics.
+    ThrottledWarning refusalWarning() {
+        return refusalWarning;
     }
 
     /// How many plain `Put`s this replica's epoch fence has refused (see [#reportStaleEpochRefusal]).

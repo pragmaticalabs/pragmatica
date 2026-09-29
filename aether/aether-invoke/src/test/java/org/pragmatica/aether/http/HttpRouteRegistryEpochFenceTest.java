@@ -149,6 +149,20 @@ class HttpRouteRegistryEpochFenceTest {
             assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
         }
 
+        /// A burst of stale route updates is refused and counted one by one, but WARNed once per cause.
+        @Test
+        void staleBurst_countsEveryRefusal_butWarnsOnce() {
+            snapshotSource.setIncarnation(2L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            for (int i = 0; i < 50; i++) {
+                registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(1L, 100L, 0L)));
+            }
+
+            assertThat(registry.staleFenceObservationCount()).isEqualTo(50L);
+            assertThat(registry.staleFenceWarningLines()).isEqualTo(1L);
+        }
+
         @Test
         void sameIncarnation_staleTerm_stillRefused() {
             snapshotSource.setIncarnation(2L);

@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.ThrottledWarning;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -48,6 +49,13 @@ public interface HttpRouteRegistry {
     void evictNode(NodeId nodeId);
 
     long staleFenceObservationCount();
+
+    /// WARN lines the stale fence actually wrote. Refusals are counted one by one
+    /// ([#staleFenceObservationCount]); the WARN is throttled, so a burst logs its first refusal per cause and
+    /// then a periodic summary.
+    default long staleFenceWarningLines() {
+        return 0L;
+    }
 
     /// One node's policies for a route: `enforced` is what that node published as enforced, `declared` the
     /// slice-declared policy it was derived from (#1659).
@@ -282,6 +290,8 @@ public interface HttpRouteRegistry {
     }
 
     long STALE_FENCE_TERM_THRESHOLD = 5L;
+    /// How often a burst of repeated stale-fence refusals is summarised in the log.
+    long STALE_FENCE_SUMMARY_INTERVAL_NANOS = 30_000_000_000L;
 
     static HttpRouteRegistry httpRouteRegistry() {
         return httpRouteRegistry(GenerationSnapshotSource.noop());
@@ -290,7 +300,8 @@ public interface HttpRouteRegistry {
     static HttpRouteRegistry httpRouteRegistry(GenerationSnapshotSource snapshotSource) {
         record httpRouteRegistry(Map<String, AtomicReference<TreeMap<String, RouteInfo>>> routesByMethod,
                                  GenerationSnapshotSource snapshotSource,
-                                 AtomicLong staleFenceCounter) implements HttpRouteRegistry {
+                                 AtomicLong staleFenceCounter,
+                                 ThrottledWarning staleFenceWarning) implements HttpRouteRegistry {
             private static final Logger log = LoggerFactory.getLogger(httpRouteRegistry.class);
 
             @Override
@@ -349,6 +360,11 @@ public interface HttpRouteRegistry {
                 return staleFenceCounter.get();
             }
 
+            @Override
+            public long staleFenceWarningLines() {
+                return staleFenceWarning.emitted();
+            }
+
             /// Incarnation first, as `Epoch.compareTo` orders (#1529). A cold restart restarts the Rabia term, so
             /// term arithmetic means nothing ACROSS incarnations:
             /// - a NEWER incarnation supersedes whatever its term. This is why the fence cannot compare terms
@@ -368,11 +384,10 @@ public interface HttpRouteRegistry {
 
                 if (valueIncarnation < observedIncarnation) {
                     staleFenceCounter.incrementAndGet();
-                    log.warn("Stale route update for {}/{}: value.incarnation={} observed.incarnation={} — REJECTED (older incarnation)",
-                             nodeId,
-                             artifact,
-                             valueIncarnation,
-                             observedIncarnation);
+                    staleFenceWarning.report(List.of("incarnation", valueIncarnation, observedIncarnation),
+                                             () -> "Stale route update for " + nodeId + "/" + artifact + ": value.incarnation="
+                                                   + valueIncarnation + " observed.incarnation=" + observedIncarnation
+                                                   + " — REJECTED (older incarnation)");
 
                     return true;
                 }
@@ -382,11 +397,10 @@ public interface HttpRouteRegistry {
 
                 if (observedTerm - valueTerm > STALE_FENCE_TERM_THRESHOLD) {
                     staleFenceCounter.incrementAndGet();
-                    log.warn("Stale route update for {}/{}: value.rabiaTerm={} observed.rabiaTerm={} — REJECTED (hard fence)",
-                             nodeId,
-                             artifact,
-                             valueTerm,
-                             observedTerm);
+                    staleFenceWarning.report(List.of("term", valueTerm, observedTerm),
+                                             () -> "Stale route update for " + nodeId + "/" + artifact + ": value.rabiaTerm="
+                                                   + valueTerm + " observed.rabiaTerm=" + observedTerm
+                                                   + " — REJECTED (hard fence)");
 
                     return true;
                 }
@@ -530,6 +544,12 @@ public interface HttpRouteRegistry {
             }
         }
 
-        return new httpRouteRegistry(new ConcurrentHashMap<>(), snapshotSource, new AtomicLong());
+        return new httpRouteRegistry(new ConcurrentHashMap<>(),
+                                     snapshotSource,
+                                     new AtomicLong(),
+                                     ThrottledWarning.throttledWarning(LoggerFactory.getLogger(HttpRouteRegistry.class)::warn,
+                                                                       System::nanoTime,
+                                                                       STALE_FENCE_SUMMARY_INTERVAL_NANOS,
+                                                                       "stale route updates"));
     }
 }

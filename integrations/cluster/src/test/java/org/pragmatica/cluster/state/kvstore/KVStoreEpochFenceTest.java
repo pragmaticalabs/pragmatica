@@ -175,6 +175,22 @@ class KVStoreEpochFenceTest {
             assertThat(store.staleEpochRefusals()).isEqualTo(2L);
         }
 
+        /// After a failover every in-flight write of the deposed writer is refused on every replica, which is
+        /// normal: each is counted, but the WARN names the epoch pair once and then only summarises (throttled).
+        @Test
+        void refusalBurst_countsEveryRefusal_butWarnsOncePerEpochPair() {
+            apply(KEY, new OwnedValue("current", new StubEpoch(5, 0)));
+
+            for (int i = 0; i < 50; i++) {
+                apply(KEY, new OwnedValue("stale-" + i, new StubEpoch(4, 0)));
+            }
+
+            assertThat(store.staleEpochRefusals()).isEqualTo(50L);
+            assertThat(store.refusalWarning()
+                            .emitted()).as("one line for the (4:0, 5:0) pair, the repeats only counted")
+                                       .isEqualTo(1L);
+        }
+
         @Test
         void acceptedWrite_emitsNotification() {
             apply(KEY, new OwnedValue("a", new StubEpoch(1, 0)));
