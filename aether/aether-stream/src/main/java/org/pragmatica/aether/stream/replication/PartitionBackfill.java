@@ -8,6 +8,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -136,7 +137,7 @@ public final class PartitionBackfill {
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
-    private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs;
 
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
@@ -147,7 +148,7 @@ public final class PartitionBackfill {
     /// value recorded here, so the re-verify backfill (one owner pull) fires once per genuinely-new stale
     /// offset and becomes a no-op once the replica reaches the owner's true tail — never a per-tick probe.
     /// A failed re-verify leaves `confirmedOffset` unchanged AND unrecorded, so the next tick retries.
-    private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset;
 
     /// Per-partition wall-clock instant (ms) of the last owner re-verify for a CAUGHT_UP non-owner replica
     /// (#333 write-idle residual). Sibling of {@link #firstNoSourceMs}: it quiesces the periodic re-verify so
@@ -158,9 +159,9 @@ public final class PartitionBackfill {
     /// re-verify by definition, so a freshly-promoted CAUGHT_UP replica is quiesced for a full interval. The
     /// null ⇒ elapsed default therefore fires only for rows that became CAUGHT_UP WITHOUT a pull (restart-
     /// loaded / cold-start self-promote), which earn one re-verify.
-    private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs;
     /// #1638 F1: the backfill in flight per partition ([#backfill]'s single-flight).
-    private final ConcurrentHashMap<PartitionKey, Flight> inFlight = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, Flight> inFlight;
     /// #1638 N1, B2: how long a flight may go WITHOUT PROGRESS and keep its partition's slot -- an idle bound, not a
     /// cap on the total duration. Progress is each catch-up page received and each record applied ([#progress]), so a
     /// long catch-up that keeps moving keeps its slot and no overlapping pull starts. A backfill that stalls this long
@@ -168,6 +169,12 @@ public final class PartitionBackfill {
     /// later trigger join it forever; the stalled run is not cancelled, and if it ever settles its install is still
     /// settled correctly by the provenance seam. [Option#none] (test factories only) leaves flights unbounded.
     private final Option<TimeSpan> flightBound;
+    /// #1638 late side effects: whether this instance's run may still act on the cluster. The shared instance answers
+    /// true; each run executes on a per-run view ([#forRun]) whose gate answers true only while the run's flight is the
+    /// partition's current, unresolved flight. A run that settles after its flight timed out -- whether the slot is
+    /// empty or a NEXT flight holds it -- therefore updates no replica row, promotes nothing and acks nothing
+    /// ([#updateWatermark], [#ackBackfillToOwner]).
+    private final BooleanSupplier current;
 
     private PartitionBackfill(ReplicaRegistry registry,
                               AlignedRecovery partitionRecovery,
@@ -197,6 +204,36 @@ public final class PartitionBackfill {
         this.durability = durability;
         this.quarantine = quarantine;
         this.flightBound = flightBound;
+        this.firstNoSourceMs = new ConcurrentHashMap<>();
+        this.reverifiedAtOffset = new ConcurrentHashMap<>();
+        this.lastReverifyMs = new ConcurrentHashMap<>();
+        this.inFlight = new ConcurrentHashMap<>();
+        this.current = () -> true;
+    }
+
+    /// A per-run view of `shared` (#1638 late side effects): the same collaborators and the same cross-call state,
+    /// with its side effects gated by `current`.
+    private PartitionBackfill(PartitionBackfill shared, BooleanSupplier current) {
+        this.registry = shared.registry;
+        this.partitionRecovery = shared.partitionRecovery;
+        this.transport = shared.transport;
+        this.replicationTransport = shared.replicationTransport;
+        this.probe = shared.probe;
+        this.selfWatermark = shared.selfWatermark;
+        this.self = shared.self;
+        this.sourceWaitBound = shared.sourceWaitBound;
+        this.clock = shared.clock;
+        this.membersSupplier = shared.membersSupplier;
+        this.committedOwnerSource = shared.committedOwnerSource;
+        this.durability = shared.durability;
+        this.quarantine = shared.quarantine;
+        this.flightBound = shared.flightBound;
+        this.firstNoSourceMs = shared.firstNoSourceMs;
+        this.reverifiedAtOffset = shared.reverifiedAtOffset;
+        this.lastReverifyMs = shared.lastReverifyMs;
+        this.inFlight = shared.inFlight;
+        this.ownerResolver = shared.ownerResolver;
+        this.current = current;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -453,7 +490,7 @@ public final class PartitionBackfill {
     }
 
     private Promise<Long> fly(PartitionKey key, Flight flight, String streamName, int partition) {
-        runBackfill(streamName, partition).onResult(result -> land(key, flight, result));
+        forRun(key, flight).runBackfill(streamName, partition).onResult(result -> land(key, flight, result));
         flightBound.onPresent(bound -> watch(key, flight, bound, bound));
 
         return flight.result();
@@ -481,6 +518,35 @@ public final class PartitionBackfill {
                   flight,
                   bound,
                   TimeSpan.timeSpan(bound.nanos() - idle).nanos());
+        }
+    }
+
+    /// The run's view: its side effects happen only while `flight` is the partition's current, unresolved flight.
+    private PartitionBackfill forRun(PartitionKey key, Flight flight) {
+        return new PartitionBackfill(this, () -> isCurrent(key, flight));
+    }
+
+    private boolean isCurrent(PartitionKey key, Flight flight) {
+        return inFlight.get(key) == flight && !flight.result()
+                                                     .isResolved();
+    }
+
+    /// #1638 late side effects: this run's replica-row write, dropped once its flight is no longer current.
+    @Contract
+    private void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset) {
+        if (current.getAsBoolean()) {
+            registry.updateWatermark(streamName, partition, nodeId, confirmedOffset);
+        }
+    }
+
+    @Contract
+    private void updateWatermark(String streamName,
+                                 int partition,
+                                 NodeId nodeId,
+                                 long confirmedOffset,
+                                 ReplicationState state) {
+        if (current.getAsBoolean()) {
+            registry.updateWatermark(streamName, partition, nodeId, confirmedOffset, state);
         }
     }
 
@@ -551,11 +617,11 @@ public final class PartitionBackfill {
     private void holdSyncingBelow(String streamName, int partition, long divergedAt) {
         var replicas = registry.replicasFor(streamName, partition);
 
-        registry.updateWatermark(streamName,
-                                 partition,
-                                 self,
-                                 Math.min(selfConfirmedOffset(replicas), divergedAt - 1),
-                                 ReplicationState.SYNCING);
+        updateWatermark(streamName,
+                        partition,
+                        self,
+                        Math.min(selfConfirmedOffset(replicas), divergedAt - 1),
+                        ReplicationState.SYNCING);
         log.debug("Backfill {}[{}]: quarantined at offset {} — self held SYNCING, no pull, no promotion",
                   streamName,
                   partition,
@@ -974,7 +1040,7 @@ public final class PartitionBackfill {
             return INCOMPLETE_BACKFILL.promise();
         }
 
-        registry.updateWatermark(streamName, partition, self, watermark);
+        updateWatermark(streamName, partition, self, watermark);
         ackBackfillToOwner(streamName, partition, watermark);
         reverifiedAtOffset.put(partitionKey(streamName, partition), watermark);
         // A successful owner/source pull IS a re-verify by definition: the replica now holds the source's
@@ -1003,7 +1069,7 @@ public final class PartitionBackfill {
     /// nothing is sent. Idempotent under redrive: a re-completed backfill re-acks the same tail, a no-op on
     /// the owner.
     private void ackBackfillToOwner(String streamName, int partition, long watermark) {
-        hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
+        hrwOwner(streamName, partition).filter(owner -> !owner.equals(self) && current.getAsBoolean())
                 .onPresent(owner -> replicationTransport.send(owner,
                                                               replicateAck(self, streamName, partition, watermark)));
     }
@@ -1266,7 +1332,7 @@ public final class PartitionBackfill {
                                                    NodeId survivorNode,
                                                    long survivorTail,
                                                    long localWatermark) {
-        registry.updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
+        updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
         var fromOffset = localWatermark + 1;
         var request = catchupRequest(survivorNode, streamName, partition, fromOffset);
 
@@ -1299,7 +1365,7 @@ public final class PartitionBackfill {
     /// row already carries `survivorTail`).
     private void recordSurvivorConfirmed(String streamName, int partition, NodeId survivorNode, long survivorTail) {
         if (survivorTail > recordedOffset(streamName, partition, survivorNode)) {
-            registry.updateWatermark(streamName, partition, survivorNode, survivorTail);
+            updateWatermark(streamName, partition, survivorNode, survivorTail);
         }
     }
 
@@ -1455,7 +1521,7 @@ public final class PartitionBackfill {
                  streamName,
                  partition,
                  watermark);
-        registry.updateWatermark(streamName, partition, self, watermark);
+        updateWatermark(streamName, partition, self, watermark);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
         return Promise.success(0L);
@@ -1667,7 +1733,7 @@ public final class PartitionBackfill {
                  selfWm,
                  peers.size(),
                  maxPeerWatermark);
-        registry.updateWatermark(streamName, partition, self, selfWm);
+        updateWatermark(streamName, partition, self, selfWm);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
         return Promise.success(0L);
@@ -1751,7 +1817,7 @@ public final class PartitionBackfill {
                   partition,
                   ownerWatermark,
                   selfConfirmed);
-        registry.updateWatermark(streamName, partition, self, selfConfirmed);
+        updateWatermark(streamName, partition, self, selfConfirmed);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
         return Promise.success(0L);

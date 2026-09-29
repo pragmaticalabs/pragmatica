@@ -252,14 +252,53 @@ class PartitionBackfillTest {
                                                               },
                                                               recovery::applyAttributed,
                                                               recovery::applyUnattributed);
-            var backfill = partitionBackfill(registry,
-                                             slowAppends,
-                                             fixedSource(eventsFrom(0, 10)),
-                                             SELF,
-                                             TimeSpan.timeSpan(200).millis());
+            var served = fixedSource(eventsFrom(0, 10));
+            // the response arrives on a timer thread, so the apply runs AFTER the flight's idle watch is armed
+            CatchupTransport later = (target, request) -> Promise.promise(TimeSpan.timeSpan(20).millis(),
+                                                                          () -> served.requestCatchup(target, request)
+                                                                                      .await());
+            var backfill = partitionBackfill(registry, slowAppends, later, SELF, TimeSpan.timeSpan(200).millis());
 
             assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).or(-1L))
                     .as("the slow apply completed rather than timing out").isEqualTo(10L);
+        }
+
+        /// #1638 late side effects: a run that settles AFTER its flight timed out -- here while the NEXT flight holds
+        /// the slot -- changes no replica row: it does not promote self, whatever its stale response says. Then the next
+        /// flight's own settlement promotes. Red under "the run's side effects are not gated".
+        @Test
+        void lateSettlement_afterTheTimeout_leavesTheRegistryUnchanged() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var served = fixedSource(eventsFrom(0, 5));
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            var next = backfill.backfill(STREAM, PARTITION);
+            var before = descriptorFor(SELF);
+
+            served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(descriptorFor(SELF)).as("the late run changed no replica row").isEqualTo(before);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
+
+            served.requestCatchup(SOURCE, requests.get(1)).onResult(pending.get(1)::resolve);
+
+            assertThat(next.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).as("the next flight settles").isTrue();
+            assertThat(descriptorFor(SELF).state()).as("the current flight promotes").isEqualTo(ReplicationState.CAUGHT_UP);
         }
 
         /// #1638 B1: a run that lands after its flight timed out must not evict the NEXT flight from the slot. The old
