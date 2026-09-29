@@ -250,6 +250,35 @@ validation before provisioning starts. A host may be declared by at most one `ss
 | `[operations.ports] app_http` | int | `8070` | Slice app-HTTP port. |
 | `[operations.ports] swim` | int | `8190` | SWIM membership port. |
 
+### `[rollback]` — automatic rollback policy (cluster-wide)
+
+Automatic rollback is **ON by default**. It is cluster-wide policy, read by the leader from the committed
+cluster TOML at every decision, so a change applied to a running cluster takes effect without a restart.
+A blank or seed cluster TOML, or a document without this section, gets the defaults below.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` turns automatic rollback off. The SliceFailure event and alert still fire. |
+| `trigger_on_all_instances_failed` | bool | `true` | Roll back when every live instance of a version is broken (the trigger below). |
+| `cooldown` | duration | `"5m"` | Minimum time between two automatic rollbacks of one slice. |
+| `max_rollbacks` | non-negative int | `2` | Automatic rollbacks per slice before a human must act. |
+| `bake_window` | positive duration | `"15m"` | Only a version that became the target less than this long ago is rolled back; an older one failing is an incident and only alerts. |
+
+**The trigger.** Every hosting node of one version reports at least 3 bridge-level defects (the method
+threw, a request or response codec failed, or the method is missing) and no success within 30 s. A
+failure the slice returns itself, and a timeout, never count. See the deploy guide for the full rule and
+its limits.
+
+**To turn it off:**
+
+```toml
+[rollback]
+enabled = false
+```
+
+Every key is typed and validated when the TOML is applied; a mistyped value, a negative count, a
+non-positive bake window or an unknown key refuses the apply.
+
 ### `[runtime.<name>]`
 
 | Field | Type | Default | Required | Notes |

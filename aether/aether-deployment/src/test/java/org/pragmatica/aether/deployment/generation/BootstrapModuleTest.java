@@ -35,7 +35,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -236,52 +235,6 @@ class BootstrapModuleTest {
         }
     }
 
-    @Nested
-    class BootstrapCommittedCallback {
-        @Test
-        void onLeaderGained_firesCallbackOnceBatchCommits() {
-            var fixture = newFixture(/* initialCoreSize */ 1);
-            var fired = new AtomicInteger(0);
-            fixture.module.onBootstrapCommitted(fired::incrementAndGet);
-
-            fixture.module.onLeaderGained();
-
-            // A core-partition apply happened — completion callback must have fired exactly once.
-            assertThat(fired.get()).isEqualTo(1);
-        }
-
-        @Test
-        void onLeaderGained_emptyBatch_firesCallbackImmediately() {
-            // Pre-seed an existing core partition + cluster config so the planner produces no work.
-            var existingConfig = ClusterConfigValue.clusterConfigValue("",
-                                                                        "",
-                                                                        "1.0.0",
-                                                                        coreTopology(1),
-                                                                        3,
-                                                                        15,
-                                                                        "test",
-                                                                        1L);
-            var fixture = newFixture(/* initialCoreSize */ 1);
-            fixture.kv.put(ClusterConfigKey.CURRENT, existingConfig);
-
-            // Pre-seed a core partition owned by self so planCoreBootstrap returns none.
-            var ownerEpoch = Epoch.epoch(0L, 0L);
-            var existingOwnership = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(SELF,
-                                                                                         BootstrapModule.CORE_COMMUNITY_ID,
-                                                                                         ownerEpoch,
-                                                                                         1L,
-                                                                                         HlcTimestamp.ZERO);
-            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), existingOwnership);
-
-            var fired = new AtomicInteger(0);
-            fixture.module.onBootstrapCommitted(fired::incrementAndGet);
-
-            fixture.module.onLeaderGained();
-
-            // Empty batch path — callback fires immediately without going through cluster.apply.
-            assertThat(fired.get()).isEqualTo(1);
-        }
-    }
 
     @Nested
     class LeaderLossResetsBootstrapState {

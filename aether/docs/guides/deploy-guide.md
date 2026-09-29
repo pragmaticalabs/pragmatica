@@ -67,6 +67,72 @@ aether deploy rollback <id>
 
 If health thresholds are breached during any stage, the canary automatically rolls back to the baseline version.
 
+## Automatic Rollback of a Broken Version
+
+**Automatic rollback is ON by default.** Outside a managed deployment (canary, blue-green, rolling), the
+leader watches for a version that is broken on **every** instance and rolls it back to the previous
+version. Every rollback emits a CRITICAL `AUTO_ROLLBACK` cluster event naming the artifact, the version
+rolled back from and to, and the evidence (each hosting node's defect count within the window).
+
+To turn it off, commit this in the cluster TOML (no restart needed; it applies to the next decision):
+
+```toml
+[rollback]
+enabled = false
+```
+
+The policy (`enabled`, `trigger_on_all_instances_failed`, `cooldown`, `max_rollbacks`, `bake_window`) is
+cluster-wide; see the `[rollback]` section of the bootstrap config reference.
+
+**What counts as broken.** Every execution counts, whichever way it arrived: an HTTP route, an inter-slice
+call, a topic message or a scheduled task. A success on any of them is a success. The classification is
+bridge defects versus returned Causes. A defect is a typed `SliceDefect` the runtime produces: the method
+broke the JBCT contract by throwing instead of returning a Cause, a bridge request could not be decoded or
+its response encoded, or the method does not exist in this version. A Cause the slice method returns is a
+business outcome and is neutral — neither a defect nor a success — however often it happens and whatever
+HTTP status it maps to; neither does an HTTP request rejected before the slice runs (a bad path, query or body, or no route —
+including a request record whose constructor refuses the path or query values, answered as a 400; a slice
+compiled before this rule still counts such a constructor throw as a defect until it is rebuilt).
+[verified: `aether/aether-invoke/src/test/java/org/pragmatica/aether/http/HttpRoutePublisherOutcomeTest.java`,
+`aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`
+(HTTP successes on every node veto a rollback)] An execution timeout does not count either: a stall is as consistent with overload or a
+downstream outage as with a broken version.
+
+**The verdict.** For a version with at least one ACTIVE instance, every hosting node must report at least
+3 such defects and no success within a 30-second window, and every hosting node's metrics must be
+fresh (a node that stopped reporting makes the version undecidable, never a trigger). Counts come from
+the per-node execution counters each node ships on its cluster-sync pong; only the leader decides.
+[mechanism: `AllInstancesFailedDetector` over per-window deltas of the pong counters]
+
+**When it rolls back.** Only within the bake window after the version became the target (default 15
+minutes, `[rollback] bake_window`). Outside it the same pattern is treated as an incident, not a bad deploy: the `SliceFailure`
+cluster event and the slice-failure alert are raised, but nothing is rolled back. It also never rolls
+back while a managed deployment owns the artifact, never to a version that already failed once, and it
+honours the cooldown (default 5 minutes) and the rollback budget (default 2), both set in `[rollback]`. The rollback record — count, last rollback
+and failed versions — is committed together with the new target, so these limits hold across a leader
+change. The commit is fenced on the state it was decided from: if the cluster config (and so the
+`[rollback]` policy) or the slice's target changed in the meantime, or this node is no longer the committed
+leader, the rollback is not applied.
+[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`, and for the
+fence `aether/aether-control/src/test/java/org/pragmatica/aether/controller/RollbackManagerAutoRollbackSafetyTest.java`]
+[unverified: that the previous version is actually running afterwards. The end-to-end proof stops at the committed
+target, because the test's previous version is not a real artifact.]
+
+**What it does not detect.** A version that fails only through returned Causes — it is never rolled
+back automatically, whatever HTTP status those Causes map to, because a downstream outage fails the same
+way and must not roll a healthy version back; a version that fails only on some instances or only for some requests;
+business-logic regressions; hangs and deadlocks; exceptions thrown asynchronously inside the slice's
+own Promise chain; a version that receives no traffic. A hosting node that dies stops counting as a
+host only once membership declares it DEAD; until then — including during the cold-boot convergence
+window, when a never-healthy peer is reported UNKNOWN rather than FAULTY — its stale metrics make the
+version undecidable and nothing triggers.
+
+**Recovery.** After an automatic rollback the failed version is recorded and is never an automatic
+rollback target again. Deploy a fixed version, or roll forward manually. When the rollback budget is
+exhausted, automatic rollback stops for that slice; there is no operator surface to reset the budget
+yet. The alert is held in the leader's memory; a leader change clears it, while the cluster event stays
+in the event stream.
+
 ## Blue-Green Deployments
 
 Runs two complete deployment environments simultaneously. Traffic switches atomically between blue (current) and green (new) versions.
