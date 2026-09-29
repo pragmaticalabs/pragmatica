@@ -42,6 +42,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -159,17 +160,15 @@ class QuicLaneOwnershipTest {
         var standIn = dialerSide.stream(LANE).unwrap();
         var sent = 400;
         var padding = "x".repeat(8 * 1024);
-        var succeeded = new AtomicInteger();
-        var failed = new AtomicInteger();
+        var trace = new DeliveryTrace("fin-", sent, padding, standIn, acceptorSide.get().stream(LANE));
+        var succeeded = trace.succeeded;
+        var failed = trace.failed;
 
         assertThat(standIn.streamId() & 0x1L).as("arming: the burst rides the ACCEPTOR-opened stand-in").isEqualTo(1L);
         IntStream.range(0, sent)
                  .forEach(i -> burstWrite(standIn, i, padding, sent / 2, succeeded, failed));
 
-        awaitTrue(() -> succeeded.get() + failed.get() == sent, "every write resolves");
-        awaitTrue(() -> finMarkers().size() == succeeded.get(),
-                  "every acknowledged write reaches the acceptor (delivered=" + finMarkers().size()
-                  + " succeeded=" + succeeded.get() + " failed=" + failed.get() + ")");
+        trace.awaitEveryAcknowledgedWriteDelivered();
         assertThat(acceptorSide.get().stream(LANE).map(QuicStreamChannel::streamId))
             .as("arming: the acceptor moved FORWARD off the stand-in, so it finished it")
             .isNotEqualTo(Option.some(standIn.streamId()));
@@ -318,14 +317,140 @@ class QuicLaneOwnershipTest {
         var retiring = dialerSide.stream(LANE).unwrap();
         var burst = 300;
         var padding = "x".repeat(8 * 1024);
+        var trace = new DeliveryTrace("burst-", burst, padding, retiring, acceptorSide.get().stream(LANE));
 
         IntStream.range(0, burst)
-                 .forEach(i -> write(retiring, LaneProbe.laneProbe(DIALER, LANE, "burst-" + i + "|" + padding)));
+                 .forEach(i -> retiring.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "burst-" + i + "|" + padding))))
+                                       .addListener(future -> countWrite(future.isSuccess(), trace.succeeded, trace.failed)));
         openLane(dialerSide);
 
-        awaitTrue(() -> burstMarkers(burst).size() == burst,
-                  "every write queued before the retirement reaches the acceptor");
+        trace.awaitEveryAcknowledgedWriteDelivered();
+        assertThat(burstMarkers(burst)).as("every write queued before the retirement reaches the acceptor (none may fail: "
+                                           + trace.failed.get() + " failed)")
+                                       .hasSize(burst);
         assertThat(dialerSide.stream(LANE).unwrap()).as("the lane moved to the newer stream").isNotSameAs(retiring);
+    }
+
+    /// #1727 — the accounting of one write burst, and on a delivery timeout a SELF-ATTRIBUTING failure: a CI red says where
+    /// the acknowledged writes stopped without a rerun. A write future succeeds when netty hands the bytes to quiche, not when
+    /// the peer reads them, so "delivered < succeeded" can stop in either QUIC stack or above the acceptor's. The verdict
+    /// compares the acceptor's QUIC receive count with the bytes the acknowledged writes carry:
+    /// - CONNECTION-CLOSED: the connection is gone, and quiche discarded what it held;
+    /// - RECEIVER-SIDE: the acceptor's QUIC stack received at least those bytes, and the app did not read them;
+    /// - SENDER-SIDE: it received fewer, so they stopped at or before the dialer's QUIC stack.
+    /// recvBytes also counts retransmitted duplicates and the other lanes, so the verdict leans RECEIVER-SIDE when close;
+    /// the raw numbers are in the message.
+    private final class DeliveryTrace {
+        private static final TimeSpan DELIVERY = TimeSpan.timeSpan(10).seconds();
+        private static final TimeSpan GRACE = TimeSpan.timeSpan(15).seconds();
+
+        private final String prefix;
+        private final int sent;
+        private final long bytesPerWrite;
+        private final QuicStreamChannel dialerStream;
+        private final Option<QuicStreamChannel> acceptorStream;
+        private final AtomicInteger succeeded = new AtomicInteger();
+        private final AtomicInteger failed = new AtomicInteger();
+        private final List<String> closes = new CopyOnWriteArrayList<>();
+        private final long startNanos = System.nanoTime();
+
+        DeliveryTrace(String prefix, int sent, String padding, QuicStreamChannel dialerStream, Option<QuicStreamChannel> acceptorStream) {
+            this.prefix = prefix;
+            this.sent = sent;
+            this.bytesPerWrite = codec.encode(LaneProbe.laneProbe(DIALER, LANE, prefix + "0|" + padding)).length + 4L;
+            this.dialerStream = dialerStream;
+            this.acceptorStream = acceptorStream;
+            dialerStream.closeFuture().addListener(_ -> closes.add("dialer@" + elapsedMillis() + "ms"));
+            acceptorStream.onPresent(stream -> stream.closeFuture().addListener(_ -> closes.add("acceptor@" + elapsedMillis() + "ms")));
+        }
+
+        void awaitEveryAcknowledgedWriteDelivered() {
+            awaitTrue(() -> succeeded.get() + failed.get() == sent, "every write resolves");
+            if (waitForDelivery(DELIVERY)) {
+                return;
+            }
+
+            var atTimeout = delivered().size();
+            var statsAtTimeout = stats();
+            var laterDelivered = waitForDelivery(GRACE);
+
+            fail("acknowledged writes not delivered — " + verdict() + " | delivered@10s=" + atTimeout + " delivered@+15s="
+                 + delivered().size() + (laterDelivered ? " (caught up: SLOW, not lost)" : "") + " succeeded=" + succeeded.get()
+                 + " failed=" + failed.get() + " missing=" + missing() + " closes=" + closes + " dialerStream.active="
+                 + dialerStream.isActive() + " acceptorStream.active=" + acceptorStream.map(QuicStreamChannel::isActive).or(false)
+                 + " stats@10s=" + statsAtTimeout + " stats@+15s=" + stats());
+        }
+
+        private boolean waitForDelivery(TimeSpan window) {
+            var deadline = System.nanoTime() + window.nanos();
+
+            while (System.nanoTime() < deadline) {
+                if (delivered().size() >= succeeded.get()) {
+                    return true;
+                }
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+            }
+            return delivered().size() >= succeeded.get();
+        }
+
+        private String verdict() {
+            if (!dialerSide.isActive() || !acceptorSide.get().isActive()) {
+                return "CONNECTION-CLOSED";
+            }
+
+            var acknowledgedBytes = succeeded.get() * bytesPerWrite;
+            var acceptorReceived = receivedBytes(acceptorSide.get().connection());
+
+            return acceptorReceived >= acknowledgedBytes
+                   ? "RECEIVER-SIDE (acceptor QUIC recvBytes " + acceptorReceived + " >= acknowledged " + acknowledgedBytes + ")"
+                   : "SENDER-SIDE (acceptor QUIC recvBytes " + acceptorReceived + " < acknowledged " + acknowledgedBytes + ")";
+        }
+
+        private Set<Integer> delivered() {
+            return markers(receivedByAcceptor).stream()
+                                              .filter(marker -> marker.startsWith(prefix))
+                                              .map(marker -> Integer.parseInt(marker.substring(prefix.length())))
+                                              .collect(Collectors.toSet());
+        }
+
+        private String missing() {
+            var got = delivered();
+            var gaps = IntStream.range(0, sent)
+                                .filter(i -> !got.contains(i))
+                                .boxed()
+                                .toList();
+
+            return gaps.size() > 20
+                   ? gaps.subList(0, 10) + "…" + gaps.subList(gaps.size() - 5, gaps.size()) + " (" + gaps.size() + ")"
+                   : gaps.toString();
+        }
+
+        private String stats() {
+            return "dialer{" + stats(dialerSide.connection()) + "} acceptor{" + stats(acceptorSide.get().connection()) + "}";
+        }
+
+        private long elapsedMillis() {
+            return (System.nanoTime() - startNanos) / 1_000_000;
+        }
+
+        private static long receivedBytes(QuicChannel channel) {
+            try {
+                return channel.collectStats().get(5, TimeUnit.SECONDS).recvBytes();
+            } catch (Exception e) {
+                return -1;
+            }
+        }
+
+        private static String stats(QuicChannel channel) {
+            try {
+                var st = channel.collectStats().get(5, TimeUnit.SECONDS);
+
+                return "active=" + channel.isActive() + " sentB=" + st.sentBytes() + " recvB=" + st.recvBytes() + " lostB="
+                       + st.lostBytes() + " retransB=" + st.streamRetransBytes();
+            } catch (Exception e) {
+                return "active=" + channel.isActive() + " stats-unavailable:" + e;
+            }
+        }
     }
 
     private Set<String> burstMarkers(int burst) {
