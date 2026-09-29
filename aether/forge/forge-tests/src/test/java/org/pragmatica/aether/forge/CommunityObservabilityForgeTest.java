@@ -48,12 +48,13 @@ import static org.awaitility.Awaitility.await;
 /// core then removes the departed worker's activation directive, and the governor's next authority write
 /// commits a roster without it (MEMBER_LEFT).
 ///
-/// Ports 46100–46300 are disjoint from `EmberGenesisRecoveryTest`'s 44100–44900 candidates.
+/// Registered in `TEST_PORT_ALLOCATION.md`: cluster 46100-46105, SWIM UDP 46200-46205 (cluster + 100), management
+/// 46300-46305, app HTTP 46400-46405 — disjoint from `EmberGenesisRecoveryTest`'s 44100–44900 candidates.
 @Execution(ExecutionMode.SAME_THREAD)
 class CommunityObservabilityForgeTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final int WORKERS = 3;
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 46100, 46200, 46300, "community-obs");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 46100, 46300, 46400, "community-obs");
     private final HttpClient http = HttpClient.newHttpClient();
 
     @AfterEach
