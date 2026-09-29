@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.replication;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
@@ -520,7 +521,9 @@ public final class PartitionBackfill {
             return;
         }
 
-        var idle = flight.idleNanos();
+        var idle = flight.inLocalBarrier()
+                   ? 0L
+                   : flight.idleNanos();
 
         if (idle >= bound.nanos()) {
             land(key, flight, FLIGHT_TIMED_OUT.result());
@@ -578,10 +581,39 @@ public final class PartitionBackfill {
         Option.option(inFlight.get(partitionKey(streamName, partition))).onPresent(Flight::touch);
     }
 
-    /// One backfill of a partition: its result, shared by every caller that joined it, and when it last progressed.
-    private record Flight(Promise<Long> result, AtomicLong lastProgressNanos) {
+    /// #1638 D1: a local barrier -- the durability sync and the promotion after it -- is in progress for the partition's
+    /// flight, which does not idle out meanwhile: a slow disk must not time out a run that applied everything, which
+    /// would suppress its promotion on every retry. Progress is reported on both sides of the barrier.
+    private <T> Promise<T> localBarrier(String streamName, int partition, Supplier<Promise<T>> barrier) {
+        var flight = Option.option(inFlight.get(partitionKey(streamName, partition)));
+
+        flight.onPresent(Flight::enterLocal);
+
+        return barrier.get()
+                      .onResult(_ -> flight.onPresent(Flight::exitLocal));
+    }
+
+    /// One backfill of a partition: its result, shared by every caller that joined it, when it last progressed, and
+    /// how many local barriers it is inside.
+    private record Flight(Promise<Long> result, AtomicLong lastProgressNanos, AtomicInteger localBarriers) {
         static Flight flight() {
-            return new Flight(Promise.promise(), new AtomicLong(System.nanoTime()));
+            return new Flight(Promise.promise(), new AtomicLong(System.nanoTime()), new AtomicInteger());
+        }
+
+        boolean inLocalBarrier() {
+            return localBarriers.get() > 0;
+        }
+
+        @Contract
+        void enterLocal() {
+            touch();
+            localBarriers.incrementAndGet();
+        }
+
+        @Contract
+        void exitLocal() {
+            localBarriers.decrementAndGet();
+            touch();
         }
 
         long idleNanos() {
@@ -1008,6 +1040,16 @@ public final class PartitionBackfill {
                                             long fromOffset,
                                             long watermark,
                                             long applied) {
+        return localBarrier(streamName,
+                            partition,
+                            () -> syncThenPromote(streamName, partition, fromOffset, watermark, applied));
+    }
+
+    private Promise<Long> syncThenPromote(String streamName,
+                                          int partition,
+                                          long fromOffset,
+                                          long watermark,
+                                          long applied) {
         return durability.sync(streamName, partition)
                          .onFailure(cause -> log.warn("Backfill {}[{}] applied {} events but could not make them durable: {}"
                                                      + " — staying SYNCING",

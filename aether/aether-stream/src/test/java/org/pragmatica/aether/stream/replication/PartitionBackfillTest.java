@@ -344,6 +344,37 @@ class PartitionBackfillTest {
             assertThat(acks).as("the current flight acks the owner once").hasSize(1);
         }
 
+        /// #1638 D1: a durability barrier slower than the idle bound -- 600 ms against 200 ms -- does not time the flight
+        /// out: a run that applied everything still promotes self CAUGHT_UP. Red under "no progress at the barrier".
+        @Test
+        void slowDurabilityBarrier_stillPromotes() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var served = fixedSource(eventsFrom(0, 5));
+            CatchupTransport later = (target, request) -> Promise.promise(TimeSpan.timeSpan(20).millis(),
+                                                                          () -> served.requestCatchup(target, request)
+                                                                                      .await());
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             later,
+                                             ReplicationTransport.NOOP,
+                                             (_, _, _) -> BackfillError.General.NO_SOURCE_REPLICA.promise(),
+                                             (_, _) -> - 1L,
+                                             SELF,
+                                             TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
+                                             List::of,
+                                             CommittedStreamOwnerSource.none(),
+                                             (_, _) -> Promise.promise(TimeSpan.timeSpan(600).millis(),
+                                                                       org.pragmatica.lang.Result::unitResult),
+                                             QuarantineView.NONE,
+                                             Option.some(TimeSpan.timeSpan(200).millis()));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).or(-1L))
+                    .as("the run that applied everything is not timed out in its barrier").isEqualTo(5L);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
         /// #1638 B1: a run that lands after its flight timed out must not evict the NEXT flight from the slot. The old
         /// run stalls past the bound, a new flight starts, then the old run settles; a later call still joins the new
         /// flight. Red under "unconditional remove".
