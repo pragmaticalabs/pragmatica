@@ -24,7 +24,7 @@ import static org.pragmatica.lang.Result.success;
 /// from topics declared `durability = "durable"`.
 ///
 /// Its job is to make the COMPOSED durable path observable from outside: publish appends an
-/// envelope to the replicated `topic:<address>` stream and resolves at the min-sync floor, dispatch
+/// envelope to the replicated `topic:<address>` stream and resolves at the confirmation floor, dispatch
 /// rides StreamConsumerManager placement serially per (group x partition), the handler's promise IS
 /// the ack, and a handler that keeps failing exhausts the bounded retries into a group-attributed
 /// dead-letter stream. Every one of those steps is unit-tested in isolation; nothing until now

@@ -1501,30 +1501,32 @@ When a governor fails and a new governor takes over:
 
 ### 10.5 Stream Replication Durability
 
-Replication durability is governed by two independent stream-level knobs. Both count the owner; `consistency-mode` (Section 3.3) remains the orthogonal *read* knob and is unaffected.
+Replication durability is governed by two independent stream-level knobs. Both count the owner; `consistency-mode` (Section 3.3) remains the orthogonal *read* knob and is unaffected. Since #1564 they are the unified replication policy shared by streams, durable topics and durable entities, with the same keys in every section (`guarantees.md` §4a); the two replication keys are snake_case, while the other `[streams.X]` keys stay dashed for now.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `replicas` | int | `3` | Replication factor (RF): total copies of each partition **including the owner**. The owner plus `replicas − 1` follower replicas are placed by HRW (highest-random-weight) over the eligible nodes. **Minimum 3** (#1547): under terminal removal a dead owner never returns, so fewer copies lose a dead owner's partitions; a declared value below 3 is never clamped: it is refused as a binding at blueprint publish (the blueprint still publishes with the alias under `rejected`, rule `replicas-below-minimum`; a slice that uses the alias then fails to load with `UnboundStreamAlias`, and an alias no slice uses is silently unbound). |
-| `min-sync-replicas` | int | `0` | Minimum in-sync replicas (Kafka `min.insync.replicas`, **counts the owner**) that must acknowledge a write before it is client-acked. `min-sync ≤ 1` resolves on the owner's local write (no peer-ack wait); `min-sync ≥ 2` blocks the publish until `min-sync − 1` follower replicas ack. |
+| `replication_factor` | int | cluster `[replication] replication_factor` (built-in `3`) | Replication factor (RF): total copies of each partition **including the owner**. The owner plus `replication_factor − 1` follower replicas are placed by HRW (highest-random-weight) over the eligible nodes. A value below 3 is accepted only when the stream declares it (LOUD warning `replication-factor-below-three`: under terminal removal a dead owner never returns, so fewer copies lose a dead owner's partitions); an RF below 3 that came from a default is refused. An RF above the cluster's DESIRED core count is refused (`replication-exceeds-core-count`). |
+| `confirmation_factor` | int | `min(cluster [replication] confirmation_factor, RF)` (built-in `2`) | Confirmation factor (CF): copies, **the owner included**, that hold a write before it is client-acked. The owner appends (WAL fsync), then awaits `CF − 1` distinct non-self acks. CF 1 acks on the owner's append alone (warning `confirmation-factor-owner-only`); CF == RF refuses writes when any one replica is lost (warning `confirmation-equals-replication-factor`). |
 
-**Invariant:** `replicas ≥ 3` and `0 ≤ min-sync-replicas ≤ replicas`. A configuration violating this bound is rejected at stream creation.
+**Invariant:** `1 ≤ confirmation_factor ≤ replication_factor`. A violation, an RF below 3 taken from a default, or an RF above the desired core count is refused, typed, at deploy (rule `replication-policy-invalid`, or `replication-exceeds-core-count`: the alias is rejected as a binding, the blueprint still publishes with it under `rejectedStreamBindings`, and a slice that uses the alias then fails to load with `UnboundStreamAlias`) and again at activation. The factors resolve once, when the stream's config is committed; a later change of the cluster default affects only streams declared afterwards, and redeclaring a live stream with different factors is refused (`ChangedOnLiveResource` — deploy a new stream to change the policy). Streams created through the Management API take the cluster defaults. `[mechanism: ReplicationDeclaration.resolve]`
 
-**One parse, deploy and runtime (#1549).** A `[streams.X]` section is parsed by `StreamConfigParser` both when the blueprint is validated and when the slice's stream resources are provisioned, so the committed config carries every declared key. Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy. The accepted keys are exactly `version`, `source`, `role`, `partitions`, `retention`, `retention-value`, `retention-mode`, `max-age`, `max-count`, `max-bytes`, `auto-offset-reset`, `max-event-size`, `consistency`, `replicas`, `min-sync-replicas`, `compression` and `encryption-key-id`; any other key directly in the section (a snake_case spelling such as `min_sync_replicas`, a record-component name such as `max_event_size_bytes`) is refused under `unknown-stream-key`, naming the key it resembles, and a non-integer value for `partitions`, `replicas` or `min-sync-replicas` under `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value). Before #1549 the provisioning path used the generic record binder, which read snake_case component names and silently resolved everything else from `StreamConfig.DEFAULT`: `min-sync-replicas` was provisioned as 0 and `max-event-size`, `retention*`, `auto-offset-reset`, `consistency`, `compression` and `encryption-key-id` as their defaults, whatever the blueprint declared. Note: `min-sync-replicas = 0` and `1` are equivalent at runtime — both resolve on the owner's local write. A large `replicas` with `min-sync ≤ 1` therefore buys placement redundancy with a **zero peer-ack durability floor**: at ack time the record may exist only on the owner (followers replicate asynchronously).
+**Breaking default (#1564).** A stream that declared no factor used to ack on the owner alone (the old `min-sync-replicas` default 0). CF now defaults to 2, so a publish needs one registered peer. A cluster whose desired core count is below 3 cannot take the default RF (it exceeds the core count), so its streams declare their factors.
 
-**Durability guarantee (storage):** a write that has been client-acked is held by `min-sync` distinct copies before the ack returns, so the *data* survives up to `min-sync − 1` simultaneous replica failures (owner included). Whether a *promotion* recovers all of it is scoped below. With `min-sync-replicas = replicas` every follower is caught up to the last acked offset, so any of them can be promoted with zero loss.
+**One parse, deploy and runtime (#1549).** A `[streams.X]` section is parsed by `StreamConfigParser` both when the blueprint is validated and when the slice's stream resources are provisioned, so the committed config carries every declared key. Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy. The accepted keys are exactly `version`, `source`, `role`, `partitions`, `retention`, `retention-value`, `retention-mode`, `max-age`, `max-count`, `max-bytes`, `auto-offset-reset`, `max-event-size`, `consistency`, `replication_factor`, `confirmation_factor`, `compression` and `encryption-key-id`; any other key directly in the section (a record-component name such as `max_event_size_bytes`, or a removed #1564 key — `replicas`, `min-sync-replicas`, `min_sync_replicas` — which is refused naming its replacement, with no alias) is refused under `unknown-stream-key`, naming the key it resembles, and a non-integer value for `partitions`, `replication_factor` or `confirmation_factor` under `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value). Before #1549 the provisioning path used the generic record binder, which read snake_case component names and silently resolved everything else from `StreamConfig.DEFAULT`: the then write-ack floor (`min-sync-replicas`, superseded by #1564) was provisioned as 0 and `max-event-size`, `retention*`, `auto-offset-reset`, `consistency`, `compression` and `encryption-key-id` as their defaults, whatever the blueprint declared.
 
-**Failover (HRW-elect + catch-up-before-serve):** on owner death the new owner is the next HRW-ranked survivor — election is placement-driven, not ISR-membership-driven. A lagging promotee is held non-authoritative until it catches up to the highest `confirmedOffset` among surviving replicas, then serves. **Losslessness scope:** with `min-sync-replicas = replicas`, every client-acked record is on every surviving in-sync replica, so the promoted owner serves the complete acked history (this is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite). With `replicas > 2` and `min-sync < replicas`, promotion catch-up currently sources from a **single** ahead-survivor; distinct acked offsets may reside on different followers, so promotion is not yet guaranteed lossless — tracked in #411 (multi-survivor promotion catch-up).
+**Durability guarantee (storage):** a write that has been client-acked is held by CF distinct copies before the ack returns, so the *data* survives up to `CF − 1` simultaneous replica failures (owner included) `[design intent — unverified]`. Whether a *promotion* recovers all of it is scoped below. With `confirmation_factor = replication_factor` every follower is caught up to the last acked offset, so any of them can be promoted with zero loss.
+
+**Failover (HRW-elect + catch-up-before-serve):** on owner death the new owner is the next HRW-ranked survivor — election is placement-driven, not ISR-membership-driven. A lagging promotee is held non-authoritative until it catches up to the highest `confirmedOffset` among surviving replicas, then serves. **Losslessness scope:** with `CF = RF`, every client-acked record is on every surviving in-sync replica, so the promoted owner serves the complete acked history (this is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite). With `CF < RF`, distinct acked offsets may reside on different followers; the multi-survivor catch-up of §10.6 and #1555's promotion gate (the new owner catches up from the highest-head live member before it serves) are the mechanism that makes promotion lossless for every acked record held by a live replica `[design intent — unverified]`.
 
 ### 10.6 Multi-survivor promotion catch-up — coverage-union design (#411, 2026-07-04)
 
-Closes the §10.5 losslessness gap for `replicas > 2 ∧ min-sync < replicas`.
+Closes the §10.5 losslessness gap for `RF > 2 ∧ CF < RF`. (Written against the pre-#1564 knobs `replicas`/`min-sync`; they are `replication_factor` (RF) and `confirmation_factor` (CF) since #1564.)
 
 **Why a single ahead-survivor is insufficient.** Each surviving replica `r` holds a contiguous
 interval `[e_r, w_r]` of the partition — contiguous because live replication applies in order
 (`applyContiguous`) and backfill fills from a starting offset; but `e_r > 0` is possible (a
 replica placed late by the reconcile edge backfills from the then-earliest retained offset and
-holds a **suffix**). With per-record ack quorums of size `min-sync − 1 < replicas − 1`, different
+holds a **suffix**). With per-record ack quorums of size `CF − 1 < RF − 1`, different
 acked records may be held by different followers. Max-tail-only catch-up pulls one interval and
 can miss acked records that only another survivor holds.
 
@@ -1547,20 +1549,22 @@ can miss acked records that only another survivor holds.
 
 **Guarantee statement (post-implementation):** promotion recovers *every acked record held by at
 least one reachable surviving replica* — the information-theoretic maximum. Acked records whose
-entire ack quorum (`min-sync` copies) is lost are unrecoverable by any mechanism and are reported
-via `PROMOTION_GAP`; their exposure is bounded by the `min-sync` floor the writer chose (§10.5).
+entire ack quorum (CF copies) is lost are unrecoverable by any mechanism and are reported
+via `PROMOTION_GAP`; their exposure is bounded by the CF the writer chose (§10.5).
 
-**Validation gate:** implementing this section is the precondition for relaxing the
-`min-sync == replicas` constraint in `durable-pubsub-spec.md` §3, and requires a `replicas = 3,
-min-sync = 2` failover scenario in `02-chaos` (kill the owner after acks routed via different
-followers; assert union recovery) before the relaxation ships.
+**Validation gate:** implementing this section was the precondition for relaxing the
+`CF == RF` constraint in `durable-pubsub-spec.md` §3, and requires an `RF = 3,
+CF = 2` failover scenario in `02-chaos` (kill the owner after acks routed via different
+followers; assert union recovery). (The relaxation itself is superseded by #1564, know 267792392: durable
+topics accept CF < RF, lossless via #1555's promotion gate; the `02-chaos` scenario is not claimed here.)
 
 **Companion #411 items (decided):**
 - `KVStoreSerializer` stream-config wire format gains a leading **schema-version tag** and
   per-stream skip-on-parse-fail (quarantine + log, not map-wide abort) **before** it is wired to
   any snapshot/persistence path. (Today: test-only, zero production callers.)
-- Startup **WARN** when `replicas ≥ 3 ∧ min-sync ≤ 1` (placement redundancy with a zero peer-ack
-  floor — legal, Kafka-consistent, surprising; §10.5 note made loud at boot).
+- Startup **WARN** when `RF ≥ 3 ∧ CF ≤ 1` (placement redundancy with a zero peer-ack
+  floor — legal, Kafka-consistent, surprising; §10.5 note made loud at boot). (Superseded by #1564: CF 1 raises
+  the declaration warning `confirmation-factor-owner-only` at deploy and activation.)
 - `@Contract` on `PartitionBackfill.ackBackfillToOwner` / `DefaultReplicationManager.recordSurvivorConfirmed`
   — fold into the same-file touch that implements this section.
 

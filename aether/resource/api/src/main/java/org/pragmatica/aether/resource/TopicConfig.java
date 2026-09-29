@@ -7,6 +7,9 @@ package org.pragmatica.aether.resource;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationDeclaration;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.config.StrictKeys;
@@ -33,17 +36,18 @@ import static org.pragmatica.lang.Option.none;
 /// topic_name = "order-events"
 /// durability = "durable"        # "ephemeral" (default) | "durable"
 /// partitions = 4                 # durable only; default 1
-/// replicas = 3                   # durable only; default 3, minimum 3 (#1547)
-/// min_sync_replicas = 3          # durable only; default = replicas
+/// replication_factor = 3         # durable only; default: the cluster's [replication] default (3)
+/// confirmation_factor = 2        # durable only; default: min(cluster default (2), replication_factor)
 /// retention = "7d"               # durable only; default 7d
 /// ```
 ///
 /// Validation is parse-time via [#topicConfig] (the TOML binder invokes the matching static
-/// factory when one exists): a durable declaration outside `min-sync == replicas >= 3` is rejected
-/// (see [DurableTopicSpec]), and stream knobs on an ephemeral topic are rejected as inert rather
-/// than silently ignored (#576 config-honesty stance). Because all three replicas must ack, a
-/// 3-core cluster refuses every durable publish (`NOT_ENOUGH_REPLICAS`) while a lost core is being
-/// replaced (owner ruling, know 8fb91f876). The knob
+/// factory when one exists) for what the declaration alone decides — partitions, retention, and a
+/// declared factor below 1 or a declared `confirmation_factor` above a declared `replication_factor` —
+/// and stream knobs on an ephemeral topic are rejected as inert rather than silently ignored (#576
+/// config-honesty stance). The factors are resolved against the committed cluster defaults when the
+/// topic is provisioned ([#durableSpec]), through [ReplicationDeclaration] like every stream and
+/// durable entity (#1564; know 267792392 superseded the fixed CF == RF of know 8fb91f876). The knob
 /// components are `Option`-typed precisely so declared-vs-absent is distinguishable — an absent
 /// key falls back to the durable tier's default at resolution, a declared key on an ephemeral
 /// topic is a loud error.
@@ -76,8 +80,8 @@ import static org.pragmatica.lang.Option.none;
 public record TopicConfig(String topicName,
                           TopicDurability durability,
                           Option<Integer> partitions,
-                          Option<Integer> replicas,
-                          Option<Integer> minSyncReplicas,
+                          Option<Integer> replicationFactor,
+                          Option<Integer> confirmationFactor,
                           Option<TimeSpan> retention) {
     /// Binder fallback for components absent from TOML (per-component accessor lookup). The blank
     /// topic name never survives binding: [#topicConfig] rejects it, keeping a missing `topic_name`
@@ -96,8 +100,8 @@ public record TopicConfig(String topicName,
     public static Result<TopicConfig> topicConfig(String topicName,
                                                   TopicDurability durability,
                                                   Option<Integer> partitions,
-                                                  Option<Integer> replicas,
-                                                  Option<Integer> minSyncReplicas,
+                                                  Option<Integer> replicationFactor,
+                                                  Option<Integer> confirmationFactor,
                                                   Option<TimeSpan> retention) {
         return Verify.ensure(topicName,
                              Verify.Is::present,
@@ -105,21 +109,27 @@ public record TopicConfig(String topicName,
                      .flatMap(name -> validateTier(new TopicConfig(name,
                                                                    durability,
                                                                    partitions,
-                                                                   replicas,
-                                                                   minSyncReplicas,
+                                                                   replicationFactor,
+                                                                   confirmationFactor,
                                                                    retention)));
     }
 
     /// Resolved durable-tier parameters: present exactly when the topic is durable, with the §3
-    /// declaration defaults applied. Ephemeral topics resolve to a successful `none()` — the knobs
-    /// do not exist for them, which is the honest shape rather than zero-filled placeholders. The
-    /// failure branch fires only for a durable config built through the canonical constructor with
-    /// knobs the [#topicConfig] factory would have rejected — loud at the point of use instead of
-    /// silently degrading to ephemeral.
-    public Result<Option<DurableTopicSpec>> durableSpec() {
+    /// declaration defaults applied and the replication factors resolved against `context` — the
+    /// committed cluster defaults and desired core count (#1564). Ephemeral topics resolve to a
+    /// successful `none()` — the knobs do not exist for them, which is the honest shape rather than
+    /// zero-filled placeholders. A failure is a declaration the context refuses, or a durable config
+    /// built through the canonical constructor with knobs the [#topicConfig] factory would have
+    /// rejected — loud at the point of use instead of silently degrading to ephemeral.
+    public Result<Option<DurableTopicSpec>> durableSpec(ReplicationContext context) {
         return durability == TopicDurability.DURABLE
-               ? resolveSpec().map(Option::some)
+               ? resolveSpec(context).map(Option::some)
                : Result.success(none());
+    }
+
+    /// The declared replication factors, before any default applies.
+    public ReplicationDeclaration replication() {
+        return ReplicationDeclaration.replicationDeclaration(replicationFactor, confirmationFactor);
     }
 
     /// Resolve the declared topic string to a canonical [ResourceAddress].
@@ -138,7 +148,7 @@ public record TopicConfig(String topicName,
     private static Result<TopicConfig> validateTier(TopicConfig config) {
         return switch (config.durability()) {
             case EPHEMERAL -> config.rejectInertKeys();
-            case DURABLE -> config.resolveSpec().map(_ -> config);
+            case DURABLE -> config.validateDeclaration();
         };
     }
 
@@ -150,21 +160,41 @@ public record TopicConfig(String topicName,
                : TopicConfigError.inertEphemeralKeys(String.join(", ", declared)).result();
     }
 
-    private Result<DurableTopicSpec> resolveSpec() {
-        var resolvedReplicas = replicas.or(DurableTopicSpec.DEFAULT_REPLICAS);
+    /// What the declaration alone decides, checked at bind: the non-replication knobs through the spec
+    /// factory, and the factors only where no default is involved. A default-dependent refusal (an RF
+    /// below 3 taken from a default, CF above a defaulted RF, RF above the core count) waits for
+    /// [#durableSpec], because the cluster defaults are not known at bind.
+    private Result<TopicConfig> validateDeclaration() {
+        return DurableTopicSpec.checkKnobs(partitions.or(DurableTopicSpec.DEFAULT_PARTITIONS),
+                                           retention.or(DurableTopicSpec.DEFAULT_RETENTION))
+                               .flatMap(_ -> declaredFactorsInRange())
+                               .map(_ -> this);
+    }
 
-        return DurableTopicSpec.durableTopicSpec(partitions.or(DurableTopicSpec.DEFAULT_PARTITIONS),
-                                                 resolvedReplicas,
-                                                 minSyncReplicas.or(resolvedReplicas),
-                                                 retention.or(DurableTopicSpec.DEFAULT_RETENTION));
+    private Result<ReplicationDeclaration> declaredFactorsInRange() {
+        var declaration = replication();
+        var confirmation = declaration.confirmationFactor().or(1);
+        var factor = declaration.replicationFactor().or(Math.max(1, confirmation));
+
+        return ReplicationFactors.replicationFactors(factor, confirmation)
+                                 .map(_ -> declaration)
+                                 .mapError(TopicConfigError::replicationRefused);
+    }
+
+    private Result<DurableTopicSpec> resolveSpec(ReplicationContext context) {
+        return context.resolve(replication())
+                      .mapError(TopicConfigError::replicationRefused)
+                      .flatMap(resolved -> DurableTopicSpec.durableTopicSpec(partitions.or(DurableTopicSpec.DEFAULT_PARTITIONS),
+                                                                             resolved,
+                                                                             retention.or(DurableTopicSpec.DEFAULT_RETENTION)));
     }
 
     private List<String> declaredStreamKeys() {
         var declared = new ArrayList<String>();
 
         partitions.onPresent(_ -> declared.add("partitions"));
-        replicas.onPresent(_ -> declared.add("replicas"));
-        minSyncReplicas.onPresent(_ -> declared.add("min_sync_replicas"));
+        replicationFactor.onPresent(_ -> declared.add(ReplicationDeclaration.FACTOR_KEY));
+        confirmationFactor.onPresent(_ -> declared.add(ReplicationDeclaration.CONFIRMATION_KEY));
         retention.onPresent(_ -> declared.add("retention"));
 
         return declared;

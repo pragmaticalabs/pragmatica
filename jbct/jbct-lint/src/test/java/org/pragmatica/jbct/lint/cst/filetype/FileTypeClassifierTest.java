@@ -65,6 +65,37 @@ class FileTypeClassifierTest {
     }
 
     @Test
+    void classify_stepInterfaceWithLocalRecordInDefaultMethod_isStepInterface() {
+        // #655: a record declared inside a default method is not a member of the interface, so it must not
+        // disqualify the single-abstract-method interface as a step interface.
+        assertType(FileType.STEP_INTERFACE, """
+                package com.example.usecase.register;
+                public interface CheckEmail {
+                    Promise<ValidRequest> apply(ValidRequest request);
+                    default String describe() {
+                        record Label(String text) {}
+                        return new Label("check-email").text();
+                    }
+                }
+                """);
+    }
+
+    @Test
+    void classify_interfaceWithMemberRecord_isNotStepInterface() {
+        // Control: a record in the interface's OWN member list still disqualifies it.
+        var actual = FileTypeClassifier.classify(parse("""
+                package com.example.usecase.register;
+                public interface CheckEmail {
+                    Promise<ValidRequest> apply(ValidRequest request);
+                    record Label(String text) {}
+                }
+                """));
+        if (actual == FileType.STEP_INTERFACE) {
+            fail("a member record must still disqualify a step interface");
+        }
+    }
+
+    @Test
     void classify_sealedInterfaceWithUnused_isUtilityInterface() {
         assertType(FileType.UTILITY_INTERFACE, """
                 package com.example.shared;

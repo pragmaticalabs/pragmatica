@@ -6,10 +6,14 @@ package org.pragmatica.aether.resource.entity;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ReplicationDeclaration;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.lang.Cause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /// #345 I3 — `replication_factor` is HONOURED, and the guarantee it buys is derived from it.
 ///
@@ -28,78 +32,53 @@ class DurableEntityConfigTest {
     private static final String KEYSPACE = "orders";
     private static final int PARTITIONS = 8;
 
+    /// #1564: `replication_factor` and `confirmation_factor` are OPTIONAL declarations, resolved against the committed
+    /// cluster defaults at provisioning ([DurableEntityFactory]); only what the declaration alone decides is checked at
+    /// bind. The derived `min(2, replication_factor)` is gone — the confirmation factor is configured.
     @Nested
-    class ReplicationFactor {
-        /// The exact value the I0 fixture declared, and the exact value that was first ignored and then
-        /// refused. It is now carried through to the backing stream's `replicas`.
+    class ReplicationFactors {
         @Test
-        void durableEntityConfig_honoursReplicationFactor_forThreeReplicas() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 3)
+        void durableEntityConfig_carriesTheDeclaredFactors() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, some(5), some(3))
                                .onFailure(DurableEntityConfigTest::failCause)
-                               .onSuccess(config -> assertThat(config.replicationFactor()).isEqualTo(3));
+                               .onSuccess(config -> assertThat(config.replication()).isEqualTo(ReplicationDeclaration.replicationDeclaration(some(5),
+                                                                                                                                             some(3))));
         }
 
-        /// #1547: below the stream replication minimum of 3 is refused, never clamped — under terminal
-        /// removal a dead owner never returns, so fewer copies lose its partitions.
+        /// #1564: an explicit factor below 3 is allowed (it was refused before); the LOUD warning is raised when
+        /// the declaration resolves ([DurableEntityFactoryTest]).
         @Test
-        void durableEntityConfig_refusesInvalidReplicationFactor_forSingleReplica() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 1)
+        void durableEntityConfig_acceptsDeclaredFactorBelowThree() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, some(1), none())
+                               .onFailure(DurableEntityConfigTest::failCause);
+        }
+
+        @Test
+        void durableEntityConfig_refusesFactorZero() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, some(0), none())
                                .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor);
+                               .onFailure(cause -> assertRefused(cause, new ReplicationFactorsError.FactorBelowOne(0)));
         }
 
         @Test
-        void durableEntityConfig_refusesInvalidReplicationFactor_forTwoReplicas() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 2)
+        void durableEntityConfig_refusesConfirmationAboveDeclaredFactor() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, some(2), some(3))
                                .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor)
-                               .onFailure(cause -> assertThat(cause.message()).contains("must be at least 3"));
+                               .onFailure(cause -> assertRefused(cause, new ReplicationFactorsError.ConfirmationOutOfRange(2, 3)));
         }
 
-        /// Zero copies has no meaning — a partition with no replicas has no owner to write to.
         @Test
-        void durableEntityConfig_refusesInvalidReplicationFactor_forZero() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 0)
+        void durableEntityConfig_refusesConfirmationZero() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, none(), some(0))
                                .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor);
+                               .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityProvisioningError.ReplicationRefused.class));
         }
 
+        /// A confirmation factor alone depends on the defaulted factor, so it is checked at provisioning, not here.
         @Test
-        void durableEntityConfig_refusesInvalidReplicationFactor_forNegative() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, -1)
-                               .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor);
-        }
-
-        @Test
-        void durableEntityConfig_namesTheRejectedValue_inTheRefusal() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 0)
-                               .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(cause -> assertThat(cause.message()).contains("replication_factor = 0"));
-        }
-    }
-
-    /// The derivation is pinned per value rather than assumed from the formula. Factors below 3 are
-    /// refused at bind (#1547), so every admitted factor waits for the owner plus exactly one peer —
-    /// `awaitReplication` blocks on `minSyncReplicas - 1` distinct non-self acks.
-    @Nested
-    class MinSyncReplicas {
-        /// Raising the replica count raises durability and availability, NOT the write barrier: a higher
-        /// factor must not silently make every write wait on more peers.
-        @Test
-        void minSyncReplicas_staysTwo_forThreeReplicas() {
-            assertMinSyncReplicas(3, 2);
-        }
-
-        @Test
-        void minSyncReplicas_staysTwo_forFiveReplicas() {
-            assertMinSyncReplicas(5, 2);
-        }
-
-        private static void assertMinSyncReplicas(int replicationFactor, int expected) {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, replicationFactor)
-                               .onFailure(DurableEntityConfigTest::failCause)
-                               .onSuccess(config -> assertThat(config.minSyncReplicas()).isEqualTo(expected));
+        void durableEntityConfig_acceptsConfirmationAlone() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, none(), some(4))
+                               .onFailure(DurableEntityConfigTest::failCause);
         }
     }
 
@@ -107,21 +86,21 @@ class DurableEntityConfigTest {
     class PartitionCount {
         @Test
         void durableEntityConfig_refusesInvalidPartitionCount_forZero() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, 0, 3)
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, 0, none(), none())
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidPartitionCount);
         }
 
         @Test
         void durableEntityConfig_refusesInvalidPartitionCount_forNegative() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, -1, 3)
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, -1, none(), none())
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidPartitionCount);
         }
 
         @Test
         void durableEntityConfig_succeeds_forSinglePartition() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, 1, 3)
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, 1, none(), none())
                                .onFailure(DurableEntityConfigTest::failCause)
                                .onSuccess(config -> assertThat(config.partitionCount()).isEqualTo(1));
         }
@@ -131,7 +110,7 @@ class DurableEntityConfigTest {
     class Keyspace {
         @Test
         void durableEntityConfig_refuses_forBlankKeyspace() {
-            DurableEntityConfig.durableEntityConfig("  ", PARTITIONS, 3)
+            DurableEntityConfig.durableEntityConfig("  ", PARTITIONS, none(), none())
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidKeyspace);
         }
@@ -144,14 +123,14 @@ class DurableEntityConfigTest {
         /// the rule can hold.
         @Test
         void durableEntityConfig_refusesKeyspaceContainingSlash() {
-            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 3)
+            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, none(), none())
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidKeyspace);
         }
 
         @Test
         void durableEntityConfig_namesTheRejectedKeyspace_inTheRefusal() {
-            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 3)
+            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, none(), none())
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(cause -> assertThat(cause.message()).contains("orders/eu"));
         }
@@ -164,23 +143,18 @@ class DurableEntityConfigTest {
         }
     }
 
-    /// The default must be the SAFE reading of "durable entity": a declaration that names only a keyspace
-    /// gets state that survives losing a node. A default of 1 would hand the weaker guarantee to everyone
-    /// who did not think about the field — which is the failure mode this whole item exists to close.
+    /// #1564: a keyspace-only declaration declares no factors — it takes the committed cluster defaults (built-in RF 3,
+    /// CF 2) at provisioning.
     private static void assertDefaults(DurableEntityConfig config) {
         assertThat(config.keyspace()).isEqualTo(KEYSPACE);
         assertThat(config.partitionCount()).isPositive();
-        assertThat(config.replicationFactor()).isEqualTo(DurableEntityConfig.DEFAULT_REPLICATION_FACTOR);
-        assertThat(config.replicationFactor()).isGreaterThan(1);
-        assertThat(config.minSyncReplicas()).isEqualTo(2);
+        assertThat(config.replication()).isEqualTo(ReplicationDeclaration.NONE);
     }
 
-    /// The factory validates with [Result#all], which composes every violation into one cause so a
-    /// blueprint breaking several rules reports all of them at once. The refusal is therefore asserted
-    /// over [Cause#stream] — uniform for a composite and for a single cause — rather than by matching the
-    /// outer instance, which for a composite would be the wrapper, not the domain refusal.
-    private static void assertInvalidReplicationFactor(Cause cause) {
-        assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityProvisioningError.InvalidReplicationFactor.class);
+    /// The factory validates with [Result#all], which composes every violation into one cause, so the refusal is
+    /// asserted over [Cause#stream] — uniform for a composite and for a single cause.
+    private static void assertRefused(Cause cause, ReplicationFactorsError expected) {
+        assertThat(cause.stream()).contains(new EntityProvisioningError.ReplicationRefused(expected));
     }
 
     private static void assertInvalidPartitionCount(Cause cause) {

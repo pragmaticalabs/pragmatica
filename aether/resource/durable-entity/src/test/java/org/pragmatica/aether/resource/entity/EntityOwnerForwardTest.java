@@ -659,7 +659,7 @@ class EntityOwnerForwardTest {
         private final Map<Integer, List<byte[]>> log = new ConcurrentHashMap<>();
 
         @Override
-        public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
+        public Result<Unit> ensureLog(String keyspace, int partitionCount, org.pragmatica.aether.slice.ReplicationFactors replication) {
             return Result.unitResult();
         }
 

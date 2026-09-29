@@ -23,7 +23,7 @@ import org.pragmatica.serialization.Deserializer;
 
 /// The durable dead-letter sink for topic streams (durable-pubsub-spec §9): a retry-exhausted
 /// event is re-enveloped as a group-attributed [DlqEnvelope] and appended to the topic's
-/// `topic:<address>.dlq` stream through the SAME min-sync replication barrier the source topic
+/// `topic:<address>.dlq` stream through the SAME confirmation barrier the source topic
 /// uses (the DLQ inherits the source's floor — an event that survived replication must not die in
 /// a weaker DLQ). The consumer runtime's cursor-hold contract does the rest: the source cursor
 /// does not advance until this append resolves, and a failed append retries with backoff there —

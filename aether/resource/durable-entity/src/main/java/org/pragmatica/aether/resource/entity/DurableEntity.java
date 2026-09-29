@@ -77,7 +77,7 @@ import org.pragmatica.lang.Unit;
 /// replicated log per `(keyspace, partition)`; the in-memory view is derived by replaying that log, so any
 /// holder rebuilds it after a restart or handover. Every write is admitted by the committed-owner check,
 /// gated by the log's epoch fence, and resolves only once the record is fsync-durable on the owner and
-/// held by the keyspace's `minSyncReplicas`. The in-memory variant (`InMemoryDurableEntity`) is a test
+/// held by the keyspace's `confirmationFactor`. The in-memory variant (`InMemoryDurableEntity`) is a test
 /// fixture under `src/test` and is not in the shipped artifact (#1270).
 ///
 /// @param <K> entity key type — used only as a map key (equals/hashCode); never mutated

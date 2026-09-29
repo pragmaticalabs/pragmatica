@@ -44,14 +44,14 @@ import static org.pragmatica.lang.Option.none;
 ///   hierarchical-storage tier (#349 — named by the spec as this feature's persistence
 ///   dependency) extends the floor beyond the ring; a consumer falling below the floor surfaces
 ///   as the §7 `CURSOR_GAP` path, never silently.
-/// - **DLQ inherits `replicas`/`min-sync`** from the source topic (an event that survived
+/// - **DLQ inherits `replication_factor`/`confirmation_factor`** from the source topic (an event that survived
 ///   replication must not die in a weaker DLQ, §9); DLQ retention defaults to 14d (§9), its
 ///   per-topic override arrives with the D3 operator surface.
 /// - **DLQ has one partition**: dead letters carry their source partition in the envelope, redrive
 ///   is per-entry and group-targeted, so cross-entry ordering buys nothing — and one partition
 ///   keeps the inspect/page surface trivial. Poison throughput is failure-bounded.
 /// - **`ConsistencyMode.EVENTUAL`**: the durability floor is the two-knob synchronous-replication
-///   barrier (`min-sync == replicas >= 3`, default 3, enforced at parse), not the STRONG consensus publish
+///   barrier (the topic's resolved `replication_factor`/`confirmation_factor`, #1564), not the STRONG consensus publish
 ///   path, which remains unwired (guarantees.md §4 known-gaps).
 public interface DurableTopicSubstrate {
     /// Create the topic stream and its DLQ stream, both or neither observable as success: a failed
@@ -67,7 +67,7 @@ public interface DurableTopicSubstrate {
     /// topic: activates the topic + DLQ streams (idempotent, same step) and assembles the
     /// envelope-wrapping publisher over the SAME fully-wired stream-publish path app streams use
     /// ([StreamPublisherFactory#assemblePublisher] — partition routing, owner forwarding, and the
-    /// `min-sync − 1` peer-ack barrier that IS the §5 durability resolution point).
+    /// `CF − 1` peer-ack barrier that IS the §5 durability resolution point).
     ///
     /// The returned publisher is keyless in v1 (round-robin partitions): the erased
     /// `Publisher<T>.publish(T)` surface has no key channel; the publisher-supplied message key of
@@ -103,8 +103,9 @@ public interface DurableTopicSubstrate {
     TimeSpan DLQ_RETENTION_DEFAULT = TimeSpan.timeSpan("14d").unwrap();
 
     private static Result<Unit> activate(StreamPartitionManager manager, String topicAddress, DurableTopicSpec spec) {
-        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(topicStreamConfig(topicAddress, spec))).flatMap(_ -> StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(dlqStreamConfig(topicAddress,
-                                                                                                                                                                                                                  spec))));
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(topicStreamConfig(topicAddress,
+                                                                                                        spec))).flatMap(_ -> StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(dlqStreamConfig(topicAddress,
+                                                                                                                                                                                                                    spec))));
     }
 
     static StreamConfig topicStreamConfig(String topicAddress, DurableTopicSpec spec) {
@@ -114,8 +115,8 @@ public interface DurableTopicSubstrate {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
-                                         spec.replicas(),
-                                         spec.minSyncReplicas(),
+                                         spec.replication().replicationFactor(),
+                                         spec.replication().confirmationFactor(),
                                          StreamCompression.NONE,
                                          none());
     }
@@ -127,8 +128,8 @@ public interface DurableTopicSubstrate {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
-                                         spec.replicas(),
-                                         spec.minSyncReplicas(),
+                                         spec.replication().replicationFactor(),
+                                         spec.replication().confirmationFactor(),
                                          StreamCompression.NONE,
                                          none());
     }
