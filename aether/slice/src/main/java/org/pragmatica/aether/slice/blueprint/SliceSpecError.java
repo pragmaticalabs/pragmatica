@@ -21,4 +21,12 @@ public sealed interface SliceSpecError extends Cause {
                                                                                                 + " instances",
                                                                                                  InstancesBelowMinimum::new);
     }
+
+    /// `minAvailable` below [SliceSpec#MIN_AVAILABLE] (#1495, runtime floor). The scale-down and drain guards
+    /// stop at `minAvailable`, so it bounds how low a running slice can be taken on purpose.
+    record MinAvailableBelowFloor(Artifact artifact, int minAvailable, String message) implements SliceSpecError {
+        static final Fn2<MinAvailableBelowFloor, Artifact, Integer> FACTORY = Causes.forTwoValues("Slice %s declares minAvailable = %s; a blueprint slice must keep at least " + SliceSpec.MIN_AVAILABLE
+                                                                                                 + " instances available",
+                                                                                                 MinAvailableBelowFloor::new);
+    }
 }

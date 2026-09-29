@@ -19,6 +19,7 @@ import java.util.function.Predicate;
 import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.controller.ClusterController.ArtifactLoad;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
@@ -228,10 +229,16 @@ public final class ControlLoopContext {
     /// can drift apart, and #936 was precisely that drift — the in-memory model kept the operator's
     /// `minInstances` while the durable record was overwritten with the new instance count, and the
     /// durable one won on the next feedback.
+    ///
+    /// The scale-down floor is never below [SliceSpec#MIN_INSTANCES] (#1495, owner ruling: the floor is a
+    /// runtime invariant). The autoscaler CLAMPS rather than refuses: a scale-down that would cross the floor
+    /// is held at it and recorded as `HELD` by the `MIN_INSTANCES` guard, exactly as a slice's own
+    /// `minAvailable` already holds it. Refusing would drop the whole decision, including the part that
+    /// stays at or above the floor.
     private static ClusterController.Blueprint blueprintOf(Artifact artifact, SliceTargetValue target) {
         return new ClusterController.Blueprint(artifact,
                                                target.targetInstances(),
-                                               target.effectiveMinInstances(),
+                                               Math.max(target.effectiveMinInstances(), SliceSpec.MIN_INSTANCES),
                                                target.owningBlueprint(),
                                                target.maxInstances(),
                                                target.scaleUpThreshold(),

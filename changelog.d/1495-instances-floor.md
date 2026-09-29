@@ -24,6 +24,19 @@
   keeps the typed cause as its `origin` and quotes its message, so the body names the floor
   `[verified: aether/node BlueprintServiceTest.PublishRefusalStatusTests — real route + real service]`.
   `POST /api/v1/blueprints/validate` is unchanged: it answers 200 with `valid: false` by contract.
-- Unchanged by design: `POST /api/scale` and the autoscaler still scale down to the blueprint's
-  `minAvailable`, and A/B test variants keep their own per-variant count. The floor bounds what a
-  blueprint declares, not the runtime count, which can drop to `minAvailable`.
+- **BREAKING (pre-GA, allowed): the floor is a runtime invariant too (owner ruling).**
+  - `POST /api/v1/scale` and `aether scale` refuse fewer than 3 instances with `400`
+    (`ScaleRouteError.InstancesBelowFloor`, which names the floor), checked before the node is read. A count
+    below the slice's own `minAvailable` now also answers `400` (`ScaleRouteError.InstancesBelowMinAvailable`)
+    where it used to be an untyped `500`. `[verified: aether/node ScaleRouteFloorTest — route level;
+    aether/forge SliceDeploymentTest.scaleSlice_belowTheFloor_isRefusedWhileAtTheFloorIsAccepted — Forge]`
+  - The autoscaler CLAMPS a scale-down at 3: its scale-down floor is `max(minAvailable, 3)`, so a decision
+    that would cross 3 is held there and recorded `HELD` by the `MIN_INSTANCES` guard. The operator's
+    `minAvailable` in the slice target is left as written. `[verified: aether/aether-control
+    ControlLoopScaleDownFloorTest.InstanceFloorAtRuntime — unit level]`
+  - `SliceSpec` refuses `minAvailable < 2` with the typed `SliceSpecError.MinAvailableBelowFloor`, because
+    `minAvailable` is the fewest ACTIVE instances the scale-down and drain guards may leave. A blueprint
+    declaring `minAvailable = 1` must be raised before it will publish. `[verified: aether/slice
+    SliceSpecTest — unit level]`
+  - `[unverified: operator-initiated drain (POST /api/v1/nodes/drain) checks the core disruption budget,
+    not a slice's minAvailable; pending a ruling]`

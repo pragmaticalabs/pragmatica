@@ -85,7 +85,8 @@ affinity_key = "customerId"
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `instances` | int | `3` | Number of slice instances. At least 3; fewer is refused when the blueprint is parsed (#1495), so one drain or node failure leaves a slice at two or more instances `[mechanism: placement puts at most one instance of a slice on a node]` |
+| `instances` | int | `3` | Number of slice instances. At least 3; fewer is refused when the blueprint is parsed (#1495), so one drain or node failure leaves a slice at two or more instances `[mechanism: placement puts at most one instance of a slice on a node]`. The floor also holds at runtime: `aether scale` refuses fewer than 3, and the autoscaler never scales a slice below 3 |
+| `minAvailable` | int | `ceil(instances/2)` | Fewest ACTIVE instances a scale-down or an automatic drain may leave. At least 2 and at most `instances`; fewer is refused when the blueprint is parsed (#1495) |
 | `timeout_ms` | int | - | Request timeout in milliseconds |
 | `memory_mb` | int | - | Memory allocation per instance |
 | `load_balancing` | string | - | Load balancing strategy (`round_robin`, `least_connections`) |

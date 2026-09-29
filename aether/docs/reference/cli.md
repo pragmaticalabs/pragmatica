@@ -502,7 +502,7 @@ aether scale org.example:order:1.0.0 -n 5 -p WORKER_PREFERRED
 
 | Option | Description |
 |--------|-------------|
-| `-n, --instances` | Target number of instances (required) |
+| `-n, --instances` | Target number of instances (required). At least 3 and at least the slice's `minAvailable`; fewer is refused with `400` (#1495) |
 | `-p, --placement` | Placement strategy: `CORE_ONLY`, `WORKER_PREFERRED`, `WORKER_ONLY` (optional) |
 
 > **Note:** Individual deploy/undeploy commands have been removed. Use `blueprint apply` and `blueprint delete` instead.

@@ -719,7 +719,7 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `artifact` | string | Yes | Full artifact coordinates (group:artifact:version) |
-| `instances` | integer | Yes | Target number of instances |
+| `instances` | integer | Yes | Target number of instances. At least 3 (#1495: the floor holds at runtime, not only when a blueprint is declared), and at least the slice's `minAvailable`; fewer answers `400` |
 | `placement` | string | No | Placement strategy: `CORE_ONLY` (default), `WORKER_PREFERRED`, `WORKER_ONLY`. When omitted, preserves existing placement or defaults to `CORE_ONLY` for new targets. |
 
 **Response:**
@@ -737,6 +737,16 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
   "error": "Slice is not part of any active blueprint. Deploy via blueprint."
 }
 ```
+
+**Error `400` (below the instance floor, checked before anything else):**
+```json
+{
+  "status": 400,
+  "detail": "Requested 2 instances; a slice must run at least 3 instances"
+}
+```
+
+**Error `400` (below the slice's `minAvailable`):** `Requested 3 instances but the slice's minAvailable is 4`.
 
 ---
 

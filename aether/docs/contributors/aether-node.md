@@ -168,7 +168,7 @@ The Management Server provides REST endpoints for cluster administration.
     {
       "artifact": "org.example:user-service:1.0.0",
       "state": "ACTIVE",
-      "instances": 2
+      "instances": 3
     }
   ]
 }

@@ -92,7 +92,7 @@ class BlueprintParserTest {
                     [[slices]]
                     artifact = "org.example:service:1.0.0"
                     instances = 4
-                    minAvailable = 1
+                    minAvailable = 2
                     maxInstances = 6
                     scaleUpThreshold = 1.8
                     scaleDownThreshold = 0.3

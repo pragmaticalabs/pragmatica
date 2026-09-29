@@ -42,7 +42,7 @@ class SliceSpecTest {
         Artifact.artifact("org.example:slice:1.0.0")
                 .flatMap(artifact -> SliceSpec.sliceSpec(artifact,
                                                          3,
-                                                         1,
+                                                         2,
                                                          Option.some(5),
                                                          Option.some(1.8),
                                                          Option.some(0.3)))
@@ -57,7 +57,7 @@ class SliceSpecTest {
     @Test
     void sliceSpec_succeeds_whenMaxInstancesEqualsInstances() {
         Artifact.artifact("org.example:slice:1.0.0")
-                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3, 1, Option.some(3), Option.none(), Option.none()))
+                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3, 2, Option.some(3), Option.none(), Option.none()))
                 .onFailureRun(Assertions::fail)
                 .onSuccess(spec -> assertThat(spec.maxInstances()).isEqualTo(Option.some(3)));
     }
@@ -65,7 +65,7 @@ class SliceSpecTest {
     @Test
     void sliceSpec_fails_whenMaxInstancesBelowInstances() {
         Artifact.artifact("org.example:slice:1.0.0")
-                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3, 1, Option.some(2), Option.none(), Option.none()))
+                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3, 2, Option.some(2), Option.none(), Option.none()))
                 .onSuccessRun(Assertions::fail)
                 .onFailure(cause -> assertThat(cause.message()).contains("maxInstances"));
     }
@@ -94,6 +94,35 @@ class SliceSpecTest {
     @Test
     void sliceSpec_fails_withNegativeInstances() {
         assertBelowMinimum(-1);
+    }
+
+    /// #1495 runtime floor: `minAvailable` is the fewest ACTIVE instances the scale-down and drain guards may
+    /// leave, so 1 would let them take a slice to one instance.
+    @Test
+    void sliceSpec_fails_withMinAvailableOne() {
+        assertMinAvailableBelowFloor(1);
+    }
+
+    @Test
+    void sliceSpec_fails_withMinAvailableZero() {
+        assertMinAvailableBelowFloor(0);
+    }
+
+    @Test
+    void sliceSpec_succeeds_withMinAvailableTwo() {
+        Artifact.artifact("org.example:slice:1.0.0")
+                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3, 2))
+                .onFailureRun(Assertions::fail)
+                .onSuccess(spec -> assertThat(spec.minAvailable()).isEqualTo(2));
+    }
+
+    private static void assertMinAvailableBelowFloor(int minAvailable) {
+        Artifact.artifact("org.example:slice:1.0.0")
+                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3, minAvailable))
+                .onSuccessRun(Assertions::fail)
+                .onFailure(cause -> assertThat(cause)
+                        .isInstanceOfSatisfying(SliceSpecError.MinAvailableBelowFloor.class,
+                                                error -> assertThat(error.minAvailable()).isEqualTo(minAvailable)));
     }
 
     private static void assertBelowMinimum(int instances) {

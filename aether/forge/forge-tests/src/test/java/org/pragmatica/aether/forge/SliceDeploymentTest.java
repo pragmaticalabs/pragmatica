@@ -124,7 +124,7 @@ class SliceDeploymentTest {
     }
 
     @Test
-    void scaleSlice_adjustsInstanceCount() {
+    void scaleSlice_belowTheFloor_isRefusedWhileAtTheFloorIsAccepted() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
 
         // Deploy at the blueprint floor of 3 instances (#1495), one per node of this 3-node cluster
@@ -133,10 +133,14 @@ class SliceDeploymentTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> sliceIsActive(TEST_ARTIFACT));
 
-        // Scale down to 2 instances: the blueprint floor bounds `instances`, runtime scaling is bounded by
-        // minAvailable (ceil(3/2) = 2), and a 3-node cluster leaves no room to scale above 3
-        var scaleResponse = scale(leaderPort, TEST_ARTIFACT, 2);
-        assertThat(scaleResponse).doesNotContain("\"error\"");
+        // The floor holds at runtime too (#1495, owner ruling): the scale API refuses 2, naming the floor
+        var refused = scale(leaderPort, TEST_ARTIFACT, 2);
+        assertThat(refused).contains("must run at least 3 instances");
+
+        // and accepts a count at the floor; a 3-node cluster leaves no room to scale above 3
+        var scaleResponse = scale(leaderPort, TEST_ARTIFACT, 3);
+        assertThat(scaleResponse).doesNotContain("\"error\"")
+                                 .doesNotContain("must run at least");
 
         // Wait for scale operation to complete
         await().atMost(DEPLOY_TIMEOUT)
