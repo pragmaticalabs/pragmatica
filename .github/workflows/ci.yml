@@ -15,6 +15,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # Test-port gate (#1710): on a pull request this checkout is the MERGE ref, the only place two sibling PRs that
+      # claim the same test ports can see each other (#1688 and #1703 both took 14500+). Overlapping
+      # TEST_PORT_ALLOCATION.md rows fail; unregistered fixed ports in */src/test are listed, warn-only until registered.
+      - name: Test-port gate
+        run: |
+          python3 -B -m unittest discover -s tools -p test_check_test_ports.py
+          python3 -B tools/check-test-ports.py
+
       - name: Set up Java 25
         uses: actions/setup-java@v5
         with:

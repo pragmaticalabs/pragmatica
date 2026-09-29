@@ -88,6 +88,11 @@ When adding a new test class:
 4. Implement the `getPortOffset()` pattern
 5. Use `@Execution(ExecutionMode.SAME_THREAD)` annotation
 
+CI enforces step 3 at the pull request's merge ref: `tools/check-test-ports.py` fails when two rows overlap. It compares
+per protocol: cluster/QUIC and SWIM (cluster + 100) are UDP; management and app-http are TCP. It also lists fixed ports
+in `*/src/test` that no row covers. Keep the Notes column parseable: it must state `N nodes`, and may state
+`app-http N` or `app-http base+N`, and `SWIM UDP a-b`.
+
 ## This table is not exhaustive
 
 The rows above are the registered ranges, and the non-overlap rule holds only among them. As of #1558,
