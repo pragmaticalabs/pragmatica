@@ -19,6 +19,48 @@ class HierarchySelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "AbsentTest"):
                 selection.verify_sources(root, ["PresentTest", "AbsentTest"])
 
+    def tree(self, directory, classes):
+        root = Path(directory)
+        for name in classes:
+            source = root / selection.TEST_DIRECTORY / (name + ".java")
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.touch()
+        return root
+
+    def test_partial_selection_one_of_many_is_refused(self):
+        # #1451: the motivating case. Only the named classes used to be checked, so 1 of 24 exited 0.
+        hierarchy = ["HierarchyAuthorityAcceptanceTest", "HierarchicalWorkerDrainTest", "HierarchicalCoreResizeTest"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.tree(directory, hierarchy + list(selection.SUPPORTING_CLASSES))
+            with self.assertRaisesRegex(ValueError, "Partial selection: 8 of 9"):
+                selection.verify_complete(root, ["HierarchyAuthorityAcceptanceTest"])
+
+    def test_complete_selection_is_accepted(self):
+        hierarchy = ["HierarchyAuthorityAcceptanceTest", "HierarchicalWorkerDrainTest"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.tree(directory, hierarchy + list(selection.SUPPORTING_CLASSES))
+            required = selection.verify_complete(root, hierarchy + list(selection.SUPPORTING_CLASSES))
+            self.assertEqual(len(required), 8)
+
+    def test_new_hierarchy_test_on_disk_must_be_selected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.tree(directory, ["HierarchyAuthorityAcceptanceTest", "HierarchicalNewTest"]
+                             + list(selection.SUPPORTING_CLASSES))
+            with self.assertRaisesRegex(ValueError, "HierarchicalNewTest"):
+                selection.verify_complete(root, ["HierarchyAuthorityAcceptanceTest"] + list(selection.SUPPORTING_CLASSES))
+
+    def test_missing_supporting_class_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.tree(directory, ["HierarchyAuthorityAcceptanceTest"] + list(selection.SUPPORTING_CLASSES))
+            with self.assertRaisesRegex(ValueError, "ClusterFormationTest"):
+                selection.verify_complete(root, ["HierarchyAuthorityAcceptanceTest"]
+                                          + [c for c in selection.SUPPORTING_CLASSES if c != "ClusterFormationTest"])
+
+    def test_empty_expected_set_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "empty expected set"):
+                selection.verify_complete(Path(directory), ["HierarchyAuthorityAcceptanceTest"])
+
     def verify(self, body, names):
         with tempfile.TemporaryDirectory() as directory:
             reports = Path(directory)

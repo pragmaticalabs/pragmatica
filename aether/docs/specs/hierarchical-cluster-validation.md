@@ -87,7 +87,9 @@ Foundation mutations remain path-triggered in `hierarchy-review.yml`. Runtime ac
 on PRs carrying `run-hierarchy` (on every push while labeled), by manual dispatch, and on
 main/release pushes that change the hierarchy acceptance tests, its strict selection checker,
 or its workflow. It does not run merely because an unrelated `aether/**` file changed.
-Before building, `check-hierarchy-selection.py` requires every selected source class. After
+Before building, `check-hierarchy-selection.py` requires the selection to include every `Hierarch*Test`
+class on disk and the six supporting classes it names (a partial selection is refused, #1451), and every
+selected source class to exist. After
 Forge, it requires actual successful, non-skipped cases for every selected class, including
 nested cases; a partial or empty green report is refused.
 
