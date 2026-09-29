@@ -64,7 +64,8 @@ class ClusterEventOwnerFailoverTest {
     /// end-to-end delivery property is [#eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped].
     /// (The two assertions that described a release WITHOUT #1555, "no new owner" and "held > 0", were a tripwire and
     /// are deleted now that #1555 has landed.) Its retry count pins that held events are re-sent, by the 1 s tick OR
-    /// the new owner's drain; it does not isolate the tick, which the Ember NO-TICK mutation arm pins on its own.
+    /// the new owner's drain; it does not isolate the tick, which is pinned in the assembly by
+    /// `ClusterEventRedeliveryWiringTest` and behaviourally by the Ember NO-TICK mutation arm on a head without #1555.
     /// The ownership-change drain is not observed here: with #1555 the dead owner is replaced before any event
     /// waits, so there is nothing for a drain to re-send. [unverified: ownership-change drain in a with-#1555 cluster]
     /// The aggregator's handling of the put is pinned by the unit tests
@@ -110,7 +111,8 @@ class ClusterEventOwnerFailoverTest {
         assertThat((long) landed.size()).as("the log holds no more than was delivered").isLessThanOrEqualTo(delivered);
         // #1653, the retry drivers. Since #1555 re-places the dead owner, a retry count above zero pins "held events
         // are re-sent, by AetherNode's 1 s tick OR the new owner's ownership-put drain", not the tick alone. The tick
-        // and the drain are pinned separately by the Ember mutation arms (NO-TICK, NO-DRAIN-ROUTE).
+        // and the drain are pinned separately in the assembly by ClusterEventRedeliveryWiringTest, and behaviourally
+        // by the Ember mutation arms (NO-TICK, NO-DRAIN-ROUTE) on a head without #1555.
         assertThat(sum(producers, "retried")).as("held events were re-sent, by the 1 s tick or the new owner's drain").isPositive();
     }
 
