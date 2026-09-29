@@ -19,6 +19,7 @@ import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -29,6 +30,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import tools.jackson.databind.JsonNode;
 
@@ -91,7 +93,9 @@ sealed interface WaveNodeProvisioning {
                                                                                                                                           spec).await());
 
             if (provisioned.isFailure()) {
-                return provisioned.mapError(cause -> PartiallyProvisioned.partiallyProvisioned(created(nodes, source),
+                return provisioned.mapError(cause -> PartiallyProvisioned.partiallyProvisioned(tearDown(compute,
+                                                                                                        created(nodes,
+                                                                                                                source)),
                                                                                                cause))
                                   .map(_ -> List.<ProvisionedNode> of());
             }
@@ -230,12 +234,34 @@ sealed interface WaveNodeProvisioning {
         return List.copyOf(peers);
     }
 
-    /// A node this apply created, with the provider that holds its VM.
-    record CreatedNode(ProvisionedNode node, String provider) {
+    /// A node this apply created, with the provider that holds its VM and — for a node of the FAILING step — the outcome
+    /// of destroying it. `teardown` is empty for a node of an earlier, completed step: it belongs to the desired
+    /// configuration and is kept.
+    record CreatedNode(ProvisionedNode node, String provider, Option<Result<Unit>> teardown) {
+        boolean stillRunning() {
+            return teardown.map(Result::isFailure)
+                           .or(true);
+        }
+
         /// The exact steps to remove the node: drain it if it joined, then delete the VM with the provider's own
         /// tool (the CLI has no per-node VM delete).
         String removal() {
             return "aether cluster drain " + node.nodeId() + " --wait --yes (if it joined), then " + providerDelete();
+        }
+
+        String describe() {
+            var vm = "node " + node.nodeId()
+                   + "  provider " + provider
+                   + "  server " + node.serverId()
+                   + "  ip " + node.publicIp();
+
+            return teardown.fold(() -> "kept, RUNNING AND BILLED (created by an earlier step of this apply; it belongs to"
+                                      + " the desired configuration): " + vm
+                                      + "\n      remove if unwanted: " + removal(),
+                                 outcome -> outcome.fold(failure -> "STILL RUNNING AND BILLED: " + vm
+                                                                   + " (destroy failed: " + failure.message()
+                                                                   + ")\n      remove: " + removal(),
+                                                         _ -> "destroyed: " + vm));
         }
 
         private String providerDelete() {
@@ -251,8 +277,23 @@ sealed interface WaveNodeProvisioning {
         var provider = providerName(source);
 
         return nodes.stream()
-                    .map(node -> new CreatedNode(node, provider))
+                    .map(node -> new CreatedNode(node,
+                                                 provider,
+                                                 Option.none()))
                     .toList();
+    }
+
+    /// The failing step's VMs are destroyed, best-effort: the apply persists the desired configuration only on success,
+    /// so they belong to no desired state, and a retry mints new ids and never reuses them.
+    private static List<CreatedNode> tearDown(ComputeProvider compute, List<CreatedNode> created) {
+        return created.stream()
+                      .map(node -> new CreatedNode(node.node(),
+                                                   node.provider(),
+                                                   Option.some(InstanceId.instanceId(node.node().serverId())
+                                                                         .async()
+                                                                         .flatMap(compute::terminate)
+                                                                         .await())))
+                      .toList();
     }
 
     static String providerName(SourceProfile source) {
@@ -261,10 +302,10 @@ sealed interface WaveNodeProvisioning {
                      .or(source.type().value());
     }
 
-    /// An apply that fails after creating VMs. It names every VM the apply created, because each is RUNNING AND BILLED
-    /// and none is recorded by the apply: a retry mints new ids and never reuses them, and `--rollback` does not see
-    /// them. They are reported, not destroyed. Each carries joinable user-data and may already be a cluster member, so
-    /// whether to keep or remove it is the operator's call.
+    /// A rollout that fails after creating VMs. The failing step's VMs have been torn down; each destroy that failed is
+    /// named as STILL RUNNING AND BILLED with its provider, server id and removal steps. VMs from earlier completed steps
+    /// are kept and listed too, because the rollout records none of them: a retry mints new ids, and `--rollback` does
+    /// not see them.
     record PartiallyProvisioned(List<CreatedNode> created, Cause cause) implements Cause {
         static Cause partiallyProvisioned(List<CreatedNode> created, Cause cause) {
             return switch (cause) {
@@ -289,24 +330,16 @@ sealed interface WaveNodeProvisioning {
         @Override
         public String message() {
             var sb = new StringBuilder();
+            var stillRunning = created.stream().filter(CreatedNode::stillRunning).count();
 
             sb.append("apply failed part-way: ").append(cause.message()).append('\n');
-            sb.append("  ")
-              .append(created.size())
-              .append(" cloud VM(s) created by this apply are RUNNING AND BILLED and are not recorded by the apply")
-              .append(" (a retry mints new ids and will not reuse them; --rollback does not see them).\n");
-            sb.append("  Each may already have joined the cluster (check 'aether nodes'). Keep it, or remove it:\n");
-            created.forEach(node -> sb.append("    - node ")
-                                      .append(node.node().nodeId())
-                                      .append("  provider ")
-                                      .append(node.provider())
-                                      .append("  server ")
-                                      .append(node.node().serverId())
-                                      .append("  ip ")
-                                      .append(node.node().publicIp())
-                                      .append("\n      remove: ")
-                                      .append(node.removal())
+            created.forEach(node -> sb.append("    - ")
+                                      .append(node.describe())
                                       .append('\n'));
+            sb.append("  ")
+              .append(stillRunning)
+              .append(" cloud VM(s) created by this apply are STILL RUNNING AND BILLED and are not recorded by the apply")
+              .append(" (a retry mints new ids and will not reuse them; --rollback does not see them).\n");
 
             return sb.toString();
         }

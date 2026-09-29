@@ -191,7 +191,7 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
 
 The wave rollout behind `--resume`/`--rollback` is dormant in rc4 (#686); plain `cluster apply` performs scale-only writes and never reaches this.
 
-The error lists each cloud VM the apply created as RUNNING AND BILLED, with its removal steps; keep the ones that joined (`aether nodes`) and remove the rest as printed (see `aether cluster apply` in `reference/cli.md`).
+The failing step's VMs are destroyed. The error names any VM still running and billed (a failed destroy, or one kept from an earlier step), each with its removal steps: remove each `STILL RUNNING AND BILLED` VM as printed, and keep or remove each `kept` one (see `aether cluster apply` in `reference/cli.md`).
 
 ### Issue: Split Brain
 

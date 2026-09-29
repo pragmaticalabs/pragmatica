@@ -2613,10 +2613,13 @@ resume.` / `... Nothing to rollback.`). That state is written only by the unwire
 rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
 options report that message and the wave executor is unreachable end to end.
 
-**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** its error lists every cloud VM that rollout created as RUNNING AND BILLED
-(node id, provider, server id, IP), because the apply records none of them. For each one, keep it if it has joined
-(`aether nodes`), or remove it with the printed steps: `aether cluster drain <node-id> --wait --yes`, then the
-provider's delete (for Hetzner, `hcloud server delete <server-id>`).
+**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
+- `destroyed`: gone, nothing to do;
+- `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
+  --wait --yes`, then the provider's delete (for Hetzner, `hcloud server delete <server-id>`);
+- `kept` (created by an earlier, completed step, so it belongs to the desired configuration): keep it if it joined
+  (`aether nodes`), or remove it the same way.
 
 ### `aether cluster rotate-key`
 
