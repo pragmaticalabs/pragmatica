@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -210,10 +209,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
     private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
-    /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Also the lock
-    /// that serialises recording an install against trimming one, so a trim never drops an entry a pending install has
-    /// just recorded or skipped. Lock order: this lock → a log's write lock, never the reverse.
-    private final Map<PartitionRef, List<InstalledSlice>> pendingInstalls = new HashMap<>();
+    /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
+    /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
+    /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
+    /// sidecar fsyncs (#1638 N2). Lock order: a partition's list → its log's write lock, never the reverse. One list per
+    /// partition that ever caught up here, kept for the manager's lifetime.
+    private final Map<PartitionRef, List<InstalledSlice>> pendingInstalls = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -2764,13 +2765,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// same key, same start -- is skipped, so re-installing a page (a retry after a failed apply, an overlapping pull)
     /// is idempotent. The first refusal stops the install and drops what it had recorded, as a failed apply would.
     ///
-    /// #1638 F1: recording and registering the install happen under [#pendingInstalls], as does every trim, so a trim
-    /// always sees every install that has recorded or skipped an entry it might drop.
+    /// #1638 F1: recording and registering the install happen under the partition's [#pendingInstalls] list, as does
+    /// every trim, so a trim always sees every install that has recorded or skipped an entry it might drop.
     private Result<InstalledSlice> recordClaimed(AppendLog wal,
                                                  String streamName,
                                                  int partition,
                                                  List<AppendLog.EpochStart> claimed) {
-        synchronized (pendingInstalls) {
+        var pending = pending(new PartitionRef(streamName, partition));
+
+        synchronized (pending) {
             var held = wal.epochHistory();
             var recorded = new ArrayList<AppendLog.EpochStart>();
             var outcome = Result.unitResult();
@@ -2786,7 +2789,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
             var installed = InstalledSlice.installedSlice(streamName, partition, recorded, claimed);
 
-            pending(installed.ref()).add(installed);
+            pending.add(installed);
 
             return outcome.fold(cause -> trimProvenance(installed).flatMap(_ -> cause.result()),
                                 _ -> Result.success(installed));
@@ -2796,8 +2799,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Settles a page that applied (#1638 F1): its install is no longer pending, so its entries no longer shield
     /// themselves from another install's trim -- a record now reaches each one it relied on.
     public Unit releaseProvenance(InstalledSlice installed) {
-        synchronized (pendingInstalls) {
-            unregister(installed);
+        var pending = pending(installed.ref());
+
+        synchronized (pending) {
+            pending.remove(installed);
 
             return unit();
         }
@@ -2808,12 +2813,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// did not record: another catch-up's entries above the head are that catch-up's to settle. A partition that keeps
     /// no log has nothing to trim.
     public Result<Unit> trimProvenance(InstalledSlice installed) {
-        synchronized (pendingInstalls) {
-            unregister(installed);
-            var shielded = pending(installed.ref()).stream()
-                                  .flatMap(other -> other.claimed()
-                                                         .stream())
-                                  .collect(Collectors.toSet());
+        var pending = pending(installed.ref());
+
+        synchronized (pending) {
+            pending.remove(installed);
+            var shielded = pending.stream().flatMap(other -> other.claimed()
+                                                                  .stream()).collect(Collectors.toSet());
             var droppable = installed.recorded().stream().filter(entry -> !shielded.contains(entry)).toList();
 
             return walFor(installed.streamName(),
@@ -2824,14 +2829,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    /// Runs under [#pendingInstalls].
+    /// The partition's pending installs, and its lock; read and changed only while holding it.
     private List<InstalledSlice> pending(PartitionRef ref) {
         return pendingInstalls.computeIfAbsent(ref, _ -> new ArrayList<>());
-    }
-
-    /// Runs under [#pendingInstalls].
-    private void unregister(InstalledSlice installed) {
-        pending(installed.ref()).remove(installed);
     }
 
     /// One catch-up's install of a source slice (#1638 F1): the entries it `recorded`, and every entry of its range it

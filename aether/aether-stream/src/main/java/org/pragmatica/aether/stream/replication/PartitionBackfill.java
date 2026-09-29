@@ -23,6 +23,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.aether.stream.replication.BackfillError.General.FLIGHT_TIMED_OUT;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.INCOMPLETE_BACKFILL;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.MALFORMED_RESPONSE;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NOT_HIGHEST_WATERMARK;
@@ -158,6 +159,11 @@ public final class PartitionBackfill {
     private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs = new ConcurrentHashMap<>();
     /// #1638 F1: the backfill in flight per partition ([#backfill]'s single-flight).
     private final ConcurrentHashMap<PartitionKey, Promise<Long>> inFlight = new ConcurrentHashMap<>();
+    /// #1638 N1: how long one flight may hold its partition's slot. A backfill that never settles would otherwise
+    /// make every later trigger join it forever. Past the bound the flight fails ([BackfillError.General#FLIGHT_TIMED_OUT],
+    /// never a success) and the slot is released; the stuck run is not cancelled, and if it ever settles its install
+    /// is still settled correctly by the provenance seam. [Option#none] (test factories only) leaves flights unbounded.
+    private final Option<TimeSpan> flightBound;
 
     private PartitionBackfill(ReplicaRegistry registry,
                               AlignedRecovery partitionRecovery,
@@ -171,7 +177,8 @@ public final class PartitionBackfill {
                               Supplier<List<NodeId>> membersSupplier,
                               CommittedStreamOwnerSource committedOwnerSource,
                               ReplicationReceiveHandler.ReplicaDurability durability,
-                              QuarantineView quarantine) {
+                              QuarantineView quarantine,
+                              Option<TimeSpan> flightBound) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
@@ -185,6 +192,7 @@ public final class PartitionBackfill {
         this.committedOwnerSource = committedOwnerSource;
         this.durability = durability;
         this.quarantine = quarantine;
+        this.flightBound = flightBound;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -206,7 +214,30 @@ public final class PartitionBackfill {
                                      List::of,
                                      CommittedStreamOwnerSource.none(),
                                      ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
-                                     QuarantineView.NONE);
+                                     QuarantineView.NONE,
+                                     Option.none());
+    }
+
+    /// The backward-compatible factory with a single-flight `flightBound` (#1638 N1), for tests of the bound.
+    static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                               AlignedRecovery partitionRecovery,
+                                               CatchupTransport transport,
+                                               NodeId self,
+                                               TimeSpan flightBound) {
+        return new PartitionBackfill(registry,
+                                     partitionRecovery,
+                                     transport,
+                                     ReplicationTransport.NOOP,
+                                     (_, _, _) -> NO_SOURCE_REPLICA.promise(),
+                                     (_, _) -> - 1L,
+                                     self,
+                                     TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
+                                     System::currentTimeMillis,
+                                     List::of,
+                                     CommittedStreamOwnerSource.none(),
+                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                     QuarantineView.NONE,
+                                     Option.some(flightBound));
     }
 
     /// Cold-start-aware factory: after `sourceWaitBound` elapses with no caught-up source, the
@@ -241,9 +272,8 @@ public final class PartitionBackfill {
                                  QuarantineView.NONE);
     }
 
-    /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
-    /// barrier a completed backfill run commits through before promoting self (see [#durability]), and the
-    /// `quarantine` record that refuses every self-promotion of a partition holding a divergent entry (#1505 F2).
+    /// The production factory below without a flight bound (#1638 N1): single-flight flights never time out. For
+    /// tests that drive the durability barrier and quarantine; production binds the bounded factory.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                       AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
@@ -256,6 +286,39 @@ public final class PartitionBackfill {
                                                       CommittedStreamOwnerSource committedOwnerSource,
                                                       ReplicationReceiveHandler.ReplicaDurability durability,
                                                       QuarantineView quarantine) {
+        return partitionBackfill(registry,
+                                 partitionRecovery,
+                                 transport,
+                                 replicationTransport,
+                                 probe,
+                                 selfWatermark,
+                                 self,
+                                 sourceWaitBound,
+                                 membersSupplier,
+                                 committedOwnerSource,
+                                 durability,
+                                 quarantine,
+                                 Option.none());
+    }
+
+    /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
+    /// barrier a completed backfill run commits through before promoting self (see [#durability]), the
+    /// `quarantine` record that refuses every self-promotion of a partition holding a divergent entry (#1505 F2),
+    /// and the `flightBound` past which a backfill that has not settled releases its partition's single-flight slot,
+    /// failed (#1638 N1, see [#flightBound]).
+    public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                                      AlignedRecovery partitionRecovery,
+                                                      CatchupTransport transport,
+                                                      ReplicationTransport replicationTransport,
+                                                      ReplicaWatermarkProbe probe,
+                                                      SelfWatermark selfWatermark,
+                                                      NodeId self,
+                                                      TimeSpan sourceWaitBound,
+                                                      Supplier<List<NodeId>> membersSupplier,
+                                                      CommittedStreamOwnerSource committedOwnerSource,
+                                                      ReplicationReceiveHandler.ReplicaDurability durability,
+                                                      QuarantineView quarantine,
+                                                      Option<TimeSpan> flightBound) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -268,7 +331,8 @@ public final class PartitionBackfill {
                                      membersSupplier,
                                      committedOwnerSource,
                                      durability,
-                                     quarantine);
+                                     quarantine,
+                                     flightBound);
     }
 
     /// Test factory: injects a deterministic clock so the bounded wait can be exercised without sleeping.
@@ -342,7 +406,8 @@ public final class PartitionBackfill {
                                      membersSupplier,
                                      committedOwnerSource,
                                      ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
-                                     QuarantineView.NONE);
+                                     QuarantineView.NONE,
+                                     Option.none());
     }
 
     /// Backfill `(streamName, partition)` onto self. Resolves with the number of events applied on
@@ -371,7 +436,8 @@ public final class PartitionBackfill {
     /// nothing itself. Two concurrent catch-ups of one partition would interleave their installs and applies; the
     /// provenance seam settles each install correctly regardless ([AlignedRecovery#applyAttributed]), and this keeps
     /// the pulls themselves from racing. The in-flight entry is removed before its result is delivered, so a caller
-    /// reacting to that result starts a fresh run.
+    /// reacting to that result starts a fresh run. A flight that has not settled within [#flightBound] fails and
+    /// releases the slot (#1638 N1), so one backfill that never settles cannot wedge the partition's catch-up.
     public Promise<Long> backfill(String streamName, int partition) {
         var key = partitionKey(streamName, partition);
         var flight = Promise.<Long> promise();
@@ -381,10 +447,15 @@ public final class PartitionBackfill {
 
     private Promise<Long> fly(PartitionKey key, Promise<Long> flight, String streamName, int partition) {
         runBackfill(streamName, partition).onResult(result -> land(key, flight, result));
+        flightBound.onPresent(bound -> Promise.<Long> promise(bound, FLIGHT_TIMED_OUT::result).onResult(result -> land(key,
+                                                                                                                       flight,
+                                                                                                                       result)));
 
         return flight;
     }
 
+    /// The first of the run's result and the bound's failure resolves the flight; the later one finds the slot already
+    /// released and the flight already resolved, and changes neither.
     @Contract
     private void land(PartitionKey key, Promise<Long> flight, Result<Long> result) {
         inFlight.remove(key, flight);

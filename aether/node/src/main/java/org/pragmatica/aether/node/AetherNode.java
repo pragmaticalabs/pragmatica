@@ -5016,7 +5016,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                        placementMembers),
                                                                           streamCommittedOwnerSource,
                                                                           streamPartitionManager::syncReplicated,
-                                                                          streamPartitionManager.quarantineView());
+                                                                          streamPartitionManager.quarantineView(),
+                                                                          Option.some(streamingConfig.backfillFlightBound()));
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry

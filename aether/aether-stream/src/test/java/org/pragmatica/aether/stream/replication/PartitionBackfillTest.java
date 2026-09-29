@@ -149,6 +149,33 @@ class PartitionBackfillTest {
 
             assertThat(await(retry)).isEqualTo(5L);
         }
+
+        /// #1638 N1: a backfill whose pull never settles holds the slot only until the flight bound. The flight then
+        /// FAILS (never a success) and a later call pulls again instead of joining the stuck run forever. Red under
+        /// "no bound".
+        @Test
+        void neverSettlingBackfill_releasesItsSlot_failed_afterTheBound() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            CatchupTransport neverSettles = (_, _) -> {
+                pulls.incrementAndGet();
+
+                return Promise.promise();
+            };
+            var backfill = partitionBackfill(registry, recovery, neverSettles, SELF, TimeSpan.timeSpan(200).millis());
+
+            var stuck = backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+
+            assertThat(stuck.isFailure()).as("the bound fails the flight").isTrue();
+            stuck.onFailure(cause -> assertThat(cause).isEqualTo(BackfillError.General.FLIGHT_TIMED_OUT));
+            assertThat(descriptorFor(SELF).state()).as("never promoted").isEqualTo(ReplicationState.SYNCING);
+
+            backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("a call after the bound pulls again").isEqualTo(2);
+        }
     }
 
     @Nested

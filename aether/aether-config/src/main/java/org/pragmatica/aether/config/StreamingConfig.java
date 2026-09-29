@@ -68,6 +68,14 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// staggered survivor several probe cycles to converge before symmetry is broken.
     public static final int BACKFILL_SOURCE_WAIT_PROBE_CYCLES = 10;
 
+    /// Multiplier applied to {@link #readForwardTimeout()} to derive how long one partition backfill may hold its
+    /// single-flight slot (#1638 N1) before it is released, failed. Every network leg of a backfill is bounded by
+    /// {@link #readForwardTimeout()} -- each catch-up page ({@code ForwardCatchupTransport}) and each watermark probe
+    /// -- so a flight lasting this many read timeouts has either wedged or is paging a very large range; either way
+    /// the next trigger re-pulls from the moved head. THE VALUE IS A GUESS, not a measured catch-up duration: it
+    /// allows three times the cold-start source wait.
+    public static final int BACKFILL_FLIGHT_BOUND_READ_TIMEOUTS = 3 * BACKFILL_SOURCE_WAIT_PROBE_CYCLES;
+
     public static StreamingConfig streamingConfig() {
         return new StreamingConfig(timeSpan(5).seconds(),
                                    timeSpan(2).seconds(),
@@ -160,5 +168,11 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// from {@link #readForwardTimeout()} so it scales with the configured transport latency budget.
     public TimeSpan backfillSourceWaitBound() {
         return readForwardTimeout.plus(readForwardTimeout.nanos() * (BACKFILL_SOURCE_WAIT_PROBE_CYCLES - 1L));
+    }
+
+    /// How long one partition backfill may hold its single-flight slot (#1638 N1): {@link #readForwardTimeout()}
+    /// times {@link #BACKFILL_FLIGHT_BOUND_READ_TIMEOUTS}.
+    public TimeSpan backfillFlightBound() {
+        return readForwardTimeout.plus(readForwardTimeout.nanos() * (BACKFILL_FLIGHT_BOUND_READ_TIMEOUTS - 1L));
     }
 }

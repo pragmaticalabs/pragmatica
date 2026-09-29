@@ -13,7 +13,8 @@ public sealed interface BackfillError extends Cause {
         MALFORMED_RESPONSE("Malformed catch-up response: payload/timestamp count mismatch"),
         INCOMPLETE_BACKFILL("Catch-up applied fewer events than the source watermark — gap remains"),
         UNREACHABLE_REPLICA_BLOCKS_PROMOTION("Cold-start self-promotion blocked: a co-replica is unreachable and may hold newer state"),
-        NOT_HIGHEST_WATERMARK("Cold-start self-promotion declined: another reachable replica holds a higher watermark or wins the tie-break");
+        NOT_HIGHEST_WATERMARK("Cold-start self-promotion declined: another reachable replica holds a higher watermark or wins the tie-break"),
+        FLIGHT_TIMED_OUT("Backfill did not settle within its flight bound; the partition's single-flight slot is released and the run counts as failed");
         private final String message;
         General(String message) {
             this.message = message;
