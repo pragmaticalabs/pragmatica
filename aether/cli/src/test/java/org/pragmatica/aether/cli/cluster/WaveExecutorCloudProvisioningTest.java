@@ -208,6 +208,42 @@ class WaveExecutorCloudProvisioningTest {
                            .contains("apply failed part-way: capacity exhausted (test cause)");
     }
 
+    private static final String SSH_SOURCE = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [source.dc-1]
+            type = "ssh"
+
+            [source.dc-1.core]
+            hosts = ["10.1.0.1", "10.1.0.2", "10.1.0.3"]
+            """;
+
+    /// An SSH source's "nodes" are the operator's own pre-existing hosts. A later failure must not list them as billed
+    /// VMs or tell the operator to delete them: only cloud-provider-created VMs are recorded.
+    @Test
+    void createdNodes_sshSourceFailure_listsNoBilledVmAndNoDeleteCommand() {
+        var desired = parse(SSH_SOURCE);
+        var created = new WaveExecutor.CreatedNodes();
+
+        created.record(List.of(org.pragmatica.aether.environment.ProvisionedNode.provisionedNode("dc-1-core-0",
+                                                                                                  "ssh",
+                                                                                                  "10.1.0.1")),
+                       desired.sources().get("dc-1"));
+
+        var message = WaveNodeProvisioning.PartiallyProvisioned.partiallyProvisioned(created.snapshot(),
+                                                                                      org.pragmatica.lang.utils.Causes.cause("ssh step failed (test cause)"))
+                                                               .message();
+
+        assertThat(created.snapshot()).as("an SSH host is not a provider-created VM").isEmpty();
+        assertThat(message).doesNotContain("BILLED")
+                           .doesNotContain("delete")
+                           .contains("ssh step failed (test cause)");
+    }
+
     private static String nodeIdOf(CapturingProvider provider, int index) {
         return provider.specs.get(index).context().nodeId().unwrap();
     }

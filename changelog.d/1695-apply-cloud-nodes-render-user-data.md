@@ -1,6 +1,10 @@
-### Fixed (2026-09-29 — #1695: `cluster apply` provisioned cloud nodes with no rendered identity, so they could not join)
-- **Every cloud node minted by `aether cluster apply` booted unable to join.** This covers scale-up, add-role,
-  rolling reprovision, replace-before-retire, and `--resume`/`--rollback`. `WaveExecutor` handed the provider a
+### Fixed (2026-09-29 — #1695: the `cluster apply` wave rollout provisioned cloud nodes with no rendered identity, so they could not join)
+- **Scope:** the client-side wave rollout (`WaveExecutor`), which is entered only through
+  `aether cluster apply --resume`/`--rollback`. **That rollout is dormant in rc4 (#686):** plain `apply` performs
+  scale-only writes and never reaches it, and `--resume`/`--rollback` abort without an apply-state file. These fixes
+  harden that dormant path.
+- **Every cloud node the wave rollout minted booted unable to join.** This covered scale-up, add-role, rolling
+  reprovision and replace-before-retire. `WaveExecutor` handed the provider a
   spec with NO user-data: no `AETHER_CLUSTER_NAME`, secret, role, source, zone or peers, and no runtime install. So
   the VM booted, billed, and never joined.
   CLOUD nodes are now provisioned through the composition the leader's auto-heal uses
@@ -13,7 +17,9 @@
 - **A wave rollout that fails part-way names every cloud VM it created, as RUNNING AND BILLED, with removal steps.**
   This covers VMs from an earlier completed step of the same rollout as well as the failing step's own, because the
   rollout records none of them: a retry mints new ids and `--rollback` does not see them. They are reported, not
-  destroyed, since each carries joinable user-data and may already be a member.
+  destroyed, since each carries joinable user-data and may already be a member. Only VMs a cloud provider created
+  are listed. SSH hosts (the operator's own), Forge placeholders and local Docker containers are not reported as billed
+  VMs.
 - **A zoneless source no longer asks for a location literally named `default`.** The zone is passed as an optional
   placement and is omitted when the source names none.
 - [mechanism: `WaveExecutor.provisionCloudNodes` builds each spec through `WaveNodeProvisioning.cloudProvisionSpec`.

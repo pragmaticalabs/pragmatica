@@ -1,5 +1,6 @@
-### Fixed (2026-09-29 — #1027: node ids on the `cluster apply` cloud path)
-- **`cluster apply` now mints each cloud node's id itself, in the auto-heal scheme (`aether-<cluster>-node-<ulid>`),
+### Fixed (2026-09-29 — #1027: node ids on the `cluster apply` wave-rollout cloud path)
+- **Scope:** the wave rollout behind `cluster apply --resume`/`--rollback`, dormant in rc4 (#686).
+- **The wave rollout now mints each cloud node's id itself, in the auto-heal scheme (`aether-<cluster>-node-<ulid>`),
   and puts the same id into the provisioning context and the node's user-data.** Before, the provider minted an id
   the CLI never saw, so no user-data could carry it (#1695).
   The alternative the ticket proposed, threading the per-call `<source>-<role>-<i>` index, restarts at 0 on every

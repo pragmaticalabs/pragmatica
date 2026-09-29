@@ -187,7 +187,9 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
    ping -c 10 node2
    ```
 
-### Issue: `cluster apply` Failed Part-Way
+### Issue: `cluster apply --resume`/`--rollback` Failed Part-Way
+
+The wave rollout behind `--resume`/`--rollback` is dormant in rc4 (#686); plain `cluster apply` performs scale-only writes and never reaches this.
 
 The error lists each cloud VM the apply created as RUNNING AND BILLED, with its removal steps; keep the ones that joined (`aether nodes`) and remove the rest as printed (see `aether cluster apply` in `reference/cli.md`).
 
