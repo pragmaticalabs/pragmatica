@@ -26,12 +26,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.io.FileOps.createDirectories;
-import static org.pragmatica.lang.io.FileOps.createTempFile;
-import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.exists;
-import static org.pragmatica.lang.io.FileOps.moveReplace;
-import static org.pragmatica.lang.io.FileOps.writeBytes;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
 
@@ -61,7 +56,9 @@ public interface RemoteRepository extends Repository {
                                                      Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
 
-        if (exists(cachedPath)) {
+        // #1599: a cached jar is loaded only if it still matches its checksum sidecar; otherwise it is
+        // evicted and fetched again rather than failing the boot with a classloading error.
+        if (exists(cachedPath) && ArtifactCache.usable(cachedPath)) {
             log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
 
             return toLocation(artifact, cachedPath);
@@ -219,17 +216,12 @@ public interface RemoteRepository extends Repository {
         return Promise.success(jarBytes);
     }
 
+    /// #1599: published durably and atomically by [ArtifactCache#store]; a failed write leaves nothing at
+    /// `targetPath`.
     private static Promise<Path> cacheAndReturn(Path targetPath, byte[] jarBytes, Artifact artifact) {
-        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(), cause),
-                            () -> cacheAndReturnPath(targetPath, jarBytes, artifact));
-    }
-
-    private static Path cacheAndReturnPath(Path targetPath, byte[] jarBytes, Artifact artifact) {
-        var result = cacheArtifact(targetPath, jarBytes);
-
-        log.info("Cached {} to {}", artifact.asString(), targetPath);
-
-        return result;
+        return ArtifactCache.store(targetPath, jarBytes)
+                            .onSuccessRun(() -> log.info("Cached {} to {}", artifact.asString(), targetPath))
+                            .async();
     }
 
     private static HttpRequest buildRequest(String url,
@@ -252,14 +244,6 @@ public interface RemoteRepository extends Repository {
         }
 
         return sb.toString();
-    }
-
-    private static Path cacheArtifact(Path targetPath, byte[] content) {
-        return createDirectories(targetPath.getParent()).flatMap(_ -> createTempFile(".download-", ".tmp"))
-                                .flatMap(tempFile -> writeBytes(tempFile, content).flatMap(_ -> moveReplace(tempFile,
-                                                                                                            targetPath))
-                                                               .onFailure(_ -> deleteIfExists(tempFile)))
-                                .unwrap();
     }
 
     private static Path localPath(Artifact artifact, Path localRepo) {
