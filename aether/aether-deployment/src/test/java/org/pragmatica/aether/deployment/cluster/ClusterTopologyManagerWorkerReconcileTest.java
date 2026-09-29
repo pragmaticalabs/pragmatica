@@ -523,6 +523,11 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                 labelled(INFO_A, peerALabels),
                                                 labelled(INFO_B, peerBLabels)));
         observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        // The observer holds only SELF until SWIM discovers the peers; configured peers are not in its topology.
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF,
+                                                                          List.of(labelled(INFO_A, peerALabels),
+                                                                                  labelled(INFO_B, peerBLabels))));
+        assertThat(observer.topology()).as("CONTROL: the balancer sees all three nodes").hasSize(3);
         ctm = buildCtm(MembershipLiveness.UNWIRED);
         seedConfig(ZONELESS_SECOND_SOURCE_TOML, entry("eu-1", "core", 3), entry("us-1", "worker", 1));
         ctm.activate();
