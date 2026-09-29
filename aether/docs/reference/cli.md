@@ -1584,12 +1584,12 @@ aether streams list
 
 ### `aether streams status <name-or-address>`
 
-Show detailed stream info including per-partition details. Bare name defaults to
-`system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream. Wraps
-`GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
+Show detailed stream info including per-partition details. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
 
 ```bash
-aether streams status my-events                  # -> system:my-events:1.0.0
+aether streams status system:my-events:1.0.0
 aether streams status orders:order-events:1.0.0
 ```
 
@@ -1624,9 +1624,9 @@ See [Management API — Declarative Stream Consumers](management-api.md#declarat
 
 ### `aether streams publish <name-or-address> <message> [--partition N]`
 
-Publish a text message to a stream. The message is base64-encoded automatically. Bare name
-defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream.
-Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
+Publish a text message to a stream. The message is base64-encoded automatically. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
 
 `--partition N` targets a specific partition; omitted, it defaults to **partition 0** (unchanged
 behavior). This command does no key-based routing — Management-API publish writes untyped bytes
@@ -1635,22 +1635,22 @@ is a direct, deliberate target choice, not a routing key. Naming a partition out
 declared range fails with `400 Bad Request` naming the valid range.
 
 ```bash
-aether streams publish my-events "Hello, world!"
+aether streams publish system:my-events:1.0.0 "Hello, world!"
 aether streams publish orders:order-events:1.0.0 "Hello, world!"
-aether streams publish my-events "Hello, world!" --partition 2
+aether streams publish orders:order-events:1.0.0 "Hello, world!" --partition 2
 ```
 
 ### `aether streams read <name-or-address> <partition>`
 
-Read events from a specific partition of a stream. Bare name defaults to `system:<name>:1.0.0`;
-a `namespace:stream:version` address targets any stream. Optional `--since <offset>` selects the
+Read events from a specific partition of a stream. Takes the full `namespace:stream:version`
+address; a bare name is refused (spell a system stream `system:<name>:1.0.0`). Optional `--since <offset>` selects the
 starting offset (maps to `?from=`), and `--limit <N>` caps the number of events returned (maps to
 `?max=`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}`.
 
 ```bash
-aether streams read my-events 0                  # -> system:my-events:1.0.0
+aether streams read system:my-events:1.0.0 0
 aether streams read orders:order-events:1.0.0 0
-aether streams read my-events 0 --since 100 --limit 50
+aether streams read orders:order-events:1.0.0 0 --since 100 --limit 50
 ```
 
 ### `aether streams create <name> [--partitions N]`
@@ -1660,12 +1660,12 @@ catalog entry. Use [`aether stream create`](#aether-stream-create-namespacestrea
 
 ### `aether streams delete <name-or-address> [--force]`
 
-Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Bare
-name defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any
-stream. Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
+Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Takes the
+full `namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
 
 ```bash
-aether streams delete my-events
+aether streams delete system:my-events:1.0.0
 aether streams delete orders:order-events:1.0.0 --force
 ```
 
