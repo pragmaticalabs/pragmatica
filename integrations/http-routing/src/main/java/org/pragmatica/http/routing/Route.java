@@ -61,7 +61,7 @@ import static org.pragmatica.http.HttpMethod.*;
 ///
 /// @param <T> the response type
 @SuppressWarnings("unused")
-public interface Route<T> extends RouteSource {
+public interface Route<T> extends RouteSource, RouteShape {
     HttpMethod method();
     String path();
     Handler<T> handler();

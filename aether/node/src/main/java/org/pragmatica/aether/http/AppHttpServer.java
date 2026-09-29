@@ -1286,8 +1286,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                   HttpNodeRouteKey routeKey,
                                   String requestId) {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
-        httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
-                                                              routeKey.pathPrefix()))
+        httpRoutePublisher.flatMap(pub -> pub.findServingRouter(routeKey.httpMethod(),
+                                                                normalizePath(request.path())))
                           .onEmpty(() -> handleMissingLocalRouter(response,
                                                                   request.path(),
                                                                   routeKey,
@@ -1657,8 +1657,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Option<SliceRouter> findLocalRouterForPath(HttpRoutePublisher pub, String method, String normalizedPath) {
-        return resolveLocalRoute(pub, method, normalizedPath).flatMap(key -> pub.findLocalRouter(key.httpMethod(),
-                                                                                                 key.pathPrefix()));
+        return pub.findServingRouter(method, normalizedPath);
     }
 
     private void sendForwardSuccess(ClusterNetwork network,

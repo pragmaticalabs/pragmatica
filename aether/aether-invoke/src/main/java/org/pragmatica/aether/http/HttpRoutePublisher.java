@@ -47,6 +47,7 @@ import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
+import org.pragmatica.http.routing.RouteShapeSelector;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
@@ -80,6 +81,13 @@ public interface HttpRoutePublisher {
     Set<HttpNodeRouteKey> allLocalRoutes();
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
+
+    /// #1678: the router that serves `(httpMethod, path)`, resolved together with [#findLocalRoute]'s route so that
+    /// authorization and dispatch name the same (artifact, route). The default composes the two lookups, as a
+    /// publisher holding one route per prefix may.
+    default Option<SliceRouter> findServingRouter(String httpMethod, String path) {
+        return findLocalRoute(httpMethod, path).flatMap(route -> findLocalRouter(route.httpMethod(), route.pathPrefix()));
+    }
 
     /// #1659: the policy this node's committed security overrides assign to a route served elsewhere; empty when
     /// no committed override matches it. The default holds no overrides, as a publisher without an override set
@@ -756,57 +764,101 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// `HttpRouteDefinition` normalizes every prefix to a trailing slash in its constructor.
     @Override
     public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
-        var normalizedPath = normalizePath(path);
         var overrides = activeOverrides.get();
 
-        return selectRoute(route -> route.httpMethod()
-                                         .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())).map(entry -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(servedDefinition(entry,
-                                                                                                                                                                                                                           httpMethod,
-                                                                                                                                                                                                                           path),
-                                                                                                                                                                                                          overrides)));
+        return resolveServed(httpMethod, path).map(served -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(served.definition(),
+                                                                                                                                 overrides)));
     }
 
-    /// #1678: sibling routes of one slice share a base path (`GET /orders/{id}` and `GET /orders/{id}/admin` are
-    /// both `/orders/`), so the prefix pick above names the slice but not the route. The policy is read from the
-    /// route the slice's own router SERVES this request with -- its arity- and spacer-aware match -- instead of
-    /// from whichever sibling was listed first. No match (the router would answer 404) or several (header-mode
-    /// versions) resolve to the STRICTEST candidate, so an ambiguity fails closed.
-    private HttpRouteDefinition servedDefinition(Map.Entry<Artifact, HttpRouteDefinition> entry,
-                                                 String httpMethod,
-                                                 String path) {
-        var definition = entry.getValue();
-        var matched = Option.option(sliceRouters.get(entry.getKey()))
-                            .map(router -> router.routesMatching(httpMethod, routerPath(path)))
-                            .or(List.of())
-                            .stream()
-                            .map(HttpRoutePublisherImpl::declaredPolicy)
+    /// #1678: the router that SERVES `(httpMethod, path)` -- from the same single resolution as [#findLocalRoute], so
+    /// the route a request is authorized against and the slice it is dispatched to are one (artifact, route) pair.
+    @Override
+    public Option<SliceRouter> findServingRouter(String httpMethod, String path) {
+        return resolveServed(httpMethod, path).flatMap(served -> Option.option(sliceRouters.get(served.artifact())));
+    }
+
+    private record ServedRoute(Artifact artifact, HttpRouteDefinition definition) {}
+
+    /// #1678: ONE resolution to the (artifact, route) that serves a request. Sibling routes share a base path
+    /// (`GET /orders/{id}` and `GET /orders/{id}/admin` are both `/orders/`), and two slices may too, so the longest
+    /// matching prefix (#884) narrows to a base and the SHAPE decides among everything published under it -- through
+    /// [RouteShapeSelector], the rule each slice's own router dispatches by, over candidates ordered by artifact
+    /// coordinate (the #884 tie-break). Picking the artifact by prefix and the route by a separate router match could
+    /// authorize one slice's route and dispatch to another's; there is nothing here left to disagree.
+    ///
+    /// Header-mode versions publish the same shape once per version; the strictest of those governs, because the
+    /// version is chosen per request by a header this lookup does not see. When no shape matches (the router would
+    /// answer 404), the base's strictest policy governs: an ambiguity fails closed.
+    private Option<ServedRoute> resolveServed(String httpMethod, String path) {
+        var normalizedPath = normalizePath(path);
+        var candidates = publishedRoutes.entrySet()
+                                        .stream()
+                                        .flatMap(entry -> entry.getValue()
+                                                               .stream()
+                                                               .filter(route -> route.httpMethod()
+                                                                                     .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix()))
+                                                               .map(route -> new ServedRoute(entry.getKey(),
+                                                                                             route)))
+                                        .toList();
+        var longest = candidates.stream()
+                                .mapToInt(served -> served.definition()
+                                                          .pathPrefix()
+                                                          .length())
+                                .max();
+
+        if (longest.isEmpty()) {
+            return Option.none();
+        }
+
+        var base = candidates.stream()
+                             .filter(served -> served.definition()
+                                                     .pathPrefix()
+                                                     .length() == longest.getAsInt())
+                             .sorted(Comparator.comparing(served -> served.definition()
+                                                                          .artifactCoord()))
+                             .toList();
+        var shapes = base.stream()
+                         .map(ServedRoute::definition)
+                         .toList();
+
+        return Option.some(RouteShapeSelector.select(shapes,
+                                                     routerPath(path))
+                                             .map(selected -> base.get(shapes.indexOf(selected)))
+                                             .map(served -> strictestOfItsShape(served, base))
+                                             .or(() -> strictestOfTheBase(base)));
+    }
+
+    private static ServedRoute strictestOfItsShape(ServedRoute served, List<ServedRoute> base) {
+        var sameShape = base.stream()
+                            .filter(other -> other.artifact()
+                                                  .equals(served.artifact()) && sameShape(other.definition(),
+                                                                                          served.definition()))
+                            .map(other -> other.definition()
+                                               .security())
                             .toList();
-        var candidates = matched.isEmpty()
-                         ? siblingPolicies(entry.getKey(), definition)
-                         : matched;
 
-        return HttpRouteDefinition.httpRouteDefinition(definition.httpMethod(),
-                                                       definition.pathPrefix(),
-                                                       definition.artifactCoord(),
-                                                       definition.sliceMethod(),
-                                                       strictest(candidates).or(definition.security()));
+        return new ServedRoute(served.artifact(),
+                               served.definition()
+                                     .withSecurity(strictest(sameShape).or(served.definition()
+                                                                                 .security())));
     }
 
-    private List<SecurityPolicy> siblingPolicies(Artifact artifact, HttpRouteDefinition definition) {
-        return Option.option(publishedRoutes.get(artifact))
-                     .or(List.of())
-                     .stream()
-                     .filter(route -> route.httpMethod()
-                                           .equalsIgnoreCase(definition.httpMethod()) && route.pathPrefix()
-                                                                                              .equals(definition.pathPrefix()))
-                     .map(HttpRouteDefinition::security)
-                     .toList();
+    private static ServedRoute strictestOfTheBase(List<ServedRoute> base) {
+        var first = base.getFirst();
+        var policies = base.stream()
+                           .map(served -> served.definition()
+                                                .security())
+                           .toList();
+
+        return new ServedRoute(first.artifact(),
+                               first.definition()
+                                    .withSecurity(strictest(policies).or(first.definition()
+                                                                              .security())));
     }
 
-    private static SecurityPolicy declaredPolicy(Route<?> route) {
-        return route.security() instanceof SecurityPolicy policy
-               ? policy
-               : SecurityPolicy.unspecified();
+    private static boolean sameShape(HttpRouteDefinition left, HttpRouteDefinition right) {
+        return left.pathArity() == right.pathArity() && left.spacers()
+                                                            .equals(right.spacers());
     }
 
     /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
