@@ -620,7 +620,7 @@ class KvBackupServiceTest {
         /// The legitimate path the incarnation id check must not break: a new leader of the SAME incarnation id, whose
         /// repository lacks the previous leader's commit, writes over the head it does not contain.
         @Test
-        void aHeadOfThisIncarnationFromThisInstance_isWrittenOver_byANewLeader() {
+        void aHeadUnderThisIncarnationId_isWrittenOver_byANewLeader() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 0));
@@ -636,7 +636,7 @@ class KvBackupServiceTest {
 
         /// A later incarnation supersedes the head whatever incarnation id wrote it — the successor rule.
         @Test
-        void aLaterIncarnation_supersedesAHeadFromAnotherInstance() {
+        void aLaterIncarnation_supersedesAHeadUnderAnotherIncarnationId() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 4, OTHER_INCARNATION_ID, 900));
@@ -655,7 +655,7 @@ class KvBackupServiceTest {
         /// `declare-genesis` is how the operator picks the cluster whose state continues: it moves to a new
         /// incarnation AND a new incarnation id, and that supersedes the forked head.
         @Test
-        void declareGenesis_resolvesAFork_withANewIncarnationAndInstance() {
+        void declareGenesis_resolvesAFork_withANewIncarnationAndIncarnationId() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, OTHER_INCARNATION_ID, 5));
@@ -685,7 +685,7 @@ class KvBackupServiceTest {
         /// repository, writes as the same incarnation id and is never FORKED against the head its predecessor
         /// wrote.
         @Test
-        void theInstance_survivesALeaderChange_toAnotherNode() {
+        void theIncarnationId_survivesALeaderChange_toAnotherNode() {
             var remote = bareRemote(temp.resolve("remote.git"));
             var first = leaderService(Option.some(remote));
 
