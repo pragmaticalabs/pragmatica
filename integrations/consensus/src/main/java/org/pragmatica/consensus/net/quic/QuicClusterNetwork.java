@@ -670,7 +670,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // before they were assigned and released nothing. Re-checked after the assignment, this start then
         // releases what it just created itself.
         if (closed.get()) {
-            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit>promise());
+            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit> promise());
         }
 
         var serverRef = server;
@@ -1130,15 +1130,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      Option.empty(),
                                                      this::onMessageReceived,
                                                      bootTokens);
-
         var serverRef = server;
 
         return serverRef.start(port)
-                     .map(unit -> captureLoopbackLoop(serverRef, unit))
-                     .onSuccess(_ -> log.info("QUIC server restarted on port {} with renewed certificate", port))
-                     .onFailure(cause -> log.error("Failed to restart QUIC server after certificate rotation: {}",
-                                                   cause.message()))
-                     .mapToUnit();
+                        .map(unit -> captureLoopbackLoop(serverRef, unit))
+                        .onSuccess(_ -> log.info("QUIC server restarted on port {} with renewed certificate", port))
+                        .onFailure(cause -> log.error("Failed to restart QUIC server after certificate rotation: {}",
+                                                      cause.message()))
+                        .mapToUnit();
     }
 
     private void onStartFailed(Cause cause) {
@@ -1349,14 +1348,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // never re-resolves). On failure we leave the peer untouched (no phase change) — the next
         // reconciler tick re-attempts under the existing backoff.
         clientRef.resolve(dialAddress.host())
-              .onSuccess(inetAddress -> dialResolved(peer,
-                                                     inetAddress,
-                                                     dialAddress.port()))
-              .onFailure(cause -> log.info("Missing-peer reconciler: dial to {} DEFERRED — address {} "
-                                          + "did not resolve ({}); next tick re-attempts under backoff",
-                                           peerId,
-                                           dialAddress.asString(),
-                                           cause.message()));
+                 .onSuccess(inetAddress -> dialResolved(peer,
+                                                        inetAddress,
+                                                        dialAddress.port()))
+                 .onFailure(cause -> log.info("Missing-peer reconciler: dial to {} DEFERRED — address {} "
+                                             + "did not resolve ({}); next tick re-attempts under backoff",
+                                              peerId,
+                                              dialAddress.asString(),
+                                              cause.message()));
     }
 
     /// Resolution-success continuation: now that a real IP is in hand, begin CONNECTING (so the
@@ -1401,7 +1400,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // it only restarts the attach-grace phase age, see PeerState#markInbound.
         clientRef.connect(peerId, address)
                  .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
-              .onFailure(cause -> onDialFailed(peer, cause, attempt));
+                 .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
     }
 
@@ -1529,12 +1528,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (cause instanceof QuicTransportError.IdentityMismatch mismatch) {
             journalDialerHelloRejected(peer, mismatch);
         }
-
         // #1489: every failed dial is a dial failure; only a TLS handshake failure is a handshake failure.
         quicMetrics.onDialFailure();
         if (cause instanceof QuicTransportError.HandshakeFailed) {
             quicMetrics.onHandshakeFailure();
         }
+
         log.warn("Failed to connect from {} to {}: {}", self, peer, cause.message());
         // Reset phase to EVICTED so a subsequent retry (via topology reconciler) can re-enter
         // CONNECTING. The dial failed from CONNECTING, so use `evictStaleConnecting`
@@ -3007,6 +3006,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Package-private test seam — the resolve-success continuation, so a test can run it after stop() (#1366).
+    @Contract
     void dialResolvedForTests(NodeInfo peer, InetAddress inetAddress, int port) {
         dialResolved(peer, inetAddress, port);
     }

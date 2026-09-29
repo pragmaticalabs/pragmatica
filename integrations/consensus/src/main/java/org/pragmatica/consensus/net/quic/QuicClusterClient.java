@@ -726,6 +726,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                 promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(peerId.id(),
                                                                             Causes.cause("the peer closed the connection before answering the Hello")));
             }
+
             super.channelInactive(ctx);
         }
 
