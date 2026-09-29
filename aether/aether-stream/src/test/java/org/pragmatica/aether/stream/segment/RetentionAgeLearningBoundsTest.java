@@ -9,18 +9,26 @@ import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
+import javax.crypto.AEADBadTagException;
+
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageTier;
 import org.pragmatica.storage.TierLevel;
@@ -97,12 +105,77 @@ class RetentionAgeLearningBoundsTest {
     }
 
     /// #1616 R3, narrowed: a TRANSIENT read failure (an I/O error, a timeout) is not remembered -- the next pass
-    /// retries and learns the age, so one bad read cannot pin a segment against age-out until a restart.
+    /// retries and learns the age, so one bad read cannot pin a segment against age-out until a restart. A
+    /// SECONDARY unit pin of `StorageError.ReadError` (an exception thrown out of a tier read); the production I/O
+    /// error from the disk tier, `FileError.ReadFailed`, is pinned on the real tier in `RetentionAgeDiskReadTest`.
     @Test
     void aTransientReadFailure_isRetriedOnTheNextPass() {
+        assertRetried(new StorageError.ReadError("injected I/O error"));
+    }
+
+    /// #1630: a timeout is transient too.
+    @Test
+    void aReadTimeout_isRetriedOnTheNextPass() {
+        assertRetried(new CoreError.Timeout("injected read timeout"));
+    }
+
+    /// #1639: a tier not yet admitted for reads (the DHT marker check still pending) is a bounded wait: retried.
+    @Test
+    void aTierNotYetAdmitted_isRetriedOnTheNextPass() {
+        assertRetried(new StorageError.TierNotAdmitted("streams", 30_000));
+    }
+
+    /// #1639 nit: an exhausted VM while reading or decoding a block reaches here as the escape `Promise` wraps
+    /// (#1311) before rethrowing; it says nothing about the block, so it is retried, never remembered.
+    @Test
+    void anExhaustedVm_isRetriedOnTheNextPass() {
+        assertRetried(new CoreError.Exception("heap exhausted decoding a block", new OutOfMemoryError("probe")));
+    }
+
+    /// #1630: the classification is inverted -- anything that is not a timeout or an I/O error is deterministic. A
+    /// block that fails its content check is read once, withheld, and counted, never re-read every pass. Red under
+    /// "the old allow-list" (only a missing block and a corrupt record remembered).
+    @Test
+    void anIntegrityFailure_isDeterministic_readOnce() {
         var tier = new CountingTier();
         var setup = restartedWith(tier, 1);
 
+        tier.corruptReads.set(true);
+        setup.enforcer().enforceNow().await();
+        setup.enforcer().enforceNow().await();
+
+        assertThat(tier.failures.get()).as("the corrupt block is read on the first pass only").isEqualTo(1);
+        assertUnknownAged(setup);
+    }
+
+    /// #1630: a block this node cannot decrypt (a missing or wrong key) is deterministic: read once, withheld,
+    /// counted. Before, it was re-read on every pass, withheld, and logged only at DEBUG. Red under "the old
+    /// allow-list".
+    @Test
+    void aDecryptionFailure_isDeterministic_readOnce() {
+        var tier = new CountingTier();
+        var setup = restartedWith(tier, 1);
+
+        tier.failAlways.set(Option.some(new EncryptionError.DecryptionFailed(new AEADBadTagException("no key"))));
+        setup.enforcer().enforceNow().await();
+        setup.enforcer().enforceNow().await();
+
+        assertThat(tier.failures.get()).as("the undecryptable block is read on the first pass only").isEqualTo(1);
+        assertUnknownAged(setup);
+    }
+
+    private static void assertUnknownAged(Setup setup) {
+        assertThat(setup.index().listSegments("orders", 0)).singleElement()
+                                                         .extracting(SegmentIndex.SegmentRef::maxTimestamp)
+                                                         .as("withheld, never aged")
+                                                         .isEqualTo(0L);
+    }
+
+    private static void assertRetried(Cause failure) {
+        var tier = new CountingTier();
+        var setup = restartedWith(tier, 1);
+
+        tier.failWith.set(Option.some(failure));
         tier.failNextReads.set(1);
         setup.enforcer().enforceNow().await();
         assertThat(setup.index().listSegments("orders", 0)).singleElement()
@@ -194,11 +267,29 @@ class RetentionAgeLearningBoundsTest {
         final AtomicInteger inFlight = new AtomicInteger();
         final AtomicInteger peak = new AtomicInteger();
         final AtomicInteger failNextReads = new AtomicInteger();
+        final AtomicInteger failures = new AtomicInteger();
+        final AtomicReference<Option<Cause>> failWith = new AtomicReference<>(Option.none());
+        final AtomicReference<Option<Cause>> failAlways = new AtomicReference<>(Option.none());
+        final AtomicBoolean corruptReads = new AtomicBoolean();
 
         @Override
         public Promise<Option<byte[]>> get(BlockId id) {
+            if (corruptReads.get()) {
+                failures.incrementAndGet();
+
+                return Promise.success(Option.some(new byte[]{1, 2, 3}));
+            }
+
+            if (failAlways.get().isPresent()) {
+                failures.incrementAndGet();
+
+                return failAlways.get().unwrap().promise();
+            }
+
             if (failNextReads.getAndDecrement() > 0) {
-                return Causes.cause("injected I/O error").promise();
+                failures.incrementAndGet();
+
+                return failWith.get().or(() -> Causes.cause("injected failure")).promise();
             }
 
             reads.incrementAndGet();

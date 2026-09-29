@@ -113,6 +113,8 @@ public final class EmberCluster {
     /// let a leader lookup answer from a node that has no consensus state. Empty in every production
     /// and existing-test path (plain [#start] holds nothing back).
     private final Map<String, AetherNode> heldBackNodes = new ConcurrentHashMap<>();
+    /// Initial node ids left out of the genesis roster: the ones [#start] holds back.
+    private volatile Set<String> genesisExcluded = Set.of();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
     /// Immutable provider identity. Initial/manual nodes use the harness prefix as cluster name,
     /// their explicit source (or default), and configured role. Provider-created nodes retain the
@@ -632,6 +634,17 @@ public final class EmberCluster {
     ///
     /// @param heldBackNodeIds ids of initial nodes whose `start()` is deferred; empty = plain [#start]
     public Promise<Unit> start(Set<String> heldBackNodeIds) {
+        return start(heldBackNodeIds, heldBackNodeIds);
+    }
+
+    /// TEST SEAM (#1554) — a cold start where some initial cores boot late: they are held back like
+    /// [#start(Set)] but stay in the genesis roster, so the started cores wait in genesis for them, as
+    /// production cores do when a configured core is slow to boot. Start them with [#startHeldBackNodes].
+    public Promise<Unit> startWithLateGenesisMembers(Set<String> lateNodeIds) {
+        return start(lateNodeIds, Set.of());
+    }
+
+    private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
         log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {})",
                  initialClusterSize,
                  basePort,
@@ -640,6 +653,7 @@ public final class EmberCluster {
                  heldBackNodeIds);
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
+        genesisExcluded = Set.copyOf(excludedFromGenesis);
         availableSlots.clear();
         for (int i = 0; i < poolSize; i++) {
             availableSlots.offer(i);
@@ -1021,9 +1035,18 @@ public final class EmberCluster {
         return Map.copyOf(configured);
     }
 
-    private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
-        var nodeId = nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap();
+    /// TEST SEAM (#1554) — add a core under an explicit NodeId, so a test can place the joiner at a chosen
+    /// position in the NodeId order (the lower NodeId of a pair is its designated dialer). Harness-scoped.
+    public Promise<NodeId> addCoreNode(String nodeIdStr) {
+        return addConfiguredNode(nodeId(nodeIdStr).unwrap(), configuredNodeLabels(Map.of()));
+    }
 
+    private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
+        return addConfiguredNode(nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap(),
+                                 labels);
+    }
+
+    private Promise<NodeId> addConfiguredNode(NodeId nodeId, Map<String, String> labels) {
         if ("core".equalsIgnoreCase(labels.getOrDefault(NodeInfo.LABEL_ROLE, "core"))) {
             localCoreAdmissions.add(nodeId.id());
         } else if ("worker".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE)) || "spot".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE))) {
@@ -1450,16 +1473,25 @@ public final class EmberCluster {
         }
     }
 
-    /// Genesis identity survives all in-process restarts of this cluster. Consensus state is
+    /// Only the initial nodes that [#start] actually starts carry `cluster.genesis_voters` (#1526):
+    /// genesis forms only when every member of its roster announces it, so a held-back node is not a
+    /// genesis member. Like a node added later, it joins the formed electorate (it announces itself, a
+    /// formed core answers) and is voted in through a Rabia §4 add command. Consensus state is
     /// in-memory (owner ruling, session 28), so no consensus storage path is injected.
     private ConfigurationProvider nodeConfiguration(NodeId nodeId) {
-        var genesis = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
-                                                .mapToObj(index -> nodeIdPrefix + "-" + index)
-                                                .collect(java.util.stream.Collectors.joining(","));
-        var builder = ConfigurationProvider.builder().withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
-                                                                                                                  Map.of("cluster.genesis_voters",
-                                                                                                                         genesis),
-                                                                                                                  Integer.MAX_VALUE));
+        var genesisIds = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
+                                                   .mapToObj(index -> nodeIdPrefix + "-" + index)
+                                                   .filter(id -> !genesisExcluded.contains(id))
+                                                   .toList();
+        var builder = ConfigurationProvider.builder();
+
+        if (genesisIds.contains(nodeId.id())) {
+            builder = builder.withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
+                                                                                          Map.of("cluster.genesis_voters",
+                                                                                                 String.join(",",
+                                                                                                             genesisIds)),
+                                                                                          Integer.MAX_VALUE));
+        }
 
         configProvider.onPresent(builder::withSource);
 
