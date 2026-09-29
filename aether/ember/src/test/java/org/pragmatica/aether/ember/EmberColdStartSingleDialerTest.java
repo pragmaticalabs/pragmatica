@@ -64,6 +64,13 @@ class EmberColdStartSingleDialerTest {
     private static final int FIRST_CANDIDATE_BASE = 42100;
     private static final int LAST_CANDIDATE_BASE = 43900;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     /// Past the genesis rounds and the first reconciler ticks, where a late second dial would land.
@@ -88,9 +95,7 @@ class EmberColdStartSingleDialerTest {
     @Test
     @Timeout(240)
     void coldStart_connectsEachPairOnce_whileGenesisIsPending() {
-        var basePort = freeBasePort();
-        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "sd");
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        cluster = EmberTestPorts.startedCluster(PORTS, basePort -> emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "sd"), START_BOUND);
         sleep(SETTLE_MS);
 
         assertThat(handshakes())
@@ -102,9 +107,7 @@ class EmberColdStartSingleDialerTest {
     @Test
     @Timeout(240)
     void freshCoreJoiner_designatedForNoPair_initiatesOnceIsolated_andLearnsTheFormedConfiguration() {
-        var basePort = freeBasePort();
-        cluster = emberCluster(JOIN_CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "jn");
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        cluster = EmberTestPorts.startedCluster(PORTS, basePort -> emberCluster(JOIN_CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "jn"), START_BOUND);
 
         // addNode resolves only once the joiner's start settles, which already includes its connection;
         // the clock starts before it.
@@ -133,9 +136,7 @@ class EmberColdStartSingleDialerTest {
     @Test
     @Timeout(300)
     void joinerBetweenSeeds_connectsToEverySeedAndIsAdmitted_withinTheBound() {
-        var basePort = freeBasePort();
-        cluster = emberCluster(JOIN_CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "pc");
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        cluster = EmberTestPorts.startedCluster(PORTS, basePort -> emberCluster(JOIN_CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "pc"), START_BOUND);
         var seeds = List.of(node("pc-1"), node("pc-2"), node("pc-3"));
 
         var started = System.currentTimeMillis();
@@ -179,7 +180,7 @@ class EmberColdStartSingleDialerTest {
     @Test
     @Timeout(300)
     void lateStartingCore_dialsOnlyThePeersItIsDesignatedFor() {
-        var basePort = freeBasePort();
+        var basePort = EmberTestPorts.freeBase(PORTS);
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "ls");
         var starting = cluster.startWithLateGenesisMembers(Set.of("ls-3"));
         var lateDials = new CopyOnWriteArrayList<NodeId>();
@@ -224,7 +225,7 @@ class EmberColdStartSingleDialerTest {
     @Test
     @Timeout(300)
     void lateStartingHighestCore_connectsToEveryCore_withinTheSupersedeBound() {
-        var basePort = freeBasePort();
+        var basePort = EmberTestPorts.freeBase(PORTS);
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "la");
         var starting = cluster.startWithLateGenesisMembers(Set.of("la-5"));
         sleep(LATE_HIGHEST_DELAY_MS);
@@ -263,52 +264,5 @@ class EmberColdStartSingleDialerTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!slotFree(base, slot)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean slotFree(int base, int slot) {
-        return udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
-               && tcpFree(base + APP_HTTP_OFFSET + slot);
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
     }
 }

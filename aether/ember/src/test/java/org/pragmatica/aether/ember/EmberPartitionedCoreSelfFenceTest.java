@@ -41,6 +41,13 @@ class EmberPartitionedCoreSelfFenceTest {
     private static final int FIRST_CANDIDATE_BASE = 38100;
     private static final int LAST_CANDIDATE_BASE = 39900;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     /// Past AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS (75 s), measured from cluster start.
@@ -139,11 +146,16 @@ class EmberPartitionedCoreSelfFenceTest {
     }
 
     private void startCluster() {
-        var basePort = freeBasePort();
-        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "psf");
         var startedAt = System.currentTimeMillis();
 
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        // #1667: a port lost between the probe and the bind moves the start to a fresh block instead of failing.
+        cluster = EmberTestPorts.startedCluster(PORTS,
+                                                basePort -> emberCluster(CLUSTER_SIZE,
+                                                                         basePort,
+                                                                         basePort + MGMT_OFFSET,
+                                                                         basePort + APP_HTTP_OFFSET,
+                                                                         "psf"),
+                                                START_BOUND);
         awaitCondition("a leader is elected", 60_000L, () -> cluster.currentLeader().isPresent());
         sleep(Math.max(0, COLD_BOOT_CLEARANCE_MS - (System.currentTimeMillis() - startedAt)));
         assertThat(cluster.nodeCount()).as("control: no node fenced before the black-hole").isEqualTo(CLUSTER_SIZE);
@@ -198,46 +210,4 @@ class EmberPartitionedCoreSelfFenceTest {
         }
     }
 
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!(udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
-                  && tcpFree(base + APP_HTTP_OFFSET + slot))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
-    }
 }

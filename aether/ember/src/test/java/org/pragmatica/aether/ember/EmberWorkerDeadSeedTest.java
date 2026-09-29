@@ -43,6 +43,13 @@ class EmberWorkerDeadSeedTest {
     private static final int FIRST_CANDIDATE_BASE = 40100;
     private static final int LAST_CANDIDATE_BASE = 41900;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long READY_BOUND_MS = 120_000L;
@@ -60,7 +67,7 @@ class EmberWorkerDeadSeedTest {
     @Timeout(420)
     @SuppressWarnings("unchecked")
     void workerSeededWithOneDeadCore_stillJoinsAndBecomesReady() throws ReflectiveOperationException {
-        var base = freeBasePort();
+        var base = EmberTestPorts.freeBase(PORTS);
         cluster = emberCluster(CORES, base, base + MGMT_OFFSET, base + APP_OFFSET, "wds");
         assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
         awaitCondition("a leader is elected", () -> cluster.currentLeader().isPresent());
@@ -115,46 +122,4 @@ class EmberWorkerDeadSeedTest {
         }
     }
 
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!(udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
-                  && tcpFree(base + APP_OFFSET + slot))) {
-                return false;
-            }
-        }
-        return udpFree(base + DEAD_OFFSET) && tcpFree(base + DEAD_OFFSET);
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
-    }
 }
