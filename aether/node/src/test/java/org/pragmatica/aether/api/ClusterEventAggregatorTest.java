@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
@@ -28,6 +29,12 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -61,7 +68,10 @@ class ClusterEventAggregatorTest {
     private static final BooleanSupplier LEADER = () -> true;
     private static final BooleanSupplier NOT_LEADER = () -> false;
 
-    private record Harness(ClusterEventAggregator aggregator, HlcClock hlc, StreamPartitionManager manager) {
+    private record Harness(ClusterEventAggregator aggregator,
+                           HlcClock hlc,
+                           StreamPartitionManager manager,
+                           AtomicReference<FrameworkStreamPublisher<ClusterEvent>> publisher) {
         static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck) {
             return create(retention, ownerCheck, () -> false);
         }
@@ -103,7 +113,7 @@ class ClusterEventAggregatorTest {
                                                                            () -> 1,
                                                                            replayingCheck,
                                                                            leaderCheck);
-            return new Harness(aggregator, hlc, manager);
+            return new Harness(aggregator, hlc, manager, pubRef);
         }
 
         static Harness create() {
@@ -525,6 +535,309 @@ class ClusterEventAggregatorTest {
         h.aggregator().onStreamMemoryExceeded(createFloorExhaustion("mixed"));
 
         assertThat(h.events()).hasSize(2);
+    }
+
+    // --- #1640 redelivery -----------------------------------------------------------------------
+
+    /// The owner gate is checked when the event is produced, never on redelivery: after a failover the producing
+    /// node is typically no longer the owner, and re-checking would drop the event on its only producer. Here the
+    /// first publish fails (publisher not yet bound), the node then stops being the owner, and the retry still
+    /// lands the event.
+    @Test
+    void emit_firstPublishFails_ownershipMovesAway_retryStillLands() throws InterruptedException {
+        var owner = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var h = Harness.create(Harness.defaultRetention(), owner::get);
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emit(selfDrainInitiated(h));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the failed publish is held").isEqualTo(1);
+        assertThat(h.aggregator().redeliveryFailuresByCause()).as("the unbound publisher is counted by its typed name")
+                                                              .containsEntry("PUBLISHER_NOT_BOUND", 1L);
+
+        owner.set(false);
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().redeliveryWaiting()).isZero();
+    }
+
+    /// An event can be in the log twice (an unknown outcome that landed, then its redelivery). Both copies carry
+    /// the same `details.eventId`, and a read returns one.
+    @Test
+    void events_sameEventLandedTwice_isReadOnce() {
+        var h = Harness.create();
+        var event = new ClusterEvent.AlertInjected(h.hlc().now(),
+                                                   ClusterEvent.Severity.INFO,
+                                                   "landed twice",
+                                                   Map.of(ClusterEventIdentity.EVENT_ID, "incarnation:1"));
+
+        h.aggregator().emitLocal(event);
+        h.aggregator().emitLocal(event);
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies are in the log").isEqualTo(1);
+    }
+
+    /// #1653: the id is stamped ONCE, when the aggregator accepts the event, before the first attempt. Here the first
+    /// attempt LANDS and still fails (the unknown-outcome case), and the retry lands a second copy: both copies carry
+    /// the same id, and a read returns one.
+    @Test
+    void emit_firstAttemptLandsButFails_retryCopyHasTheSameId_andIsReadOnce() {
+        var h = Harness.create();
+        var real = h.publisher().get();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var landsThenFails = FrameworkStreamPublishers.<ClusterEvent>testPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                                  event -> landThenFailFirst(real, event, calls))
+                                                      .unwrap();
+
+        h.publisher().set(landsThenFails);
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "once", Map.of()));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the first attempt failed and is held").isEqualTo(1);
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(calls.get()).as("control: two attempts").isEqualTo(2);
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies landed").isEqualTo(1);
+    }
+
+    /// #1653: the feed's read starts at the offset it is given, not at the start of the retained log, and reports
+    /// where the next read starts. A whole-log read would return all five events for every offset.
+    @Test
+    void eventsFrom_readsFromTheGivenOffset_andReportsTheNextOne() {
+        var h = Harness.create();
+
+        for (int i = 0; i < 5; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+
+        var all = h.aggregator().eventsFrom(0).await().unwrap();
+        var tail = h.aggregator().eventsFrom(3).await().unwrap();
+        var none = h.aggregator().eventsFrom(5).await().unwrap();
+
+        assertThat(all.events()).as("control: every event from offset 0").extracting(landed -> landed.event().summary())
+                                .containsExactly("e0", "e1", "e2", "e3", "e4");
+        assertThat(all.nextOffset()).isEqualTo(5);
+        assertThat(tail.events()).extracting(landed -> landed.event().summary()).containsExactly("e3", "e4");
+        assertThat(tail.nextOffset()).isEqualTo(5);
+        assertThat(none.events()).isEmpty();
+        assertThat(none.nextOffset()).isEqualTo(5);
+    }
+
+    /// #1653 (v1640 V6): once retention has trimmed the head of the log, a read clamped up to the tail still reports
+    /// the offset after the last event it read, not `from` plus the number of events.
+    @Test
+    void eventsFrom_belowTheRetainedTail_nextOffsetFollowsTheLastEventRead() {
+        var h = Harness.create(RetentionPolicy.retentionPolicy(5, 64L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY), OWNER);
+
+        for (int i = 0; i < 12; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+
+        var page = h.aggregator().eventsFrom(0).await().unwrap();
+
+        assertThat(page.tailOffset()).as("control: retention trimmed the head").isPositive();
+        assertThat(page.events().getLast().offset()).as("control").isEqualTo(11);
+        assertThat(page.nextOffset()).isEqualTo(12);
+    }
+
+    /// #1653 (v1640 V2): the production feed wiring reads the node's aggregator from its cursor, not from offset 0.
+    @Test
+    void feed_wiredToTheAggregator_readsFromTheCursor() {
+        var h = Harness.create();
+        var broadcasts = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var feed = EventWebSocketPublisher.eventWebSocketPublisher(new EventWebSocketPublisherTest.CapturingHandler(broadcasts),
+                                                                   h::aggregator,
+                                                                   events -> String.valueOf(events.size()));
+
+        for (int i = 0; i < 30; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+        feed.publish();
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e30", Map.of()));
+        feed.publish();
+
+        assertThat(broadcasts).as("control: 30, then the one new event").containsExactly("30", "1");
+        assertThat(h.aggregator().lastEventsFrom()).isEqualTo(30 - EventWebSocketPublisher.OVERLAP);
+    }
+
+    /// #1653: an ownership change of the cluster-events partition is counted on the page, which is what makes the feed
+    /// re-read a new owner's log.
+    @Test
+    void onStreamPartitionOwnershipPut_clusterEventsPartition_isCountedOnThePage() {
+        var h = Harness.create();
+        var before = h.aggregator().eventsFrom(0).await().unwrap().ownershipChanges();
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(h.aggregator().eventsFrom(0).await().unwrap().ownershipChanges()).isEqualTo(before + 1);
+    }
+
+    /// #1653 (v1640 N3): stamping copies `details`, which throws on a null value. That throw stays inside the
+    /// publish's isolation: the caller is not interrupted and the event is still published, without an id.
+    @Test
+    void emitLocal_detailsWithANullValue_doesNotThrow_andIsPublishedWithoutAnId() {
+        var h = Harness.create();
+        var details = new java.util.HashMap<String, String>();
+
+        details.put("reason", null);
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "null detail", details));
+
+        assertThat(h.aggregator().redeliveryCounters()).as("handed to redelivery").containsEntry("accepted", 1L);
+    }
+
+    /// #1653, the handover limit (CTO ruling on item 8): the owner gate is each node's own view of ownership, so
+    /// across a handover the old and the new owner can both raise one fact. The guarantee pinned here is
+    /// AT-LEAST-ONCE: the old owner's raise, whose publish failed during the handover, is still delivered, and so
+    /// is the new owner's. How many copies a read shows is deliberately not asserted.
+    @Test
+    void emit_ownerHandover_bothOwnersRaiseOneFact_eachRaiseIsDeliveredAtLeastOnce() throws InterruptedException {
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+        var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
+                                               1,
+                                               Harness.defaultRetention(),
+                                               "earliest",
+                                               64L * 1024,
+                                               ConsistencyMode.EVENTUAL,
+                                               1);
+        var publisher = SystemStreamFactories.<ClusterEvent>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS, manager, CODEC, config)
+                                             .unwrap();
+        var consumer = SystemStreamFactories.<ClusterEvent>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS, manager, CODEC, CODEC, config)
+                                            .unwrap();
+        var oldOwnerPublisher = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(null);
+        var oldOwner = handoverSide("old-owner", oldOwnerPublisher, consumer);
+        var newOwner = handoverSide("new-owner", new AtomicReference<>(publisher), consumer);
+
+        oldOwner.aggregator().emit(deploymentStarted(oldOwner.hlc()));
+        newOwner.aggregator().emit(deploymentStarted(newOwner.hlc()));
+        assertThat(oldOwner.aggregator().redeliveryWaiting()).as("control: the old owner's publish failed and is held").isEqualTo(1);
+
+        oldOwnerPublisher.set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        oldOwner.aggregator().redeliverDue();
+
+        var raisedBy = newOwner.aggregator()
+                               .events()
+                               .await()
+                               .unwrap()
+                               .stream()
+                               .filter(event -> event instanceof ClusterEvent.DeploymentStarted)
+                               .map(event -> event.at().nodeId().id())
+                               .toList();
+
+        assertThat(raisedBy).as("the old owner's raise is delivered").contains("old-owner");
+        assertThat(raisedBy).as("the new owner's raise is delivered").contains("new-owner");
+    }
+
+    private record HandoverSide(ClusterEventAggregator aggregator, HlcClock hlc) {}
+
+    private static HandoverSide handoverSide(String node,
+                                             AtomicReference<FrameworkStreamPublisher<ClusterEvent>> publisher,
+                                             FrameworkStreamConsumer<ClusterEvent> consumer) {
+        var hlc = HlcClock.hlcClock(new NodeId(node));
+        var aggregator = ClusterEventAggregator.clusterEventAggregator(publisher::get,
+                                                                       () -> consumer,
+                                                                       OWNER,
+                                                                       new NodeId(node),
+                                                                       hlc,
+                                                                       () -> 3,
+                                                                       () -> false,
+                                                                       LEADER);
+        return new HandoverSide(aggregator, hlc);
+    }
+
+    private static ClusterEvent deploymentStarted(HlcClock hlc) {
+        return new ClusterEvent.DeploymentStarted(hlc.now(),
+                                                  ClusterEvent.Severity.INFO,
+                                                  "Deploying x to n1",
+                                                  Map.of("artifact", "x", "nodeId", "n1"));
+    }
+
+    private static void landThenFailFirst(FrameworkStreamPublisher<ClusterEvent> real,
+                                          ClusterEvent event,
+                                          java.util.concurrent.atomic.AtomicInteger calls) {
+        real.publish(event)
+            .await();
+        if (calls.incrementAndGet() == 1) {
+            throw new IllegalStateException("landed, then the outcome was lost");
+        }
+    }
+
+    /// #1653 round 2: `at` is not an identity. Two DISTINCT events that share `at` (one node, one millisecond,
+    /// for example after a restart with a clock step) are both kept, because each is stamped with its own id.
+    @Test
+    void events_twoDistinctEventsWithTheSameAt_areBothKept() {
+        var h = Harness.create();
+        var at = h.hlc().now();
+
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(at, ClusterEvent.Severity.INFO, "first", Map.of()));
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(at, ClusterEvent.Severity.INFO, "second", Map.of()));
+
+        assertThat(h.events()).extracting(ClusterEvent::summary).containsExactlyInAnyOrder("first", "second");
+        assertThat(h.events()).allMatch(event -> event.details().containsKey(ClusterEventIdentity.EVENT_ID));
+    }
+
+    /// #1653 round 2: a redelivered event lands after events produced later; a read is still a timeline.
+    @Test
+    void events_landedOutOfAtOrder_areReadInAtOrder() {
+        var h = Harness.create();
+        var earlier = h.hlc().now();
+        var later = h.hlc().now();
+
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(later, ClusterEvent.Severity.INFO, "later", Map.of()));
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(earlier, ClusterEvent.Severity.INFO, "earlier", Map.of()));
+
+        assertThat(h.events()).extracting(ClusterEvent::summary).containsExactly("earlier", "later");
+    }
+
+    /// #1653 round 2: an ownership put for cluster-events partition 0 re-sends every held event at once, without
+    /// waiting for its backoff; a put for any other stream or partition does not.
+    @Test
+    void onStreamPartitionOwnershipPut_clusterEventsPartition0_drainsAtOnce_otherPutsDoNot() {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+        h.publisher().set(publisher);
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut("orders", 0));
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 1));
+        assertThat(h.events()).as("control: other puts do not drain").isEmpty();
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(h.events()).as("drained at once, well inside the 1 s backoff").hasSize(1);
+    }
+
+    /// #1653 round 2: `redeliverDue` is what the AetherNode 1 s tick calls; once an event's backoff has passed, it
+    /// re-sends it.
+    @Test
+    void redeliverDue_afterTheBackoff_resends() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+        h.publisher().set(publisher);
+        h.aggregator().redeliverDue();
+        assertThat(h.events()).as("control: not yet due").isEmpty();
+
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).hasSize(1);
+    }
+
+    private static ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> ownershipPut(String stream, int partition) {
+        var epoch = Epoch.epoch(7, 3);
+
+        return new ValuePut<>(new KVCommand.Put<>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                                  StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                                                              epoch,
+                                                                                                              epoch.localCounter(),
+                                                                                                              HlcTimestamp.ZERO)),
+                              Option.none());
     }
 
     // --- production retention -------------------------------------------------------------------
