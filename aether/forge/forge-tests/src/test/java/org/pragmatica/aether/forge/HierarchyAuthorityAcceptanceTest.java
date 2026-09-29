@@ -35,6 +35,14 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Authenticated real transport, real cold synchronization and management routes. Fault filters
 /// only discard traffic; they do not bypass sender binding or normal message eligibility.
+///
+/// #1526 fixture change: genesis now forms only from the full roster it names, so a configured core
+/// can no longer be a held-back genesis member while the others form. The genesis roster is the two
+/// cores started first (Ember gives `cluster.genesis_voters` only to started initial nodes), and the
+/// held-back `authority-3` is a configured core brought in later: it joins the formed electorate as an
+/// observer, synchronizes, and is voted in through a Rabia §4 add. The intent is unchanged — workers can
+/// neither synchronize that core, change roles, nor issue a drain — only the electorate size before the
+/// add (2, not 3) and the "cold voter" now being a cold core on its way into the roster.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class HierarchyAuthorityAcceptanceTest {
@@ -50,7 +58,7 @@ class HierarchyAuthorityAcceptanceTest {
     @Test void workerMajorityCannotSynchronizeColdVoter_orChangeRolesOrIssueDrain() {
         // Ember retains stopped nodes' port slots for identity-preserving restart.
         cluster.withAdditionalNodeSlots(2).unwrap();
-        LifecycleAwait.settled("start two of three voters", cluster, cluster.start(Set.of("authority-3")));
+        LifecycleAwait.settled("start the two-core genesis roster", cluster, cluster.start(Set.of("authority-3")));
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
         var workers = new ArrayList<AetherNode>();
         var workerStarts = new ArrayList<org.pragmatica.lang.Promise<NodeId>>();
@@ -66,7 +74,7 @@ class HierarchyAuthorityAcceptanceTest {
             assertThat(directive(id).unwrap().role()).isEqualTo("WORKER");
         }
         assertThat(workers).hasSize(4);
-        assertThat(leader().coreNodeIds()).hasSize(3);
+        assertThat(leader().coreNodeIds()).as("the genesis roster is the two started cores").hasSize(2);
         assertPromotionRefused(workers.getFirst(), "CORE");
 
         var cold = cluster.heldBackNode("authority-3").unwrap();
@@ -92,12 +100,15 @@ class HierarchyAuthorityAcceptanceTest {
             assertThat(runtime(worker).network().sendOutcome(cold.self(), falseVote).await(REQUEST).unwrap().isSent()).isTrue();
         }
         await().during(2, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
-            assertThat(runtime(cold).isActive()).as("four workers cannot replace three-voter synchronization evidence").isFalse();
+            assertThat(runtime(cold).isActive()).as("four workers cannot replace core synchronization evidence").isFalse();
+            assertThat(runtime(cold).isObserving()).as("the cold core adopts no state from worker responses, not even as an observer").isFalse();
             assertThat(withheld.get()).isPositive();
         });
         cold.setInboundFaultFilter((_, _) -> true);
         LifecycleAwait.settled("restore real voter sync responses", cluster, BUDGET, started);
+        // The configured core synchronizes from the voters and is voted in through a §4 add.
         await().atMost(BUDGET.duration()).until(() -> runtime(cold).isActive());
+        await().atMost(BUDGET.duration()).until(() -> leader().coreNodeIds().contains(cold.self()));
         for (var workerStart : workerStarts) {
             LifecycleAwait.nodeSettled("complete worker startup after held replica returns", cluster, workerStart);
         }

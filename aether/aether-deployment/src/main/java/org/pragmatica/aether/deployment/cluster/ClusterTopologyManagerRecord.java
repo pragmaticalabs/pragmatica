@@ -269,22 +269,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return org.pragmatica.lang.Unit.unit();
     }
 
-    private TomlDocument withGenesisVoters(TomlDocument document) {
-        var sections = new java.util.HashMap<>(document.sections());
-        var cluster = new java.util.HashMap<>(sections.getOrDefault("cluster", java.util.Map.of()));
-
-        cluster.put("genesis_voters",
-                    genesisVoters.get()
-                                 .get()
-                                 .stream()
-                                 .sorted()
-                                 .map(NodeId::id)
-                                 .collect(java.util.stream.Collectors.joining(",")));
-        sections.put("cluster", java.util.Map.copyOf(cluster));
-
-        return new TomlDocument(sections, document.tableArrays());
-    }
-
     private long nowMs() {
         return clock.getAsLong();
     }
@@ -1482,7 +1466,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                      config,
                                                                                      source.name(),
                                                                                      intendedRole))
-                                            .map(this::withGenesisVoters)
                                             .map(composed -> NodeUserDataRenderer.render(config,
                                                                                          source,
                                                                                          intendedRole,

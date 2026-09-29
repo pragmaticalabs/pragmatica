@@ -7,6 +7,7 @@ package org.pragmatica.aether.http.fsm;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.http.ListenerStops;
 import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.http.server.HttpServer;
@@ -98,11 +99,13 @@ public final class AppHttpContext {
         h3.onPresent(HttpServer::stop);
     }
 
+    /// Stops both listeners and waits for both. #1612: a stop may FAIL (a timed-out close or termination), and
+    /// the first failure is reported. `flatMap` would have returned h1's failure without waiting for h3.
     public Promise<Unit> stopServersAsync(Option<HttpServer> server, Option<HttpServer> h3) {
         var h1Stop = server.map(HttpServer::stop).or(Promise.success(unit()));
         var h3Stop = h3.map(HttpServer::stop).or(Promise.success(unit()));
 
-        return h1Stop.flatMap(_ -> h3Stop);
+        return ListenerStops.bothStopped(h1Stop, h3Stop);
     }
 
     public RouteTable currentRoutes() {
