@@ -20,6 +20,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.update.DeploymentState;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
@@ -642,7 +643,7 @@ public interface RollbackManager {
                                                                                     Option.<AetherValue> some(record));
                 var rolledBackTarget = target.map(current -> current.withVersion(decision.targetVersion()))
                                              .or(() -> SliceTargetValue.sliceTargetValue(decision.targetVersion(),
-                                                                                         1));
+                                                                                         SliceSpec.MIN_INSTANCES));
                 var targetMutation = new KVCommand.Mutation<AetherKey, AetherValue>(targetKey,
                                                                                     target.map(AetherValue.class::cast),
                                                                                     Option.<AetherValue> some(rolledBackTarget));

@@ -44,3 +44,6 @@
     SliceOwnershipQuery.java:104, wired at AetherNode.java:4319]`. An **operator** drain or shutdown
     (`POST /api/v1/nodes/drain|shutdown`) checks the core disruption budget and READY state, not a slice's
     `minAvailable`, so it can still take a slice below it; see #1720 `[unverified-gap: #1720]`.
+  - An automatic rollback that finds no committed slice target writes a fresh one at 3 instances (was 1).
+    `[verified: aether/aether-control RollbackManagerAutoRollbackSafetyTest.rollbackWithNoCommittedTarget_writesAFreshTargetAtTheInstanceFloor — unit level]`
+  - Known exception: A/B tests currently write a 1-instance target for the variant; see #1721 `[unverified-gap: #1721]`.

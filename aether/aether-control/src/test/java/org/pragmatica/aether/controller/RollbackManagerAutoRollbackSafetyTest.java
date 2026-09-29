@@ -20,6 +20,7 @@ import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.controller.RollbackManagerOverridePreservationTest.AlwaysLeaderManager;
 import org.pragmatica.aether.controller.RollbackManagerOverridePreservationTest.CapturingClusterNode;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
@@ -286,6 +287,23 @@ class RollbackManagerAutoRollbackSafetyTest {
         manager().onAllInstancesFailed(failure(V2));
 
         assertThat(clusterNode.appliedCommands).isEmpty();
+    }
+
+    /// #1495 (owner ruling: the instance floor holds at runtime): a rollback that finds no committed target
+    /// writes a fresh one at the floor, never at a single instance.
+    @Test
+    void rollbackWithNoCommittedTarget_writesAFreshTargetAtTheInstanceFloor() {
+        kvStore.process(kvStore.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(BASE)))));
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+
+        manager().onAllInstancesFailed(failure(V2));
+
+        assertThat(clusterNode.appliedCommands).as("the rollback must have committed, or the floor below is vacuous")
+                                               .hasSize(1);
+        var target = (SliceTargetValue) value(1);
+
+        assertThat(target.currentVersion()).isEqualTo(V1);
+        assertThat(target.targetInstances()).isEqualTo(SliceSpec.MIN_INSTANCES);
     }
 
     /// The store-backed control for the two races above: with no interleaved write the same fixture commits.
