@@ -86,9 +86,8 @@ class LivePlacementMembersWiringTest {
         assertThat(code).contains("streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);");
         assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
         assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
-        assertThat(code).contains("(node,stream,partition,from,to)->readOwnerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient,node,stream,partition,from,to)");
-        assertThat(code).as("v1555 R3: the candidate's own window is read through its tier, as a peer's is")
-                        .contains("OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(manager,Option.some(tieredReader)),");
+        assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
+                        .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),AetherNode::raiseOwnerPromotionBlock");
     }
 
     @Test

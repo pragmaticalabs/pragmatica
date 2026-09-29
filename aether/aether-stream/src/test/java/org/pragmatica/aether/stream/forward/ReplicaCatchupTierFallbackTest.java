@@ -34,6 +34,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
@@ -316,7 +317,8 @@ class ReplicaCatchupTierFallbackTest {
         publish(3);
         awaitSealedThrough(0);
 
-        var throughTier = OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(owner, Option.some(tieredStreamReader(index, storage))), OWNER, STREAM, PARTITION, 0, 2, 100)
+        var throughTier = OwnerPeerReads.ownerRange(OWNER, owner, tieredStreamReader(index, storage), ReplicaCatchupTierFallbackTest::noPeerPages, 100)
+                                        .read(OWNER, STREAM, PARTITION, 0, 2)
                                         .await()
                                         .unwrap();
         var ringOnly = OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(owner, Option.none()), OWNER, STREAM, PARTITION, 0, 2, 100)
@@ -357,10 +359,7 @@ class ReplicaCatchupTierFallbackTest {
                                                        (_, _) -> ownerRing().headOffset(),
                                                        (_, _, _, _) -> Promise.success(-1L),
                                                        () -> true,
-                                                       (node, stream, partition, from, to) -> node.equals(OWNER)
-                                                                                              ? OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(owner, Option.some(tieredStreamReader(index, storage))),
-                                                                                                                             node, stream, partition, from, to, 100)
-                                                                                              : peer.readAppended(stream, partition, from, (int) (to - from + 1)).async(),
+                                                       OwnerPeerReads.ownerRange(OWNER, owner, tieredStreamReader(index, storage), OwnerPeerReads.localPages(peer, Option.none()), 100),
                                                        block -> {
                                                            alarms.add(block);
                                                            return Unit.unit();
@@ -373,6 +372,15 @@ class ReplicaCatchupTierFallbackTest {
         } finally {
             peer.close();
         }
+    }
+
+    /// The gate's peer read where the test reads only the candidate's own window: reaching it is a dispatch defect.
+    private static Promise<StreamForwardClient.ReadForwardResult> noPeerPages(NodeId target,
+                                                                             String streamName,
+                                                                             int partition,
+                                                                             long fromOffset,
+                                                                             int maxEvents) {
+        return Causes.cause("the candidate's own window was read from a peer").promise();
     }
 
     private static void publishTagged(StreamPartitionManager manager, String tag, int count) {

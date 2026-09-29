@@ -56,6 +56,30 @@ public sealed interface OwnerPeerReads {
                                                                                              maxEvents).map(OwnerPeerReads::asPage);
     }
 
+    /// The owner promotion gate's overlap read ([OwnerActivation.RecordRange]): the APPENDED records `from .. to`
+    /// held by any member — this node's own copy through its ring and tier ([#localPages]), a peer's over the
+    /// catch-up forward (`peerPages`), which serves the same read — each resuming at that copy's oldest available
+    /// offset ([#appendedRange]). The tier is not optional here: a ring-only candidate read compared nothing once
+    /// the candidate's ring was evicted below a lower peer's head (v1555 R3). The dispatch lives here, not at the
+    /// node's assembly, so the gate tests exercise the read production makes (v1555 F1).
+    static OwnerActivation.RecordRange ownerRange(NodeId self,
+                                                  StreamPartitionManager manager,
+                                                  TieredStreamReader tier,
+                                                  PageRead peerPages,
+                                                  int page) {
+        var local = localPages(manager, Option.some(tier));
+
+        return (node, streamName, partition, from, to) -> appendedRange(node.equals(self)
+                                                                        ? local
+                                                                        : peerPages,
+                                                                        node,
+                                                                        streamName,
+                                                                        partition,
+                                                                        from,
+                                                                        to,
+                                                                        page);
+    }
+
     private static StreamForwardClient.ReadForwardResult asPage(List<OffHeapRingBuffer.RawEvent> events) {
         return StreamForwardClient.ReadForwardResult.readForwardResult(events.stream()
                                                                              .map(RawEventDto::fromRawEvent)

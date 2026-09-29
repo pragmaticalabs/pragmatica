@@ -1564,48 +1564,6 @@ public interface AetherNode extends ManageableNode {
         return Unit.unit();
     }
 
-    /// #1555 overlap verification: the APPENDED records `from .. to` held by `node`, through the replication read
-    /// class on BOTH sides — this node's ring and tier ([CatchupRead#readAppended]), or a peer's over the
-    /// catch-up forward, which serves the same read — each resuming at that copy's oldest available offset
-    /// ([OwnerPeerReads#appendedRange]). The candidate's own window is read through its tier exactly as a peer's
-    /// is (v1555 R3): a ring-only local read compared nothing once the candidate's ring was evicted below a lower
-    /// peer's head, and a divergent candidate was accepted over that peer's acknowledged records. Zero records
-    /// compared now means retention reclaimed the window.
-    private static Promise<List<OffHeapRingBuffer.RawEvent>> readOwnerRange(NodeId self,
-                                                                            StreamPartitionManager manager,
-                                                                            TieredStreamReader tieredReader,
-                                                                            StreamForwardClient forwardClient,
-                                                                            NodeId node,
-                                                                            String streamName,
-                                                                            int partition,
-                                                                            long from,
-                                                                            long to) {
-        return node.equals(self)
-               ? OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(manager, Option.some(tieredReader)),
-                                              node,
-                                              streamName,
-                                              partition,
-                                              from,
-                                              to,
-                                              STREAM_CATCHUP_BATCH_SIZE)
-               : readPeerRange(forwardClient, node, streamName, partition, from, to);
-    }
-
-    private static Promise<List<OffHeapRingBuffer.RawEvent>> readPeerRange(StreamForwardClient forwardClient,
-                                                                           NodeId target,
-                                                                           String streamName,
-                                                                           int partition,
-                                                                           long from,
-                                                                           long to) {
-        return OwnerPeerReads.appendedRange(forwardClient::readRemoteCatchup,
-                                            target,
-                                            streamName,
-                                            partition,
-                                            from,
-                                            to,
-                                            STREAM_CATCHUP_BATCH_SIZE);
-    }
-
     /// One page of a peer's partition read, over whichever forward-read class the probe uses.
     @FunctionalInterface
     interface PeerPageRead {
@@ -5073,15 +5031,11 @@ public interface AetherNode extends ManageableNode {
                                                               streamSelfWatermark,
                                                               streamPartitionBackfill::catchUpOwnerFrom,
                                                               clusterNode::isActive,
-                                                              (node, stream, partition, from, to) -> readOwnerRange(config.self(),
-                                                                                                                    streamPartitionManager,
-                                                                                                                    streamTieredReader,
-                                                                                                                    streamForwardClient,
-                                                                                                                    node,
-                                                                                                                    stream,
-                                                                                                                    partition,
-                                                                                                                    from,
-                                                                                                                    to),
+                                                              OwnerPeerReads.ownerRange(config.self(),
+                                                                                        streamPartitionManager,
+                                                                                        streamTieredReader,
+                                                                                        streamForwardClient::readRemoteCatchup,
+                                                                                        STREAM_CATCHUP_BATCH_SIZE),
                                                               AetherNode::raiseOwnerPromotionBlock,
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
