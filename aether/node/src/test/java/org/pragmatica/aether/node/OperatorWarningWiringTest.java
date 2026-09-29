@@ -34,6 +34,25 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
     }
 
+    /// #1564 (R10): the replication warnings raised at resource activation, the deploy warnings and the refused
+    /// cluster-events registration all reach this node's sink. Un-binding any of them leaves every unit test green.
+    @Test
+    void assembly_givesTheSinkToActivationDeployAndClusterEventsRefusal() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
+        assertThat(code).contains("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink);");
+        assertThat(code).contains("cause->raiseClusterEventsRefusal(operatorWarningSink,cause)");
+    }
+
+    /// #1564 N2: the cluster-events local partition built at construction takes the committed
+    /// `[replication.cluster_events]` factors through `ClusterEventsLimits.streamConfig` (pinned by
+    /// `ClusterEventsLimitsTest`), never a separately hardcoded config.
+    @Test
+    void assembly_buildsTheClusterEventsConfigFromTheCommittedFactors() {
+        assertThat(assemblyCode()).contains("varclusterEventsStreamConfig=clusterEventsLimits.streamConfig(clusterEventsStreamName,kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,AetherValue.ClusterConfigValue.class));");
+    }
+
     @Test
     void assembly_evictsIdleThrottleKeysOncePerMinute() {
         var code = assemblyCode();

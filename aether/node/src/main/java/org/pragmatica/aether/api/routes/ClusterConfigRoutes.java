@@ -35,6 +35,7 @@ import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -867,7 +868,15 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     /// Commit the complete desired config with its expected version and current leader in one
     /// transaction; correlate the result even when consensus merges this request with another batch.
+    /// #1564 (B1): every config this route commits — apply, scale, version upgrade — is refused, typed, unless the
+    /// `system:cluster-events` factors it implies resolve ([ClusterReplication#admissible]).
     private Promise<ClusterConfigValue> storeFencedConfig(ClusterConfigValue intended) {
+        return ClusterReplication.admissible(intended)
+                                 .async()
+                                 .flatMap(this::commitFencedConfig);
+    }
+
+    private Promise<ClusterConfigValue> commitFencedConfig(ClusterConfigValue intended) {
         var node = nodeSupplier.get();
         var expected = storedClusterConfig();
 

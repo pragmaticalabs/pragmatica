@@ -436,9 +436,10 @@ CLAUDE.md invariant #1).
 ```toml
 [streams]
 ring_budget_bytes      = "128MiB"   # per-node materialized-ring budget (DEFAULT_MAX_TOTAL_BYTES)
-# NOTE (v0.2): RF is NOT a global config key. Each stream declares its own `replicas`
-# (two-knob model, #262/#410, StreamConfig field); the cap formula (§7) and budget
-# accounting (§6) use the PER-STREAM `replicas` at create-time validation.
+# NOTE (v0.2): RF is NOT a [streams] config key. Each stream declares its own
+# `replication_factor` (#1564; formerly `replicas`, two-knob model #262/#410); the cap formula (§7)
+# and budget accounting (§6) use the PER-STREAM resolved RF at create-time validation. An undeclared
+# RF takes the committed cluster `[replication] replication_factor` default (#1564, built-in 3).
 
 [streams.limits]
 # derived cap is computed at runtime; these are the ABSOLUTE upper guards (Kafka-style)
@@ -513,12 +514,14 @@ serves complete history.
 **All five resolved (v0.2, 2026-07-04)** — three by the #262/#410 two-knob + failover-convergence work
 that landed after this spec was drafted, two by default-setting (config-knobbed, tunable):
 
-1. **RF source. RESOLVED: per-stream.** The two-knob model (#262/#410) made `replicas` a first-class
-   per-stream `StreamConfig` field (default 1; durable pub-sub topics constrain it per
-   `durable-pubsub-spec.md` §3). The cap formula (§7) and budget accounting (§6) use each stream's
-   declared `replicas` at create-time validation. The global `[streams] replication_factor` key is
+1. **RF source. RESOLVED: per-stream.** The two-knob model (#262/#410) made the replication factor a first-class
+   per-stream `StreamConfig` field (then `replicas`, default 1). The cap formula (§7) and budget accounting (§6) use each stream's
+   resolved RF at create-time validation. The global `[streams] replication_factor` key is
    removed from §10 — a cluster default, if ever wanted, is a default *for the per-stream field*,
-   not a parallel source of truth.
+   not a parallel source of truth. (#1564 did exactly that: the per-stream key is now
+   `replication_factor`, shared with durable topics and entities, and its default comes from the committed
+   cluster `[replication]` section, built-in 3 — a default for the per-stream field, resolved once when
+   the stream's config is committed.)
 2. **Reshuffle pacing. RESOLVED: bounded concurrency window, default 2 partitions per node,**
    config `[streams] reshuffle_concurrency = 2`. One-at-a-time starves large reshuffles; unbounded
    floods backfill. A small window is the standard middle; tune against backfill throughput once

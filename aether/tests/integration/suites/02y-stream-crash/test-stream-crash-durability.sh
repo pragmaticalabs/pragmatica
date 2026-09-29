@@ -32,7 +32,7 @@
 # INDEPENDENTLY — a bug that loses one partition's WAL while others recover is caught
 # per-partition rather than hidden in an aggregate count.
 #
-# Durability contract under test (min-sync-replicas=2): a publish resolves only after
+# Durability contract under test (confirmation_factor=2): a publish resolves only after
 # `PartitionWal.append`'s `force()`, so an ACKED event is fsync-durable on >=2 nodes
 # BEFORE the caller is told "published". Therefore the assertion is exactly:
 #   every event whose publish returned success is present after the crash.
@@ -446,7 +446,7 @@ test_deploy_multipart_blueprint() {
         log_fail "test-stream-multipart did not reach all-instances ACTIVE — stream ${STREAM_NAME} not established"
         return 1
     fi
-    log_pass "Deployed ${STREAM_BP} (stream ${STREAM_NAME}, partitions=${PARTITIONS}, min-sync-replicas=2)"
+    log_pass "Deployed ${STREAM_BP} (stream ${STREAM_NAME}, partitions=${PARTITIONS}, confirmation_factor=2)"
 }
 
 test_publish_pre_kill_history() {

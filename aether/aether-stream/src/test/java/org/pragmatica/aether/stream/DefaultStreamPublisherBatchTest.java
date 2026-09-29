@@ -196,7 +196,7 @@ class DefaultStreamPublisherBatchTest {
 
         assertBatchMatchesPerEvent(streamPartitionManager(budget),
                                    streamPartitionManager(budget),
-                                   StreamConfig.streamConfig(STREAM, 1, retention, "earliest"),
+                                   StreamConfig.streamConfig(STREAM, 1, retention, "earliest").withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 1)),
                                    payloads);
     }
 

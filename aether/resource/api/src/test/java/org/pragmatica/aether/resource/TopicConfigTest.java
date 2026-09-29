@@ -7,6 +7,10 @@ package org.pragmatica.aether.resource;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
@@ -34,6 +38,7 @@ import static org.pragmatica.lang.Option.some;
 /// test-only shortcut — `TomlConfigService` has no production caller, so a test built on it would
 /// prove nothing about runtime behavior (#738 post-GO correction).
 class TopicConfigTest {
+    private static final ReplicationContext BUILT_IN = ReplicationContext.BUILT_IN;
 
     @Test
     void explicitlyNamespacedTopicRoundTrips() {
@@ -80,7 +85,7 @@ class TopicConfigTest {
         var config = new TopicConfig("order-events");
 
         assertThat(config.durability()).isEqualTo(TopicDurability.EPHEMERAL);
-        assertThat(config.durableSpec().unwrap().isPresent()).isFalse();
+        assertThat(config.durableSpec(BUILT_IN).unwrap().isPresent()).isFalse();
     }
 
     @Test
@@ -99,54 +104,83 @@ class TopicConfigTest {
 
     @Test
     void topicConfig_appliesDurableDefaults() {
-        var spec = TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), none(), none(), none())
-                              .flatMap(TopicConfig::durableSpec)
-                              .unwrap()
-                              .unwrap();
+        var spec = durable(none(), none());
 
         assertThat(spec.partitions()).isEqualTo(DurableTopicSpec.DEFAULT_PARTITIONS);
-        assertThat(spec.replicas()).isEqualTo(DurableTopicSpec.DEFAULT_REPLICAS);
-        assertThat(spec.minSyncReplicas()).isEqualTo(DurableTopicSpec.DEFAULT_REPLICAS);
+        assertThat(spec.replication()).isEqualTo(ReplicationFactors.BUILT_IN);
+        assertThat(spec.replicationWarnings()).isEmpty();
         assertThat(spec.retention().duration()).isEqualTo(DurableTopicSpec.DEFAULT_RETENTION.duration());
     }
 
+    /// #1564 (know 267792392): a topic declaring only its factor takes the cluster default CF capped at that factor.
     @Test
-    void topicConfig_defaultsMinSyncToDeclaredReplicas() {
-        var spec = TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(3), none(), none())
-                              .flatMap(TopicConfig::durableSpec)
-                              .unwrap()
-                              .unwrap();
+    void topicConfig_declaredFactorOnly_takesTheDefaultConfirmationCappedAtTheFactor() {
+        assertThat(durable(some(5), none()).replication()).isEqualTo(new ReplicationFactors(5, 2));
+        assertThat(durable(some(1), none()).replication()).isEqualTo(new ReplicationFactors(1, 1));
+    }
 
-        assertThat(spec.replicas()).isEqualTo(3);
-        assertThat(spec.minSyncReplicas()).isEqualTo(3);
+    /// #1564: decision 1's fixed CF == RF (know 8fb91f876) was superseded by know 267792392 — `CF < RF` is lossless
+    /// through #1555's promotion gate. This test used to assert the refusal of exactly this declaration.
+    @Test
+    void topicConfig_confirmationBelowFactor_isAccepted() {
+        assertThat(durable(some(3), some(2)).replication()).isEqualTo(new ReplicationFactors(3, 2));
+    }
+
+    /// #1564: an explicitly declared factor below 3 is allowed, with the LOUD warning (it was refused before #1564).
+    @Test
+    void topicConfig_declaredFactorBelowThree_isAcceptedWithTheLoudWarning() {
+        var spec = durable(some(2), none());
+
+        assertThat(spec.replication()).isEqualTo(new ReplicationFactors(2, 2));
+        assertThat(spec.replicationWarnings()).contains(ReplicationWarning.FACTOR_BELOW_THREE);
+    }
+
+    /// #1564 R5 pin (topics): a factor below 3 that comes from a DEFAULT is refused — only a declaration may go below 3.
+    /// Mutation "drop the explicitness check in ReplicationDeclaration#resolve" turns this red.
+    @Test
+    void durableSpec_defaultedFactorBelowThree_isRefused() {
+        var lowDefaults = ReplicationContext.replicationContext(new ReplicationFactors(2, 1), 0);
+        var config = TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), none(), none(), none()).unwrap();
+
+        config.durableSpec(lowDefaults)
+              .onSuccess(_ -> fail("a defaulted factor below 3 must be refused"))
+              .onFailure(cause -> assertThat(cause).isEqualTo(new TopicConfigError.ReplicationRefused(new ReplicationFactorsError.ImplicitFactorBelowThree(2))));
     }
 
     @Test
-    void topicConfig_rejectsSingleReplicaDurable() {
-        TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(1), none(), none())
-                   .onSuccess(_ -> fail("replicas=1 provides no failover durability"))
-                   .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.OutsideProvenDurableConfig.class));
-    }
-
-    /// #1547: 2 copies was the durable floor until the stream replication minimum became 3.
-    @Test
-    void topicConfig_rejectsTwoReplicaDurable_belowStreamMinimum() {
-        TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(2), none(), none())
-                   .onSuccess(_ -> fail("replicas=2 is below the stream replication minimum of 3"))
-                   .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.OutsideProvenDurableConfig.class))
-                   .onFailure(cause -> assertThat(cause.message()).contains("replicas >= 3"));
+    void topicConfig_confirmationAboveDeclaredFactor_isRefusedAtBind() {
+        TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(2), some(3), none())
+                   .onSuccess(_ -> fail("confirmation_factor above replication_factor must be refused"))
+                   .onFailure(cause -> assertThat(cause).isEqualTo(new TopicConfigError.ReplicationRefused(new ReplicationFactorsError.ConfirmationOutOfRange(2, 3))));
     }
 
     @Test
-    void topicConfig_defaultReplicas_isTheStreamMinimum() {
-        assertThat(DurableTopicSpec.DEFAULT_REPLICAS).isEqualTo(3);
+    void topicConfig_confirmationZero_isRefusedAtBind() {
+        TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), none(), some(0), none())
+                   .onSuccess(_ -> fail("confirmation_factor = 0 must be refused"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.ReplicationRefused.class));
     }
 
+    /// #1564 R7: the factor is checked against the cluster's desired core count when the topic is provisioned.
     @Test
-    void topicConfig_rejectsMinSyncBelowReplicas_until411() {
-        TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(3), some(2), none())
-                   .onSuccess(_ -> fail("min-sync < replicas is outside the proven config"))
-                   .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.OutsideProvenDurableConfig.class));
+    void durableSpec_factorAboveDesiredCoreCount_isRefused() {
+        var threeCores = ReplicationContext.replicationContext(ReplicationFactors.BUILT_IN, 3);
+        var config = TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(5), none(), none()).unwrap();
+
+        config.durableSpec(threeCores)
+              .onSuccess(_ -> fail("replication_factor above the desired core count must be refused"))
+              .onFailure(cause -> assertThat(cause).isEqualTo(new TopicConfigError.ReplicationRefused(new ReplicationFactorsError.ExceedsCoreCount(5, 3))));
+    }
+
+    /// #1564: the committed cluster default is overridden by the topic's declared value.
+    @Test
+    void durableSpec_declaredValues_overrideTheClusterDefault() {
+        var clusterDefaults = ReplicationContext.replicationContext(new ReplicationFactors(5, 3), 0);
+        var declared = TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(3), some(3), none()).unwrap();
+        var undeclared = TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), none(), none(), none()).unwrap();
+
+        assertThat(declared.durableSpec(clusterDefaults).unwrap().unwrap().replication()).isEqualTo(new ReplicationFactors(3, 3));
+        assertThat(undeclared.durableSpec(clusterDefaults).unwrap().unwrap().replication()).isEqualTo(new ReplicationFactors(5, 3));
     }
 
     @Test
@@ -158,9 +192,17 @@ class TopicConfigTest {
 
     @Test
     void durableSpec_failsLoudly_forConstructorBypassedInvalidConfig() {
-        var bypassed = new TopicConfig("order-events", TopicDurability.DURABLE, none(), some(1), none(), none());
+        var bypassed = new TopicConfig("order-events", TopicDurability.DURABLE, none(), some(0), none(), none());
 
-        assertThat(bypassed.durableSpec().isFailure()).isTrue();
+        assertThat(bypassed.durableSpec(BUILT_IN).isFailure()).isTrue();
+    }
+
+    private static DurableTopicSpec durable(org.pragmatica.lang.Option<Integer> factor,
+                                            org.pragmatica.lang.Option<Integer> confirmation) {
+        return TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), factor, confirmation, none())
+                          .flatMap(config -> config.durableSpec(BUILT_IN))
+                          .unwrap()
+                          .unwrap();
     }
 
     @Test
@@ -172,7 +214,7 @@ class TopicConfigTest {
 
         assertThat(config.topicName()).isEqualTo("order-events");
         assertThat(config.durability()).isEqualTo(TopicDurability.EPHEMERAL);
-        assertThat(config.durableSpec().unwrap().isPresent()).isFalse();
+        assertThat(config.durableSpec(BUILT_IN).unwrap().isPresent()).isFalse();
     }
 
     @Test
@@ -184,25 +226,39 @@ class TopicConfigTest {
                           retention = "14d"
                           """);
 
-        var spec = config.durableSpec().unwrap().unwrap();
+        var spec = config.durableSpec(BUILT_IN).unwrap().unwrap();
 
         assertThat(spec.partitions()).isEqualTo(1);
-        assertThat(spec.replicas()).isEqualTo(3);
-        assertThat(spec.minSyncReplicas()).isEqualTo(3);
+        assertThat(spec.replication()).isEqualTo(ReplicationFactors.BUILT_IN);
         assertThat(spec.retention().duration()).isEqualTo(TimeSpan.timeSpan("14d").unwrap().duration());
     }
 
     @Test
-    void tomlBinding_rejectsDurableOutsideProvenConstraint() {
+    void tomlBinding_rejectsConfirmationAboveFactor() {
         serviceFrom("""
                     [orders]
                     topic_name = "order-events"
                     durability = "durable"
-                    replicas = 3
-                    min_sync_replicas = 2
+                    replication_factor = 2
+                    confirmation_factor = 3
                     """).config("orders", TopicConfig.class)
-                        .onSuccess(_ -> fail("min-sync < replicas must be rejected at parse"))
-                        .onFailure(cause -> assertThat(cause.message()).contains("durable-pubsub-spec"));
+                        .onSuccess(_ -> fail("confirmation_factor above replication_factor must be rejected at parse"))
+                        .onFailure(cause -> assertThat(cause.message()).contains("confirmation_factor"));
+    }
+
+    /// #1564: the pre-#1564 keys are gone without aliases (pre-GA); each is refused as unknown by the strict bind.
+    @Test
+    void tomlBinding_rejectsTheRemovedReplicationKeys() {
+        for (var removed : java.util.List.of("replicas = 3", "min_sync_replicas = 3")) {
+            serviceFrom("""
+                        [orders]
+                        topic_name = "order-events"
+                        durability = "durable"
+                        %s
+                        """.formatted(removed)).config("orders", TopicConfig.class)
+                                               .onSuccess(_ -> fail(removed + " must be refused as an unknown key"))
+                                               .onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class));
+        }
     }
 
     @Test
@@ -224,7 +280,7 @@ class TopicConfigTest {
                           retention = "1ms"
                           """);
 
-        assertThat(config.durableSpec().unwrap().unwrap().retention().toMillis()).isEqualTo(1L);
+        assertThat(config.durableSpec(BUILT_IN).unwrap().unwrap().retention().toMillis()).isEqualTo(1L);
     }
 
     private static void assertRetentionRefused(String retention) {
@@ -269,12 +325,12 @@ class TopicConfigTest {
                     topic_name = "order-events"
                     durability = "durable"
                     retention = "14d"
-                    min-sync-replicas = 2
+                    confirmation-factor = 2
                     """).config("orders", TopicConfig.class)
-                        .onSuccess(_ -> fail("dashed min-sync-replicas must be rejected, not silently ignored"))
+                        .onSuccess(_ -> fail("dashed confirmation-factor must be rejected, not silently ignored"))
                         .onFailure(cause -> {
                             assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
-                            assertThat(cause.message()).contains("min_sync_replicas");
+                            assertThat(cause.message()).contains("confirmation_factor");
                         });
     }
 
@@ -304,16 +360,15 @@ class TopicConfigTest {
                           topic_name = "order-events"
                           durability = "durable"
                           partitions = 4
-                          replicas = 3
-                          min_sync_replicas = 3
+                          replication_factor = 3
+                          confirmation_factor = 2
                           retention = "14d"
                           """);
 
-        var spec = config.durableSpec().unwrap().unwrap();
+        var spec = config.durableSpec(BUILT_IN).unwrap().unwrap();
 
         assertThat(spec.partitions()).isEqualTo(4);
-        assertThat(spec.replicas()).isEqualTo(3);
-        assertThat(spec.minSyncReplicas()).isEqualTo(3);
+        assertThat(spec.replication()).isEqualTo(new ReplicationFactors(3, 2));
     }
 
     /// Team-lead condition 2: the strict check is scoped to exactly the keys [TopicConfig] itself
@@ -348,15 +403,15 @@ class TopicConfigTest {
                     topic_name = "order-events"
                     durability = "durable"
                     retention = "14d"
-                    min-sync-replicas = 2
+                    confirmation-factor = 2
 
                     [orders.consumers.handler]
                     batch-size = 100
                     """).config("orders", TopicConfig.class)
-                        .onSuccess(_ -> fail("dashed min-sync-replicas at topic level must be rejected"))
+                        .onSuccess(_ -> fail("dashed confirmation-factor at topic level must be rejected"))
                         .onFailure(cause -> {
                             assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
-                            assertThat(cause.message()).contains("min_sync_replicas");
+                            assertThat(cause.message()).contains("confirmation_factor");
                             assertThat(cause.message()).doesNotContain("batch");
                         });
     }
@@ -399,12 +454,12 @@ class TopicConfigTest {
                         topic_name = "order-events"
                         durability = "durable"
                         retention = "14d"
-                        min-sync-replicas = 2
+                        confirmation-factor = 2
                         """, "aether.").config("orders", TopicConfig.class)
                             .onSuccess(_ -> fail("dashed file key must still be rejected"))
                             .onFailure(cause -> {
                                 assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
-                                assertThat(((ConfigError.UnknownKey) cause).keys()).containsExactly("min-sync-replicas");
+                                assertThat(((ConfigError.UnknownKey) cause).keys()).containsExactly("confirmation-factor");
                             });
         } finally {
             System.clearProperty("aether.orders.deploy_trace_id");
@@ -466,14 +521,14 @@ class TopicConfigTest {
                     [orders]
                     topic_name = "order-events"
                     partitons = 4
-                    replicaas = 3
+                    confirmaton_factor = 3
                     """).config("orders", TopicConfig.class)
                         .onSuccess(_ -> fail("both typo'd keys must be rejected together"))
                         .onFailure(cause -> {
                             assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
                             assertThat(((ConfigError.UnknownKey) cause).keys())
-                                    .containsExactlyInAnyOrder("partitons", "replicaas");
-                            assertThat(cause.message()).contains("partitions").contains("replicas");
+                                    .containsExactlyInAnyOrder("partitons", "confirmaton_factor");
+                            assertThat(cause.message()).contains("partitions").contains("confirmation_factor");
                         });
     }
 

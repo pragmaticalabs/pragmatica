@@ -17,7 +17,7 @@
 #   * Every entity create that ACKED must read back with its EXACT written
 #     value after the owner is SIGKILLed. The ack IS the durability claim — an
 #     entity write does not resolve until the record is fsync-durable on the
-#     owner AND held by `minSyncReplicas` — so demanding more would assert a
+#     owner AND held by `confirmation_factor` — so demanding more would assert a
 #     guarantee the system does not make, and demanding less would not test the
 #     one it does. Creates that did NOT ack may legitimately be absent.
 #   * The amount is derived from the key index, so a readback proves the value
@@ -284,10 +284,10 @@ test_deploy_entity_blueprint() {
 
 # Ownership is minted per (entity:orders, partition) arc, and the write barrier
 # additionally needs each partition's replica set populated before
-# minSyncReplicas can be met. Probing ONE key certifies ONE partition — the
+# confirmation_factor can be met. Probing ONE key certifies ONE partition — the
 # Forge run failed in exactly that gap — so this probes a spread of keys.
 # Ownership is minted per (entity:orders, partition) arc, and the write barrier
-# additionally needs each partition's replica set populated before minSyncReplicas can
+# additionally needs each partition's replica set populated before confirmation_factor can
 # be met. Probing ONE key certifies ONE partition, so this probes a spread.
 #
 # Each poll uses a FRESH key block. The first version reused keys 900-911 every poll,
