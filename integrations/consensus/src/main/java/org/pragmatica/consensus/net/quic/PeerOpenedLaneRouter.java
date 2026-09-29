@@ -31,6 +31,7 @@ import org.slf4j.Logger;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// #1578 — the one routing of a data-lane stream opened by the OTHER end of a connection, shared by
 /// the acceptor ([QuicClusterServer]) and the dialer ([QuicClusterClient]).
 ///
@@ -62,9 +63,11 @@ record PeerOpenedLaneRouter(Deserializer deserializer,
     Unit attach(ChannelHandlerContext ctx, ChannelHandler preambleHandler, StreamType lane) {
         var parent = (QuicChannel) ctx.channel().parent();
 
-        return Option.option(parent.attr(PEER_CONNECTION).get())
-                     .fold(() -> refuseUnverified(ctx, lane),
-                           peerConnection -> attachTo(ctx, preambleHandler, lane, peerConnection));
+        return Option.option(parent.attr(PEER_CONNECTION).get()).fold(() -> refuseUnverified(ctx, lane),
+                                                                      peerConnection -> attachTo(ctx,
+                                                                                                 preambleHandler,
+                                                                                                 lane,
+                                                                                                 peerConnection));
     }
 
     private Unit attachTo(ChannelHandlerContext ctx,

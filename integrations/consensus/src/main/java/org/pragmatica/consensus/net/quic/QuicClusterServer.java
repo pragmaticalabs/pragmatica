@@ -185,7 +185,6 @@ public sealed interface QuicClusterServer {
 
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
-
     private static final long HELLO_TIMEOUT_MS = 15_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0;  // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 64_000_000;
@@ -485,8 +484,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void handlePreamble(ChannelHandlerContext ctx, ByteBuf buf) {
-            PeerOpenedLaneRouter.preambleLane(buf)
-                                .fold(() -> onInvalidPreamble(ctx), lane -> routePreamble(ctx, lane));
+            PeerOpenedLaneRouter.preambleLane(buf).fold(() -> onInvalidPreamble(ctx), lane -> routePreamble(ctx, lane));
         }
 
         private Unit onInvalidPreamble(ChannelHandlerContext ctx) {

@@ -93,7 +93,6 @@ public sealed interface QuicClusterClient {
     /// underlying datagram channel must be closed too — otherwise the kernel-level
     /// socket leaks until JVM exit. Idempotent: a missing entry resolves immediately.
     Promise<Unit> closeDatagramChannel(NodeId peerId);
-
     /// Snapshot the count of currently-tracked datagram channels. Test/diagnostic only.
     int datagramChannelCount();
 
@@ -380,7 +379,6 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
         pendingDials.put(peerId, attempt);
         promise.onResultRun(() -> pendingDials.remove(peerId, attempt));
-
         var codec = buildQuicCodec();
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioDatagramChannel.class)
@@ -395,7 +393,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     @Override
     public Unit abandonPendingDial(NodeId peerId) {
         option(pendingDials.get(peerId)).filter(DialAttempt::abandon)
-                                        .onPresent(attempt -> releaseAbandoned(peerId, attempt));
+              .onPresent(attempt -> releaseAbandoned(peerId, attempt));
 
         return unit();
     }
@@ -453,10 +451,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Netty QUIC channel bootstrap
-    private void connectQuicChannel(Channel channel,
-                                    NodeId peerId,
-                                    InetSocketAddress address,
-                                    DialAttempt attempt) {
+    private void connectQuicChannel(Channel channel, NodeId peerId, InetSocketAddress address, DialAttempt attempt) {
         QuicChannel.newBootstrap(channel)
                    .handler(new ClientConnectionInitializer())
                    .streamHandler(new DialerStreamInitializer())
@@ -647,7 +642,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             quicMetrics.onBytesReceived(buf.readableBytes());
             PeerOpenedLaneRouter.preambleLane(buf)
                                 .filter(lane -> lane != StreamType.CONTROL)
-                                .fold(() -> refusePreamble(ctx), lane -> laneRouter.attach(ctx, this, lane));
+                                .fold(() -> refusePreamble(ctx),
+                                      lane -> laneRouter.attach(ctx, this, lane));
         }
 
         private Unit refusePreamble(ChannelHandlerContext ctx) {
@@ -889,6 +885,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // #726: PAYLOAD bytes at the lane boundary — the lane preamble is a real frame.
             quicMetrics.onBytesSent(preamble.length);
             var _ = peerConnection.registerStream(lane, streamChannel);
+
             if (pending.decrementAndGet() == 0) {
                 log.info("All 8 lanes registered for peer {} — connection ready", peerNodeId);
                 promise.succeed(peerConnection);

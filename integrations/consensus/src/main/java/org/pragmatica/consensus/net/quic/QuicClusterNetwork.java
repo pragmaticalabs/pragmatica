@@ -1644,15 +1644,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// #1578 dial-attempt journal: one line per attach, naming where the connection came from (a
     /// numbered dial attempt or an inbound Hello), the phase it found and what the attach did — so a
     /// RECONNECT of an already-connected peer can be traced to the route that produced it.
-    private void journalAttach(NodeId peerId, String origin, PeerState.Phase phaseBefore, PeerState.AttachOutcome outcome) {
+    private void journalAttach(NodeId peerId,
+                               String origin,
+                               PeerState.Phase phaseBefore,
+                               PeerState.AttachOutcome outcome) {
         log.info("Dial journal: attach {} via {} found {} -> {}{}",
                  peerId,
                  origin,
                  phaseBefore,
                  outcome.result(),
-                 outcome.superseded()
-                        .map(_ -> " (superseded the incumbent)")
-                        .or(""));
+                 outcome.superseded().map(_ -> " (superseded the incumbent)").or(""));
     }
 
     private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId,
@@ -2017,18 +2018,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// waiting messages go to the lane on the bound connection instead, or are reported as dropped.
     private void laneOpenFailed(NodeId peerId, StreamType lane, QuicPeerConnection connection, List<byte[]> pending) {
         boundConnection(peerId).filter(bound -> bound != connection)
-                               .onPresent(bound -> resendOnBoundConnection(peerId, lane, bound, pending))
-                               .onEmpty(() -> backstopUnhealableStream(peerId, connection));
+                       .onPresent(bound -> resendOnBoundConnection(peerId, lane, bound, pending))
+                       .onEmpty(() -> backstopUnhealableStream(peerId, connection));
     }
 
     private Option<QuicPeerConnection> boundConnection(NodeId peerId) {
         return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
     }
 
-    private void resendOnBoundConnection(NodeId peerId, StreamType lane, QuicPeerConnection bound, List<byte[]> pending) {
+    private void resendOnBoundConnection(NodeId peerId,
+                                         StreamType lane,
+                                         QuicPeerConnection bound,
+                                         List<byte[]> pending) {
         laneStream(bound, lane).filter(QuicStreamChannel::isActive)
-                               .onPresent(stream -> pending.forEach(bytes -> resendOnKeptStream(stream, bytes, peerId, lane)))
-                               .onEmpty(() -> warnPendingDropped(peerId, lane, pending.size()));
+                  .onPresent(stream -> pending.forEach(bytes -> resendOnKeptStream(stream, bytes, peerId, lane)))
+                  .onEmpty(() -> warnPendingDropped(peerId,
+                                                    lane,
+                                                    pending.size()));
     }
 
     private void warnPendingDropped(NodeId peerId, StreamType lane, int count) {
@@ -2239,7 +2245,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private static Option<QuicStreamChannel> laneStream(QuicPeerConnection connection, StreamType lane) {
-        return connection.stream(lane).fold(() -> connection.stream(StreamType.CONSENSUS), Option::some);
+        return connection.stream(lane)
+                         .fold(() -> connection.stream(StreamType.CONSENSUS),
+                               Option::some);
     }
 
     private void resendOnKeptStream(QuicStreamChannel current, byte[] bytes, NodeId peerId, StreamType streamType) {

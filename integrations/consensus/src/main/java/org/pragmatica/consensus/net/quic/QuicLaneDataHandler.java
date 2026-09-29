@@ -150,8 +150,8 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Contract
     private void streamEnded(ChannelHandlerContext ctx) {
         if (ctx.channel() instanceof QuicStreamChannel stream) {
-            Option.option(stream.parent().attr(PeerOpenedLaneRouter.PEER_CONNECTION).get())
-                  .onPresent(connection -> connection.streamEnded(lane, stream));
+            Option.option(stream.parent().attr(PeerOpenedLaneRouter.PEER_CONNECTION).get()).onPresent(connection -> connection.streamEnded(lane,
+                                                                                                                                           stream));
         }
     }
 

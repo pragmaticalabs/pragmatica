@@ -291,7 +291,7 @@ public final class QuicPeerConnection {
 
         var incumbent = longLivedStreams[type.streamIndex()];
 
-        if (keepsLane(incumbent, channel)) {
+        if (keepsLane(option(incumbent), channel)) {
             retire(type, channel, incumbent);
 
             return incumbent;
@@ -303,8 +303,11 @@ public final class QuicPeerConnection {
         return channel;
     }
 
-    private static boolean keepsLane(QuicStreamChannel incumbent, QuicStreamChannel candidate) {
-        return incumbent != null && incumbent != candidate && incumbent.isActive() && !outranks(candidate, incumbent);
+    private static boolean keepsLane(Option<QuicStreamChannel> incumbent, QuicStreamChannel candidate) {
+        return incumbent.filter(current -> current != candidate
+                                           && current.isActive()
+                                           && !outranks(candidate, current))
+                        .isPresent();
     }
 
     /// #1578 — the lane-ownership rule, identical at both ends. A stream opened by the DIALER (the
@@ -355,7 +358,10 @@ public final class QuicPeerConnection {
     public void streamEnded(StreamType type, QuicStreamChannel stream) {
         if (longLivedStreams[type.streamIndex()] == stream) {
             longLivedStreams[type.streamIndex()] = null;
-            log.debug("{} stream {} for peer {} ended from the other side — lane released", type, stream.streamId(), peerId);
+            log.debug("{} stream {} for peer {} ended from the other side — lane released",
+                      type,
+                      stream.streamId(),
+                      peerId);
         }
 
         if (stream.isActive()) {
