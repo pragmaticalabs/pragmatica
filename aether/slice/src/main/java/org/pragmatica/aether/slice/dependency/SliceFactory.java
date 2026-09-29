@@ -184,18 +184,27 @@ public interface SliceFactory {
         return new SliceLoadingFailure.Fatal.FactoryMethodNotFound(className, methodName);
     }
 
+    /// #1196 — what the code observes is only that the generated factory's signature is not this runtime's
+    /// `(SliceCreationContext)` contract. A slice built by an OLDER slice processor and one built by a NEWER
+    /// one reach that state identically, so the message names the mismatch and a remedy that holds in both
+    /// directions; it used to assert "compiled against an older runtime", the opposite of the truth for a
+    /// newer slice.
+    private static final String FACTORY_CONTRACT_MISMATCH = " — the factory's signature does not match this runtime's factory"
+                                                           + " contract. A slice built by a different Aether version, older"
+                                                           + " or newer, reaches this state; build the slice with the same"
+                                                           + " Aether version as this runtime";
+
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
                                                                "expected " + expected
                                                               + " (SliceCreationContext), got " + actual
-                                                              + " — slice was compiled against an older runtime"
-                                                              + " (factory parameter 0 Aspect was removed); rebuild against this runtime version");
+                                                              + FACTORY_CONTRACT_MISMATCH);
     }
 
     private static Cause firstParameterMustBeCreationContext(String methodName, String actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
                                                                "factory parameter 0 must be SliceCreationContext, got " + actual
-                                                              + " — slice was compiled against an older runtime; rebuild against this runtime version");
+                                                              + FACTORY_CONTRACT_MISMATCH);
     }
 
     /// Two causes produce this state and nothing observable here separates them: the class was removed
@@ -207,7 +216,7 @@ public interface SliceFactory {
     /// and picks NEITHER: asserting the upgrade cause sends an operator to rebuild a slice that is
     /// fine, and a rebuild against the older jar would not even compile (#758).
     private static Cause servedPackageLacksClass(String context, String missingClass, ClassLoader owner) {
-        return new SliceLoadingFailure.Fatal.ParameterMismatch(context,
+        return new SliceLoadingFailure.Fatal.ServedPackageLacksClass(context,
                                                                "slice references class " + missingClass
                                                               + ", whose package " + packageOf(missingClass)
                                                               + " is served by " + loaderLabel(owner)
