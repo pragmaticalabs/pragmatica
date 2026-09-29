@@ -265,10 +265,21 @@ public final class PartitionBackfill {
                                                CatchupTransport transport,
                                                NodeId self,
                                                TimeSpan flightBound) {
+        return partitionBackfill(registry, partitionRecovery, transport, ReplicationTransport.NOOP, self, flightBound);
+    }
+
+    /// The bounded test factory with a `replicationTransport`, so a test can observe the backfill's ack to the owner
+    /// (#1638 late side effects).
+    static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                               AlignedRecovery partitionRecovery,
+                                               CatchupTransport transport,
+                                               ReplicationTransport replicationTransport,
+                                               NodeId self,
+                                               TimeSpan flightBound) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
-                                     ReplicationTransport.NOOP,
+                                     replicationTransport,
                                      (_, _, _) -> NO_SOURCE_REPLICA.promise(),
                                      (_, _) -> - 1L,
                                      self,

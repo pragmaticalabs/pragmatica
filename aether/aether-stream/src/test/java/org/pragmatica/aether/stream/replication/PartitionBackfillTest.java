@@ -301,6 +301,49 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(SELF).state()).as("the current flight promotes").isEqualTo(ReplicationState.CAUGHT_UP);
         }
 
+        /// #1638 late side effects, the ack half: with the owner known (SOURCE), a completed backfill acks the owner.
+        /// A run that settles AFTER its flight timed out sends no ack, while the next flight's own settlement does. Red
+        /// under "the ack is not gated".
+        @Test
+        void lateSettlement_afterTheTimeout_sendsNoAckToTheOwner() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            var served = fixedSource(eventsFrom(0, 5));
+            var acks = new CopyOnWriteArrayList<ReplicationMessage>();
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             gated,
+                                             (_, message) -> acks.add(message),
+                                             SELF,
+                                             TimeSpan.timeSpan(500).millis());
+
+            backfill.ownerResolver((_, _) -> Option.some(SOURCE));
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            var next = backfill.backfill(STREAM, PARTITION);
+
+            served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(acks).as("the late run acked nothing").isEmpty();
+
+            served.requestCatchup(SOURCE, requests.get(1)).onResult(pending.get(1)::resolve);
+
+            assertThat(next.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).isTrue();
+            assertThat(acks).as("the current flight acks the owner once").hasSize(1);
+        }
+
         /// #1638 B1: a run that lands after its flight timed out must not evict the NEXT flight from the slot. The old
         /// run stalls past the bound, a new flight starts, then the old run settles; a later call still joins the new
         /// flight. Red under "unconditional remove".
