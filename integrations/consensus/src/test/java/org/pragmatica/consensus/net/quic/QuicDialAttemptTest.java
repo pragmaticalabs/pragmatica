@@ -90,6 +90,7 @@ class QuicDialAttemptTest {
     /// After the gate opens, a live seed attempt's retransmitted Initial (PTO backoff ≈ 1, 2, 4 s) must have time to
     /// land and complete, so that a missing abandon is SEEN as a supersede (28), not missed.
     private static final long GATE_SETTLE_MS = 8_000L;
+    private static final long ARMING_WAIT_MS = 2_000L;
     private static final List<String> SUPERSEDING_CAUSES = List.of(PeerState.CAUSE_ATTACH_SUPERSEDE,
                                                                    PeerState.CAUSE_ATTACH_STALE_REPLACE);
 
@@ -207,9 +208,11 @@ class QuicDialAttemptTest {
             }
 
             awaitTrue(() -> fullyConnected(nodes, ids), "every core CONNECTED to every other");
-            awaitTrue(() -> nodes.stream().mapToLong(node -> node.network().quicMetrics().dialAbandonedCount()).sum() == late,
-                      "arming: each seed's pending dial to the late core was abandoned when the late core's link attached");
-            // Open the gate: an attempt that was NOT abandoned would now complete and supersede the live link.
+            // Abandonment happens at attach, so it is normally complete already; the arming is ASSERTED after the count,
+            // so that without the abandon the count itself shows the damage (the live attempts complete: 28, not 20).
+            waitUpTo(() -> nodes.stream().mapToLong(node -> node.network().quicMetrics().dialAbandonedCount()).sum() == late,
+                     ARMING_WAIT_MS);
+            // Open the gate: an attempt that was NOT abandoned now completes and supersedes the live link.
             gate.open();
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(GATE_SETTLE_MS));
         }
@@ -458,6 +461,14 @@ class QuicDialAttemptTest {
             return socket.getLocalPort();
         } catch (IOException e) {
             return fail("no free UDP port: " + e.getMessage());
+        }
+    }
+
+    private static void waitUpTo(BooleanSupplier condition, long millis) {
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+
+        while (System.nanoTime() < deadline && !condition.getAsBoolean()) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
         }
     }
 
