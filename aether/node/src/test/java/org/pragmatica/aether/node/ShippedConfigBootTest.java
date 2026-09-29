@@ -102,7 +102,7 @@ class ShippedConfigBootTest {
                          .unwrap();
 
         assertThat(node.self().id()).startsWith("shipped-config-boot-");
-        assertThat(storageRoot.resolve("stream-segments").resolve(node.self().id().id()))
+        assertThat(storageRoot.resolve("stream-segments").resolve(node.self().id()))
             .as("#912: the default storage root the shipped config resolves is the injected one, not /data/aether")
             .exists();
     }
