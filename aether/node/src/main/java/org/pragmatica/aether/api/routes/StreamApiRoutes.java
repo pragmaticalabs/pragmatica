@@ -810,11 +810,10 @@ public final class StreamApiRoutes implements RouteSource {
     private static final byte[] EMPTY_PAYLOAD = new byte[0];
 
     /// Publish auto-create guard. When the stream is not yet materialized locally, prefer the committed
-    /// `StreamConfig` from applied KV state (which carries the app/blueprint `replicas` / `minSyncReplicas`
-    /// durability knobs committed at slice activation) so a first publish racing ahead of local
-    /// materialization preserves the replication factor rather than fabricating a `replicas=1/min-sync=0`
-    /// management default over it. Falls back to the management default only for a genuinely
-    /// management-only stream with no committed entry.
+    /// `StreamConfig` from applied KV state (which carries the app/blueprint replication factors committed at
+    /// slice activation) so a first publish racing ahead of local materialization preserves them rather than
+    /// fabricating a management default over it. Falls back to the management default — the cluster's
+    /// replication defaults (#1564) — only for a genuinely management-only stream with no committed entry.
     ///
     /// #524 SHOULD-FIX 1: a materialization failure here is never a transient race — the only failure
     /// modes `ensureStreamMaterialized` can return are permanent (capacity exhausted, or STRONG
@@ -836,11 +835,14 @@ public final class StreamApiRoutes implements RouteSource {
                            .flatMap(config -> materializeForPublish(streamName, config));
     }
 
-    private static Result<StreamConfig> managementDefaultConfig(String streamName) {
-        return ReservedStreamNames.requireUnreserved(streamName).map(unreserved -> StreamConfig.streamConfig(unreserved,
-                                                                                                             DEFAULT_PARTITIONS,
-                                                                                                             MANAGEMENT_API_RETENTION,
-                                                                                                             "latest"));
+    private Result<StreamConfig> managementDefaultConfig(String streamName) {
+        return ReservedStreamNames.requireUnreserved(streamName)
+                                  .flatMap(unreserved -> ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
+                                                                                                                     .kvStore(),
+                                                                                                         StreamConfig.streamConfig(unreserved,
+                                                                                                                                   DEFAULT_PARTITIONS,
+                                                                                                                                   MANAGEMENT_API_RETENTION,
+                                                                                                                                   "latest")));
     }
 
     private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {
@@ -962,9 +964,13 @@ public final class StreamApiRoutes implements RouteSource {
 
     private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-        var config = StreamConfig.streamConfig(engineKey, partitions, MANAGEMENT_API_RETENTION, "latest");
-
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
+        return ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
+                                                                           .kvStore(),
+                                                               StreamConfig.streamConfig(engineKey,
+                                                                                         partitions,
+                                                                                         MANAGEMENT_API_RETENTION,
+                                                                                         "latest"))
+                                          .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
     }
 
     private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {

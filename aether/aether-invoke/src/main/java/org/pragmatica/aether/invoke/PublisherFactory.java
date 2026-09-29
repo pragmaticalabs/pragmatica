@@ -9,8 +9,10 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.TopicConfig;
+import org.pragmatica.aether.resource.TopicDurability;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
@@ -18,12 +20,17 @@ import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public final class PublisherFactory implements ResourceFactory<Publisher, TopicConfig> {
+    private static final Logger LOG = LoggerFactory.getLogger(PublisherFactory.class);
+
     private static final Cause REQUIRES_CONTEXT = Causes.cause("Publisher requires ProvisioningContext with runtime extensions");
 
     @Override
@@ -43,9 +50,30 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
 
     @Override
     public Promise<Publisher> provision(TopicConfig config, ProvisioningContext context) {
-        return config.durableSpec()
-                     .fold(cause -> cause.promise(),
-                           spec -> provisionForTier(config, spec, context));
+        return durableSpec(config, context).fold(cause -> cause.promise(),
+                                                 spec -> provisionForTier(config, spec, context));
+    }
+
+    /// #1564: a DURABLE topic's factors are resolved against the node's [ReplicationContext] — the committed
+    /// cluster defaults and desired core count — and the declaration's warnings are logged here, at activation.
+    /// An ephemeral topic has no factors, so it needs no context.
+    private static Result<Option<DurableTopicSpec>> durableSpec(TopicConfig config, ProvisioningContext context) {
+        return config.durability() == TopicDurability.DURABLE
+               ? context.extension(ReplicationContext.Source.class)
+                        .flatMap(ReplicationContext.Source::current)
+                        .flatMap(config::durableSpec)
+                        .onSuccess(spec -> spec.onPresent(durable -> logWarnings(config, durable)))
+               : config.durableSpec(ReplicationContext.BUILT_IN);
+    }
+
+    private static void logWarnings(TopicConfig config, DurableTopicSpec spec) {
+        spec.replicationWarnings()
+            .forEach(warning -> LOG.warn("{}durable topic replication warning [{}]: {}",
+                                         warning.loud()
+                                         ? "LOUD: "
+                                         : "",
+                                         warning.code(),
+                                         warning.message("topic '" + config.topicName() + "'", spec.replication())));
     }
 
     /// The D1 tier switch (durable-pubsub-spec §5, ratified on #386): the declared durability class

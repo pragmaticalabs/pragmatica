@@ -162,7 +162,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                           request.partition(),
                                           request.payload(),
                                           request.timestamp(),
-                                          partitionManager.minSyncReplicasFor(request.streamName()) - 1)
+                                          partitionManager.confirmationFactorFor(request.streamName()) - 1)
                         .async()
                         .flatMap(offset -> awaitMinSync(request, offset))
                         .onSuccess(offset -> sendSuccessResponse(request, offset))
@@ -181,13 +181,13 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// #1236: this barrier runs AFTER the append, so a failure here is an unknown outcome
     /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is the pre-append floor in [#onPublishForward].
     private Promise<Long> awaitMinSync(PublishForward request, long offset) {
-        var minSyncReplicas = partitionManager.minSyncReplicasFor(request.streamName());
+        var confirmationFactor = partitionManager.confirmationFactorFor(request.streamName());
 
-        return minSyncReplicas > 1
+        return confirmationFactor > 1
                ? partitionManager.awaitReplication(request.streamName(),
                                                    request.partition(),
                                                    offset,
-                                                   minSyncReplicas - 1)
+                                                   confirmationFactor - 1)
                                  .mapError(PublishOutcomeUnknown.FACTORY)
                                  .map(_ -> offset)
                : Promise.success(offset);

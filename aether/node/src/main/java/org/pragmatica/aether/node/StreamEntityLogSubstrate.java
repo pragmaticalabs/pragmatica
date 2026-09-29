@@ -15,6 +15,7 @@ import org.pragmatica.aether.resource.entity.EntityLogSubstrate;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.TierAwareRetention;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -147,14 +148,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     }
 
     @Override
-    public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
-        return StreamCreateOutcome.tolerateAlreadyExists(partitionManager.createStream(entityStreamConfig(keyspace,
-                                                                                                          partitionCount,
-                                                                                                          replicationFactor,
-                                                                                                          minSyncReplicas))).flatMap(_ -> assertExistingShape(keyspace,
-                                                                                                                                                              partitionCount,
-                                                                                                                                                              replicationFactor,
-                                                                                                                                                              minSyncReplicas));
+    public Result<Unit> ensureLog(String keyspace, int partitionCount, ReplicationFactors replication) {
+        return StreamCreateOutcome.tolerateAlreadyExists(partitionManager.createDeclaredStream(entityStreamConfig(keyspace,
+                                                                                                                  partitionCount,
+                                                                                                                  replication))).flatMap(_ -> assertExistingShape(keyspace,
+                                                                                                                                                                  partitionCount,
+                                                                                                                                                                  replication));
     }
 
     /// `tolerateAlreadyExists` makes ensure idempotent — and, unguarded, it also made it SHAPE-BLIND
@@ -164,11 +163,13 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// declared shape must MATCH the stream that actually exists, or provisioning fails naming both.
     ///
     /// The check runs on the freshly-created stream too, where it trivially passes — cheaper than
-    /// threading "was it created or found" out of the outcome classification.
+    /// threading "was it created or found" out of the outcome classification. #1564 R8: different replication
+    /// factors are refused typed ([org.pragmatica.aether.slice.ReplicationFactorsError.ChangedOnLiveResource]),
+    /// for a local entry not yet committed as well as the committed one
+    /// [StreamPartitionManager#createDeclaredStream] already refuses.
     private Result<Unit> assertExistingShape(String keyspace,
                                              int partitionCount,
-                                             int replicationFactor,
-                                             int minSyncReplicas) {
+                                             ReplicationFactors replication) {
         var streamName = EntityPartitionArc.arcName(keyspace);
 
         return partitionManager.replicaCatalog()
@@ -177,27 +178,24 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                .filter(spec -> spec.name()
                                                    .equals(streamName))
                                .findFirst()
-                               .map(spec -> matchShape(spec, partitionCount, replicationFactor, minSyncReplicas))
+                               .map(spec -> matchShape(spec, partitionCount, replication))
                                .orElseGet(Result::unitResult);
     }
 
     private static Result<Unit> matchShape(StreamCatalog.StreamSpec spec,
                                            int partitionCount,
-                                           int replicationFactor,
-                                           int minSyncReplicas) {
-        if (spec.partitions() == partitionCount && spec.replicas() == replicationFactor && spec.minSyncReplicas() == minSyncReplicas) {
-            return Result.unitResult();
+                                           ReplicationFactors replication) {
+        if (spec.partitions() != partitionCount) {
+            return Causes.cause("entity log for '" + spec.name()
+                               + "' already exists with partitions=" + spec.partitions()
+                               + " but this deployment declares partitions=" + partitionCount
+                               + " — a changed partition_count re-hashes keys onto partitions whose history"
+                               + " lives elsewhere, so the mismatch is refused rather than served wrong").result();
         }
 
-        return Causes.cause("entity log for '" + spec.name()
-                           + "' already exists with shape (partitions=" + spec.partitions()
-                           + ", replicas=" + spec.replicas()
-                           + ", minSync=" + spec.minSyncReplicas()
-                           + ") but this deployment declares (partitions=" + partitionCount
-                           + ", replicas=" + replicationFactor
-                           + ", minSync=" + minSyncReplicas
-                           + ") — a changed partition_count re-hashes keys onto partitions whose history"
-                           + " lives elsewhere, so the mismatch is refused rather than served wrong").result();
+        return replication.sameAsCommitted("entity log '" + spec.name() + "'",
+                                           new ReplicationFactors(spec.replicationFactor(), spec.confirmationFactor()))
+                          .mapToUnit();
     }
 
     /// The backing stream's shape.
@@ -227,8 +225,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// handed to the segment sealer, which retains it until it is sealed (#1234).
     private static StreamConfig entityStreamConfig(String keyspace,
                                                    int partitionCount,
-                                                   int replicationFactor,
-                                                   int minSyncReplicas) {
+                                                   ReplicationFactors replication) {
         return StreamConfig.streamConfig(EntityPartitionArc.arcName(keyspace),
                                          partitionCount,
                                          RetentionPolicy.retentionPolicy(ENTITY_RING_CAPACITY,
@@ -238,8 +235,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                          AUTO_OFFSET_RESET_EARLIEST,
                                          ENTITY_MAX_EVENT_SIZE_BYTES,
                                          ConsistencyMode.EVENTUAL,
-                                         replicationFactor,
-                                         minSyncReplicas,
+                                         replication.replicationFactor(),
+                                         replication.confirmationFactor(),
                                          StreamCompression.NONE,
                                          Option.none());
     }
@@ -298,9 +295,9 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                    .id();
     }
 
-    /// `minSyncReplicas` COUNTS THE OWNER; `awaitReplication` counts DISTINCT NON-SELF acks. The two
-    /// differ by exactly one, and this call passed the raw value — so a keyspace configured for `2`
-    /// ("the owner plus one peer", per [DurableEntityConfig#minSyncReplicas]) waited for TWO peers.
+    /// The confirmation factor COUNTS THE OWNER; `awaitReplication` counts DISTINCT NON-SELF acks. The two
+    /// differ by exactly one, and this call once passed the raw value — so a keyspace configured for `2`
+    /// ("the owner plus one peer") waited for TWO peers.
     ///
     /// At the default `replicationFactor = 3` that is satisfiable only while BOTH peers are alive and
     /// caught up, so losing a single peer failed every entity write with `ReplicationBarrierUnmet` —
@@ -311,18 +308,18 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// `StreamForwardHandler.awaitMinSync`. This is the third writer on the same barrier and it was the
     /// odd one out.
     private Promise<Long> awaitBarrier(String keyspace, String stream, int partition, long offset) {
-        var minSyncReplicas = partitionManager.minSyncReplicasFor(stream);
+        var confirmationFactor = partitionManager.confirmationFactorFor(stream);
 
-        if (minSyncReplicas <= 1) {
+        if (confirmationFactor <= 1) {
             return Promise.success(offset);
         }
 
-        return partitionManager.awaitReplication(stream, partition, offset, minSyncReplicas - 1)
+        return partitionManager.awaitReplication(stream, partition, offset, confirmationFactor - 1)
                                .map(_ -> offset)
                                .mapError(cause -> new EntityLogError.ReplicationBarrierUnmet(keyspace,
                                                                                              partition,
                                                                                              offset,
-                                                                                             minSyncReplicas,
+                                                                                             confirmationFactor,
                                                                                              cause));
     }
 

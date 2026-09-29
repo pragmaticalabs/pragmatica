@@ -309,7 +309,8 @@ public final class SliceRoutes implements RouteSource {
                                      counts.active(),
                                      counts.failed(),
                                      blueprintStatusUrl(id),
-                                     rejectedStreamBindings(published));
+                                     rejectedStreamBindings(published),
+                                     deployWarnings(published));
     }
 
     private BlueprintResponse deployBlueprintResponse(PublishedBlueprint published) {
@@ -322,7 +323,8 @@ public final class SliceRoutes implements RouteSource {
                                      counts.active(),
                                      counts.failed(),
                                      blueprintStatusUrl(id),
-                                     rejectedStreamBindings(published));
+                                     rejectedStreamBindings(published),
+                                     deployWarnings(published));
     }
 
     /// #1336: every `[streams.*]` declaration the publish did not bind, by field and rule, so the
@@ -334,6 +336,14 @@ public final class SliceRoutes implements RouteSource {
                         .map(failure -> new RejectedStreamBinding(failure.field(),
                                                                   failure.rule(),
                                                                   failure.message()))
+                        .toList();
+    }
+
+    /// #1564: every deploy-time warning, so the operator sees the LOUD replication warnings at deploy time.
+    private static List<DeployWarning> deployWarnings(PublishedBlueprint published) {
+        return published.warnings()
+                        .stream()
+                        .map(warning -> new DeployWarning(warning.field(), warning.rule(), warning.message()))
                         .toList();
     }
 

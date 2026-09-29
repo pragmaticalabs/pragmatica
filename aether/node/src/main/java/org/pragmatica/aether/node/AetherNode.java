@@ -58,6 +58,7 @@ import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
@@ -231,6 +232,7 @@ import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
@@ -5398,7 +5400,12 @@ public interface AetherNode extends ManageableNode {
         // backoff until both legs commit (or hit a terminal config error), latches each leg DONE, and
         // disarms on leadership loss. Both legs are idempotent + consensus-committed, so re-arming on
         // each leader-gain is safe and self-heals across re-elections.
-        var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> streamPartitionManager.createStream(clusterEventsStreamConfig),
+        // #1564: the stream is committed with the factors of the committed cluster config's
+        // `[replication.cluster_events]` (CF default 1 until the owner decides the acked-but-lost question; RF the
+        // desired core count), read when the leader commits it.
+        var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                                                AetherValue.ClusterConfigValue.class))
+                                                                                                        .flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
                                                                                 streamNamespacesService::bootstrap);
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -8406,6 +8413,12 @@ public interface AetherNode extends ManageableNode {
         // on a real node the resolver must always be present or a co-deployed publisher and
         // subscriber fall back to two DIFFERENT slice-derived namespaces and silently never meet.
         spi.registerExtension(OwningBlueprintResolver.class, OwningBlueprintResolver.kvBacked(kvStore));
+        // #1564: every stream, durable topic and durable entity declaration resolves its replication_factor /
+        // confirmation_factor against the COMMITTED cluster config — the `[replication]` defaults and the desired
+        // core count — read on each resolution, exactly as deploy validation reads it.
+        spi.registerExtension(ReplicationContext.Source.class,
+                              ClusterReplication.source(() -> kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                               AetherValue.ClusterConfigValue.class)));
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot

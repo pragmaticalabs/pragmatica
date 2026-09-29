@@ -124,7 +124,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     }
 
     private static Result<Unit> ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
-        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(config));
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(config));
     }
 
     /// Owner-resolver extension consumed by the app stream publish path.

@@ -366,7 +366,7 @@ public final class ReplicaSetController implements AutoCloseable {
                                  int clusterSize,
                                  List<PartitionKey> reconciled) {
         var streamClass = classify(spec.name());
-        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.replicas(), clusterSize);
+        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.replicationFactor(), clusterSize);
 
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
@@ -498,7 +498,7 @@ public final class ReplicaSetController implements AutoCloseable {
                                .stream()
                                .filter(spec -> spec.name()
                                                    .equals(streamName))
-                               .mapToInt(StreamCatalog.StreamSpec::replicas)
+                               .mapToInt(StreamCatalog.StreamSpec::replicationFactor)
                                .findFirst()
                                .orElse(0);
 

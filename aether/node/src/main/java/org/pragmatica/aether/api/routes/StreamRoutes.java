@@ -270,10 +270,9 @@ public final class StreamRoutes implements RouteSource {
                                                                                                     60 * 60 * 1000L);
 
     /// Publish auto-create guard. A stream ALREADY materialized locally carries its own committed
-    /// `StreamConfig` — an app/blueprint-declared stream keeps its `replicas` / `minSyncReplicas`
-    /// durability knobs — so the management publish path must leave it INTACT rather than fabricate and
-    /// commit a `replicas=1/min-sync=0` MANAGEMENT DEFAULT over it (which would disarm the sync barrier
-    /// — `minSyncReplicas` read as 0 — and collapse the replica set to RF=1). `streamInfo` is a LOCAL
+    /// `StreamConfig` — an app/blueprint-declared stream keeps its replication factors — so the management
+    /// publish path must leave it INTACT rather than fabricate and commit a MANAGEMENT DEFAULT over it (which
+    /// would replace its declared factors with the cluster defaults). `streamInfo` is a LOCAL
     /// read of the manager's already-materialized state — NO consensus round-trip on the publish hot
     /// path. When it MISSES (a first publish racing ahead of local materialization of an app config
     /// committed at slice activation), the absent branch still prefers the committed config from applied
@@ -285,8 +284,8 @@ public final class StreamRoutes implements RouteSource {
                             .or(() -> materializeAbsentStream(name));
     }
 
-    /// Absent-locally branch. The app/blueprint stream's committed `StreamConfig` (with its
-    /// `replicas` / `minSyncReplicas` durability knobs) lands in applied KV state at slice activation but
+    /// Absent-locally branch. The app/blueprint stream's committed `StreamConfig` (with its replication
+    /// factors) lands in applied KV state at slice activation but
     /// may not yet be in the manager's local materialized map when a first publish races in. Prefer that
     /// committed config so the auto-create preserves RF; fall back to the management default only for a
     /// genuinely management-only stream that has no committed entry — and never under a reserved kind
@@ -302,11 +301,15 @@ public final class StreamRoutes implements RouteSource {
                            .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
     }
 
-    private static Result<StreamConfig> managementDefaultConfig(String name) {
-        return ReservedStreamNames.requireUnreserved(name).map(unreserved -> StreamConfig.streamConfig(unreserved,
-                                                                                                       DEFAULT_PARTITIONS,
-                                                                                                       MANAGEMENT_API_RETENTION,
-                                                                                                       "latest"));
+    /// #1564: a management-only stream takes the cluster's replication defaults ([ManagementStreamReplication]).
+    private Result<StreamConfig> managementDefaultConfig(String name) {
+        return ReservedStreamNames.requireUnreserved(name)
+                                  .flatMap(unreserved -> ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
+                                                                                                                     .kvStore(),
+                                                                                                         StreamConfig.streamConfig(unreserved,
+                                                                                                                                   DEFAULT_PARTITIONS,
+                                                                                                                                   MANAGEMENT_API_RETENTION,
+                                                                                                                                   "latest")));
     }
 
     private Result<StreamConsumersResponse> streamConsumers(String name) {

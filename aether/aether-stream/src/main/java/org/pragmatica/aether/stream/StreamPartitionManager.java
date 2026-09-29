@@ -29,6 +29,8 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -842,6 +844,23 @@ public final class StreamPartitionManager implements AutoCloseable {
         return createStream(config, CommitMode.ASYNC);
     }
 
+    /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)
+    /// or a durable entity's log — whose factors its caller resolved from the declaration through
+    /// [org.pragmatica.aether.slice.ReplicationDeclaration]. Identical to [#createStream(StreamConfig)], except that
+    /// a stream already COMMITTED here with different factors is refused
+    /// ([ReplicationFactorsError.ChangedOnLiveResource], R8): a live resource's replication policy is not
+    /// changed in place, and keeping the old one silently would leave the operator believing the new one holds.
+    /// The management and system create paths keep [#createStream(StreamConfig)]: they carry no declaration.
+    public Result<Unit> createDeclaredStream(StreamConfig config) {
+        return option(streams.get(config.name())).filter(StreamEntry::isCommitted)
+                     .map(existing -> config.replication()
+                                            .sameAsCommitted("stream '" + config.name() + "'",
+                                                             existing.config().replication())
+                                            .map(_ -> unit()))
+                     .or(success(unit()))
+                     .flatMap(_ -> createStream(config, CommitMode.SYNC));
+    }
+
     private Result<Unit> createStream(StreamConfig config, CommitMode commitMode) {
         return option(streams.get(config.name())).fold(() -> createFreshStream(config, commitMode),
                                                        existing -> ensureConfigCommitted(config, existing, commitMode));
@@ -879,13 +898,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       .flatMap(_ -> materializeFreshStream(config, commitMode));
     }
 
-    /// #1547 engine backstop: an APP stream is never created below `StreamConfig.MIN_REPLICAS` copies,
-    /// whichever path minted its config. System streams are exempt — their factor is the cluster size.
-    /// Applied on the create path only; a config already committed is adopted as-is.
+    /// #1564 engine backstop (R5): whichever path minted the config, its factors satisfy `1 <= CF <= RF`
+    /// ([ReplicationFactors#replicationFactors]). "RF below 3 only when declared, with a loud warning" is a
+    /// DECLARATION rule ([org.pragmatica.aether.slice.ReplicationDeclaration]) — the engine cannot know what was
+    /// declared. Applied on the create path only; a config already committed is adopted as-is.
     private static Result<Unit> checkReplicationMinimum(StreamConfig config) {
-        return isSystemStream(config.name()) || config.replicas() >= StreamConfig.MIN_REPLICAS
-               ? success(unit())
-               : new StreamError.ReplicasBelowMinimum(config.name(), config.replicas(), StreamConfig.MIN_REPLICAS).result();
+        return ReplicationFactors.replicationFactors(config.replicationFactor(), config.confirmationFactor())
+                                 .map(_ -> unit())
+                                 .mapError(cause -> new StreamError.ReplicationRefused(config.name(), cause));
     }
 
     /// #1549: every retention bound is at least 1, and the count is one the ring can index — refused before
@@ -948,7 +968,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> enforceAggregateGuard(StreamConfig config, int clusterSize) {
-        var maxReplicas = Math.max(config.replicas(), maxDeclaredReplicas());
+        var maxReplicas = Math.max(config.replicationFactor(), maxDeclaredReplicas());
         var guard = (long) CLUSTER_PARTITION_GUARD_FACTOR * clusterSize * maxReplicas;
         var projected = currentAggregateSlots() + partitionSlots(config);
 
@@ -1238,16 +1258,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
         log.info("Adopting committed config for stream '{}' over prior local default: replicas {}->{}, minSyncReplicas {}->{}",
                  config.name(),
-                 existing.config().replicas(),
-                 config.replicas(),
-                 existing.config().minSyncReplicas(),
-                 config.minSyncReplicas());
+                 existing.config().replicationFactor(),
+                 config.replicationFactor(),
+                 existing.config().confirmationFactor(),
+                 config.confirmationFactor());
 
         return existing.withConfig(config);
     }
 
     private static boolean strongerDurability(StreamConfig incoming, StreamConfig existing) {
-        return incoming.replicas() > existing.replicas() || incoming.minSyncReplicas() > existing.minSyncReplicas();
+        return incoming.replicationFactor() > existing.replicationFactor() || incoming.confirmationFactor() > existing.confirmationFactor();
     }
 
     @Contract
@@ -1454,7 +1474,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                             partition,
                                                                             payload,
                                                                             timestamp,
-                                                                            config.minSyncReplicas() - 1));
+                                                                            config.confirmationFactor() - 1));
     }
 
     private Result<Long> writableAppend(String streamName, int partition, byte[] payload, long timestamp, int minAcks) {
@@ -1575,7 +1595,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
         ring.advanceVisible(Math.min(ring.durableOffset(),
-                                     replicationManager.replicatedThrough(ack, minSyncReplicasFor(ack.streamName()) - 1)));
+                                     replicationManager.replicatedThrough(ack, confirmationFactorFor(ack.streamName()) - 1)));
     }
 
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
@@ -1586,7 +1606,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (`minSyncReplicas <= 1`) sees the whole tail at once, as before. A REPLICA's visible position is its
     /// OWN durability (#1235 replica side), so its tail is visible at once. `NONE` — the role unresolved —
     /// takes the owner rule: an unresolved role must not expose more than the owner would. The min-sync
-    /// count is read from `config`, not [#minSyncReplicasFor]: on a fresh create the entry is not in
+    /// count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is not in
     /// `streams` yet, and the lookup would report `0` — no barrier — and expose the tail.
     @Contract
     private void restoreVisible(StreamConfig config, int partition, OffHeapRingBuffer ring) {
@@ -1595,7 +1615,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
                                                              replicationManager.replicatedThrough(config.name(),
                                                                                                   partition,
-                                                                                                  config.minSyncReplicas() - 1)));
+                                                                                                  config.confirmationFactor() - 1)));
         }
     }
 
@@ -1619,7 +1639,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private long peerAcknowledgedThrough(String streamName, int partition) {
-        return replicationManager.replicatedThrough(streamName, partition, minSyncReplicasFor(streamName) - 1);
+        return replicationManager.replicatedThrough(streamName, partition, confirmationFactorFor(streamName) - 1);
     }
 
     /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE the
@@ -1644,7 +1664,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private boolean isBestEffort(String streamName, int partition) {
         return ! isDurableByName(streamName)
-               && minSyncReplicasFor(streamName) < 2
+               && confirmationFactorFor(streamName) < 2
                && walFor(streamName, partition).isEmpty();
     }
 
@@ -1993,9 +2013,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// owner), or `0` when the stream is unknown. `<= 1` means no peer-ack barrier; `>= 2` means a
     /// publish must await `minSyncReplicas - 1` distinct non-self replica acks. Read straight from the
     /// stream's committed config so the REST publish path can gate on the stream's durability setting.
-    public int minSyncReplicasFor(String streamName) {
+    public int confirmationFactorFor(String streamName) {
         return option(streams.get(streamName)).map(entry -> entry.config()
-                                                                 .minSyncReplicas())
+                                                                 .confirmationFactor())
                      .or(0);
     }
 
@@ -2585,8 +2605,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                              .map(entry -> entry.config())
                                              .map(config -> new StreamSpec(config.name(),
                                                                            config.partitions(),
-                                                                           config.replicas(),
-                                                                           config.minSyncReplicas()))
+                                                                           config.replicationFactor(),
+                                                                           config.confirmationFactor()))
                                              .toList();
             }
         };
@@ -2932,7 +2952,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static long partitionSlots(StreamConfig config) {
-        return (long) config.partitions() * config.replicas();
+        return (long) config.partitions() * config.replicationFactor();
     }
 
     /// Largest declared `replicas` across known streams (min 1) — the `maxDeclaredReplicas` factor of the
@@ -2940,7 +2960,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private int maxDeclaredReplicas() {
         return Math.max(1,
                         streams.values().stream().mapToInt(entry -> entry.config()
-                                                                         .replicas()).max().orElse(1));
+                                                                         .replicationFactor()).max().orElse(1));
     }
 
     /// The aggregate partition guard `100 × clusterSize × maxDeclaredReplicas`, or `-1` when the cluster size
@@ -3284,7 +3304,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                           ? StreamClass.SYSTEM
                           : StreamClass.APP;
 
-        return ReplicaPlacement.replicationFactor(streamClass, config.replicas(), clusterSizeSupplier.getAsInt());
+        return ReplicaPlacement.replicationFactor(streamClass, config.replicationFactor(), clusterSizeSupplier.getAsInt());
     }
 
     /// Release a single materialized partition's ring on confirmed role loss (#265 increment 5). Atomic remove

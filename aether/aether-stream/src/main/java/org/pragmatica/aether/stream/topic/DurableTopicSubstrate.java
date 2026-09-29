@@ -103,7 +103,7 @@ public interface DurableTopicSubstrate {
     TimeSpan DLQ_RETENTION_DEFAULT = TimeSpan.timeSpan("14d").unwrap();
 
     private static Result<Unit> activate(StreamPartitionManager manager, String topicAddress, DurableTopicSpec spec) {
-        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(topicStreamConfig(topicAddress, spec))).flatMap(_ -> StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(dlqStreamConfig(topicAddress,
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(topicStreamConfig(topicAddress, spec))).flatMap(_ -> StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(dlqStreamConfig(topicAddress,
                                                                                                                                                                                                                   spec))));
     }
 
@@ -114,8 +114,8 @@ public interface DurableTopicSubstrate {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
-                                         spec.replicas(),
-                                         spec.minSyncReplicas(),
+                                         spec.replication().replicationFactor(),
+                                         spec.replication().confirmationFactor(),
                                          StreamCompression.NONE,
                                          none());
     }
@@ -127,8 +127,8 @@ public interface DurableTopicSubstrate {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
-                                         spec.replicas(),
-                                         spec.minSyncReplicas(),
+                                         spec.replication().replicationFactor(),
+                                         spec.replication().confirmationFactor(),
                                          StreamCompression.NONE,
                                          none());
     }
