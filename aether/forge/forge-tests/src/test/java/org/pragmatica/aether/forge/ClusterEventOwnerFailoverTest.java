@@ -14,7 +14,6 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -56,10 +55,6 @@ class ClusterEventOwnerFailoverTest {
     private static final Duration SETTLE = Duration.ofSeconds(120);
     private static final Duration LANDING = Duration.ofSeconds(90);
     private static final Duration COLD_BOOT_MARGIN = Duration.ofSeconds(45);
-    /// The tripwire's message. It names both #1555-absent assertions: the owner check and the held check after it.
-    private static final String TRIPWIRE_1555 = "TRIPWIRE (#1555): #1555 has landed. Delete BOTH #1555-absent assertions "
-                                                + "(owner().isEmpty() and the held > 0 right after it) and enable "
-                                                + "eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped";
 
     /// Registered in `TEST_PORT_ALLOCATION.md`: cluster 24210-24214, management 24230-24234, app HTTP
     /// 24250-24254, SWIM UDP 24310-24314.
@@ -71,18 +66,11 @@ class ClusterEventOwnerFailoverTest {
         LifecycleAwait.bestEffort("stop cluster-event failover cluster", cluster, cluster.stop());
     }
 
-    /// What holds on this release, where a dead cluster-events owner is not re-placed (#1550): publishes after the
-    /// owner's death are held for redelivery instead of dropped, nothing is given up on inside the horizon, and no
-    /// event is read twice. Whether every held event then LANDS needs a new owner, which is what the disabled test
-    /// below asserts.
-    ///
-    /// **TRIPWIRE:** the first two assertions pin what holds only WITHOUT #1555: no new owner appears, and so events
-    /// raised after the owner's death are still held. The owner check runs first, so with #1555 it is the one that
-    /// fails, with the instruction. (v1555 found that with #1555 nothing is held by the time this reads, and that
-    /// `held > 0`, then asserted before the owner check, reddened first with no instruction.) On this release the
-    /// owner check passes, and `held > 0` is the assertion that catches a redelivery that drops failed publishes. Then delete it, and enable [#eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped],
-    /// which asserts delivery after a real failover. That test is disabled rather than enabled because on this
-    /// release it can only time out waiting for an owner that never comes.
+    /// Publishes after the owner's death are held for redelivery instead of dropped, nothing is given up on inside the
+    /// horizon, and no event is read twice. Since #1555 a dead owner is re-placed, so held events then land; the
+    /// end-to-end delivery property is [#eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped].
+    /// (The two assertions that described a release WITHOUT #1555, "no new owner" and "held > 0", were a tripwire and
+    /// are deleted now that #1555 has landed.)
     @Test
     void eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost() {
         startSettledCluster();
@@ -110,16 +98,6 @@ class ClusterEventOwnerFailoverTest {
                  held,
                  delivered - landed.size());
 
-        // TRIPWIRE (#1555), checked FIRST: the two assertions that describe a cluster WITHOUT #1555 (no new owner,
-        // so publishes after the owner's death are still held) must fail before anything else, and with the message
-        // that says what to do. With #1555 the failover is quick enough that nothing is held when this reads.
-        assertThat(owner().isEmpty()).as(TRIPWIRE_1555 + " (a new cluster-events owner appeared)").isTrue();
-        // Reached only when the tripwire above held, i.e. no owner exists: nothing held then means the failed
-        // publishes were dropped silently, which is the redelivery defect this test exists for.
-        assertThat(held).as("no new owner exists, yet nothing is held: publishes after the owner's death were lost, "
-                            + "so redelivery is broken. (If you are here because you deleted the tripwire above for "
-                            + "#1555, delete this assertion too.)")
-                        .isPositive();
         // The producers also raise their own events (for example on the owner's death), so accepted >= sent.
         assertThat(accepted).as("every raised event reached redelivery").isGreaterThanOrEqualTo(phase.sent().size());
         assertThat(dropped).as("nothing was given up on inside the horizon").isZero();
@@ -160,10 +138,9 @@ class ClusterEventOwnerFailoverTest {
                .until(() -> counterOn(producer, "retried") - retriedBefore >= waitingBefore * 9L / 10);
     }
 
-    /// The full #1640 property, once #1555 re-places a dead owner: events raised across the owner's death and then
-    /// the leader's each land exactly once or are counted as dropped. Disabled until then (see the tripwire above).
+    /// The full #1640 property, now that #1555 re-places a dead owner: events raised across the owner's death and then
+    /// the leader's each land exactly once or are counted as dropped.
     @Test
-    @Disabled("#1555: on this release a dead cluster-events owner is not re-placed, so this can only time out; the tripwire in eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost says when to enable it")
     void eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped() {
         startSettledCluster();
 
