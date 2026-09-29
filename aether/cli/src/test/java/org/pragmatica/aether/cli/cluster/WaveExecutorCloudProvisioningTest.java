@@ -160,52 +160,74 @@ class WaveExecutorCloudProvisioningTest {
                            .containsExactly(nodeId);
     }
 
-    /// CodeRabbit on #1716 (CTO ruling: report, not destroy): a wave that fails part-way names every VM it already
-    /// created, in the text the CLI prints (`Error: <message>`). Each line carries node id, provider, server id and IP,
-    /// says it is RUNNING AND BILLED, and gives the exact removal steps.
+    /// CodeRabbit on #1716 (CTO ruling: destroy the failing step's VMs). Create 2, fail the 3rd: both are terminated,
+    /// and the CLI text (`Error: <message>`) says so for each.
     @Test
-    void provisionCloudNodes_failurePartWay_printsEveryCreatedVmWithItsRemoval() {
+    void provisionCloudNodes_failurePartWay_destroysTheVmsItCreated() {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
         provider.failOnCall = 3;
 
         var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
-        var first = nodeIdOf(provider, 0);
-        var second = nodeIdOf(provider, 1);
 
         assertThat(provider.specs).as("the wave stops at the failure").hasSize(3);
+        assertThat(provider.terminated).as("every VM the failing step created is destroyed")
+                                       .containsExactlyInAnyOrder("vm-1", "vm-2");
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause.message()).contains("apply failed part-way: capacity exhausted (test cause)")
-                                                             .contains("2 cloud VM(s) created by this apply are RUNNING AND BILLED")
-                                                             .contains("- node " + first + "  provider hetzner  server vm-1  ip 10.0.1.1")
-                                                             .contains("remove: aether cluster drain " + first
-                                                                       + " --wait --yes (if it joined), then hcloud server delete vm-1")
-                                                             .contains("- node " + second + "  provider hetzner  server vm-2  ip 10.0.1.2")
-                                                             .contains("hcloud server delete vm-2"));
+                                                             .contains("destroyed: node " + nodeIdOf(provider, 0)
+                                                                       + "  provider hetzner  server vm-1  ip 10.0.1.1")
+                                                             .contains("destroyed: node " + nodeIdOf(provider, 1))
+                                                             .contains("0 cloud VM(s) created by this apply are STILL RUNNING"));
     }
 
-    /// Condition 2 of the ruling: VMs from an EARLIER, completed step of the same apply are not recorded by the apply
-    /// either, so a later failure names them too, together with the failing step's own.
+    /// A destroy that fails leaves a paid VM running: it is named loudly, with provider, server id and removal steps.
     @Test
-    void partiallyProvisioned_laterFailure_namesEarlierStepsVmsToo() {
+    void provisionCloudNodes_failurePartWay_namesAVmWhoseDestroyFailedAsStillRunning() {
+        var provider = new CapturingProvider();
+        var desired = parse(ZONED);
+
+        provider.failOnCall = 3;
+        provider.terminateFails = "vm-1";
+
+        var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
+        var first = nodeIdOf(provider, 0);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("STILL RUNNING AND BILLED: node " + first
+                                                                       + "  provider hetzner  server vm-1  ip 10.0.1.1")
+                                                             .contains("destroy failed: provider refused the delete (test cause)")
+                                                             .contains("remove: aether cluster drain " + first
+                                                                       + " --wait --yes (if it joined), then hcloud server delete vm-1")
+                                                             .contains("destroyed: node " + nodeIdOf(provider, 1))
+                                                             .contains("1 cloud VM(s) created by this apply are STILL RUNNING"));
+    }
+
+    /// VMs from an EARLIER, completed step of the same apply are kept (they belong to the desired configuration), but
+    /// the rollout records none of them either, so a later failure lists them too.
+    @Test
+    void partiallyProvisioned_laterFailure_listsEarlierStepsKeptVms() {
         var earlier = new WaveNodeProvisioning.CreatedNode(org.pragmatica.aether.environment.ProvisionedNode.provisionedNode("n-early",
                                                                                                                              "vm-10",
                                                                                                                              "10.0.9.1"),
-                                                           "hetzner");
+                                                           "hetzner",
+                                                           Option.none());
         var failing = new WaveNodeProvisioning.CreatedNode(org.pragmatica.aether.environment.ProvisionedNode.provisionedNode("n-late",
                                                                                                                              "vm-11",
                                                                                                                              "10.0.9.2"),
-                                                           "hetzner");
+                                                           "hetzner",
+                                                           Option.some(org.pragmatica.lang.Result.unitResult()));
         var inner = WaveNodeProvisioning.PartiallyProvisioned.partiallyProvisioned(List.of(failing),
                                                                                     org.pragmatica.lang.utils.Causes.cause("capacity exhausted (test cause)"));
 
         var message = WaveNodeProvisioning.PartiallyProvisioned.partiallyProvisioned(List.of(earlier), inner).message();
 
-        assertThat(message).contains("2 cloud VM(s) created by this apply")
-                           .contains("- node n-early  provider hetzner  server vm-10")
-                           .contains("- node n-late  provider hetzner  server vm-11")
-                           .contains("apply failed part-way: capacity exhausted (test cause)");
+        assertThat(message).contains("kept, RUNNING AND BILLED (created by an earlier step of this apply")
+                           .contains("node n-early  provider hetzner  server vm-10")
+                           .contains("remove if unwanted: aether cluster drain n-early --wait --yes")
+                           .contains("destroyed: node n-late  provider hetzner  server vm-11")
+                           .contains("1 cloud VM(s) created by this apply are STILL RUNNING");
     }
 
     private static String nodeIdOf(CapturingProvider provider, int index) {
@@ -241,7 +263,9 @@ class WaveExecutorCloudProvisioningTest {
     /// Captures every spec handed to the provider boundary and answers with a running instance.
     private static final class CapturingProvider implements ComputeProvider {
         private final List<ProvisionSpec> specs = new ArrayList<>();
+        private final List<String> terminated = new ArrayList<>();
         private int failOnCall = 0;
+        private String terminateFails = "";
 
         @Override
         public Promise<InstanceInfo> provision(ProvisionSpec spec) {
@@ -265,6 +289,12 @@ class WaveExecutorCloudProvisioningTest {
 
         @Override
         public Promise<Unit> terminate(InstanceId instanceId) {
+            if (instanceId.value().equals(terminateFails)) {
+                return Promise.failure(org.pragmatica.lang.utils.Causes.cause("provider refused the delete (test cause)"));
+            }
+
+            terminated.add(instanceId.value());
+
             return Promise.unitPromise();
         }
 
