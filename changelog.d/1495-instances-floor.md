@@ -38,5 +38,9 @@
     `minAvailable` is the fewest ACTIVE instances the scale-down and drain guards may leave. A blueprint
     declaring `minAvailable = 1` must be raised before it will publish. `[verified: aether/slice
     SliceSpecTest — unit level]`
-  - `[unverified: operator-initiated drain (POST /api/v1/nodes/drain) checks the core disruption budget,
-    not a slice's minAvailable; pending a ruling]`
+  - Drain, per operation. An **automatic** drain (the leader's reconciler choosing a victim) never picks a
+    node whose removal would leave a hosted slice below its `minAvailable` ACTIVE instances on the remaining
+    nodes; a refused victim is deferred and logged `[mechanism: SliceOwnershipQuery.minAvailableDrainGuard,
+    SliceOwnershipQuery.java:104, wired at AetherNode.java:4319]`. An **operator** drain or shutdown
+    (`POST /api/v1/nodes/drain|shutdown`) checks the core disruption budget and READY state, not a slice's
+    `minAvailable`, so it can still take a slice below it; see #1720 `[unverified-gap: #1720]`.
