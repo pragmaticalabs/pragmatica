@@ -5,7 +5,12 @@
 package org.pragmatica.aether.api;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.controller.RollbackEvent;
+import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -52,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterEventAggregatorTest {
 
     private static final NodeId SELF = new NodeId("self-node");
+    private static final Artifact ROLLBACK_ARTIFACT = Artifact.artifact("org.example:svc:1.0.0").unwrap();
 
     /// Node runtime codec, built exactly as production builds it. Includes the generated
     /// ClusterEvent codecs, so it can encode/decode the sealed hierarchy over the byte[] transport.
@@ -364,6 +370,49 @@ class ClusterEventAggregatorTest {
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
         h.aggregator().onPeerJoined(peerJoined("replacement", List.of(SELF, new NodeId("replacement"))));
         assertThat(h.events()).isEmpty();
+    }
+
+    /// #1573 B2: the automatic-rollback events are produced on the leader only. Under the owner gate they
+    /// were lost whenever another node owned the cluster-events partition (v1608: 2 of 6 clusters).
+    @Test
+    void leader_emitsAutoRollbackAndSliceFailure_evenWhenNotOwner() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, LEADER);
+
+        h.aggregator().onSliceFailure(allInstancesFailed());
+        h.aggregator().onAutoRollback(autoRollbackExecuted());
+
+        assertThat(h.events()).hasSize(2)
+                              .anyMatch(ClusterEvent.SliceFailure.class::isInstance)
+                              .anyMatch(ClusterEvent.AutoRollback.class::isInstance);
+    }
+
+    @Test
+    void nonLeader_suppressesAutoRollbackAndSliceFailure_evenWhenOwner() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+
+        h.aggregator().onSliceFailure(allInstancesFailed());
+        h.aggregator().onAutoRollback(autoRollbackExecuted());
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    private static SliceFailureEvent.AllInstancesFailed allInstancesFailed() {
+        return SliceFailureEvent.AllInstancesFailed.allInstancesFailed("req-1",
+                                                                       ROLLBACK_ARTIFACT,
+                                                                       MethodName.methodName("ping").unwrap(),
+                                                                       Option.none(),
+                                                                       List.of(SELF),
+                                                                       Map.of(SELF, 3L),
+                                                                       30_000L);
+    }
+
+    private static RollbackEvent.AutoRollbackExecuted autoRollbackExecuted() {
+        return new RollbackEvent.AutoRollbackExecuted("req-1",
+                                                      ROLLBACK_ARTIFACT,
+                                                      Version.version("0.9.0").unwrap(),
+                                                      1,
+                                                      Map.of(SELF, 3L),
+                                                      30_000L);
     }
 
     /// Lifecycle (and leader/quorum/generation) events are cluster-canonical and LEADER-gated: a

@@ -121,6 +121,19 @@ class GeneratedFactoryRouteTest {
     }
 
     @Nested
+    class PathRouteWithoutFactory {
+        /// #1573 (v1608 R2-2): the canonical constructor is lifted — a throw on client input is a typed 400,
+        /// and the delegate runs only on the constructed value.
+        @Test
+        void strict_liftsTheConstructorIntoATyped400() {
+            assertThat(generated).contains(
+                ".to(code -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), "
+               + "() -> new com.example.factoryslice.StrictRequest(code)).async()"
+               + ".flatMap(__constructed -> delegate.strict(__constructed)))");
+        }
+    }
+
+    @Nested
     class PathRouteWithFactory {
         @Test
         void lookup_feedsPathArgToFactoryInsteadOfNew() {
