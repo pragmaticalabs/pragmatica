@@ -3114,7 +3114,7 @@ public class RabiaEngine<C extends Command> {
     /// answered this replica still cannot know it is behind. Cost in a quiet cluster: one `RoundRequest`
     /// per voter pair per `syncRetryInterval`. InPhase replicas are covered by the stall detector instead.
     private void probeQuietSlot() {
-        if (!(engineState.get() instanceof EngineState.Idle)) {
+        if (! (engineState.get() instanceof EngineState.Idle)) {
             return;
         }
 
@@ -3389,7 +3389,7 @@ public class RabiaEngine<C extends Command> {
 
     private void replayCompletedSlot(NodeId peer, Phase phase) {
         completedDecision(phase).onPresent(decision -> network.send(peer, decision))
-                                .onEmpty(() -> doHandleSyncRequest(new SyncRequest(peer)));
+                         .onEmpty(() -> doHandleSyncRequest(new SyncRequest(peer)));
         replayFrontierDecision(peer, phase);
     }
 
