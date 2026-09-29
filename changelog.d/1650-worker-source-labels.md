@@ -14,3 +14,12 @@
   or inherited. Community placement matches on the provider-observed zone, not this label, so it is unaffected.
   [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManagerWorkerReconcileTest.java`
   — two cloud worker sources, each worker's user-data carries its own source and zone]
+- **Zone balancing now counts only the nodes of the source being provisioned.** A source with no configured zone falls
+  back to balancing across the zones its nodes report, and that count spanned every source. While zone labels were
+  rarely set this did no harm. Once they were stamped, a zoneless source's replacement was hinted into another
+  source's zone: Hetzner would place it there, and AWS or GCP would reject the create and open the provisioning
+  circuit. A node without a `source` label counts as `default`.
+  [verified: `ClusterTopologyManagerWorkerReconcileTest` — `reconcile_zonelessSource_isNeverPlacedInAnotherSourcesZone`,
+  `reconcile_zonelessSource_balancesAcrossItsOwnNodesZones_only`]
+- `DockerComputeProvider` reads the host env through an injected lookup (`System::getenv` by default), so the
+  host-env filter is tested against a host that exports its own `AETHER_SOURCE`/`AETHER_ZONE`.
