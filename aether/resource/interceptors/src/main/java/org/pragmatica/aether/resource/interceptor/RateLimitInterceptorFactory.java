@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.RateLimiter;
 
 
@@ -22,16 +23,16 @@ public final class RateLimitInterceptorFactory implements ResourceFactory<RateLi
 
     @Override
     public Promise<RateLimitMethodInterceptor> provision(RateLimitConfig config) {
-        return Promise.success(interceptor(config));
+        return interceptor(config).async();
     }
 
-    private static RateLimitMethodInterceptor interceptor(RateLimitConfig config) {
-        var limiter = RateLimiter.builder()
-                                 .rate(config.maxRequests())
-                                 .period(config.window())
-                                 .burst(config.burst())
-                                 .withDefaultTimeSource();
-
-        return new RateLimitMethodInterceptor(limiter);
+    /// #1316: a configuration the limiter cannot represent fails provisioning with its typed cause.
+    private static Result<RateLimitMethodInterceptor> interceptor(RateLimitConfig config) {
+        return RateLimiter.builder()
+                          .rate(config.maxRequests())
+                          .period(config.window())
+                          .burst(config.burst())
+                          .withDefaultTimeSource()
+                          .map(RateLimitMethodInterceptor::new);
     }
 }
