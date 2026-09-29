@@ -75,6 +75,10 @@ class QuicClusterNetworkLivenessSweepTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(1).seconds();
     private static final TimeSpan HELLO_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    /// #807: waits on a REAL connect use the product's own bound plus margin, not a fixed few seconds. A dial is
+    /// bounded by the connect timeout (3 × helloTimeout = 15 s here); an 8 s wait scored a legitimately slow
+    /// handshake under reactor load as a failure. These are ceilings, reached only when something is wrong.
+    private static final TimeSpan CONNECT_BOUND = TimeSpan.timeSpan(HELLO_TIMEOUT.nanos() * 3 + TimeSpan.timeSpan(5).seconds().nanos()).nanos();
 
     private SliceCodec codec;
     private QuicSslContext serverSsl;
@@ -304,11 +308,13 @@ class QuicClusterNetworkLivenessSweepTest {
 
         nodeA.connect(NodeInfo.nodeInfo(peerBId, bAddress));
 
-        awaitTrue(() -> nodeA.connectedPeers().contains(peerBId), AWAIT_TIMEOUT, "A connects to B");
+        awaitTrue(() -> nodeA.connectedPeers().contains(peerBId), CONNECT_BOUND, "A connects to B");
+        // #807: a keepalive arrives every pingInterval (1 s); any sample younger than 2 s proves one landed. The
+        // ceiling is generous because a loaded box delays the timer, not because the property needs the time.
         awaitTrue(() -> nodeA.peerInboundAgeForTests(peerBId)
                              .map(age -> age < TimeSpan.timeSpan(2).seconds().nanos())
                              .or(false),
-                  AWAIT_TIMEOUT,
+                  CONNECT_BOUND,
                   "B's periodic keepalive refreshes A's receipt clock on an otherwise-idle link");
 
         nodeA.reconcileMissingPeersTick();
@@ -336,15 +342,17 @@ class QuicClusterNetworkLivenessSweepTest {
 
             network.connect(NodeInfo.nodeInfo(peerId, address));
 
-            // 2s budget: far below the 5s reconciler tick, so only the per-attempt timer can clear it.
-            awaitTrue(() -> network.peerPhaseForTests(peerId)
-                                   .map(phase -> phase == PeerState.Phase.EVICTED)
-                                   .or(false),
-                      TimeSpan.timeSpan(2).seconds(),
-                      "per-attempt dial timeout evicts the hung CONNECTING dial for re-dial");
-            assertThat(failures)
-                .as("the per-attempt timeout routes the typed dial-failure event")
-                .isNotEmpty();
+            // #807: attributed by WHAT evicted, not by a 2 s race against the 5 s reconciler tick. Only the
+            // per-attempt timer routes a ConnectionFailed naming "per-attempt dial timeout", so waiting for that event
+            // proves this timer cleared the hung dial whatever the load; the ceiling is only a failure bound.
+            awaitTrue(() -> failures.stream()
+                                    .anyMatch(failure -> failure.nodeId().equals(peerId)
+                                                         && failure.cause().message().contains("per-attempt dial timeout")),
+                      CONNECT_BOUND,
+                      "the per-attempt dial timeout evicts the hung CONNECTING dial and routes its typed failure");
+            assertThat(network.peerPhaseForTests(peerId).map(phase -> phase != PeerState.Phase.CONNECTED).or(false))
+                .as("the hung dial never connected")
+                .isTrue();
         }
     }
 
