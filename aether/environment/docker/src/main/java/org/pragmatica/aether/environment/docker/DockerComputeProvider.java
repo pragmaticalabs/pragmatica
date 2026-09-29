@@ -29,6 +29,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
@@ -38,11 +39,20 @@ import static org.pragmatica.lang.Result.success;
 
 
 @Contract
-public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig config) implements ComputeProvider {
+/// `hostEnv` is the provisioning host's environment, the one the identity and Docker-infra allow-lists are
+/// forwarded from. It is injected so the rule that a node's OWN variables never come from it (#1650) is testable
+/// against a host that HAS them, not only against a CI box that happens not to.
+public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig config, Fn1<String, String> hostEnv) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(DockerComputeProvider.class);
 
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner, DockerConfig config) {
-        return success(new DockerComputeProvider(runner, config));
+        return dockerComputeProvider(runner, config, System::getenv);
+    }
+
+    public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner,
+                                                                      DockerConfig config,
+                                                                      Fn1<String, String> hostEnv) {
+        return success(new DockerComputeProvider(runner, config, hostEnv));
     }
 
     @Override
@@ -326,6 +336,14 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // AETHER_ROLE out — a leader's own role can never leak onto a node it mints.
         command.add("-e");
         command.add("AETHER_ROLE=" + role);
+        // #1650: the node's OWN source and zone, from the provision context and the placement this request
+        // resolved to -- emitted BEFORE the IDENTITY_VARS loop so alreadyEmitted() dedupes the provisioning
+        // host's AETHER_SOURCE/AETHER_ZONE out. Inherited, a leader's own source became every node it minted
+        // (a node learns its source only from this variable), collapsing a multi-source cluster into one
+        // community. A blank zone leaves AETHER_ZONE absent, as the placement label is.
+        command.add("-e");
+        command.add("AETHER_SOURCE=" + ctx.sourceName().value());
+        addZoneEnv(command, request.zone());
         // Single source of truth: propagate the full cluster-identity allow-list
         // (AETHER_CLUSTER_NAME/SECRET/PROVISIONED_BY/API_KEY) then the Docker-infra
         // allow-list (AETHER_DOCKER_NETWORK/DOCKER_GID). A provider-minted replacement
@@ -336,7 +354,9 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // AETHER_PROVISIONED_BY (from ctx.provisionedBy()), AETHER_API_KEY (from config.apiKey()).
         // AETHER_CLUSTER_SECRET still rides the loop verbatim (a cluster-wide constant with no
         // per-provision authoritative source, unlike the name).
-        ClusterIdentityEnv.IDENTITY_VARS.forEach(name -> propagateEnvVar(command, name));
+        ClusterIdentityEnv.IDENTITY_VARS.stream()
+                                        .filter(name -> !ClusterIdentityEnv.NODE_OWN_VARS.contains(name))
+                                        .forEach(name -> propagateEnvVar(command, name));
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
         // Propagate AETHER_INSECURE_DEV_MODE only when present in env so an auto-healed
@@ -373,12 +393,12 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return List.copyOf(command);
     }
 
-    private static void propagateEnvVar(ArrayList<String> command, String name) {
+    private void propagateEnvVar(ArrayList<String> command, String name) {
         if (alreadyEmitted(command, name)) {
             return;
         }
 
-        var value = System.getenv(name);
+        var value = hostEnv.apply(name);
 
         if (value != null && !value.isEmpty()) {
             command.add("-e");
@@ -411,6 +431,13 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     private static void addLabelArgs(ArrayList<String> command, Map.Entry<String, String> entry) {
         command.add("--label");
         command.add(entry.getKey() + "=" + entry.getValue());
+    }
+
+    private static void addZoneEnv(ArrayList<String> command, String zone) {
+        if (!zone.isBlank()) {
+            command.add("-e");
+            command.add("AETHER_ZONE=" + zone);
+        }
     }
 
     private static void addPlacementLabels(ArrayList<String> command, String zone) {

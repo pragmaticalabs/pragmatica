@@ -83,6 +83,11 @@ class RabiaOwnRestoreFailureTest {
     private static final byte[] OWN_SNAPSHOT = "own".getBytes(StandardCharsets.UTF_8);
     private static final byte[] PEER_SNAPSHOT = "peer".getBytes(StandardCharsets.UTF_8);
     private static final Phase OWN_PHASE = Phase.phase(5);
+    private static final String STUCK_FRAGMENT = "still SYNCING after";
+    private static final int WARN_ROUNDS = 6;
+    private static final long FAST_RETRY_MILLIS = 20;
+    private static final org.pragmatica.lang.io.TimeSpan FAST_RETRY = timeSpan(FAST_RETRY_MILLIS).millis();
+    private static final long STUCK_BUDGET_MILLIS = 5_000;
     private static final Cause UNREADABLE_SNAPSHOT = Causes.cause("snapshot is corrupt and cannot be decoded");
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
@@ -100,8 +105,8 @@ class RabiaOwnRestoreFailureTest {
 
         loggerConfig = getOrCreateLoggerConfig(configuration);
         originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ERROR, null);
-        loggerConfig.setLevel(Level.ERROR);
+        loggerConfig.addAppender(appender, Level.WARN, null);
+        loggerConfig.setLevel(Level.WARN);
         ctx.updateLoggers();
     }
 
@@ -138,9 +143,9 @@ class RabiaOwnRestoreFailureTest {
             .contains(UNREADABLE_SNAPSHOT.message());
     }
 
-    /// Pins the diagnostic itself. The ERROR is the ONLY operator signal on this path — the periodic
-    /// stuck-in-`Syncing` WARN is structurally suppressed here (#1447) — so it must name the
-    /// consequence and render the cause, not log a bare object.
+    /// Pins the diagnostic itself. The ERROR is the per-attempt operator signal on this path, so it must
+    /// name the consequence and render the cause, not log a bare object. The periodic stuck-in-`Syncing`
+    /// WARN reports the stall's length on top of it (#1447, pinned below).
     @Test
     void ownRestoreFails_logsAtErrorNamingTheConsequence() {
         var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
@@ -169,6 +174,95 @@ class RabiaOwnRestoreFailureTest {
         assertThat(stateMachine.lastRestored()).as("control: the own-restore branch is the one exercised").isEqualTo(OWN_SNAPSHOT);
         assertThat(appender.capturedErrors()).as("a successful restore reports no failure")
                   .noneMatch(message -> message.contains(FAILURE_FRAGMENT));
+    }
+
+    /// #1447 — the stuck-sync WARN was structurally suppressed on the adoption loop: `adoptCollectedState`
+    /// reset the round counter on every entry, and at `clusterSize` 1 `doSynchronize` returned on the
+    /// adoption branch before counting at all. A node that cannot restore its own history must now report
+    /// the stall within [RabiaEngine#WARN_EVERY_N_SYNC_ROUNDS] retries.
+    ///
+    /// Size 1: adoption runs on every round with zero responses (the unreachable arm). Mutation that
+    /// reddens it: restore the early `return` on the adoption branch of `doSynchronize`.
+    @Test
+    void ownRestoreFails_singleNode_reportsTheStuckSyncWithinBoundedRetries() {
+        var engine = started(1, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT), FAST_RETRY).engine();
+
+        assertThat(awaitCondition(() -> !stuckWarnings().isEmpty(), STUCK_BUDGET_MILLIS))
+            .as("#1447: a single node looping on a failed own-restore must emit the stuck-sync WARN; errors seen: %s",
+                appender.capturedErrors())
+            .isTrue();
+        assertThat(stuckWarnings()).allMatch(message -> message.contains("adoption threshold is met")
+                                                        && message.contains(UNREADABLE_SNAPSHOT.message()));
+        assertThat(engine.isActive()).as("and it still fails closed (#1468)").isFalse();
+    }
+
+    /// Size 3: a peer answers every sync request, so adoption re-enters on every round. Mutation that
+    /// reddens it: restore `syncRounds.set(0)` at the top of `adoptCollectedState`.
+    @Test
+    void ownRestoreFails_threeNodes_reportsTheStuckSyncWithinBoundedRetries() {
+        var network = new AnsweringNetwork();
+        var engine = started(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT), FAST_RETRY, network).engine();
+
+        network.answerWith(engine);
+        assertThat(awaitCondition(() -> !stuckWarnings().isEmpty(), STUCK_BUDGET_MILLIS))
+            .as("#1447: a node re-entering adoption every round must emit the stuck-sync WARN; answered %s requests",
+                network.answered())
+            .isTrue();
+        assertThat(network.answered()).as("adoption was re-entered on several rounds, not once")
+                                      .isGreaterThanOrEqualTo(WARN_ROUNDS);
+        assertThat(engine.isActive()).isFalse();
+    }
+
+    /// CONTROL for both — the same fixtures with a SUCCEEDING restore activate and stay silent for longer
+    /// than it takes the failing arm to warn, so the WARN is caused by the stall and adds no noise to a
+    /// healthy adoption.
+    @Test
+    void ownRestoreSucceeds_emitsNoStuckSyncWarning() {
+        var single = started(1, new RecordingStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT), FAST_RETRY).engine();
+        var network = new AnsweringNetwork();
+        var trio = started(3, new RecordingStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT), FAST_RETRY, network).engine();
+
+        network.answerWith(trio);
+        assertThat(becameActive(single)).isTrue();
+        assertThat(becameActive(trio)).isTrue();
+        awaitCondition(() -> false, FAST_RETRY_MILLIS * WARN_ROUNDS * 3);
+        assertThat(stuckWarnings()).as("a healthy adoption reports no stall").isEmpty();
+    }
+
+    private List<String> stuckWarnings() {
+        return appender.capturedWarnings()
+                       .stream()
+                       .filter(message -> message.contains(STUCK_FRAGMENT))
+                       .toList();
+    }
+
+    /// Answers every `SyncRequest` the engine sends with a COLD response from NODE_2, as a live peer would.
+    private static final class AnsweringNetwork extends TestClusterNetwork {
+        private final java.util.concurrent.atomic.AtomicReference<RabiaEngine<TestCommand>> engine = new java.util.concurrent.atomic.AtomicReference<>();
+        private final java.util.concurrent.atomic.AtomicInteger answered = new java.util.concurrent.atomic.AtomicInteger();
+
+        void answerWith(RabiaEngine<TestCommand> target) {
+            engine.set(target);
+            target.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        }
+
+        int answered() {
+            return answered.get();
+        }
+
+        @Override
+        public <M extends org.pragmatica.consensus.ProtocolMessage> Unit send(NodeId nodeId, M message) {
+            var result = super.send(nodeId, message);
+
+            if (message instanceof SyncRequest && nodeId.equals(NODE_2)) {
+                Option.option(engine.get()).onPresent(target -> {
+                    answered.incrementAndGet();
+                    target.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+                });
+            }
+
+            return result;
+        }
     }
 
     /// A state machine that cannot read its own snapshot: a corrupt or truncated `state.toml`.
@@ -238,11 +332,25 @@ class RabiaOwnRestoreFailureTest {
     private Started started(int clusterSize,
                             StateMachine<TestCommand> stateMachine,
                             RabiaPersistence<TestCommand> persistence) {
-        var network = new TestClusterNetwork();
+        return started(clusterSize, stateMachine, persistence, timeSpan(60).seconds());
+    }
+
+    private Started started(int clusterSize,
+                            StateMachine<TestCommand> stateMachine,
+                            RabiaPersistence<TestCommand> persistence,
+                            org.pragmatica.lang.io.TimeSpan syncRetry) {
+        return started(clusterSize, stateMachine, persistence, syncRetry, new TestClusterNetwork());
+    }
+
+    private Started started(int clusterSize,
+                            StateMachine<TestCommand> stateMachine,
+                            RabiaPersistence<TestCommand> persistence,
+                            org.pragmatica.lang.io.TimeSpan syncRetry,
+                            TestClusterNetwork network) {
         var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, clusterSize),
                                        network,
                                        stateMachine,
-                                       ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
+                                       ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetry),
                                        ConsensusMetrics.noop(),
                                        false,
                                        persistence,
@@ -268,9 +376,10 @@ class RabiaOwnRestoreFailureTest {
         return fresh;
     }
 
-    /// In-memory log4j2 appender capturing ERROR-and-above messages for assertions.
+    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions.
     private static final class CapturingAppender extends AbstractAppender {
         private final List<String> messages = new CopyOnWriteArrayList<>();
+        private final List<String> warnings = new CopyOnWriteArrayList<>();
 
         private CapturingAppender(String name, Layout<?> layout) {
             super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
@@ -284,11 +393,17 @@ class RabiaOwnRestoreFailureTest {
         public void append(LogEvent event) {
             if (event.getLevel().isMoreSpecificThan(Level.ERROR)) {
                 messages.add(event.getMessage().getFormattedMessage());
+            } else if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                warnings.add(event.getMessage().getFormattedMessage());
             }
         }
 
         List<String> capturedErrors() {
             return List.copyOf(messages);
+        }
+
+        List<String> capturedWarnings() {
+            return List.copyOf(warnings);
         }
     }
 
@@ -297,7 +412,11 @@ class RabiaOwnRestoreFailureTest {
     }
 
     private static boolean awaitCondition(BooleanSupplier condition) {
-        var deadline = System.nanoTime() + MILLISECONDS.toNanos(ACTIVATION_BUDGET_MILLIS);
+        return awaitCondition(condition, ACTIVATION_BUDGET_MILLIS);
+    }
+
+    private static boolean awaitCondition(BooleanSupplier condition, long budgetMillis) {
+        var deadline = System.nanoTime() + MILLISECONDS.toNanos(budgetMillis);
 
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {
