@@ -1332,11 +1332,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // `Promise.timeout` would race the Netty completion callbacks and DISCARD a late
         // handshake success (the established connection was orphaned, never attached, never
         // closed). Instead a side timer ([#armDialAttemptTimeout]) evicts a still-CONNECTING
-        // peer after the window so the reconciler re-dials, while the original promise stays
-        // pending: a LATE completion still runs `onDialCompleted` and attaches normally (the
-        // close-listener + zombie-TTL sweep own a genuinely dead late connection; a late attach
-        // never refreshes the receipt-evidence liveness clock — it only restarts the attach-grace
-        // phase age, see PeerState#markInbound).
+        // peer after the window so the reconciler re-dials. The promise itself is never failed by
+        // the timer, but the eviction closes this attempt's socket ([#evictStaleConnecting] →
+        // `closeDatagramChannel`, and the next dial closes the previous socket too), so a timed-out
+        // attempt cannot complete late (#1578, pinned by QuicDialAttemptTest). A completion inside
+        // the window runs `onDialCompleted` and attaches normally — unless the peer went CONNECTED
+        // over another link first, which abandons this attempt while its QUIC handshake is
+        // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
+        // it only restarts the attach-grace phase age, see PeerState#markInbound.
         client.connect(peerId, address)
               .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
               .onFailure(cause -> onDialFailed(peer, cause, attempt));
