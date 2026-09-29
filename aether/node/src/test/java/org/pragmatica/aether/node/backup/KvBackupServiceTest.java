@@ -528,28 +528,67 @@ class KvBackupServiceTest {
     class Fork {
         private static final String OTHER_INSTANCE = "01K4ZT9Q6W3X8Y2B7C5D1OTHR0";
 
-        /// Another instance holds this cluster's lineage and incarnation: FORKED, loud once, and nothing is
-        /// written — not now, not after later changes, whatever the revisions say.
+        /// Two clusters at the SAME lineage and incarnation as different instances (restored from one backup
+        /// at once). X flushes first and owns the head. Y reads X's head: FORKED, loud once naming both
+        /// instances, and never writes — not then, not after later changes, whatever the revisions. X shows
+        /// nothing and its next flush WRITES normally (detection is on the second writer only).
         @Test
-        void aHeadOfThisIncarnationFromAnotherInstance_isForked_neverWritten_andWarnedOnce() {
+        void theSecondClusterOfAFork_isForked_neverWrites_andTheFirstKeepsWriting() {
             var remote = bareRemote(temp.resolve("remote.git"));
+            var x = otherCluster(remote, OTHER_INSTANCE, "local-x");
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, OTHER_INSTANCE, 5));
-            var service = leaderService(Option.some(remote));
-
-            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            x.put(ConfigKey.forKey("x1"), ConfigValue.configValue("x1", "1"));
             scheduler.runUntilIdle();
-            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            var y = leaderService(Option.some(remote));
+
+            put(y, ConfigKey.forKey("y1"), ConfigValue.configValue("y1", "1"));
+            scheduler.runUntilIdle();
+            put(y, ConfigKey.forKey("y2"), ConfigValue.configValue("y2", "2"));
             scheduler.runUntilIdle();
 
-            assertThat(service.status()).isEqualTo(KvBackupService.Status.FORKED);
-            assertThat(commitCount(remote)).as("the other instance's head is never replaced").isEqualTo(1);
+            assertThat(y.status()).isEqualTo(KvBackupService.Status.FORKED);
             assertThat(remoteDocument(remote).header()
-                                             .instanceId()).isEqualTo(OTHER_INSTANCE);
+                                             .instanceId()).as("the head stays X's").isEqualTo(OTHER_INSTANCE);
+            assertThat(remoteDocument(remote).entries()).doesNotContainKey(ConfigKey.forKey("y1"));
             assertThat(warnings).extracting(BackupWarning::code)
                                 .containsExactly(Code.BACKUP_FORKED);
             assertThat(warnings.getFirst()
                                .detail()).contains(OTHER_INSTANCE, INSTANCE);
+
+            x.put(ConfigKey.forKey("x2"), ConfigValue.configValue("x2", "2"));
+            scheduler.runUntilIdle();
+
+            assertThat(remoteDocument(remote).entries()).as("X keeps backing up")
+                                                        .containsKey(ConfigKey.forKey("x2"));
+            assertThat(x.service()
+                        .status()).isEqualTo(KvBackupService.Status.CURRENT);
+            assertThat(x.warnings()).as("the first writer never observes the fork").isEmpty();
+        }
+
+        /// The race: Y committed locally while the remote was unreachable, and X's push reached the remote
+        /// first. The remote admits exactly one history (pushes are fast-forward only); when Y next reads
+        /// the head it is X's, so Y ends FORKED and its queued commit never reaches the remote.
+        @Test
+        void aForkRacedAtThePush_leavesTheLoserForked_andItsQueuedCommitUnpushed() {
+            var remotePath = temp.resolve("raced.git");
+            var y = leaderService(Option.some(remotePath.toString()));
+
+            put(y, ConfigKey.forKey("y1"), ConfigValue.configValue("y1", "1"));
+            scheduler.runUntilIdle(10);
+            assertThat(localCommitCount()).as("Y's commits are queued locally").isPositive();
+
+            var remote = bareRemote(remotePath);
+            var x = otherCluster(remote, OTHER_INSTANCE, "local-x");
+
+            x.put(ConfigKey.forKey("x1"), ConfigValue.configValue("x1", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(y.status()).isEqualTo(KvBackupService.Status.FORKED);
+            assertThat(remoteDocument(remote).header()
+                                             .instanceId()).isEqualTo(OTHER_INSTANCE);
+            assertThat(remoteDocument(remote).entries()).doesNotContainKey(ConfigKey.forKey("y1"));
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .contains(Code.BACKUP_FORKED);
         }
 
         /// The legitimate path the instance check must not break: a new leader of the SAME instance, whose
@@ -837,6 +876,45 @@ class KvBackupServiceTest {
         scheduler.advance(TIMING.quietMillis());
 
         return service;
+    }
+
+    /// Another cluster at this test's lineage and incarnation 1, as instance `instance`: its own KV store,
+    /// local repository and warnings, sharing the remote and the scheduler. It is its own leader.
+    private OtherCluster otherCluster(String remote, String instance, String localDir) {
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
+        var otherWarnings = new ArrayList<BackupWarning>();
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve(localDir),
+                                                                 Option.some(remote),
+                                                                 "backup",
+                                                                 TimeSpan.timeSpan(30).seconds());
+        var service = KvBackupService.kvBackupService(store,
+                                                      CODEC,
+                                                      repository,
+                                                      scheduler,
+                                                      scheduler::now,
+                                                      otherWarnings::add,
+                                                      TIMING);
+        var cluster = new OtherCluster(store, service, otherWarnings);
+
+        cluster.apply(ClusterIncarnationKey.clusterIncarnationKey(),
+                      ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 1, instance));
+        service.onLeaderChange(leaderChange(true));
+        scheduler.advance(TIMING.quietMillis());
+
+        return cluster;
+    }
+
+    private record OtherCluster(KVStore<AetherKey, AetherValue> store, KvBackupService service, List<BackupWarning> warnings) {
+        void apply(AetherKey key, AetherValue value) {
+            store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(key, value))), store.committedRevision() + 1);
+        }
+
+        void put(AetherKey key, AetherValue value) {
+            var old = store.get(key);
+
+            apply(key, value);
+            service.onValuePut(new ValuePut<>(new KVCommand.Put<>(key, value), old));
+        }
     }
 
     private KvBackupService service(Option<String> remote) {

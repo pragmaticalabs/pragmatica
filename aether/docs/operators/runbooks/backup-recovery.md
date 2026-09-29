@@ -76,10 +76,13 @@ EmberKvBackupRestoreTest]`.
 id (#1533), so two clusters restored from the same head at the same time reach the same lineage and
 incarnation as different instances. The backup refuses to let either one replace the other's head:
 whichever cluster finds the other's head raises `BACKUP_FORKED`, naming both instance ids, and backs up
-nothing from then on. `[verified: KvBackupServiceTest.Fork]` The cluster that pushed first keeps writing
-and raises nothing, so `BACKUP_FORKED` on ONE cluster means another live cluster owns this lineage's head.
-To resolve it, retire one cluster and run `aether backup declare-genesis` on the one whose state should
-continue: it moves to a new incarnation and instance, which supersedes the forked head.
+nothing from then on; a push race is settled by git's fast-forward check, and the loser ends FORKED.
+`[verified: KvBackupServiceTest.Fork]` **Detection is on the second writer only:** `BACKUP_FORKED` on a
+cluster means another live cluster with the same lineage and incarnation owns the backup head; that other
+cluster shows NOTHING and keeps backing up. The FORKED cluster's state is not being backed up. Resolve it
+by stopping the FORKED cluster, or by running `aether backup declare-genesis` on it: that moves it to a new
+incarnation and instance of the SAME lineage, which then supersedes the other cluster's head — so run it
+only on the cluster whose state should continue, and stop the other one.
 
 **`restore = "fresh"` against an existing backup** starts a new lineage, and its backup is then GATED
 (`BACKUP_GATED`) until `aether backup declare-genesis` makes it the head; the old lineage stays in git

@@ -125,7 +125,8 @@ Consensus runs in memory on every node; the old per-node consensus snapshot (`Gi
   incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. **A head of this cluster's own lineage and incarnation written by ANOTHER cluster instance is never
   written over** (`BACKUP_FORKED`, gated until `declare-genesis` or a restore moves this cluster to a new
   incarnation) `[mechanism: BackupDecision — the instance id, minted with every incarnation, must match;
-  verified: KvBackupServiceTest.Fork]`. A head of this cluster's own lineage that is ahead of its state is never written over while it is
+  verified: KvBackupServiceTest.Fork]`. Detection is on the second writer only: the cluster whose head it
+  is sees nothing and keeps writing. A head of this cluster's own lineage that is ahead of its state is never written over while it is
   ahead; routine lag after a leader change resolves by itself, and a stall longer than 30 s (monotonic
   clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`
   `[unverified: a false-positive BACKUP_HEAD_AHEAD WARN needs >30 s apply lag in a newly elected leader;
