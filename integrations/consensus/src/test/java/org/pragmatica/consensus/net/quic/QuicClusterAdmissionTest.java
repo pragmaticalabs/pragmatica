@@ -205,6 +205,15 @@ class QuicClusterAdmissionTest {
                                                    .isNotInstanceOf(CoreError.Timeout.class));
     }
 
+    /// #1694 — a server that refuses the client certificate closes the connection before answering the Hello. The
+    /// dial must settle promptly with THAT cause, not after the 15 s Hello bound as `HELLO_TIMEOUT` (which is what
+    /// the timeout path alone would report). Before #1694 it never settled at all.
+    private static void assertRejectedByPeerClose(Result<QuicPeerConnection> outcome, String why) {
+        assertRejected(outcome, why);
+        outcome.onFailure(cause -> assertThat(cause.message()).as("#1694: the refusal is reported as the peer's close, not a timeout")
+                                                              .contains("closed the connection before answering the Hello"));
+    }
+
     @Nested
     class ClusterAdmission {
         /// THE POSITIVE CONTROL. Without this, every rejection below could be a broken harness.
@@ -222,7 +231,7 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected() {
             var port = startServer(clusterServerSsl());
 
-            assertRejected(connect(certificatelessClientSsl(), port),
+            assertRejectedByPeerClose(connect(certificatelessClientSsl(), port),
                 "#715: a peer presenting no certificate must not be admitted to the cluster — "
                     + "before the fix this succeeded, and the peer was then counted by the CTM");
         }
@@ -246,7 +255,7 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected_againstRotatedContext() {
             var port = startServer(rotatedClusterServerSsl());
 
-            assertRejected(connect(certificatelessClientSsl(), port),
+            assertRejectedByPeerClose(connect(certificatelessClientSsl(), port),
                 "the rotated context must enforce the same admission policy as the initial one");
         }
 
