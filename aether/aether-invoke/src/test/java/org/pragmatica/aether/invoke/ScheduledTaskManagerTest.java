@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -16,12 +17,19 @@ import org.pragmatica.aether.invoke.ScheduledTaskManager.ScheduledTaskManagerAda
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
+import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
+import org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -34,6 +42,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -397,9 +407,59 @@ class ScheduledTaskManagerTest {
             putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(0);
-            // Resume by putting non-paused task
-            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            // Resume = the operator's pause key is removed
+            removePause("cache", artifact, method);
             assertThat(manager.activeTimerCount()).isEqualTo(1);
+        }
+
+        /// After a restore the pause key is back BEFORE slice activation republishes the task. The
+        /// registry must remember it and apply it when the task registers.
+        @Test
+        void pauseArrivingBeforeItsTask_isAppliedWhenTheTaskRegisters() {
+            putPause("cache", artifact, method);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).isEqualTo(0);
+            assertThat(registry.allTasks()).singleElement()
+                                           .matches(ScheduledTask::paused);
+        }
+
+        /// Republishing the task (slice reactivation) writes only `ScheduledTaskKey`; the pause stays.
+        @Test
+        void republishOfAPausedTask_keepsItPaused() {
+            putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).isEqualTo(0);
+        }
+
+        /// Simulated cold restart: the paused task's KV state is backed up, decoded, and applied to a fresh
+        /// registry; the runtime `ScheduledTaskKey` is excluded from the backup and republished by activation.
+        @Test
+        void pause_survivesABackupRestore() {
+            var taskKey = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
+            var pauseKey = ScheduledTaskPauseKey.scheduledTaskPauseKey(taskKey);
+            var codec = BackupEntryCodec.backupEntryCodec(SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
+                                                                                KvstoreCodecsSlice.CODECS));
+            var live = Map.<AetherKey, AetherValue> of(taskKey,
+                                                       ScheduledTaskValue.intervalTask(self, "30s", ExecutionMode.ALL),
+                                                       pauseKey,
+                                                       ScheduledTaskPauseValue.scheduledTaskPauseValue(1L));
+            var restored = codec.encode(1L, live)
+                                .flatMap(codec::decode)
+                                .unwrap()
+                                .entries();
+
+            assertThat(restored).containsOnlyKeys(pauseKey);
+            restored.forEach(ScheduledTaskManagerTest.this::applyRestored);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).as("the restored pause holds the republished task").isEqualTo(0);
+            removePause("cache", artifact, method);
+            assertThat(manager.activeTimerCount()).as("resume after restore clears it").isEqualTo(1);
         }
     }
 
@@ -654,10 +714,32 @@ class ScheduledTaskManagerTest {
                                String interval,
                                ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
-        var value = ScheduledTaskValue.intervalTask(node, interval, executionMode).withPaused(true);
+        var value = ScheduledTaskValue.intervalTask(node, interval, executionMode);
         var put = new KVCommand.Put<>(key, value);
 
+        putPause(configSection, artifact, method);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
+    }
+
+    private void putPause(String configSection, Artifact artifact, MethodName method) {
+        var put = new KVCommand.Put<>(ScheduledTaskPauseKey.scheduledTaskPauseKey(configSection, artifact, method),
+                                      ScheduledTaskPauseValue.scheduledTaskPauseValue(1L));
+
+        registry.onScheduledTaskPausePut(new ValuePut<>(put, Option.none()));
+    }
+
+    private void removePause(String configSection, Artifact artifact, MethodName method) {
+        var remove = new KVCommand.Remove<ScheduledTaskPauseKey>(ScheduledTaskPauseKey.scheduledTaskPauseKey(configSection,
+                                                                                                             artifact,
+                                                                                                             method));
+
+        registry.onScheduledTaskPauseRemove(new ValueRemove<>(remove, Option.none()));
+    }
+
+    private void applyRestored(AetherKey key, AetherValue value) {
+        if (key instanceof ScheduledTaskPauseKey pauseKey && value instanceof ScheduledTaskPauseValue pause) {
+            registry.onScheduledTaskPausePut(new ValuePut<>(new KVCommand.Put<>(pauseKey, pause), Option.none()));
+        }
     }
 
     private void putCronTask(String configSection,
@@ -810,10 +892,6 @@ class ScheduledTaskManagerTest {
             return 0;
         }
 
-        @Override
-        public Unit setFailureListener(SliceFailureListener listener) {
-            return Unit.unit();
-        }
 
         @Override
         public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {

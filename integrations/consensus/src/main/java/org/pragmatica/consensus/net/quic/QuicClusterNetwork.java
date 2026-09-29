@@ -508,8 +508,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Override
     public Unit setBootTokens(BootTokens registry) {
         this.bootTokens = registry;
+        registry.onRetired(this::onIdentityRetired);
 
         return Unit.unit();
+    }
+
+    /// A NodeId just retired by a boot-token conflict (#1558): its known process is treated as dead, so the
+    /// peer is permanently departed now — dropped from `connectedPeers()` and never re-dialed — instead of
+    /// lingering until the liveness TTL evicts the dead link.
+    private void onIdentityRetired(NodeId peer) {
+        log.warn("QUIC evicting retired identity {} (boot-token conflict) — permanent departure", peer);
+        departurePermanent(peer);
     }
 
     /// The boot-token registry this transport admits peers through.

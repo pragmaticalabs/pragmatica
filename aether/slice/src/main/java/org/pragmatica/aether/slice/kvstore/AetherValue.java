@@ -4,10 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
-import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -474,23 +472,15 @@ public sealed interface AetherValue {
         }
     }
 
-    record ScheduledTaskValue(NodeId registeredBy,
-                              String interval,
-                              String cron,
-                              ExecutionMode executionMode,
-                              boolean paused) implements AetherValue {
+    record ScheduledTaskValue(NodeId registeredBy, String interval, String cron, ExecutionMode executionMode) implements AetherValue {
         public static ScheduledTaskValue intervalTask(NodeId registeredBy,
                                                       String interval,
                                                       ExecutionMode executionMode) {
-            return new ScheduledTaskValue(registeredBy, interval, "", executionMode, false);
+            return new ScheduledTaskValue(registeredBy, interval, "", executionMode);
         }
 
         public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, ExecutionMode executionMode) {
-            return new ScheduledTaskValue(registeredBy, "", cron, executionMode, false);
-        }
-
-        public ScheduledTaskValue withPaused(boolean paused) {
-            return new ScheduledTaskValue(registeredBy, interval, cron, executionMode, paused);
+            return new ScheduledTaskValue(registeredBy, "", cron, executionMode);
         }
 
         public boolean isInterval() {
@@ -499,6 +489,14 @@ public sealed interface AetherValue {
 
         public boolean isCron() {
             return ! cron.isEmpty();
+        }
+    }
+
+    /// The operator's pause of one scheduled task, stored under [AetherKey.ScheduledTaskPauseKey]. Its
+    /// presence is the pause; `pausedAt` records when, for the operator.
+    record ScheduledTaskPauseValue(long pausedAt) implements AetherValue {
+        public static ScheduledTaskPauseValue scheduledTaskPauseValue(long pausedAt) {
+            return new ScheduledTaskPauseValue(pausedAt);
         }
     }
 
@@ -616,14 +614,64 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Rollback bookkeeping for one artifact base. `updatedAt` is when `currentVersion` became the target —
+    /// the anchor of the auto-rollback bake window (#1573). `rollbackCount`, `lastRollbackAt` and
+    /// `failedVersions` are committed in the SAME batch as the rollback's SliceTarget put, so cooldown,
+    /// maxRollbacks and the never-roll-back-to-a-failed-version rule survive a leader change.
     record PreviousVersionValue(ArtifactBase artifactBase,
                                 Version previousVersion,
                                 Version currentVersion,
-                                long updatedAt) implements AetherValue {
+                                long updatedAt,
+                                int rollbackCount,
+                                long lastRollbackAt,
+                                List<Version> failedVersions) implements AetherValue {
+        public PreviousVersionValue {
+            failedVersions = List.copyOf(failedVersions);
+        }
+
         public static PreviousVersionValue previousVersionValue(ArtifactBase artifactBase,
                                                                 Version previousVersion,
                                                                 Version currentVersion) {
-            return new PreviousVersionValue(artifactBase, previousVersion, currentVersion, System.currentTimeMillis());
+            return new PreviousVersionValue(artifactBase,
+                                            previousVersion,
+                                            currentVersion,
+                                            System.currentTimeMillis(),
+                                            0,
+                                            0,
+                                            List.of());
+        }
+
+        /// A new target version was deployed: the rollback history carries over.
+        public PreviousVersionValue withVersionChange(Version newVersion, long nowMs) {
+            return new PreviousVersionValue(artifactBase,
+                                            currentVersion,
+                                            newVersion,
+                                            nowMs,
+                                            rollbackCount,
+                                            lastRollbackAt,
+                                            failedVersions);
+        }
+
+        /// An automatic rollback from `failedVersion` to `target` committed at `nowMs`.
+        public PreviousVersionValue withRollback(Version failedVersion, Version target, long nowMs) {
+            var failed = new ArrayList<>(failedVersions);
+
+            if (!failed.contains(failedVersion)) {
+                failed.add(failedVersion);
+            }
+
+            return new PreviousVersionValue(artifactBase, failedVersion, target, nowMs, rollbackCount + 1, nowMs, failed);
+        }
+
+        /// Operator reset of the rollback budget; the failed-version record is kept.
+        public PreviousVersionValue withRollbackCountReset() {
+            return new PreviousVersionValue(artifactBase,
+                                            previousVersion,
+                                            currentVersion,
+                                            updatedAt,
+                                            0,
+                                            0,
+                                            failedVersions);
         }
     }
 
@@ -1045,6 +1093,38 @@ public sealed interface AetherValue {
         }
     }
 
+    /// The cluster's lineage and incarnation, under [AetherKey.ClusterIncarnationKey] (#1529 part 1).
+    /// `lineageId` names the cluster's history across cold restarts; `incarnation` counts those restarts
+    /// and dominates any per-incarnation counter (a consensus revision restarts with the cluster).
+    ///
+    /// [VersionFenced] on `incarnation`, which gives two per-operation guarantees and no more: a genesis
+    /// mint against an absent key is first-wins, and a Put through the fence is accepted only as the
+    /// immediate successor of the committed value. A Remove is NOT fenced, and a restore deliberately goes
+    /// Remove-then-Put to bypass the fence; a restore's monotonicity comes from the floor in
+    /// `ClusterIncarnation.restoreCommands`, not from this fence.
+    record ClusterIncarnationValue(String lineageId, long incarnation) implements AetherValue, VersionFenced {
+        public static final long GENESIS = 1L;
+
+        public static ClusterIncarnationValue clusterIncarnationValue(String lineageId, long incarnation) {
+            return new ClusterIncarnationValue(lineageId, incarnation);
+        }
+
+        /// A brand-new cluster: a fresh lineage at the first incarnation.
+        public static ClusterIncarnationValue genesis(String lineageId) {
+            return new ClusterIncarnationValue(lineageId, GENESIS);
+        }
+
+        /// The same lineage, one incarnation later — what a restore commits.
+        public ClusterIncarnationValue next() {
+            return new ClusterIncarnationValue(lineageId, incarnation + 1);
+        }
+
+        @Override
+        public long fenceVersion() {
+            return incarnation;
+        }
+    }
+
     /// Durable record of the operator's cluster-wide auto-heal enable/disable flag (#685), keyed by
     /// [AetherKey.AutoHealStateKey]. A read reflects the log applied LOCALLY: the disable becomes
     /// visible on a node when that node applies the committed Put — bounded by consensus latency, not
@@ -1381,40 +1461,6 @@ public sealed interface AetherValue {
         }
     }
 
-    record AbTestRoutingValue(String testId, String splitRuleJson, String variantVersionsJson) implements AetherValue {
-        public static AbTestRoutingValue abTestRoutingValue(String testId,
-                                                            String splitRuleJson,
-                                                            String variantVersionsJson) {
-            return new AbTestRoutingValue(testId, splitRuleJson, variantVersionsJson);
-        }
-    }
-
-    record StreamMetadataValue(String streamName,
-                               int partitionCount,
-                               String retention,
-                               String retentionValue,
-                               String maxEventSize,
-                               String backpressure,
-                               String owningBlueprint,
-                               long createdAt) implements AetherValue {
-        public static StreamMetadataValue streamMetadataValue(String streamName,
-                                                              int partitionCount,
-                                                              String retention,
-                                                              String retentionValue,
-                                                              String maxEventSize,
-                                                              String backpressure,
-                                                              String owningBlueprint) {
-            return new StreamMetadataValue(streamName,
-                                           partitionCount,
-                                           retention,
-                                           retentionValue,
-                                           maxEventSize,
-                                           backpressure,
-                                           owningBlueprint,
-                                           System.currentTimeMillis());
-        }
-    }
-
     /// Committed assignee of one consumer group's partition (#1271). Written by the leader-only
     /// `ConsumerAssignmentWriter`; read by every node's attach admission and by the applier's cross-key
     /// guard on [StreamCursorCheckpointValue] writes. `epoch` is `Epoch(rabiaTerm, assignmentTerm)`, so it
@@ -1539,63 +1585,6 @@ public sealed interface AetherValue {
                                                                       boolean batchMode,
                                                                       String eventType) {
             return new StreamRegistrationValue(nodeId, consumerGroup, batchMode, eventType);
-        }
-    }
-
-    record StorageBlockValue(String blockIdHex,
-                             Set<String> presentIn,
-                             int refCount,
-                             long lastAccessedAt,
-                             long createdAt,
-                             int accessCount) implements AetherValue {
-        public static StorageBlockValue storageBlockValue(String blockIdHex,
-                                                          Set<String> presentIn,
-                                                          int refCount,
-                                                          long lastAccessedAt,
-                                                          long createdAt,
-                                                          int accessCount) {
-            return new StorageBlockValue(blockIdHex,
-                                         Set.copyOf(presentIn),
-                                         refCount,
-                                         lastAccessedAt,
-                                         createdAt,
-                                         accessCount);
-        }
-
-        public StorageBlockValue withTierAdded(String tier) {
-            var tiers = new HashSet<>(presentIn);
-
-            tiers.add(tier);
-
-            return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt, accessCount);
-        }
-
-        public StorageBlockValue withRefCountIncremented() {
-            return new StorageBlockValue(blockIdHex, presentIn, refCount + 1, lastAccessedAt, createdAt, accessCount);
-        }
-
-        public StorageBlockValue withRefCountDecremented() {
-            return new StorageBlockValue(blockIdHex,
-                                         presentIn,
-                                         Math.max(0, refCount - 1),
-                                         lastAccessedAt,
-                                         createdAt,
-                                         accessCount);
-        }
-
-        public StorageBlockValue withAccessTimestamp() {
-            return new StorageBlockValue(blockIdHex,
-                                         presentIn,
-                                         refCount,
-                                         System.currentTimeMillis(),
-                                         createdAt,
-                                         accessCount + 1);
-        }
-    }
-
-    record StorageRefValue(String blockIdHex, long updatedAt) implements AetherValue {
-        public static StorageRefValue storageRefValue(String blockIdHex) {
-            return new StorageRefValue(blockIdHex, System.currentTimeMillis());
         }
     }
 
@@ -1927,17 +1916,6 @@ public sealed interface AetherValue {
                                                         long timestamp,
                                                         String operatorHint) {
             return new ApiKeyAuditValue(keyId, action, timestamp, operatorHint);
-        }
-    }
-
-    record CloudCredentialsValue(byte[] encryptedToken, String provider, long storedAt) implements AetherValue {
-        public static CloudCredentialsValue cloudCredentialsValue(byte[] encryptedToken, String provider) {
-            return new CloudCredentialsValue(encryptedToken.clone(), provider, System.currentTimeMillis());
-        }
-
-        @Override
-        public byte[] encryptedToken() {
-            return encryptedToken.clone();
         }
     }
 

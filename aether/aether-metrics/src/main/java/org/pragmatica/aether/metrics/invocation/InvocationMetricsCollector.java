@@ -31,6 +31,11 @@ public final class InvocationMetricsCollector {
 
     private final Map<Artifact, Map<MethodName, MethodMetricsWithSlowCalls>> metricsMap = new ConcurrentHashMap<>();
 
+    /// #1573: cumulative per-(artifact, method) execution outcomes, counted at the slice bridge for every
+    /// execution on this node (local and remote callers alike). Shipped on the cluster-sync pong so the
+    /// leader's all-instances-failed detector can take per-window deltas. Never reset: a restart starts a
+    /// new producer incarnation, which the detector treats as a fresh baseline.
+    private final Map<Artifact, Map<String, ExecutionCounters>> executions = new ConcurrentHashMap<>();
     private final AtomicLong totalSerializationNs = new AtomicLong();
     private final AtomicLong serializationCount = new AtomicLong();
 
@@ -68,6 +73,31 @@ public final class InvocationMetricsCollector {
                                       int requestBytes,
                                       int responseBytes) {
         return record(artifact, method, durationNs, true, requestBytes, responseBytes, Option.empty());
+    }
+
+    /// #1573: one slice execution on this node finished with `outcome`. Failures the slice method
+    /// returned itself and execution timeouts are not recorded at all — neither counts either way.
+    public Result<Unit> recordExecution(Artifact artifact, String method, ExecutionOutcome outcome) {
+        executions.computeIfAbsent(artifact,
+                                   _ -> new ConcurrentHashMap<>())
+                  .computeIfAbsent(method,
+                                   _ -> new ExecutionCounters())
+                  .record(outcome);
+
+        return unitResult();
+    }
+
+    /// #1573: cumulative execution outcomes per (artifact, method) since this collector was created.
+    public List<ExecutionCounts> executionCounts() {
+        return executions.entrySet()
+                         .stream()
+                         .flatMap(artifactEntry -> artifactEntry.getValue()
+                                                                .entrySet()
+                                                                .stream()
+                                                                .map(methodEntry -> methodEntry.getValue()
+                                                                                               .counts(artifactEntry.getKey(),
+                                                                                                       methodEntry.getKey())))
+                         .toList();
     }
 
     public Result<Unit> recordStart(Artifact artifact, MethodName method) {
@@ -309,6 +339,52 @@ public final class InvocationMetricsCollector {
 
         public double currentThresholdMs() {
             return currentThresholdNs / 1_000_000.0;
+        }
+    }
+
+    /// #1573: how one slice execution ended, as far as the all-instances-failed detector is concerned.
+    /// One classification for every ingress; the bridge (`AdmittedSliceBridge`: inter-slice, topic,
+    /// scheduled) and the HTTP route recorder (`HttpRoutePublisher.RouteOutcomeRecorder`) both apply it.
+    ///
+    /// | Execution ends with | Counted as |
+    /// |---|---|
+    /// | a value (HTTP: any value but a returned `Result.Failure`) | [#SUCCESS] |
+    /// | the method threw — user code breaking the JBCT contract (`SliceDefect.MethodThrew`) | [#DEFECT] |
+    /// | bridge only: request decode / response encode failed (`SliceDefect.CodecFailed`) | [#DEFECT] |
+    /// | bridge only: the method does not exist in this build (`SliceDefect.MethodNotFound`) | [#DEFECT] |
+    /// | a Cause the method RETURNED — a business outcome — whatever status it maps to (4xx or 5xx) | not counted (neutral) |
+    /// | HTTP: a request the router rejects before the slice (bad path/query/body → 4xx, no route → 404) | not counted |
+    /// | DRAINING refusal, reply timeout, execution timeout | not counted |
+    ///
+    /// The classification is bridge defects (typed `SliceDefect`) versus returned Causes. A returned Cause is
+    /// not a defect because a downstream outage surfaces exactly that way, and counting it would roll a
+    /// healthy version back during someone else's incident; it is not a success either, or it could veto a
+    /// rollback. The consequence is a stated limit: a version that fails only through returned Causes is
+    /// never auto-rolled back.
+    /// An HTTP request body that fails to decode is the client's input, unlike a bridge request, which
+    /// another build produced.
+    public enum ExecutionOutcome {
+        SUCCESS,
+        DEFECT
+    }
+
+    /// #1573: cumulative execution outcomes for one (artifact, method) on this node.
+    public record ExecutionCounts(Artifact artifact, String method, long successes, long defects) {}
+
+    private static final class ExecutionCounters {
+        private final AtomicLong successes = new AtomicLong();
+        private final AtomicLong defects = new AtomicLong();
+
+        @Contract
+        void record(ExecutionOutcome outcome) {
+            switch (outcome) {
+                case SUCCESS -> successes.incrementAndGet();
+                case DEFECT -> defects.incrementAndGet();
+            }
+        }
+
+        ExecutionCounts counts(Artifact artifact, String method) {
+            return new ExecutionCounts(artifact, method, successes.get(), defects.get());
         }
     }
 }

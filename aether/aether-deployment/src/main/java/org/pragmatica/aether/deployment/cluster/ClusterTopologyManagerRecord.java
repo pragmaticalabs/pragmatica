@@ -269,22 +269,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return org.pragmatica.lang.Unit.unit();
     }
 
-    private TomlDocument withGenesisVoters(TomlDocument document) {
-        var sections = new java.util.HashMap<>(document.sections());
-        var cluster = new java.util.HashMap<>(sections.getOrDefault("cluster", java.util.Map.of()));
-
-        cluster.put("genesis_voters",
-                    genesisVoters.get()
-                                 .get()
-                                 .stream()
-                                 .sorted()
-                                 .map(NodeId::id)
-                                 .collect(java.util.stream.Collectors.joining(",")));
-        sections.put("cluster", java.util.Map.copyOf(cluster));
-
-        return new TomlDocument(sections, document.tableArrays());
-    }
-
     private long nowMs() {
         return clock.getAsLong();
     }
@@ -1360,7 +1344,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit, long epoch) {
         var role = NodeRole.nodeRole(entry.role()).option().or(NodeRole.WORKER);
-        var members = observer.coreNodes();
+        var members = liveInstalledVoters();
         var pass = Promise.unitPromise();
 
         for (int i = 0; i < deficit; i++) {
@@ -1482,7 +1466,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                      config,
                                                                                      source.name(),
                                                                                      intendedRole))
-                                            .map(this::withGenesisVoters)
                                             .map(composed -> NodeUserDataRenderer.render(config,
                                                                                          source,
                                                                                          intendedRole,
@@ -1607,6 +1590,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      MAX_CONSECUTIVE_PROVISIONING_FAILURES,
                      cause.message());
         }
+    }
+
+    /// #1601: the live voters a new worker is seeded with — membership's counted core members (MEMBER + SUSPECT)
+    /// narrowed to the installed voter set, the same live set the core auto-heal path passes. The installed
+    /// voter set alone ([TopologyObserver#coreNodes] once voters are installed) carries no health, so a dead
+    /// voter stayed in a new worker's PEERS until membership pruned its NodeInfo. Empty when liveness is
+    /// unwired, which falls back to the liveness-filtered cold path in [#buildProvisionContext].
+    private Set<NodeId> liveInstalledVoters() {
+        var installed = observer.coreNodes();
+
+        return liveness.coreCountedMembers()
+                       .get()
+                       .stream()
+                       .filter(installed::contains)
+                       .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Build the PEERS string from the LIVE member set: `self` first (always present — the

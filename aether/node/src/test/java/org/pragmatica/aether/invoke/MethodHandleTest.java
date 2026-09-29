@@ -230,10 +230,6 @@ class MethodHandleTest {
             return 0;
         }
 
-        @Override
-        public Unit setFailureListener(SliceFailureListener listener) {
-            return unit();
-        }
 
         @Override
         public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {

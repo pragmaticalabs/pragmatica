@@ -61,7 +61,7 @@ class GeneratedVoRouteTest {
         @Test
         void getSeat_handlerReceivesLiftedValueObjectDirectly() {
             assertThat(generated).contains(
-                ".to(seatId -> delegate.getSeat(new com.example.voslice.GetSeatRequest(seatId)))");
+                ".to(seatId -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.voslice.GetSeatRequest(seatId)).async().flatMap(__constructed -> delegate.getSeat(__constructed)))");
         }
 
         @Test
@@ -85,7 +85,7 @@ class GeneratedVoRouteTest {
         @Test
         void findSeat_handlerReceivesLiftedOptionalValueObject() {
             assertThat(generated).contains(
-                ".to(seat -> delegate.findSeat(new com.example.voslice.FindSeatRequest(seat)))");
+                ".to(seat -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.voslice.FindSeatRequest(seat)).async().flatMap(__constructed -> delegate.findSeat(__constructed)))");
         }
     }
 }

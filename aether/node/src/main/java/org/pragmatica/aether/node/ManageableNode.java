@@ -20,6 +20,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.journal.TransitionJournal;
+import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -192,6 +193,12 @@ public interface ManageableNode {
     /// below quorum?" without log-scraping. Default `Option.none()` keeps `ManageableNode` test
     /// proxies compiling; the production node record supplies the live view.
     default Option<QuorumLossSnapshot> quorumLossSnapshot() {
+        return Option.none();
+    }
+
+    /// #1532 — the change-triggered KV backup's genesis declaration, when `[backup]` is enabled on this
+    /// node. Default `Option.none()` keeps `ManageableNode` test proxies compiling.
+    default Option<BackupGenesis> backupGenesis() {
         return Option.none();
     }
 

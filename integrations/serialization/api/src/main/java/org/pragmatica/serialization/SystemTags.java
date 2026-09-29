@@ -180,6 +180,9 @@ public interface SystemTags {
         pin(table, 86, "org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot");
         pin(table, 87, "org.pragmatica.aether.worker.metrics.PerMethodMetrics");
         pin(table, 88, "org.pragmatica.aether.worker.metrics.PerSliceMetrics");
+        // #1526: genesis agreement. Consensus-prefixed, so it must sit in the one-byte window; 89 was
+        // the next free slot in it (blocks are advisory).
+        pin(table, 89, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement");
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
@@ -213,15 +216,22 @@ public interface SystemTags {
         pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
         pin(table, 113, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest");
         pin(table, 114, "org.pragmatica.consensus.rabia.VoterConfiguration");
+        // RETIRED 2026-09-27 (#1526): `ConfigurationHandoff` went with #1390's certified handoff; voter
+        // reconfiguration now follows Rabia §4. The pin STAYS so the tag is never reused (see the
+        // DHTNotification note under [base 640]). Same for 118, 119, 121 and 122 below.
         pin(table, 115, "org.pragmatica.consensus.rabia.ConfigurationHandoff");
         pin(table, 116, "org.pragmatica.cluster.metrics.MetricObservation");
         pin(table, 117, "org.pragmatica.aether.worker.metrics.SourceMetricsBatch");
+        // RETIRED 2026-09-27 (#1526): `VoterAuthority` and `ConfigurationCertificate`.
         pin(table, 118, "org.pragmatica.consensus.rabia.VoterAuthority");
         pin(table, 119, "org.pragmatica.consensus.rabia.ConfigurationCertificate");
         pin(table, 120, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest");
+        // RETIRED 2026-09-27 (#1526): the `ConfigurationTransfer` and `ConfigurationInstalled` messages.
         pin(table, 121, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationTransfer");
         pin(table, 122, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationInstalled");
-        // Tag 123 is available: the removed uncorrelated LeaderPut never shipped before GA.
+        // #1526: the Rabia §4 command nested in Propose/Decision; consensus-prefixed, so one-byte window.
+        // Tag 123 was free: the removed uncorrelated LeaderPut never shipped before GA.
+        pin(table, 123, "org.pragmatica.consensus.rabia.ReconfigurationCommand");
         pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
         pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
         pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");
@@ -279,6 +289,10 @@ public interface SystemTags {
         // so the clear edge must be its own event.
         pin(table, 290, "org.pragmatica.aether.api.ClusterEvent.ThresholdBreached");
         pin(table, 291, "org.pragmatica.aether.api.ClusterEvent.ThresholdCleared");
+        // #1573: appended, like 290/291 — the committed automatic rollback, CRITICAL, with its evidence.
+        // 293, not 292: open PR branch feat/1574-operator-warning pins 292 (OperatorWarning); skipping it
+        // keeps the two appends from colliding whichever merges first.
+        pin(table, 293, "org.pragmatica.aether.api.ClusterEvent.AutoRollback");
         // HTTP handling and forwarding  [base 512]
         pin(table, 512, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest");
         pin(table, 513, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse");
@@ -335,6 +349,8 @@ public interface SystemTags {
         pin(table, 968, "org.pragmatica.aether.slice.blueprint.SecurityOverrides.Entry");
         // AetherKey  [base 1088]
         pin(table, 1088, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey");
+        // RETIRED 2026-09-27 (#1530): `AbTestRoutingKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1089, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestRoutingKey");
         pin(table, 1090, "org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey");
         pin(table, 1091, "org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey");
@@ -342,6 +358,8 @@ public interface SystemTags {
         pin(table, 1093, "org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey");
         pin(table, 1094, "org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey");
         pin(table, 1095, "org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey");
+        // RETIRED 2026-09-26 (#1530): `CloudCredentialsKey` was deleted — no production writer
+        // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1096, "org.pragmatica.aether.slice.kvstore.AetherKey.CloudCredentialsKey");
         pin(table, 1097, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey");
         pin(table, 1098, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterPhaseKey");
@@ -371,11 +389,15 @@ public interface SystemTags {
         pin(table, 1122, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey");
         pin(table, 1123, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey");
         pin(table, 1124, "org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey");
+        // RETIRED 2026-09-26 (#1530): `StorageBlockKey` and `StorageRefKey` were deleted — no
+        // production writer or reader. Both pins STAY so the tags are never reused.
         pin(table, 1125, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageBlockKey");
         pin(table, 1126, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageRefKey");
         pin(table, 1127, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageStatusKey");
         pin(table, 1128, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey");
         pin(table, 1129, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey");
+        // RETIRED 2026-09-27 (#1530): `StreamMetadataKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1130, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey");
         pin(table, 1131, "org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey");
         pin(table, 1132, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey");
@@ -385,6 +407,8 @@ public interface SystemTags {
         pin(table, 1136, "org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey");
         pin(table, 1137, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey");
         // AetherValue  [base 1600]
+        // RETIRED 2026-09-27 (#1530): `AbTestRoutingValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1600, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestRoutingValue");
         pin(table, 1601, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue");
         pin(table, 1602, "org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue");
@@ -394,6 +418,8 @@ public interface SystemTags {
         pin(table, 1606, "org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue");
         pin(table, 1607, "org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue");
         pin(table, 1608, "org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress");
+        // RETIRED 2026-09-26 (#1530): `CloudCredentialsValue` was deleted — no production writer
+        // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1609, "org.pragmatica.aether.slice.kvstore.AetherValue.CloudCredentialsValue");
         pin(table, 1610, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue");
         pin(table, 1611, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase");
@@ -428,12 +454,16 @@ public interface SystemTags {
         pin(table, 1640, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue");
         pin(table, 1641, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus");
         pin(table, 1642, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue");
+        // RETIRED 2026-09-26 (#1530): `StorageBlockValue` and `StorageRefValue` were deleted — no
+        // production writer or reader. Both pins STAY so the tags are never reused.
         pin(table, 1643, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageBlockValue");
         pin(table, 1644, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageRefValue");
         pin(table, 1645, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue");
         pin(table, 1646, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue.TierStatus");
         pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
         pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
+        // RETIRED 2026-09-27 (#1530): `StreamMetadataValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1649, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue");
         pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
         pin(table, 1651, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
@@ -496,6 +526,11 @@ public interface SystemTags {
         pin(table, 1690, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityLedgerValue");
         pin(table, 1691, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue");
         pin(table, 1692, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase");
+        // RETIRED 2026-09-27 (#1545): `VotingJournalCheckpoint` and `VotingJournalRecord` were deleted with
+        // the durable control storage. #1545 removed their pins outright; they are restored here (#1541) so
+        // the table keeps "never reuse" enforceable, as for DHTNotification under [base 640].
+        pin(table, 1693, "org.pragmatica.consensus.rabia.VotingJournalCheckpoint");
+        pin(table, 1694, "org.pragmatica.consensus.rabia.VotingJournalRecord");
         pin(table, 1701, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Request");
         pin(table, 1702, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Report");
         pin(table, 1704, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected");
@@ -507,6 +542,12 @@ public interface SystemTags {
         pin(table, 1697, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ScopeContent");
         pin(table, 1698, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ChunkRequest");
         pin(table, 1699, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Chunk");
+        // scheduled-task operator pause as cluster state (#1541) — next free slots after 1706
+        pin(table, 1707, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey");
+        pin(table, 1708, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue");
+        // cluster incarnation — the single lineage/incarnation authority (#1529 part 1); next free after 1708
+        pin(table, 1709, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey");
+        pin(table, 1710, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // ---- 2114..16383 RESERVED ----
