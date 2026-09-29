@@ -82,7 +82,9 @@ class CommunityObservabilityForgeTest {
         LifecycleAwait.nodeSettled("kill worker " + victim.id(), cluster, cluster.killNode(victim.id(), false));
         await().atMost(BUDGET.duration())
                .until(() -> field(communityJson(community), "state").equals(Option.some("DEGRADED")));
-        assertThat(field(communityJson(community), "liveMembers").map(Integer::parseInt)).hasValueSatisfying(live -> assertThat(live).isLessThan(WORKERS));
+        // An absent liveMembers reads as WORKERS, so it fails the bound rather than passing vacuously.
+        assertThat(field(communityJson(community), "liveMembers").map(Integer::parseInt)
+                                                                 .or(WORKERS)).isLessThan(WORKERS);
         await().atMost(BUDGET.duration())
                .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(CommunityObservabilityForgeTest::assertDegradedEdge));
         await().atMost(BUDGET.duration())
