@@ -542,6 +542,86 @@ class ClusterDeploymentStateTransactionalTest {
         }
     }
 
+    /// #1492 — removing an ABSENT blueprint used to log "App blueprint '<id>' removed". `KVStore.handleRemove`
+    /// publishes a `ValueRemove` with an empty `oldValue` even for a key it never held, and the handler did not
+    /// look. Both arms are driven through the real FSM entry point, differing only in `oldValue`, so a handler
+    /// that ignores it cannot pass both.
+    @Nested
+    class AbsentBlueprintRemoval {
+        private InfoAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void captureActiveLogger() {
+            appender = new InfoAppender("AbsentBlueprintRemovalCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            var configuration = ctx.getConfiguration();
+            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
+            if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {
+                loggerConfig = existing;
+            } else {
+                loggerConfig = new LoggerConfig(ACTIVE_LOGGER_NAME, Level.INFO, false);
+                configuration.addLogger(ACTIVE_LOGGER_NAME, loggerConfig);
+            }
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.INFO, null);
+            loggerConfig.setLevel(Level.INFO);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void releaseActiveLogger() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        @Test
+        void appBlueprintRemove_ofAnAbsentKey_doesNotLogRemoved() {
+            var id = blueprintId("ghost", V1);
+
+            dispatchRemove(id, Option.none());
+
+            assertThat(appender.messages).as("an absent blueprint must not be reported as removed")
+                                         .noneMatch(msg -> msg.contains("App blueprint '" + id.artifact().asString() + "' removed"))
+                                         .anyMatch(msg -> msg.contains(id.artifact().asString())
+                                                          && msg.contains("absent key — nothing was removed"));
+        }
+
+        @Test
+        void appBlueprintRemove_ofAPresentKey_logsRemoved() {
+            var present = blueprint("app", V1, "slice-a");
+
+            dispatchRemove(present.id(), Option.some(AppBlueprintValue.appBlueprintValue(present)));
+
+            assertThat(appender.messages).as("a present blueprint's removal is still reported")
+                                         .anyMatch(msg -> msg.contains("App blueprint '" + present.id().artifact().asString() + "' removed"))
+                                         .noneMatch(msg -> msg.contains("absent key"));
+        }
+
+        private void dispatchRemove(BlueprintId id, Option<AppBlueprintValue> oldValue) {
+            var key = AppBlueprintKey.appBlueprintKey(id);
+
+            harness.dispatch(new AppBlueprintRemoveReceived(new ValueRemove<>(new KVCommand.Remove<>(key), oldValue)));
+        }
+    }
+
+    private static final class InfoAppender extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private InfoAppender(String name) {
+            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
+        }
+
+        @Override public void append(LogEvent event) {
+            messages.add(event.getMessage().getFormattedMessage());
+        }
+    }
+
     @Nested
     class BestEffortFailureOutcome {
         // #760/#724 review round 3 GAP fix (151b11d94): BEST_EFFORT deployments now populate
