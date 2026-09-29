@@ -329,6 +329,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// counter makes the ~240-rejection storm one-grep diagnosable instead of DEBUG-silent. Reset
     /// to zero when the peer is readmitted (a fresh tombstone starts a fresh count).
     private final Map<NodeId, AtomicLong> tombstoneRejectionCount = new ConcurrentHashMap<>();
+    /// #1578 dial-attempt journal: a process-wide attempt number, so every outbound attach can be
+    /// traced to the one dial that produced it and a re-dial of an already-connected peer shows the
+    /// route it took.
+    private final AtomicLong dialAttempts = new AtomicLong();
     /// Membership-view supplier gating consensus broadcast targets — MANDATORY (Wave 5,
     /// #68-class retry-storm prevention). The transport `peers` table is a connection CACHE,
     /// not the membership AUTHORITY: a peer absent from the membership view (evicted / dead per
@@ -1321,18 +1325,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         var address = new InetSocketAddress(inetAddress, port);
+        var attempt = dialAttempts.incrementAndGet();
+
+        log.info("Dial journal: attempt #{} to {} at {} started", attempt, peerId, address);
         // Per-ATTEMPT dial timeout (H10, Wave 5): the timeout must NOT fail the dial promise —
         // `Promise.timeout` would race the Netty completion callbacks and DISCARD a late
         // handshake success (the established connection was orphaned, never attached, never
         // closed). Instead a side timer ([#armDialAttemptTimeout]) evicts a still-CONNECTING
-        // peer after the window so the reconciler re-dials, while the original promise stays
-        // pending: a LATE completion still runs `onDialCompleted` and attaches normally (the
-        // close-listener + zombie-TTL sweep own a genuinely dead late connection; a late attach
-        // never refreshes the receipt-evidence liveness clock — it only restarts the attach-grace
-        // phase age, see PeerState#markInbound).
+        // peer after the window so the reconciler re-dials. The promise itself is never failed by
+        // the timer, but the eviction closes this attempt's socket ([#evictStaleConnecting] →
+        // `closeDatagramChannel`, and the next dial closes the previous socket too), so a timed-out
+        // attempt cannot complete late (#1578, pinned by QuicDialAttemptTest). A completion inside
+        // the window runs `onDialCompleted` and attaches normally — unless the peer went CONNECTED
+        // over another link first, which abandons this attempt while its QUIC handshake is
+        // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
+        // it only restarts the attach-grace phase age, see PeerState#markInbound.
         client.connect(peerId, address)
-              .onSuccess(conn -> onDialCompleted(peer, conn))
-              .onFailure(cause -> onConnectFailed(peer, cause));
+              .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
+              .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
     }
 
@@ -1349,8 +1359,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Per-attempt dial-timeout expiry: if the peer is STILL CONNECTING (the dial neither
     /// completed nor failed within the window), force CONNECTING → EVICTED so the reconciler
-    /// re-dials, and route the typed dial-failure event — WITHOUT failing the dial promise,
-    /// so a late completion still attaches (H10).
+    /// re-dials, and route the typed dial-failure event. The timer does not fail the dial promise,
+    /// but the eviction closes this attempt's socket, so the attempt cannot complete late (#1578).
     @SuppressWarnings("JBCT-PAT-01")  // Guard + evict + failure routing
     private void onDialAttemptTimeout(NodeInfo peer) {
         var state = peers.get(peer.id());
@@ -1365,7 +1375,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         router.route(new NetworkServiceMessage.ConnectionFailed(peer.id(),
                                                                 ConnectionError.networkError(peer.address().asString(),
-                                                                                             "per-attempt dial timeout (a late completion may still attach)")));
+                                                                                             "per-attempt dial timeout (the attempt is released)")));
     }
 
     /// Dial-success continuation. Journals the Wave-1 §6.1 dialer expected-vs-actual identity
@@ -1373,9 +1383,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// `QuicClusterClient.completePeerConnection`: a mismatched Hello sender is rejected there
     /// (connection closed, dial failed down [#onConnectFailed]), so this continuation only ever
     /// sees connections whose identity was verified against the dialed NodeId.
-    private void onDialCompleted(NodeInfo dialed, QuicPeerConnection connection) {
+    private void onDialCompleted(NodeInfo dialed, QuicPeerConnection connection, long attempt) {
         journalDialerHello(dialed, connection);
-        onPeerConnected(connection, dialed.address(), dialed.labels());
+        onPeerConnected(connection, dialed.address(), dialed.labels(), "dial attempt #" + attempt);
+    }
+
+    private void abandonPendingDial(NodeId peerId) {
+        var clientRef = client;
+
+        if (clientRef != null) {
+            clientRef.abandonPendingDial(peerId);
+        }
+    }
+
+    private void onDialFailed(NodeInfo peer, Cause cause, long attempt) {
+        // #1578: an attempt abandoned because the peer is already CONNECTED over another link is not a
+        // failure — the connect-failure path would evict, count a handshake failure and report the peer.
+        if (cause instanceof QuicTransportError.DialAbandoned) {
+            quicMetrics.onDialAbandoned();
+            log.info("Dial journal: attempt #{} to {} abandoned: connected over another link", attempt, peer.id());
+
+            return;
+        }
+
+        log.info("Dial journal: attempt #{} to {} failed: {}", attempt, peer.id(), cause.message());
+        onConnectFailed(peer, cause);
     }
 
     /// Feed the PEER transition journal with the completed outbound handshake identity
@@ -1456,10 +1488,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                                              cause.message())));
     }
 
-    @SuppressWarnings("JBCT-PAT-01")  // Multi-step peer registration with attach outcome dispatch
     private void onPeerConnected(QuicPeerConnection connection,
                                  NodeAddress peerAddress,
                                  Map<String, String> peerLabels) {
+        onPeerConnected(connection, peerAddress, peerLabels, "inbound Hello");
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")  // Multi-step peer registration with attach outcome dispatch
+    private void onPeerConnected(QuicPeerConnection connection,
+                                 NodeAddress peerAddress,
+                                 Map<String, String> peerLabels,
+                                 String origin) {
         var peerId = connection.peerId();
         // Never register self as a peer — self-connections cause removal cascades
         // (processViewChange REMOVE for self → leader re-election → CDM rebuild)
@@ -1513,7 +1552,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // The attach transition IS the emission (Wave 5): ACCEPTED routed processViewChange(ADD)
         // and RECONNECTED routed processViewChange(RECONNECT) from the PeerState chokepoint
         // before attach() returned. Only post-attach bookkeeping remains here.
+        var phaseBefore = state.phase();
         var outcome = state.attach(connection, System.nanoTime());
+
+        journalAttach(peerId, origin, phaseBefore, outcome);
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
         outcome.superseded().onPresent(this::closeSupersededConnection);
@@ -1563,6 +1605,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // missing-peer reconciler backoff (handles the asymmetric-handshake recovery path).
         resetReconnectBackoff(peerId);
         state.resetReconcileBackoff();
+        // #1578: the peer is CONNECTED, so our own dial to it that has not passed its QUIC handshake is dropped
+        // rather than left to complete late and supersede this link (the late designated dial of #1554's
+        // skewed cold start: a second handshake per pair). An attempt already past its handshake is untouched.
+        abandonPendingDial(peerId);
         // Fix D.1: a successful attach means the peer is no longer livelocking against a tombstone —
         // drop its rejection counter so a future fresh tombstone starts counting from zero.
         tombstoneRejectionCount.remove(peerId);
@@ -1596,6 +1642,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
         unknownNodeInfo.onPresent(_ -> router.route(new NetworkServiceMessage.Send(peerId,
                                                                                    new NetworkMessage.DiscoverNodes(self.id()))));
         log.debug("Node {} connected via QUIC Hello handshake", peerId);
+    }
+
+    /// #1578 dial-attempt journal: one line per attach, naming where the connection came from (a
+    /// numbered dial attempt or an inbound Hello), the phase it found and what the attach did — so a
+    /// RECONNECT of an already-connected peer can be traced to the route that produced it.
+    private void journalAttach(NodeId peerId,
+                               String origin,
+                               PeerState.Phase phaseBefore,
+                               PeerState.AttachOutcome outcome) {
+        log.info("Dial journal: attach {} via {} found {} -> {}{}",
+                 peerId,
+                 origin,
+                 phaseBefore,
+                 outcome.result(),
+                 outcome.superseded().map(_ -> " (superseded the incumbent)").or(""));
     }
 
     private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId,
@@ -1846,7 +1907,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         // Sole serialization site: encode only once a writable lane stream is confirmed.
         return encodeLoudly(message, peerId).fold(_ -> encodeFailedOutcome(peerId, message),
-                                                  bytes -> writeIfWritable(stream.unwrap(), bytes, peerId, lane));
+                                                  bytes -> writeIfWritable(stream.unwrap(),
+                                                                           bytes,
+                                                                           peerId,
+                                                                           lane,
+                                                                           option(connection)));
     }
 
     /// Encode with the failure made LOUD (the #492 orphaned-codec class): an encode throw previously
@@ -1947,7 +2012,41 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var pending = connection.completeLaneOpen(lane);
 
         opened.onPresent(stream -> writeLaneOpened(stream, pending, peerId, lane))
-              .onEmpty(() -> backstopUnhealableStream(peerId, connection));
+              .onEmpty(() -> laneOpenFailed(peerId, lane, connection, pending));
+    }
+
+    /// #1578 — a lane open fails when its connection is dead. If that connection is still the bound
+    /// one, the link is a zombie and the BACKSTOP evicts it. If it was REPLACED (the losing side of a
+    /// duplicate dial, closed while writes captured it), evicting would tear down the survivor: the
+    /// waiting messages go to the lane on the bound connection instead, or are reported as dropped.
+    private void laneOpenFailed(NodeId peerId, StreamType lane, QuicPeerConnection connection, List<byte[]> pending) {
+        boundConnection(peerId).filter(bound -> bound != connection)
+                       .onPresent(bound -> resendOnBoundConnection(peerId, lane, bound, pending))
+                       .onEmpty(() -> backstopUnhealableStream(peerId, connection));
+    }
+
+    private Option<QuicPeerConnection> boundConnection(NodeId peerId) {
+        return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
+    }
+
+    private void resendOnBoundConnection(NodeId peerId,
+                                         StreamType lane,
+                                         QuicPeerConnection bound,
+                                         List<byte[]> pending) {
+        laneStream(bound, lane).filter(QuicStreamChannel::isActive)
+                  .onPresent(stream -> pending.forEach(bytes -> resendOnKeptStream(stream, bytes, peerId, lane)))
+                  .onEmpty(() -> warnPendingDropped(peerId,
+                                                    lane,
+                                                    pending.size()));
+    }
+
+    private void warnPendingDropped(NodeId peerId, StreamType lane, int count) {
+        quicMetrics.onWriteFailure();
+        log.warn("Lane open for {} on a replaced connection to peer {} failed and the bound connection has no {} stream — {} pending message(s) dropped",
+                 lane,
+                 peerId,
+                 lane,
+                 count);
     }
 
     @Contract
@@ -1957,7 +2056,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Contract
     private void writePendingLaneMessage(QuicStreamChannel stream, byte[] bytes, NodeId peerId, StreamType lane) {
-        var _ = writeIfWritable(stream, bytes, peerId, lane);
+        var _ = writeIfWritable(stream, bytes, peerId, lane, Option.none());
     }
 
     /// BACKSTOP: a write found a CONNECTED peer with no usable stream AND the lazy open could not
@@ -1983,12 +2082,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
         evictStaleConnection(peerId, connection);
     }
 
-    private WriteOutcome writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
+    /// `resendVia` is the connection whose lane a failed write may be re-sent on (see
+    /// [#onLaneWriteResult]); empty where the caller already writes to the stream the lane resolves to.
+    private WriteOutcome writeIfWritable(QuicStreamChannel ch,
+                                         byte[] bytes,
+                                         NodeId peerId,
+                                         StreamType streamType,
+                                         Option<QuicPeerConnection> resendVia) {
         if (ch.isWritable()) {
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
-              .addListener(future -> handleWriteResult(future, peerId, streamType));
+              .addListener(future -> onLaneWriteResult(future, ch, bytes, peerId, streamType, resendVia));
 
             return new WriteOutcome.Sent(peerId);
         }
@@ -2028,7 +2133,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// assert the per-stream backpressure branch (CONSENSUS retry vs. fast-fail refusal)
     /// without standing up a full QUIC handshake.
     WriteOutcome writeIfWritableForTest(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
-        return writeIfWritable(ch, bytes, peerId, streamType);
+        return writeIfWritable(ch, bytes, peerId, streamType, Option.none());
     }
 
     /// Package-private test seam — drives the lane-resolution + lazy-open + BACKSTOP write path
@@ -2119,6 +2224,44 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Causes.cause(streamType + " stream backpressured or inactive for " + peerId).promise();
     }
 
+    /// #1578 — a write that failed because its stream was retired under it is re-sent ONCE on the
+    /// stream its lane resolves to now. The write resolved its stream before a winning stream was
+    /// registered for the lane, and ran on the event loop after the retired stream was finished
+    /// ([QuicPeerConnection#registerStream]); reporting that as a plain write failure would lose a
+    /// message the connection can still carry. Only a stream that differs from the failed one and is
+    /// live qualifies, so a genuinely dead connection still takes the ordinary failure path — and so
+    /// does a failed resend, which is never resent again.
+    private void onLaneWriteResult(Future<? super Void> future,
+                                   QuicStreamChannel failed,
+                                   byte[] bytes,
+                                   NodeId peerId,
+                                   StreamType streamType,
+                                   Option<QuicPeerConnection> resendVia) {
+        if (future.isSuccess()) {
+            return;
+        }
+
+        resendVia.flatMap(connection -> laneStream(connection, streamType))
+                 .filter(current -> current != failed && current.isActive())
+                 .onPresent(current -> resendOnKeptStream(current, bytes, peerId, streamType))
+                 .onEmpty(() -> handleWriteResult(future, peerId, streamType));
+    }
+
+    private static Option<QuicStreamChannel> laneStream(QuicPeerConnection connection, StreamType lane) {
+        return connection.stream(lane)
+                         .fold(() -> connection.stream(StreamType.CONSENSUS),
+                               Option::some);
+    }
+
+    private void resendOnKeptStream(QuicStreamChannel current, byte[] bytes, NodeId peerId, StreamType streamType) {
+        quicMetrics.onRetiredStreamResend();
+        log.debug("Write to peer {} on a retired {} stream or connection failed — resending once on the stream the lane resolves to now",
+                  peerId,
+                  streamType);
+        current.writeAndFlush(Unpooled.wrappedBuffer(bytes))
+               .addListener(future -> handleWriteResult(future, peerId, streamType));
+    }
+
     private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {
         if (!future.isSuccess()) {
             quicMetrics.onWriteFailure();
@@ -2145,10 +2288,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
-        var evicted = state.evict(System.nanoTime());
+        var evicted = state.evictIfBound(connection, System.nanoTime());
 
         if (evicted.isEmpty()) {
             log.debug("Node {} stale link already replaced — nothing to evict", peerId);
+            Option.option(connection).filter(QuicPeerConnection::isActive).onPresent(this::closeDroppedConnection);
 
             return;
         }
@@ -2166,8 +2310,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         log.warn("Node {} evicted stale (inactive) link — peer remains in topology, offline buffer preserved for reconnect",
                  peerId);
-        // Explicit use of the `connection` parameter to satisfy the API contract — the
-        // identity check already happened inside `state.evict()` which matches by phase.
+        // #1578: the identity check is `state.evictIfBound(connection)` above — the evicted
+        // connection IS `connection`. (It used to read "matches by phase", which it did, and a
+        // stale captured reference then evicted the connection that replaced it.)
         // #1442: wrapped at the boundary rather than null-checked in place. Behaviour is
         // unchanged — every caller passes a live connection, and the documented guard is the
         // `isActive()` one (see the comment at the channel-close call site).
@@ -2775,6 +2920,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// in CONNECTING nor marked REMOVED after an unresolvable dial.
     Option<PeerState.Phase> peerPhaseForTests(NodeId peerId) {
         return Option.option(peers.get(peerId)).map(PeerState::phase);
+    }
+
+    /// Package-private test seam (#1578) — the connection a peer is currently bound to, or empty when
+    /// it has none. Lets the lane tests write on, and inspect, the lanes of the connection that
+    /// survived a simultaneous dial.
+    Option<QuicPeerConnection> activeConnectionForTests(NodeId peerId) {
+        return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
+    }
+
+    /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally
+    /// as the non-designated initiator, so a test can force BOTH ends of a pair to dial at once.
+    @Contract
+    void dialForTests(NodeInfo peer, boolean forceInitiate) {
+        connectPeer(peer, forceInitiate);
+    }
+
+    /// Package-private test seam — the #1578 abandon an attach performs, invoked directly, so a test can aim it at
+    /// an attempt in a chosen stage (e.g. past its QUIC handshake, Hello unanswered).
+    void abandonPendingDialForTests(NodeId peerId) {
+        abandonPendingDial(peerId);
     }
 
     /// Package-private test seam — the offline-buffer occupancy of a peer's PeerState (0 when the peer has

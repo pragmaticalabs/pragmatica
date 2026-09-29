@@ -218,9 +218,12 @@ class EmberColdStartSingleDialerTest {
 
     /// The late core is the HIGHEST id, so it is the designated dialer for no pair and reaches the isolation
     /// branch while the four designated dialers' dials to it, started before it listened, are still in
-    /// flight. Measured: it dials each seed once, and those late designated dials then complete and supersede
-    /// the connected lane — up to 8 extra handshakes, the late-completing supersede tracked in #1578. Pinned
-    /// here as a regression bound: every core connects to every other, and the count never exceeds 28.
+    /// flight. It dials each seed once; since #1578 each seed's still-pending dial is abandoned when the late
+    /// core's link attaches, so the normal shape is exactly 20 (pinned in-JVM by `QuicDialAttemptTest`). A seed
+    /// whose dial passed its QUIC handshake before that attach is NOT abandoned (its Hello may be with the peer);
+    /// it completes and the lower-id link supersedes — at most one live attempt per seed, so at most 8 extra
+    /// handshakes. Pinned here as a safety bound: every core connects to every other, and the count stays in
+    /// [20, 28].
     @Test
     @Timeout(300)
     void lateStartingHighestCore_connectsToEveryCore_withinTheSupersedeBound() {
