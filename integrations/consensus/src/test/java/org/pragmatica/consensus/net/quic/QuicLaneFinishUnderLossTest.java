@@ -51,9 +51,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// it opens its own lane stream, the acceptor finishes the stand-in, and the dialer finishes its half behind its
 /// queued writes), but the connection runs through a relay that drops datagrams in both directions (default 3%,
 /// `-Dquic.test.dropRate`). Armed per run: loss really happened (the dialer's QUIC stack lost bytes) and the acceptor
-/// really finished the stand-in. Whether the finish lands MID-burst depends on how fast the pivot's stream opens under
-/// loss — at 3% it usually does (writes after it fail visibly), at 20% the burst usually resolves first. Every write
-/// the dialer saw succeed must reach the acceptor either way.
+/// really finished the stand-in, and the finish landed MID-burst: at the pivot the burst waits until the dialer's stand-in
+/// has shut its output (the acceptor's FIN arrived and ours went out), so the writes after it fail visibly (failed > 0)
+/// while the writes before it are still in flight under loss. Every write the dialer saw succeed must reach the acceptor.
 @Timeout(120)
 class QuicLaneFinishUnderLossTest {
     private static final NodeId ACCEPTOR = new NodeId("lf-acceptor");
@@ -120,6 +120,7 @@ class QuicLaneFinishUnderLossTest {
                  + " statsAt20s=" + statsAt + " statsAt35s=" + stats());
         }
         assertThat(lostBytes(dialerSide.connection())).as("arming: the relay made the dialer's QUIC stack lose bytes").isPositive();
+        assertThat(failed.get()).as("arming: the finish landed mid-burst, so the writes after it failed visibly").isPositive();
         assertThat(acceptorSide.get().stream(LANE).map(QuicStreamChannel::streamId))
             .as("arming: the acceptor moved the lane off the stand-in, so it finished it")
             .isNotEqualTo(Option.some(standIn.streamId()));
@@ -198,6 +199,8 @@ class QuicLaneFinishUnderLossTest {
     private void burstWrite(QuicStreamChannel stream, int index, String padding, int pivot, AtomicInteger succeeded, AtomicInteger failed) {
         if (index == pivot) {
             var _ = openLaneAsync(dialerSide);
+            // Hold the burst until the finish has really happened, so it lands mid-burst at any drop rate.
+            awaitTrue(stream::isOutputShutdown, "the peer finished the stand-in and the dialer answered with its FIN (mid-burst)");
         }
         stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "fin-" + index + "|" + padding))))
               .addListener(future -> (future.isSuccess() ? succeeded : failed).incrementAndGet());
