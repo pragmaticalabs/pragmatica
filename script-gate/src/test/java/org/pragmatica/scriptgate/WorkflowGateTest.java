@@ -1,14 +1,16 @@
 package org.pragmatica.scriptgate;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.lang.Result;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 
 /// #1180 - a job whose purpose is to produce integration reports must fail, not warn, when its upload step finds
@@ -25,27 +27,24 @@ class WorkflowGateTest {
         var steps = new ArrayList<String>();
 
         WORKFLOWS.forEach(workflow -> steps.addAll(uploadSteps(workflow)));
-
-        var failsafeUploads = steps.stream()
-                                   .filter(step -> step.contains("failsafe-reports"))
-                                   .toList();
-
+        var failsafeUploads = steps.stream().filter(step -> step.contains("failsafe-reports")).toList();
         // The count is the evidence: a pass that examined no upload step would prove nothing.
         assertThat(failsafeUploads).as("control: failsafe-report upload steps found in %s", WORKFLOWS)
-                                   .hasSizeGreaterThanOrEqualTo(3);
+                  .hasSizeGreaterThanOrEqualTo(3);
         assertThat(failsafeUploads).allSatisfy(step -> assertThat(step).as("upload step:%n%s", step)
-                                                                        .contains("if-no-files-found: error"));
+                                                                 .contains("if-no-files-found: error"));
     }
 
     /// #1684 - the standalone test blueprints are outside the reactor, so a reactor build never checks their format.
     /// CI must run `jbct:check` over every `aether/tests/blueprints/*/pom.xml`, refusing an empty glob.
     @Test
     void ci_jbctChecksEveryStandaloneBlueprint() {
-        var ci = String.join("\n", read(ScriptRunner.repoRoot().resolve(Path.of(".github", "workflows", "ci.yml"))));
+        var ci = String.join("\n",
+                             read(ScriptRunner.repoRoot().resolve(Path.of(".github", "workflows", "ci.yml"))));
 
         assertThat(ci).contains("poms=(aether/tests/blueprints/*/pom.xml)")
-                      .contains("mvn -B jbct:check -f \"$pom\"")
-                      .contains("refusing to continue");
+                  .contains("mvn -B jbct:check -f \"$pom\"")
+                  .contains("refusing to continue");
     }
 
     /// Each `actions/upload-artifact` step of `workflow`, as its text: from the step's `- ` line to the next step at
@@ -58,6 +57,7 @@ class WorkflowGateTest {
             if (!lines.get(i).contains("uses: actions/upload-artifact")) {
                 continue;
             }
+
             var start = stepStart(lines, i);
             var indent = indentOf(lines.get(start));
             var end = start + 1;
@@ -65,8 +65,10 @@ class WorkflowGateTest {
             while (end < lines.size() && (lines.get(end).isBlank() || indentOf(lines.get(end)) > indent)) {
                 end++;
             }
+
             steps.add(String.join("\n", lines.subList(start, end)));
         }
+
         return steps;
     }
 
@@ -76,19 +78,20 @@ class WorkflowGateTest {
         while (start > 0 && !lines.get(start).stripLeading().startsWith("- ")) {
             start--;
         }
+
         return start;
     }
 
     private static int indentOf(String line) {
-        return line.length() - line.stripLeading().length();
+        return line.length() - line.stripLeading()
+                                   .length();
     }
 
     private static List<String> read(Path file) {
         assertThat(file).exists();
-        try {
-            return Files.readAllLines(file);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + file, e);
-        }
+
+        return Result.lift(() -> Files.readAllLines(file)).fold(cause -> fail("Cannot read " + file
+                                                                             + ": " + cause.message()),
+                                                                lines -> lines);
     }
 }
