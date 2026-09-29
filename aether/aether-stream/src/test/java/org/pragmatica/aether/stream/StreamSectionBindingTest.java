@@ -14,6 +14,10 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
@@ -52,6 +56,10 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// Every key here is declared with a NON-default value, so a single key falling back to its default is
 /// visible in the assertion that covers it.
 class StreamSectionBindingTest {
+    /// #1564: the activation binder resolves the declared factors against the node\'s replication context.
+    private static final ProvisioningContext BINDING_CONTEXT = ProvisioningContext.provisioningContext()
+                                                                                  .withExtension(ReplicationContext.Source.class,
+                                                                                                 ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN));
     private static final String SECTION = "streams.orders";
     private static final String ALIAS = "orders";
     private static final RetentionPolicy DEFAULTS = RetentionPolicy.retentionPolicy();
@@ -69,8 +77,8 @@ class StreamSectionBindingTest {
             auto-offset-reset = "latest"
             max-event-size = "64KB"
             consistency = "strong"
-            replicas = 3
-            min-sync-replicas = 2
+            replication_factor = 3
+            confirmation_factor = 2
             compression = "lz4"
             encryption-key-id = "orders-key"
             """;
@@ -133,8 +141,8 @@ class StreamSectionBindingTest {
             assertThat(config.autoOffsetReset()).isEqualTo("latest");
             assertThat(config.maxEventSizeBytes()).isEqualTo(64L * 1024);
             assertThat(config.consistencyMode()).isEqualTo(ConsistencyMode.STRONG);
-            assertThat(config.replicas()).isEqualTo(3);
-            assertThat(config.minSyncReplicas()).isEqualTo(2);
+            assertThat(config.replicationFactor()).isEqualTo(3);
+            assertThat(config.confirmationFactor()).isEqualTo(2);
             assertThat(config.compression()).isEqualTo(StreamCompression.LZ4);
             assertThat(config.encryptionKeyId()).isEqualTo(Option.some("orders-key"));
         }
@@ -280,7 +288,7 @@ class StreamSectionBindingTest {
         void bindTimeRefusal_isTheParsersTypedCause() {
             new StreamPublisherFactory().sectionBinder()
                                         .onEmpty(() -> fail("stream factories must bind their own section"))
-                                        .onPresent(binder -> binder.bind(providerOf(compound("max-count = \"0\"")), SECTION)
+                                        .onPresent(binder -> binder.bind(providerOf(compound("max-count = \"0\"")), SECTION, BINDING_CONTEXT)
                                                                    .onSuccess(config -> fail("count 0 must be refused, bound " + config))
                                                                    .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ValueOutOfRange(ALIAS,
                                                                                                                                                               "max-count",
@@ -329,8 +337,8 @@ class StreamSectionBindingTest {
                                                    defaults.autoOffsetReset(),
                                                    defaults.maxEventSizeBytes(),
                                                    defaults.consistencyMode(),
-                                                   defaults.replicas(),
-                                                   defaults.minSyncReplicas(),
+                                                   defaults.replicationFactor(),
+                                                   defaults.confirmationFactor(),
                                                    defaults.compression(),
                                                    defaults.encryptionKeyId());
             var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
@@ -394,12 +402,12 @@ class StreamSectionBindingTest {
         }
 
         private static void assertBothRefuseWith(String toml, Class<? extends Cause> expected) {
-            StreamConfigParser.parseResources(toml)
+            StreamConfigParser.parseResources(toml, ReplicationFactors.BUILT_IN)
                               .onSuccess(resources -> fail("deploy must refuse, parsed " + resources))
                               .onFailure(cause -> assertThat(cause).as("deploy").isInstanceOf(expected));
             new StreamPublisherFactory().sectionBinder()
                                         .onEmpty(() -> fail("stream factories must bind their own section"))
-                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION)
+                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION, BINDING_CONTEXT)
                                                                    .onSuccess(config -> fail("activation must refuse, bound " + config))
                                                                    .onFailure(cause -> assertThat(cause).as("activation").isInstanceOf(expected)));
         }
@@ -420,6 +428,7 @@ class StreamSectionBindingTest {
                                                                    });
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(StreamPartitionManager.class, manager)
+                                             .withExtension(ReplicationContext.Source.class, ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN))
                                              .withExtension(Serializer.class, identitySerializer());
             try {
                 provider.provide(StreamPublisher.class, SECTION, context)
@@ -440,7 +449,7 @@ class StreamSectionBindingTest {
     class DeployAndRuntimeAgree {
         @Test
         void deployParse_and_runtimeBind_produceTheSameConfig() {
-            var deployed = StreamConfigParser.parseResources(EVERY_KEY)
+            var deployed = StreamConfigParser.parseResources(EVERY_KEY, ReplicationFactors.BUILT_IN)
                                              .map(resources -> ((StreamResource.Owned) resources.get(ALIAS)).config())
                                              .onFailure(cause -> fail(cause.message()))
                                              .unwrap();
@@ -457,28 +466,41 @@ class StreamSectionBindingTest {
         void snakeCaseKey_isRefused_namingTheDashedSpelling() {
             var toml = """
                     [streams.orders]
-                    min_sync_replicas = 2
+                    max_event_size = "64KB"
                     """;
 
             new StreamPublisherFactory().sectionBinder()
                                         .onEmpty(() -> fail("stream factories must bind their own section"))
-                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION)
+                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION, BINDING_CONTEXT)
                                                                    .onSuccess(config -> fail("unread key must be refused, bound " + config))
                                                                    .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
-                                                                   .onFailure(cause -> assertThat(cause.message()).contains("'min_sync_replicas'")
-                                                                                                                  .contains("did you mean 'min-sync-replicas'")));
+                                                                   .onFailure(cause -> assertThat(cause.message()).contains("'max_event_size'")
+                                                                                                                  .contains("did you mean 'max-event-size'")));
+        }
+
+        /// #1564: the removed replication keys are refused at activation too, naming their replacement.
+        @Test
+        void removedReplicationKey_isRefused_namingItsReplacement() {
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf("""
+                                                                                    [streams.orders]
+                                                                                    min-sync-replicas = 2
+                                                                                    """), SECTION, BINDING_CONTEXT)
+                                                                   .onSuccess(config -> fail("removed key must be refused, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause.message()).contains("did you mean 'confirmation_factor'")));
         }
 
         @Test
         void nonIntegerValue_isRefused_notDefaulted() {
             var toml = """
                     [streams.orders]
-                    min-sync-replicas = "two"
+                    confirmation_factor = "two"
                     """;
 
             new StreamPublisherFactory().sectionBinder()
                                         .onEmpty(() -> fail("stream factories must bind their own section"))
-                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION)
+                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION, BINDING_CONTEXT)
                                                                    .onSuccess(config -> fail("non-integer must be refused, bound " + config)));
         }
 
@@ -496,9 +518,96 @@ class StreamSectionBindingTest {
         }
     }
 
+    /// #1564 at ACTIVATION (v1680 V1/V5): the node-side bind applies the same core-count check and raises the same
+    /// warnings deploy validation does, whatever deploy saw — the committed cluster config may have changed since.
+    @Nested
+    class ActivationReplicationChecks {
+        private static final ProvisioningContext THREE_CORES = ProvisioningContext.provisioningContext()
+                                                                                  .withExtension(ReplicationContext.Source.class,
+                                                                                                 ReplicationContext.Source.fixed(ReplicationContext.replicationContext(ReplicationFactors.BUILT_IN,
+                                                                                                                                                                       3)));
+
+        /// V1: a declared replication_factor above the DESIRED core count is refused at activation, typed.
+        @Test
+        void bind_factorAboveTheDesiredCoreCount_isRefused() {
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf("""
+                                                                                    [streams.orders]
+                                                                                    replication_factor = 5
+                                                                                    """), SECTION, THREE_CORES)
+                                                                   .onSuccess(config -> fail("RF 5 on 3 cores must be refused, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicationRefused(ALIAS,
+                                                                                                                                                                 new ReplicationFactorsError.ExceedsCoreCount(5,
+                                                                                                                                                                                                              3)))));
+        }
+
+        /// N8: a node that supplies no replication context refuses the bind with a TYPED cause naming the alias,
+        /// never resolving the section against a guessed default.
+        @Test
+        void bind_withoutAReplicationSource_isRefusedTyped() {
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf("""
+                                                                                    [streams.orders]
+                                                                                    partitions = 2
+                                                                                    """), SECTION, ProvisioningContext.provisioningContext())
+                                                                   .onSuccess(config -> fail("no replication source must be refused, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicationContextUnavailable(ALIAS))));
+        }
+
+        /// #1564 / #1617 (R10): the same warnings are raised as `replication-policy-warning` operator warnings through
+        /// the sink the node supplies in the provisioning context, so they reach the cluster event log.
+        @Test
+        void bind_declaredFactorBelowThree_raisesAReplicationPolicyOperatorWarning() {
+            var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            var context = THREE_CORES.withExtension(org.pragmatica.utility.warning.OperatorWarningSink.class,
+                                                    org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf("""
+                                                                                    [streams.orders]
+                                                                                    replication_factor = 1
+                                                                                    """), SECTION, context)
+                                                                   .onFailure(cause -> fail(cause.message())));
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+            while (events.size() < 3 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(events).as("RF 1 declared raises all three warnings").hasSize(3);
+            assertThat(events).allSatisfy(event -> assertThat(event.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING))
+                              .allSatisfy(event -> assertThat(event.subject()).isEqualTo("stream 'orders'"));
+            assertThat(events).anySatisfy(event -> assertThat(event.message()).contains(ReplicationWarning.FACTOR_BELOW_THREE.code()));
+        }
+
+        /// V5: the declaration's warnings are LOGGED at activation — the LOUD RF-below-3 warning among them.
+        @Test
+        void bind_declaredFactorBelowThree_logsTheLoudWarning() {
+            var warnings = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var detach = LogCapture.warningsOf(StreamSectionBinding.class, warnings);
+
+            try {
+                bindWith(new StreamPublisherFactory(), """
+                        [streams.orders]
+                        replication_factor = 1
+                        """);
+            } finally {
+                detach.run();
+            }
+
+            // #1617: OperatorWarnings.raise prefixes the site's template with the operator-warning code.
+            assertThat(warnings).anySatisfy(line -> assertThat(line).startsWith("[replication-policy-warning] LOUD: ")
+                                                                    .contains(ReplicationWarning.FACTOR_BELOW_THREE.code())
+                                                                    .contains("stream 'orders'"));
+        }
+    }
+
     /// The full activation seam: [SpiResourceProvider] binds a stream resource's config with the factory's
     /// own binder over the slice's configuration provider, and the stream is created with the declared
-    /// `min-sync-replicas`, which the record binder dropped to `0`.
+    /// `confirmation_factor` (pre-#1564 `min-sync-replicas`, which the record binder dropped to `0`).
     @Nested
     class ThroughTheResourceProvider {
         @Test
@@ -509,6 +618,7 @@ class StreamSectionBindingTest {
                                                                    (_, _) -> Result.success(StreamConfig.DEFAULT));
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(StreamPartitionManager.class, manager)
+                                             .withExtension(ReplicationContext.Source.class, ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN))
                                              .withExtension(Serializer.class, identitySerializer())
                                              .withExtension(ConfigurationProvider.class, providerOf("""
                                                      [streams.orders]
@@ -516,8 +626,8 @@ class StreamSectionBindingTest {
                                                      retention = "count"
                                                      retention-value = "1000"
                                                      max-event-size = "64KB"
-                                                     replicas = 3
-                                                     min-sync-replicas = 2
+                                                     replication_factor = 3
+                                                     confirmation_factor = 2
                                                      """));
             try {
                 provider.provide(StreamPublisher.class, SECTION, context)
@@ -526,10 +636,10 @@ class StreamSectionBindingTest {
 
                 assertThat(capturing.seen).hasSize(1);
                 var bound = capturing.seen.getFirst();
-                assertThat(bound.minSyncReplicas()).isEqualTo(2);
+                assertThat(bound.confirmationFactor()).isEqualTo(2);
                 assertThat(bound.maxEventSizeBytes()).isEqualTo(64L * 1024);
                 assertThat(bound.retention().maxCount()).isEqualTo(1000L);
-                assertThat(manager.minSyncReplicasFor(ALIAS)).isEqualTo(2);
+                assertThat(manager.confirmationFactorFor(ALIAS)).isEqualTo(2);
             } finally {
                 manager.close();
             }
@@ -542,7 +652,7 @@ class StreamSectionBindingTest {
 
     private static StreamConfig bindWith(ResourceFactory<?, StreamConfig> factory, String toml, String section) {
         return factory.sectionBinder()
-                      .map(binder -> binder.bind(providerOf(toml), section))
+                      .map(binder -> binder.bind(providerOf(toml), section, BINDING_CONTEXT))
                       .or(() -> fail("stream factories must bind their own section"))
                       .onFailure(cause -> fail(cause.message()))
                       .unwrap();

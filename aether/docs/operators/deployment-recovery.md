@@ -85,7 +85,7 @@ Aether takes the second view. Empirically, the second view is right for distribu
 
 The single argument for `--restart unless-stopped` is "if the Docker daemon restarts (host reboot), the container should come back automatically."
 
-Aether's answer: that's a host-level concern, handled at host level. If the host reboots, CTM observes the node missing and provisions a replacement. If the operator wants the same VM to come back, they provision a systemd unit at host level — but that systemd unit must also have `Restart=no`. The job of "make the host bring up an aether-node on boot" is distinct from "auto-restart the process if it exits."
+Aether's answer: a reboot is a process death, and a dead NodeId never returns under the same id. If the host reboots, CTM observes the node missing and provisions a replacement under a FRESH node id. A host-level unit must therefore neither restart the process (`Restart=no`) nor start it on boot (`systemctl start`, never `enable`) while the node id is fixed per host. Relaunching under the old id is refused once the node has been removed (§4.4). A host that should serve again after a reboot rejoins under a NEW node id.
 
 In practice, most production deployments use immutable VMs/pods: hosts are cattle, not pets. A host that needs to be rebooted to restore a service is replaced, not nursed.
 
@@ -153,7 +153,7 @@ Restart=no
 # DO NOT use Restart=on-failure or Restart=always
 ```
 
-The operator-supplied systemd may be appropriate for launching aether-node on host boot (same role as cloud-init's `docker run`), but it must not respawn on exit.
+The unit must not respawn on exit, and it must not start on host boot either (`systemctl start`, never `enable`) while the node id is fixed per host. A node that has been gone long enough is removed for good, so a rebooted host that relaunched it under the same id would be refused and never rejoin (#1467, #1543). A host that should come back after a reboot rejoins under a NEW node id. Aether's own cloud-init starts the unit without enabling it, and runs its container with `--restart no`.
 
 ### 4.5 Heap exhaustion exits the process — exit code 3
 

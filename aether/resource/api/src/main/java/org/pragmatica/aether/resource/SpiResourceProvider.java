@@ -399,8 +399,11 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                   ResourceFactory<T, C> factory,
                                                   String section,
                                                   Option<ProvisioningContext> contextOpt) {
-        return compositeOf(contextOpt).map(composite -> bindSection(binder, composite, section))
-                          .or(() -> noProviderForSectionBinder(factory, section));
+        return contextOpt.flatMap(context -> compositeOf(contextOpt).map(composite -> bindSection(binder,
+                                                                                                  composite,
+                                                                                                  section,
+                                                                                                  context)))
+                         .or(() -> noProviderForSectionBinder(factory, section));
     }
 
     private static <T, C> Promise<C> noProviderForSectionBinder(ResourceFactory<T, C> factory, String section) {
@@ -411,8 +414,9 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     private static <C> Promise<C> bindSection(ResourceFactory.SectionBinder<C> binder,
                                               ConfigurationProvider composite,
-                                              String section) {
-        return binder.bind(composite, section)
+                                              String section,
+                                              ProvisioningContext context) {
+        return binder.bind(composite, section, context)
                      .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
                      .async();
     }

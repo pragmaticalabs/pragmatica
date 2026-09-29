@@ -55,7 +55,7 @@ class StreamReshuffleLifecycleTest {
                                          1_048_576L,
                                          ConsistencyMode.EVENTUAL,
                                          replicas,
-                                         0,
+                                         1,
                                          StreamCompression.NONE,
                                          Option.none());
     }

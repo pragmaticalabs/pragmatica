@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -298,18 +299,19 @@ class StreamConfigReplicationTest {
         }
     }
 
-    /// #1547 review: the replication minimum holds on EVERY commit path, not only the fresh create.
+    /// #1547 review, carried into #1564: the engine's replication check holds on EVERY commit path, not only the fresh
+    /// create. Since #1564 the engine refuses a pair outside `1 <= CF <= RF` (it no longer refuses RF < 3, R5).
     @Nested
-    class ReplicationMinimumOnEveryCommitPath {
+    class ReplicationBackstopOnEveryCommitPath {
 
-        /// Control: a fresh RF=1 create is refused before anything is materialized.
+        /// Control: a fresh create with CF above RF is refused before anything is materialized.
         @Test
-        void freshCreate_belowMinimum_isRefused() {
+        void freshCreate_confirmationAboveFactor_isRefused() {
             var manager = streamPartitionManager(Long.MAX_VALUE, clusterNode);
             try {
-                manager.createStream(replicasConfig(1))
-                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected ReplicasBelowMinimum"))
-                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicasBelowMinimum("orders", 1, 3)));
+                manager.createStream(replicasConfig(1, 2))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected ReplicationRefused"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(INVALID_POLICY));
 
                 assertThat(clusterNode.streamConfigPuts()).isEmpty();
             } finally {
@@ -317,20 +319,20 @@ class StreamConfigReplicationTest {
             }
         }
 
-        /// The verifier's probe: an RF=3 create whose commit fails leaves an uncommitted local entry; an RF=1
+        /// The verifier's probe: an RF=3 create whose commit fails leaves an uncommitted local entry; an invalid
         /// re-create of the same name must not reach the commit through the republish arm.
         @Test
-        void reCreate_belowMinimum_afterAFailedCommit_isRefused_andNothingIsCommitted() {
+        void reCreate_invalidPolicy_afterAFailedCommit_isRefused_andNothingIsCommitted() {
             var failingNode = new FailingClusterNode();
             var manager = streamPartitionManager(Long.MAX_VALUE, failingNode);
             try {
-                manager.createStream(replicasConfig(3))
+                manager.createStream(replicasConfig(3, 2))
                        .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected the first commit to fail"));
 
                 failingNode.recover();
-                manager.createStream(replicasConfig(1))
-                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("An RF=1 re-create must not commit"))
-                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicasBelowMinimum("orders", 1, 3)));
+                manager.createStream(replicasConfig(1, 2))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("An invalid re-create must not commit"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(INVALID_POLICY));
 
                 assertThat(failingNode.appliedAfterRecovery()).isZero();
             } finally {
@@ -338,7 +340,11 @@ class StreamConfigReplicationTest {
             }
         }
 
-        private static StreamConfig replicasConfig(int replicas) {
+        private static final StreamError INVALID_POLICY = new StreamError.ReplicationRefused("orders",
+                                                                                            new ReplicationFactorsError.ConfirmationOutOfRange(1,
+                                                                                                                                               2));
+
+        private static StreamConfig replicasConfig(int replicas, int confirmation) {
             var defaults = StreamConfig.streamConfig("orders");
 
             return StreamConfig.streamConfig("orders",
@@ -348,7 +354,7 @@ class StreamConfigReplicationTest {
                                              defaults.maxEventSizeBytes(),
                                              defaults.consistencyMode(),
                                              replicas,
-                                             0,
+                                             confirmation,
                                              defaults.compression(),
                                              defaults.encryptionKeyId());
         }
@@ -441,7 +447,7 @@ class StreamConfigReplicationTest {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             try {
                 putConfig(manager, durableConfig(4, 1, 0));
-                assertThat(manager.minSyncReplicasFor("orders")).isEqualTo(0);
+                assertThat(manager.confirmationFactorFor("orders")).isEqualTo(0);
 
                 manager.publishLocal("orders", 0, "e0".getBytes(), 1L)
                        .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("seed publish must succeed"));
@@ -449,7 +455,7 @@ class StreamConfigReplicationTest {
 
                 putConfig(manager, durableConfig(4, 2, 2));
 
-                assertThat(manager.minSyncReplicasFor("orders"))
+                assertThat(manager.confirmationFactorFor("orders"))
                     .as("committed app config must become authoritative over the prior REST default")
                     .isEqualTo(2);
                 assertThat(manager.totalAllocatedBytes())
@@ -472,11 +478,11 @@ class StreamConfigReplicationTest {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             try {
                 putConfig(manager, durableConfig(4, 2, 2));
-                assertThat(manager.minSyncReplicasFor("orders")).isEqualTo(2);
+                assertThat(manager.confirmationFactorFor("orders")).isEqualTo(2);
 
                 putConfig(manager, durableConfig(4, 1, 0));
 
-                assertThat(manager.minSyncReplicasFor("orders"))
+                assertThat(manager.confirmationFactorFor("orders"))
                     .as("a weaker committed config must not downgrade the stream")
                     .isEqualTo(2);
             } finally {
@@ -497,7 +503,7 @@ class StreamConfigReplicationTest {
                        .onPresent(si -> assertThat(si.partitions())
                            .as("a partition-count change must not resize live rings")
                            .isEqualTo(4));
-                assertThat(manager.minSyncReplicasFor("orders"))
+                assertThat(manager.confirmationFactorFor("orders"))
                     .as("an incompatible partition change must not adopt the new durability knobs")
                     .isEqualTo(0);
             } finally {

@@ -58,6 +58,7 @@ import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
@@ -231,6 +232,7 @@ import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
@@ -367,6 +369,8 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -1577,7 +1581,7 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
-    /// consensus (e.g. `replicas=2 / min-sync=2` at slice activation), place its replica set NOW instead
+    /// consensus (e.g. `replication_factor=2 / confirmation_factor=2` at slice activation), place its replica set NOW instead
     /// of waiting for an unrelated membership/quorum edge that may never fire in a membership-stable
     /// cluster. Registered as the SECOND `StreamConfigKey` put-handler, so it runs AFTER
     /// [StreamPartitionManager#onStreamConfigPut] has hydrated the stream into `replicaCatalog()`
@@ -3096,11 +3100,6 @@ public interface AetherNode extends ManageableNode {
         }
 
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
-        var blueprintService = BlueprintService.blueprintService(clusterNode,
-                                                                 kvStore,
-                                                                 repository,
-                                                                 artifactStore,
-                                                                 resourceProviderSetup.nodeComposite());
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
@@ -3186,6 +3185,13 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
                                                                       OPERATOR_WARNING_EVICTION_INTERVAL,
                                                                       OPERATOR_WARNING_EVICTION_INTERVAL));
+        // #1564 / #1617 (R10): deploy warnings are raised through this node's operator-warning sink.
+        var blueprintService = BlueprintService.blueprintService(clusterNode,
+                                                                 kvStore,
+                                                                 repository,
+                                                                 artifactStore,
+                                                                 resourceProviderSetup.nodeComposite(),
+                                                                 operatorWarningSink);
         // #1640: a cluster event whose publish did not land (the partition's owner died with it) waits in the
         // aggregator and is re-sent once a second until it lands or its horizon passes.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,
@@ -3400,7 +3406,8 @@ public interface AetherNode extends ManageableNode {
                                                                          sliceInvoker,
                                                                          cacheDhtClient,
                                                                          contentStorage,
-                                                                         kvStore));
+                                                                         kvStore,
+                                                                         operatorWarningSink));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -4841,14 +4848,12 @@ public interface AetherNode extends ManageableNode {
         // Retention is production-grade and config-overridable (item 4 / OOM guard): bounded on count,
         // bytes (off-heap hard cap), and age, mode ANY — see ClusterEventsLimits, checked at boot (#1549). The publisher/consumer refs the aggregator was
         // constructed with are bound here; until then emits fall back to log-only (bootstrap window).
-        var clusterEventsRetention = clusterEventsLimits.retention();
-        var clusterEventsStreamConfig = org.pragmatica.aether.slice.StreamConfig.streamConfig(clusterEventsStreamName,
-                                                                                              1,
-                                                                                              clusterEventsRetention,
-                                                                                              "earliest",
-                                                                                              clusterEventsLimits.maxEventSizeBytes(),
-                                                                                              org.pragmatica.aether.slice.ConsistencyMode.EVENTUAL,
-                                                                                              1);
+        // #1564 (N2): the local partition the publisher/consumer wiring below creates at construction carries the
+        // SAME factors the SystemStreamRegistrar commits — the committed `[replication.cluster_events]` as this node
+        // sees it now, never a separate hardcoded CF (ClusterEventsLimits.streamConfig).
+        var clusterEventsStreamConfig = clusterEventsLimits.streamConfig(clusterEventsStreamName,
+                                                                         kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                          AetherValue.ClusterConfigValue.class));
         // Fix #3 / #1230: the forward-capable cluster-events CONSUMER and PUBLISHER are wired further below,
         // after streamForwardClient + streamReadForwardMetrics are constructed, so a non-replica node
         // read-forwards observability reads to a caught-up replica instead of reading its own empty local
@@ -5048,7 +5053,7 @@ public interface AetherNode extends ManageableNode {
         // against the HRW-derived desired replica set on every membership change. Members are the single
         // live placement source (#1550, placementMembers); cluster size comes from the consensus topology
         // observer; the stream catalog (name/partitions/
-        // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
+        // confirmationFactor + partition-has-data) is adapted from the partition manager. The A4
         // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
         //
         // 1d-iii / #265: the leader-only StreamPartitionOwnershipWriter, fired by the controller's
@@ -5321,7 +5326,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                    () -> switchableCluster.current() instanceof ForwardingClusterNode),
                                                                                              projectionRegistry);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
-        // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
+        // group-attributed and appended to the topic's `.dlq` stream through the same confirmation
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
         // dispatch node that does not own the DLQ partition forwards instead of stalling). All
         // other streams keep the in-memory default; its durability question is a separate ticket's
@@ -5427,11 +5432,23 @@ public interface AetherNode extends ManageableNode {
         // backoff until both legs commit (or hit a terminal config error), latches each leg DONE, and
         // disarms on leadership loss. Both legs are idempotent + consensus-committed, so re-arming on
         // each leader-gain is safe and self-heals across re-elections.
-        var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> streamPartitionManager.createStream(clusterEventsStreamConfig),
-                                                                                streamNamespacesService::bootstrap);
+        // #1564: the stream is committed with the factors of the committed cluster config's
+        // `[replication.cluster_events]` (CF default 1 until the owner decides the acked-but-lost question; RF the
+        // desired core count), read when the leader commits it.
+        var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                                               AetherValue.ClusterConfigValue.class)).flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
+                                                                                streamNamespacesService::bootstrap,
+                                                                                cause -> raiseClusterEventsRefusal(operatorWarningSink,
+                                                                                                                   cause));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  systemStreamRegistrar::onLeaderChange));
+        // #1564 B1: a committed cluster config re-arms a registration the replication policy refused.
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.ClusterConfigKey.class,
+                                                     _ -> systemStreamRegistrar.onClusterConfigChanged())
+                                              .build()
+                                              .asRouteEntries());
         // #290: cluster-formation bootstrap admin API key. On first leadership, if no admin key is yet
         // present in the KV store, register one cluster-wide and print the plaintext once. Self-healing
         // and idempotent (mirrors SystemStreamRegistrar); the leg uses the same clusterNode.apply
@@ -6018,6 +6035,21 @@ public interface AetherNode extends ManageableNode {
                   projector.announcedCoreMembers(),
                   membershipFsm.coreMembers(),
                   presenceSampler.currentMembers());
+    }
+
+    /// #1564 B1: the operator-visible half of a refused `system:cluster-events` registration, a CRITICAL
+    /// `cluster-events-registration-refused` operator warning (#1617, R10): an ERROR log, plus a cluster event. The
+    /// event is offered to the very stream whose registration was refused, so on this path the ERROR log is the
+    /// report the operator can rely on; the event lands only once cluster-events exists (redelivery holds it for
+    /// its horizon).
+    @Contract
+    private static void raiseClusterEventsRefusal(OperatorWarningSink sink, Cause cause) {
+        OperatorWarnings.raise(LOG,
+                               sink,
+                               OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED,
+                               "system:cluster-events",
+                               "system:cluster-events was not registered: {} — correct [replication.cluster_events] and re-apply the cluster config",
+                               cause.message());
     }
 
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —
@@ -8478,7 +8510,8 @@ public interface AetherNode extends ManageableNode {
                                                   SliceInvoker sliceInvoker,
                                                   DHTClient cacheDhtClient,
                                                   StorageInstance contentStorage,
-                                                  KVStore<AetherKey, AetherValue> kvStore) {
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  OperatorWarningSink operatorWarningSink) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
         spi.registerExtension(DHTClient.class, cacheDhtClient);
@@ -8503,6 +8536,15 @@ public interface AetherNode extends ManageableNode {
         // on a real node the resolver must always be present or a co-deployed publisher and
         // subscriber fall back to two DIFFERENT slice-derived namespaces and silently never meet.
         spi.registerExtension(OwningBlueprintResolver.class, OwningBlueprintResolver.kvBacked(kvStore));
+        // #1564: every stream, durable topic and durable entity declaration resolves its replication_factor /
+        // confirmation_factor against the COMMITTED cluster config — the `[replication]` defaults and the desired
+        // core count — read on each resolution, exactly as deploy validation reads it.
+        spi.registerExtension(ReplicationContext.Source.class,
+                              ClusterReplication.source(() -> kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                               AetherValue.ClusterConfigValue.class)));
+        // #1564 / #1617 (R10): the replication warnings a stream, durable topic or durable entity raises when it
+        // activates reach this node's cluster event log through its own operator-warning sink.
+        spi.registerExtension(OperatorWarningSink.class, operatorWarningSink);
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot

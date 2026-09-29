@@ -60,8 +60,8 @@ class WalTruncationDurableBoundBootTest {
     /// truncatable, is physically rewritten and the file shrinks by the sealed bytes.
     private static final int EVENTS = 200;
     private static final int PAYLOAD = 70 * 1024;
-    /// 10 seals of 20 events each — well under the streams snapshot's 100-mutation trigger, so the only way a
-    /// snapshot lands before the first tick is the 30 s interval, which [#awaitSealed]'s deadline stays inside.
+    /// 10 seals of 20 events each — well under the streams snapshot's 100-mutation trigger. The other trigger, the
+    /// 30 s interval counted from construction, is not raced: the node's periodic ticks are cancelled after start.
     private static final int SEALED_AT_LEAST = EVENTS - 2 * RING_EVENTS;
     private static final long DISK_MAX_BYTES = 256L * 1024 * 1024;
     private static final long AWAIT_MS = 15_000;
@@ -91,10 +91,12 @@ class WalTruncationDurableBoundBootTest {
         node = AetherNode.aetherNode(minimalConfig(), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
-        // start() returns post-formation; the periodic drivers (snapshot tick, truncation tick) are armed by it.
-        // The streams SnapshotManager's 30 s interval trigger has been counting since construction, so the
-        // sealing phase below must stay well inside it.
+        // start() returns post-formation and arms the periodic drivers: a 10 s snapshot tick whose 30 s interval
+        // trigger has been counting since construction, and a 30 s truncation tick. Boot plus sealing can outlast
+        // that window on a loaded host (#1685), and either tick would then snapshot or compact before the steps
+        // below. This test drives both halves by hand, so it cancels the ticks rather than racing them.
         node.start().await(START_BOUND).onFailure(cause -> fail("start must succeed: " + cause.message()));
+        node.periodicTasks().cancel();
         var manager = node.streamPartitionManager();
         // #1555: this single-node harness never forms consensus (see createStream), so the owner promotion gate —
         // which requires an active consensus engine and a fresh ownership view — would refuse every append. The

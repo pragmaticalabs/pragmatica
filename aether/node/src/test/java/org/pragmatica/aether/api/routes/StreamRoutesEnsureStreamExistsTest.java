@@ -84,13 +84,13 @@ class StreamRoutesEnsureStreamExistsTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
         try {
             manager.createStream(appConfig("app-stream")).onFailure(_ -> fail("app stream create must succeed"));
-            assertThat(manager.minSyncReplicasFor("app-stream")).isEqualTo(2);
+            assertThat(manager.confirmationFactorFor("app-stream")).isEqualTo(2);
 
             routesFor(manager, emptyStore()).ensureStreamExists("app-stream")
                               .onFailure(_ -> fail("ensureStreamExists must succeed for an existing stream"));
 
-            assertThat(manager.minSyncReplicasFor("app-stream"))
-                .as("a management publish must NOT downgrade an app stream's min-sync-replicas")
+            assertThat(manager.confirmationFactorFor("app-stream"))
+                .as("a management publish must NOT downgrade an app stream's confirmation factor")
                 .isEqualTo(2);
             manager.streamInfo("app-stream")
                    .onPresent(si -> assertThat(si.partitions()).isEqualTo(4));
@@ -115,8 +115,8 @@ class StreamRoutesEnsureStreamExistsTest {
             routesFor(manager, store).ensureStreamExists("repl-failover-events")
                               .onFailure(_ -> fail("ensureStreamExists must materialize the committed config"));
 
-            assertThat(manager.minSyncReplicasFor("repl-failover-events"))
-                .as("auto-create must adopt the committed min-sync-replicas, NOT the RF=1 management default")
+            assertThat(manager.confirmationFactorFor("repl-failover-events"))
+                .as("auto-create must adopt the committed confirmation factor, NOT the RF=1 management default")
                 .isEqualTo(2);
         } finally {
             manager.close();
@@ -133,7 +133,38 @@ class StreamRoutesEnsureStreamExistsTest {
             assertThat(manager.streamInfo("mgmt-stream").isPresent())
                 .as("a genuinely new management stream must be auto-created")
                 .isTrue();
-            assertThat(manager.minSyncReplicasFor("mgmt-stream")).isEqualTo(0);
+            assertThat(manager.confirmationFactorFor("mgmt-stream"))
+                .as("#1564: with no committed cluster config a management stream takes the built-in CF 2 (it was owner-only)")
+                .isEqualTo(2);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// #1564: a management-minted stream carries no declaration, so it takes the committed cluster `[replication]`
+    /// defaults — the same resolution every declared resource uses.
+    @Test
+    void ensureStreamExists_newManagementStream_takesTheCommittedClusterDefaults() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        try {
+            var store = emptyStore();
+            seed(store,
+                 AetherKey.ClusterConfigKey.CURRENT,
+                 AetherValue.ClusterConfigValue.clusterConfigValue("[replication]\nreplication_factor = 5\nconfirmation_factor = 4\n",
+                                                                   "c1",
+                                                                   "1.0.0",
+                                                                   List.of(AetherValue.TopologyEntry.topologyEntry("local",
+                                                                                                                  AetherValue.TopologyEntry.CORE_ROLE,
+                                                                                                                  5)),
+                                                                   5,
+                                                                   5,
+                                                                   "embedded",
+                                                                   1L));
+
+            routesFor(manager, store).ensureStreamExists("mgmt-stream")
+                              .onFailure(cause -> fail("ensureStreamExists must auto-create: " + cause.message()));
+
+            assertThat(manager.confirmationFactorFor("mgmt-stream")).isEqualTo(4);
         } finally {
             manager.close();
         }

@@ -10,6 +10,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Option;
@@ -138,7 +140,7 @@ class StreamResourceValidatorPartitionTest {
 
                                       [streams.no-replicas]
                                       version = "1.0.0"
-                                      replicas = 0
+                                      replication_factor = 0
 
                                       [streams.snake-keys]
                                       version = "1.0.0"
@@ -150,12 +152,13 @@ class StreamResourceValidatorPartitionTest {
 
                                       [streams.single-copy]
                                       version = "1.0.0"
-                                      replicas = 1
+                                      replication_factor = 2
+                                      confirmation_factor = 3
 
                                       [streams.over-synced]
                                       version = "1.0.0"
-                                      replicas = 3
-                                      min-sync-replicas = 4
+                                      replication_factor = 3
+                                      confirmation_factor = 4
                                       """,
                                       APP_ARTIFACT);
 
@@ -166,9 +169,9 @@ class StreamResourceValidatorPartitionTest {
                                                "[streams.bad-source-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
                                                "[streams.bad-owned-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
                                                "[streams.too-many]::" + StreamResourceValidator.RULE_PARTITIONS_OVER_CEILING,
-                                               "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICAS_BELOW_MINIMUM,
-                                               "[streams.single-copy]::" + StreamResourceValidator.RULE_REPLICAS_BELOW_MINIMUM,
-                                               "[streams.over-synced]::" + StreamResourceValidator.RULE_REPLICATION_INVALID,
+                                               "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICATION_POLICY_INVALID,
+                                               "[streams.single-copy]::" + StreamResourceValidator.RULE_REPLICATION_POLICY_INVALID,
+                                               "[streams.over-synced]::" + StreamResourceValidator.RULE_REPLICATION_POLICY_INVALID,
                                                "[streams.snake-keys]::" + StreamResourceValidator.RULE_UNKNOWN_STREAM_KEY,
                                                "[streams.wordy-count]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID);
             assertThat(partition.rejected()).extracting(StreamValidationFailure::field)
@@ -240,12 +243,74 @@ class StreamResourceValidatorPartitionTest {
 
         @Test
         void noResources_acceptsNothing_rejectsNothing() {
-            var partition = StreamResourceValidator.partition(Option.none(), APP_ARTIFACT, Map.of())
+            var partition = StreamResourceValidator.partition(Option.none(), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
                                                    .onFailure(cause -> fail("Expected success: " + cause.message()))
                                                    .unwrap();
 
             assertThat(partition.accepted()).isEmpty();
             assertThat(partition.rejected()).isEmpty();
+        }
+    }
+
+    /// #1564: deploy-time resolution of `replication_factor`/`confirmation_factor` against the committed cluster context.
+    @Nested
+    class Replication {
+        /// R7: an owned stream whose factor exceeds the DESIRED core count is rejected per section, under its own rule.
+        @Test
+        void factorAboveDesiredCoreCount_isRejected_underItsOwnRule() {
+            var partition = StreamResourceValidator.partition(Option.some("""
+                                                                          [streams.orders]
+                                                                          version = "1.0.0"
+                                                                          replication_factor = 5
+                                                                          """),
+                                                              APP_ARTIFACT,
+                                                              Map.of(),
+                                                              ReplicationContext.replicationContext(ReplicationFactors.BUILT_IN, 3))
+                                                   .unwrap();
+
+            assertThat(partition.accepted()).isEmpty();
+            assertThat(fieldsAndRules(partition.rejected())).containsExactly("[streams.orders]::"
+                                                                             + StreamResourceValidator.RULE_REPLICATION_EXCEEDS_CORE_COUNT);
+        }
+
+        /// The LOUD warning reaches the partition's warnings — the deploy response carries them to the operator.
+        @Test
+        void declaredFactorBelowThree_isAccepted_andWarnsLoudly() {
+            var partition = partition("""
+                                      [streams.orders]
+                                      version = "1.0.0"
+                                      replication_factor = 2
+                                      """, APP_ARTIFACT);
+
+            assertThat(partition.accepted()).containsOnlyKeys("orders");
+            assertThat(partition.warnings()).extracting(StreamValidationWarning::rule)
+                                            .contains("replication-factor-below-three");
+        }
+
+        /// The committed cluster default applies to an undeclared factor; a declared one overrides it.
+        @Test
+        void clusterDefaults_applyAtDeploy_andADeclaredValueOverridesThem() {
+            var partition = StreamResourceValidator.partition(Option.some("""
+                                                                          [streams.orders]
+                                                                          version = "1.0.0"
+
+                                                                          [streams.audit]
+                                                                          version = "1.0.0"
+                                                                          confirmation_factor = 5
+                                                                          """),
+                                                              APP_ARTIFACT,
+                                                              Map.of(),
+                                                              ReplicationContext.replicationContext(new ReplicationFactors(5, 3), 5))
+                                                   .unwrap();
+
+            assertThat(ownedFactors(partition, "orders")).isEqualTo(new ReplicationFactors(5, 3));
+            assertThat(ownedFactors(partition, "audit")).isEqualTo(new ReplicationFactors(5, 5));
+        }
+
+        private static ReplicationFactors ownedFactors(StreamValidationPartition partition, String alias) {
+            return ((org.pragmatica.aether.slice.stream.StreamResource.Owned) partition.accepted()
+                                                                                      .get(alias)).config()
+                                                                                                  .replication();
         }
     }
 
@@ -255,7 +320,7 @@ class StreamResourceValidatorPartitionTest {
         void aDocumentThatDoesNotParse_isTheFailure_namingTheRule() {
             var result = StreamResourceValidator.partition(Option.some("[streams.orders\nversion = \"1.0.0\"\n"),
                                                            APP_ARTIFACT,
-                                                           Map.of());
+                                                           Map.of(), ReplicationContext.BUILT_IN);
 
             result.onSuccess(_ -> fail("an unparseable document has no section to keep — it must gate"))
                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_RESOURCES_PARSE));
@@ -272,7 +337,7 @@ class StreamResourceValidatorPartitionTest {
                                                                        version = "2.0.0"
                                                                        """),
                                                            APP_ARTIFACT,
-                                                           Map.of());
+                                                           Map.of(), ReplicationContext.BUILT_IN);
 
             result.onSuccess(_ -> fail("instrument check: the fixture must not parse"))
                   .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
@@ -282,7 +347,7 @@ class StreamResourceValidatorPartitionTest {
         /// rev1363 M6: the blueprint-namespace failure rides a document-level refusal too.
         @Test
         void aReservedBlueprintNamespace_ridesAParseRefusal() {
-            var result = StreamResourceValidator.partition(Option.some("[streams.orders\n"), RESERVED_ARTIFACT, Map.of());
+            var result = StreamResourceValidator.partition(Option.some("[streams.orders\n"), RESERVED_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN);
 
             result.onSuccess(_ -> fail("instrument check: the fixture must not parse"))
                   .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
@@ -292,7 +357,7 @@ class StreamResourceValidatorPartitionTest {
 
         @Test
         void aReservedBlueprintNamespace_isTheFailure_whenAStreamIsDeclared() {
-            var result = StreamResourceValidator.partition(Option.some(ONE_VALID_ONE_INVALID), RESERVED_ARTIFACT, Map.of());
+            var result = StreamResourceValidator.partition(Option.some(ONE_VALID_ONE_INVALID), RESERVED_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN);
 
             result.onSuccess(_ -> fail("the namespace prefixes every owned address — nothing survives it"))
                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_NAMESPACE_RESERVED)
@@ -309,7 +374,7 @@ class StreamResourceValidatorPartitionTest {
                                                                        version = "1.0.0"
                                                                        """),
                                                            RESERVED_ARTIFACT,
-                                                           Map.of());
+                                                           Map.of(), ReplicationContext.BUILT_IN);
 
             result.onSuccess(_ -> fail("a declared stream, even a rejected one, makes the namespace load-bearing"))
                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_NAMESPACE_RESERVED));
@@ -333,7 +398,7 @@ class StreamResourceValidatorPartitionTest {
                                                                        version = "1.0.0"
                                                                        """),
                                                            APP_ARTIFACT,
-                                                           Map.of());
+                                                           Map.of(), ReplicationContext.BUILT_IN);
 
             result.onSuccess(_ -> fail("a reserved stream kind is a deliberate reach into a reserved namespace — it must gate"))
                   .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
@@ -346,7 +411,7 @@ class StreamResourceValidatorPartitionTest {
         /// content, not a server fault.
         @Test
         void aGatingRefusal_answers422() {
-            StreamResourceValidator.partition(Option.some("[streams.orders\n"), APP_ARTIFACT, Map.of())
+            StreamResourceValidator.partition(Option.some("[streams.orders\n"), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
                                    .onSuccess(_ -> fail("instrument check: the fixture must gate"))
                                    .onFailure(cause -> assertThat(cause).isInstanceOf(HttpStatusAware.class)
                                                                         .extracting(c -> ((HttpStatusAware) c).httpStatus())
@@ -355,7 +420,7 @@ class StreamResourceValidatorPartitionTest {
 
         @Test
         void aReservedBlueprintNamespace_isReportedNotGating_whenNoStreamIsDeclared() {
-            var partition = StreamResourceValidator.partition(Option.none(), RESERVED_ARTIFACT, Map.of())
+            var partition = StreamResourceValidator.partition(Option.none(), RESERVED_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
                                                    .onFailure(cause -> fail("nothing to bind, nothing to gate: " + cause.message()))
                                                    .unwrap();
 
@@ -366,7 +431,7 @@ class StreamResourceValidatorPartitionTest {
     }
 
     private static StreamValidationPartition partition(String toml, Artifact artifact) {
-        return StreamResourceValidator.partition(Option.some(toml), artifact, Map.of())
+        return StreamResourceValidator.partition(Option.some(toml), artifact, Map.of(), ReplicationContext.BUILT_IN)
                                       .onFailure(cause -> fail("Expected a partition, got: " + cause.message()))
                                       .unwrap();
     }

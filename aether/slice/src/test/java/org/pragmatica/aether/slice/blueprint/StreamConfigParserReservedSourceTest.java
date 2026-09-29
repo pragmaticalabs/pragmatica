@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import org.pragmatica.aether.slice.ReplicationFactors;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,14 +43,14 @@ class StreamConfigParserReservedSourceTest {
     }
 
     private static void assertRefused(String source, String prefix) {
-        StreamConfigParser.parseResources(toml(source))
+        StreamConfigParser.parseResources(toml(source), ReplicationFactors.BUILT_IN)
                           .onSuccess(_ -> fail("External source '" + source + "' must be refused"))
                           .onFailure(cause -> assertThat(cause.message()).contains(source)
                                                                          .contains("'" + prefix + "'"));
     }
 
     private static void assertParses(String source) {
-        StreamConfigParser.parseResources(toml(source))
+        StreamConfigParser.parseResources(toml(source), ReplicationFactors.BUILT_IN)
                           .onFailure(cause -> fail("External source '" + source + "' must parse: " + cause.message()));
     }
 
