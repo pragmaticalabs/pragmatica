@@ -20,3 +20,11 @@
   non-hosting nodes answer 200]
   [unverified: the Ember test goes red only with BOTH layers reverted; each layer alone keeps it green, so each layer
   is pinned by unit tests only (`HttpRouteRegistrySecurityRefreshTest`, `AppHttpServerRouteSecurityPolicyTest`)]
+- **A non-hosting ingress judges a request by the LONGEST matching route prefix, the one the host serves it by.**
+  Remote routes are matched most-specific first, the rule the hosting node applies to its own routes (#884).
+  Previously the ingress took the first match in the registry's ascending order, which is the SHORTEST prefix. So a
+  PUBLIC `/api/` let a request through to a protected `/api/admin/` subtree, and the host, which serves a forwarded
+  request by its longest prefix, does not re-authorize it.
+  [verified: `AppHttpServerRouteSecurityPolicyTest` — `remoteRoute_nestedPrefixes_theInnerRouteGovernsItsSubtree`,
+  `remoteRoute_nestedPrefixes_committedOverrideOnTheInnerRoute_isEnforced`]
+  [unverified: Ember nested-prefix, because no Ember fixture slice declares nested prefixes]
