@@ -131,7 +131,7 @@ public class PackageSlicesMojo extends AbstractMojo {
         var classification = classifyDependencies(manifest);
 
         if (!classification.unpackaged().isEmpty()) {
-            throw new MojoExecutionException(refusalMessage(manifest, classification.unpackaged()));
+            failBuild(refusalMessage(manifest, classification.unpackaged()));
         }
         // Create Impl JAR (fat JAR with dependencies file and manifest entries)
         createImplJar(manifest, classification);
@@ -196,6 +196,13 @@ public class PackageSlicesMojo extends AbstractMojo {
                                       && !providedInterfaces.contains(dep.interfaceQualifiedName()))
                        .map(dep -> dep.interfaceQualifiedName() + " (coordinate '" + dep.artifact() + "')")
                        .toList();
+    }
+
+    /// Maven's mojo API reports a build failure only as a thrown MojoExecutionException, so this is a
+    /// framework-mandated exception boundary, the one place #1408's refusal leaves the Result world.
+    @SuppressWarnings("JBCT-EX-01")
+    private static void failBuild(String message) throws MojoExecutionException {
+        throw new MojoExecutionException(message);
     }
 
     private String refusalMessage(SliceManifest manifest, List<String> unpackaged) {
