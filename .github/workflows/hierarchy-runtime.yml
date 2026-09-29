@@ -17,7 +17,24 @@ on:
 permissions:
   contents: read
 
+# One list for both jobs: `selection` checks it on every PR, `runtime-acceptance` runs it.
+env:
+  HIERARCHY_TESTS: HierarchyAuthorityAcceptanceTest,HierarchicalDecisionReplayTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerRuntimeReplayTest,HierarchicalWorkerReconnectTest,HierarchicalRecoveryEnvelopeTest,HierarchicalMetadataRecoveryTest,HierarchicalGovernorReportLossTest,HierarchicalGovernorConcurrentNominationTest,HierarchicalWorkerFormationTest,HierarchicalCoreResizeTest,HierarchicalWorkerDrainTest,HierarchicalLoadedMovementTest,HierarchicalMovementTakeoverTest,HierarchicalCapacityFallbackTest,HierarchicalCommunityMovementTest,HierarchicalWorkerWorkloadTest,EmberAddNodeRoleLabelTest,ClusterFormationTest,StreamOwnershipDriverFenceTest,SliceInvocationTest,DeclarativeStreamConsumerTest,DurableProjectionRebuildForgeTest
+
 jobs:
+  selection:
+    # No label condition and no build: a selection naming a deleted class, or missing a required one, fails every PR
+    # in seconds. #1545 merged unlabelled while the label-gated job below reported skipped, and every release push
+    # failed from then until #1662.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify complete selection
+        run: |
+          python3 -B -m unittest discover -s tools -p test_hierarchy_selection.py
+          python3 tools/check-hierarchy-selection.py "$HIERARCHY_TESTS"
+
   runtime-acceptance:
     # Labels opt code-only PRs into this expensive matrix; unrelated labels do not rerun it.
     if: >-
@@ -29,8 +46,6 @@ jobs:
     concurrency:
       group: hierarchy-runtime-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
-    env:
-      HIERARCHY_TESTS: HierarchyAuthorityAcceptanceTest,HierarchicalDecisionReplayTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerRuntimeReplayTest,HierarchicalWorkerReconnectTest,HierarchicalRecoveryEnvelopeTest,HierarchicalMetadataRecoveryTest,HierarchicalGovernorReportLossTest,HierarchicalGovernorConcurrencyRestartTest,HierarchicalWorkerFormationTest,HierarchicalCoreRestartTest,HierarchicalCoreResizeTest,HierarchicalWorkerDrainTest,HierarchicalLoadedMovementTest,HierarchicalMovementTakeoverTest,HierarchicalCapacityFallbackTest,HierarchicalCommunityMovementTest,HierarchicalWorkerWorkloadTest,EmberAddNodeRoleLabelTest,ClusterFormationTest,StreamOwnershipDriverFenceTest,SliceInvocationTest,DeclarativeStreamConsumerTest,DurableProjectionRebuildForgeTest
     steps:
       - uses: actions/checkout@v5
       - name: Verify complete selection before building
