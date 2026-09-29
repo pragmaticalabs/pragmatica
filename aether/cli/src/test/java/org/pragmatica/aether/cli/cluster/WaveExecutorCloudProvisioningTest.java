@@ -160,6 +160,27 @@ class WaveExecutorCloudProvisioningTest {
                            .containsExactly(nodeId);
     }
 
+    /// CodeRabbit on #1716: a wave that fails part-way must not lose the nodes it already created. Those VMs are
+    /// running and billing, and their minted ids are not addressable by the rolling paths, so the failure names them
+    /// (node id and server id) for the operator to find.
+    @Test
+    void provisionCloudNodes_failurePartWay_namesTheNodesAlreadyCreated() {
+        var provider = new CapturingProvider();
+        var desired = parse(ZONED);
+
+        provider.failOnCall = 2;
+
+        var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
+        var createdId = provider.specs.getFirst().context().nodeId().unwrap();
+
+        assertThat(provider.specs).as("the wave stops at the failure").hasSize(2);
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).as("the created, still-running node is named")
+                                                             .contains(createdId)
+                                                             .contains("vm-1")
+                                                             .contains("capacity exhausted (test cause)"));
+    }
+
     /// The peers a wave node dials are the LIVE CORE members from `GET /api/v1/nodes/live`: a worker, a dead core
     /// member (SWIM not alive) and a member with no advertised address are not peers.
     @Test
@@ -189,10 +210,15 @@ class WaveExecutorCloudProvisioningTest {
     /// Captures every spec handed to the provider boundary and answers with a running instance.
     private static final class CapturingProvider implements ComputeProvider {
         private final List<ProvisionSpec> specs = new ArrayList<>();
+        private int failOnCall = 0;
 
         @Override
         public Promise<InstanceInfo> provision(ProvisionSpec spec) {
             specs.add(spec);
+
+            if (specs.size() == failOnCall) {
+                return Promise.failure(org.pragmatica.lang.utils.Causes.cause("capacity exhausted (test cause)"));
+            }
 
             return InstanceInfo.instanceInfo(InstanceId.instanceId("vm-" + specs.size()).unwrap(),
                                              InstanceStatus.RUNNING,

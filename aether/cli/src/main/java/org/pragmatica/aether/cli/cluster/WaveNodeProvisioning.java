@@ -91,7 +91,8 @@ sealed interface WaveNodeProvisioning {
                                                                                                                                           spec).await());
 
             if (provisioned.isFailure()) {
-                return provisioned.map(_ -> List.<ProvisionedNode> of());
+                return provisioned.mapError(cause -> failedAfter(nodes, cause))
+                                  .map(_ -> List.<ProvisionedNode> of());
             }
 
             var _ = provisioned.onSuccess(nodes::add);
@@ -226,6 +227,28 @@ sealed interface WaveNodeProvisioning {
         }
 
         return List.copyOf(peers);
+    }
+
+    /// A failure part-way through a wave keeps the nodes already created in its cause. They are running and billing,
+    /// and their minted ids are not addressable by the rolling paths, so the operator must be told which they are.
+    private static Cause failedAfter(List<ProvisionedNode> created, Cause cause) {
+        return created.isEmpty()
+               ? cause
+               : new PartiallyProvisioned(List.copyOf(created), cause);
+    }
+
+    record PartiallyProvisioned(List<ProvisionedNode> created, Cause cause) implements Cause {
+        @Override
+        public String message() {
+            var names = created.stream()
+                               .map(node -> node.nodeId() + " (server " + node.serverId() + ", " + node.publicIp() + ")")
+                               .toList();
+
+            return "Provisioning failed after creating " + created.size()
+                 + " node(s) that are still running and billing: " + String.join(", ", names)
+                 + ". Cause: " + cause.message()
+                 + ". Remove them or let them join; a retried apply mints new ids and will not reuse them.";
+        }
     }
 
     record JoinInputsUnavailable(ClusterName clusterName, String reason) implements Cause {
