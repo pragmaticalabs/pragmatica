@@ -379,14 +379,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         pendingDials.put(peerId, attempt);
         promise.onResultRun(() -> pendingDials.remove(peerId, attempt));
         var codec = buildQuicCodec();
-        var bootstrap = new Bootstrap().group(eventLoopGroup)
-                                       .channel(NioDatagramChannel.class)
-                                       // NO SO_REUSEADDR on the dial socket (#1578). UDP has no TIME_WAIT to escape, and on
-                                       // Linux a reuse-enabled bind(0) may be handed the port of another reuse-enabled socket
-                                       // — a QUIC server's — after which that port's inbound datagrams go to this socket,
-                                       // silencing the server. Measured: 7 of 36,000 such binds landed on one of 5 server
-                                       // ports; 0 of 20,000 without the option.
-                                       .handler(codec);
+        // NO SO_REUSEADDR on the dial socket (#1578). UDP has no TIME_WAIT to escape, and on Linux a reuse-enabled
+        // bind(0) may be handed the port of another reuse-enabled socket — a QUIC server's — after which that port's
+        // inbound datagrams go to this socket, silencing the server. Measured: 7 of 36,000 such binds landed on one of
+        // 5 server ports; 0 of 20,000 without the option.
+        var bootstrap = new Bootstrap().group(eventLoopGroup).channel(NioDatagramChannel.class).handler(codec);
 
         bootstrap.bind(0).addListener(future -> handleBind(peerId, address, attempt, future));
     }
