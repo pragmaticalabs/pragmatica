@@ -28,7 +28,7 @@ import org.pragmatica.lang.Option;
 /// - [#superseding]/[#supersedeCommands] — what `aether backup declare-genesis` commits (#1532).
 ///
 /// [ObservedIncarnation] mirrors [#current] from the key's notifications for threads that must not take the
-/// `KVStore` monitor (the QUIC event loop); it is fed from here, never written independently.
+/// `KVStore` monitor (network threads: the QUIC and SWIM loops); it is fed from here, never written independently.
 public sealed interface ClusterIncarnation {
     /// The value [#current] answers before genesis.
     long NONE = 0L;

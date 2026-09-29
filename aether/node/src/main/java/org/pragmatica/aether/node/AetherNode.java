@@ -610,6 +610,7 @@ public interface AetherNode extends ManageableNode {
         var leaderTerm = LeaderTerm.leaderTerm(config.self(),
                                                () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class));
         Supplier<Long> rabiaTermSupplier = leaderTerm::current;
+        var epochSources = epochSources(kvStore, leaderTerm);
         // Membership v2: decommission is NTT/membership-driven, not a KV atom. A decommissioned
         // node's process is gone; a restart is a fresh NTT-gated join, so there is no stale KV
         // STOPPED record to refuse rejoin against.
@@ -686,7 +687,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                presenceCoreSizeSupplier,
                                                                                                ctmProvisionedSupplier,
                                                                                                rabiaTermSupplier,
-                                                                                               () -> ClusterIncarnation.current(kvStore));
+                                                                                               epochSources.incarnation()::current);
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -733,6 +734,7 @@ public interface AetherNode extends ManageableNode {
                                                              dhtNode,
                                                              ownershipEpochHighWater,
                                                              leaderTerm,
+                                                             epochSources,
                                                              hlcClock,
                                                              snapshotSource,
                                                              membershipFsmRef,
@@ -1698,6 +1700,7 @@ public interface AetherNode extends ManageableNode {
                                                    DHTNode dhtNode,
                                                    OwnershipEpochHighWater ownershipEpochHighWater,
                                                    LeaderTerm leaderTerm,
+                                                   EpochSources epochSources,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
                                                    AtomicReference<MembershipFsm> membershipFsmRef,
@@ -2852,10 +2855,8 @@ public interface AetherNode extends ManageableNode {
         // committed LeaderValue.viewSequence of this node's election (S28, see LeaderTerm) — strictly
         // above every prior committed leadership cluster-wide — so a new leader's lower local counter
         // still orders strictly after the prior leader's epoch via the term.
-        var generationCounter = new AtomicLong(0L);
-        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(ClusterIncarnation.current(kvStore),
-                                                                leaderTerm.current(),
-                                                                generationCounter.get());
+        var generationCounter = epochSources.generationCounter();
+        Supplier<Epoch> leaderEpochSupplier = epochSources.leaderEpoch();
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier,
                                                                                                    generationCounter),
@@ -3719,6 +3720,9 @@ public interface AetherNode extends ManageableNode {
         // the key divergence this rests on.
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
+        allEntries.addAll(epochSources.incarnation()
+                                      .routeEntries());
+
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
         var swimTimeouts = config.timeouts().swim();
@@ -4003,7 +4007,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
                                                                                                                       org.pragmatica.aether.worker.metadata.WorkerMetadataLimits.DEFAULT,
-                                                                                                                      () -> ClusterIncarnation.current(kvStore));
+                                                                                                                      epochSources.incarnation()::current);
 
         workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection);
         allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest.class,
@@ -4679,7 +4683,7 @@ public interface AetherNode extends ManageableNode {
         // role-blind countedMembers() previously wired here could seed a worker as a DHT core
         // partition member).
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
-                                                              generationEpoch(kvStore, rabiaTermSupplier),
+                                                              epochSources.generationEpoch(),
                                                               () -> isLeaderSupplier.getAsBoolean()
                                                                     ? Option.some(leaderTerm.current())
                                                                     : Option.<Long> none(),
@@ -4692,10 +4696,8 @@ public interface AetherNode extends ManageableNode {
 
         attachQuicConnectivityReporter(clusterNode.network(),
                                        connectivityWiring(peerObservationStore,
-                                                          kvStore,
-                                                          leaderTerm,
-                                                          generationCounter,
-                                                          allEntries,
+                                                          epochSources.incarnation(),
+                                                          leaderEpochSupplier,
                                                           nttConnectTap,
                                                           nttDisconnectTap));
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, metricsScheduler::onLinkEstablished);
@@ -5067,8 +5069,7 @@ public interface AetherNode extends ManageableNode {
         // a SINGLE consensus batch, so a mass reshuffle commits one batch per pass, not one apply per moved
         // partition. This keeps the reshuffle fan-out bound the promise #265 makes.
         var streamOwnershipWriter = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
-                                                                                                  generationEpoch(kvStore,
-                                                                                                                  rabiaTermSupplier),
+                                                                                                  epochSources.generationEpoch(),
                                                                                                   hlcClock,
                                                                                                   (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                   partition),
@@ -5356,8 +5357,7 @@ public interface AetherNode extends ManageableNode {
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
                                                                                                         ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
-                                                                                                                                                          generationEpoch(kvStore,
-                                                                                                                                                                          rabiaTermSupplier),
+                                                                                                                                                          epochSources.generationEpoch(),
                                                                                                                                                           hlcClock,
                                                                                                                                                           committedConsumerAssignments),
                                                                                                         commands -> switchableCluster.apply(commands)
@@ -5404,7 +5404,7 @@ public interface AetherNode extends ManageableNode {
                                                                                 cursorCommandWriter,
                                                                                 committedCursorReader,
                                                                                 committedConsumerAssignments,
-                                                                                () -> ClusterIncarnation.current(kvStore));
+                                                                                epochSources.incarnation()::current);
 
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));
@@ -5555,8 +5555,7 @@ public interface AetherNode extends ManageableNode {
                                                                                             streamReplicaSetController::reconciledMembers,
                                                                                             clusterNode::isActive,
                                                                                             entityArcOwner -> StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
-                                                                                                                                                                            generationEpoch(kvStore,
-                                                                                                                                                                                            rabiaTermSupplier),
+                                                                                                                                                                            epochSources.generationEpoch(),
                                                                                                                                                                             hlcClock,
                                                                                                                                                                             (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                                                                                             partition),
@@ -6151,8 +6150,40 @@ public interface AetherNode extends ManageableNode {
     /// `ClusterIncarnationTest.GenerationEpochSeam` pins it (forcing the incarnation to 0 here left every
     /// module green). An epoch minted before the registrar commits the genesis incarnation carries 0, which
     /// ranks below every later mint.
-    static Supplier<Epoch> generationEpoch(KVStore<AetherKey, AetherValue> kvStore, Supplier<Long> rabiaTermSupplier) {
-        return () -> Epoch.epoch(ClusterIncarnation.current(kvStore), rabiaTermSupplier.get(), 0L);
+    static Supplier<Epoch> generationEpoch(ObservedIncarnation incarnation, Supplier<Long> rabiaTermSupplier) {
+        return () -> Epoch.epoch(incarnation.current(), rabiaTermSupplier.get(), 0L);
+    }
+
+    /// The node's incarnation-bearing epoch sources (#1529), built ONCE per node and shared by every consumer:
+    /// the SWIM health detector, cluster sync, the governor authority, the QUIC connectivity reporter (all
+    /// [#leaderEpoch]); the ownership writers and the bootstrap module ([#generationEpoch]); presence, worker
+    /// metadata and stream cursors ([#incarnation]).
+    ///
+    /// None of them may read the incarnation through [ClusterIncarnation#current]: that goes through the
+    /// synchronized `KVStore.getTyped`, whose monitor a snapshot restore holds for the whole install, and
+    /// several of these suppliers are read inline on network threads — a SWIM hint on the SWIM UDP loop, a
+    /// reconnect or an inbound attach on the QUIC loop, a routed request on its channel's loop (v1640 B1). They
+    /// read the [ObservedIncarnation] mirror, which the committed key's notifications keep current.
+    ///
+    /// The mirror can only LAG the committed incarnation (until a commit's notification is dispatched, or a
+    /// snapshot install's replay), never lead it, and a lagging incarnation mints a LOWER epoch. Every fence
+    /// orders incarnation-first and refuses an older epoch, so a stale read is refused, never accepted in the
+    /// newer incarnation's place: the cost of the lag is a retried write, not a wrong one.
+    record EpochSources(ObservedIncarnation incarnation,
+                        AtomicLong generationCounter,
+                        Supplier<Epoch> leaderEpoch,
+                        Supplier<Epoch> generationEpoch) {}
+
+    /// Seeds the mirror from the store on the assembly thread, before consensus starts; its routes go live
+    /// with the node's router (`routeEntries`), and no commit can land before that.
+    static EpochSources epochSources(KVStore<AetherKey, AetherValue> kvStore, LeaderTerm leaderTerm) {
+        var incarnation = ObservedIncarnation.observedIncarnation(ClusterIncarnation.current(kvStore));
+        var generationCounter = new AtomicLong(0L);
+
+        return new EpochSources(incarnation,
+                                generationCounter,
+                                () -> Epoch.epoch(incarnation.current(), leaderTerm.current(), generationCounter.get()),
+                                generationEpoch(incarnation, leaderTerm::current));
     }
 
     /// #1573: the committed cluster-wide automatic-rollback policy. Absent or blank (seed) cluster TOML is the
@@ -6909,22 +6940,10 @@ public interface AetherNode extends ManageableNode {
     /// change can therefore mix two epochs. Nothing fences on these observations (they feed connectivity
     /// telemetry), so it is recorded rather than fixed.
     static ConnectivityWiring connectivityWiring(PeerObservationBuffer buffer,
-                                                 KVStore<AetherKey, AetherValue> kvStore,
-                                                 LeaderTerm leaderTerm,
-                                                 AtomicLong generationCounter,
-                                                 List<MessageRouter.Entry<?>> routes,
+                                                 ObservedIncarnation incarnation,
+                                                 Supplier<Epoch> epochSupplier,
                                                  Consumer<NodeId> onNttConnect,
                                                  Consumer<NodeId> onNttDisconnect) {
-        var incarnation = ObservedIncarnation.observedIncarnation(ClusterIncarnation.current(kvStore));
-
-        routes.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                          .onPut(AetherKey.ClusterIncarnationKey.class, incarnation::onPut)
-                                          .onRemove(AetherKey.ClusterIncarnationKey.class, incarnation::onRemove)
-                                          .build()
-                                          .asRouteEntries());
-        Supplier<Epoch> epochSupplier = () -> Epoch.epoch(incarnation.current(),
-                                                          leaderTerm.current(),
-                                                          generationCounter.get());
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
             @Contract
             @Override

@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
@@ -68,23 +69,26 @@ class ClusterIncarnationTest {
 
     /// `AetherNode.generationEpoch` is the base every ownership writer (streams, consumer assignments,
     /// entities, the DHT core arc) mints from; v1635's M10 forced its incarnation to 0 and every module
-    /// stayed green.
+    /// stayed green. It reads the node's [ObservedIncarnation] mirror (v1640 B1: never the `KVStore` monitor);
+    /// that the mirror follows the committed key is pinned by `ConnectivityWiringTest` and
+    /// `SwimHintEpochMonitorTest`.
     @Nested
     class GenerationEpochSeam {
         @Test
-        void generationEpoch_carriesTheCommittedIncarnation_andTheLeaderTerm_atCounterZero() {
-            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 3, "id-lineage-a-3")));
+        void generationEpoch_carriesTheObservedIncarnation_andTheLeaderTerm_atCounterZero() {
+            var incarnation = ObservedIncarnation.observedIncarnation(3L);
 
-            assertThat(AetherNode.generationEpoch(kvStore, () -> 7L).get()).isEqualTo(Epoch.epoch(3L, 7L, 0L));
+            assertThat(AetherNode.generationEpoch(incarnation, () -> 7L).get()).isEqualTo(Epoch.epoch(3L, 7L, 0L));
         }
 
         @Test
         void generationEpoch_readsTheIncarnationAtCallTime_notAtWiring() {
-            var epoch = AetherNode.generationEpoch(kvStore, () -> 7L);
+            var incarnation = ObservedIncarnation.observedIncarnation(ClusterIncarnation.NONE);
+            var epoch = AetherNode.generationEpoch(incarnation, () -> 7L);
 
             assertThat(epoch.get().incarnation()).as("before genesis").isZero();
-            ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-new", () -> "id-new")
-                              .onPresent(ClusterIncarnationTest.this::apply);
+            incarnation.onPut(new ValuePut<>(new KVCommand.Put<>(KEY, ClusterIncarnationValue.genesis("lineage-new", "id-new")),
+                                             Option.none()));
             assertThat(epoch.get().incarnation()).as("after genesis").isEqualTo(ClusterIncarnationValue.GENESIS);
         }
     }

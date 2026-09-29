@@ -4,13 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -65,16 +63,14 @@ class ConnectivityWiringTest {
 
     @BeforeEach
     void setUp() {
-        var routes = new ArrayList<MessageRouter.Entry<?>>();
+        var sources = AetherNode.epochSources(kvStore, LeaderTerm.leaderTerm(LEADER.leader(), Option::none));
 
-        wiring = AetherNode.connectivityWiring(buffer,
-                                               kvStore,
-                                               LeaderTerm.leaderTerm(LEADER.leader(), Option::none),
-                                               new AtomicLong(4L),
-                                               routes,
-                                               _ -> {},
-                                               _ -> {});
-        routes.forEach(this::register);
+        sources.generationCounter()
+               .set(4L);
+        sources.incarnation()
+               .routeEntries()
+               .forEach(this::register);
+        wiring = AetherNode.connectivityWiring(buffer, sources.incarnation(), sources.leaderEpoch(), _ -> {}, _ -> {});
     }
 
     /// Another thread holds the `KVStore` monitor, as `restoreCommittedSnapshot` does for a whole install.
