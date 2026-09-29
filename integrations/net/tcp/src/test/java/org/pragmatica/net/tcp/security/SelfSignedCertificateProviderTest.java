@@ -190,6 +190,23 @@ class SelfSignedCertificateProviderTest {
             assertThat(keyId(east.nextGossipKey())).isEqualTo(keyId(west.nextGossipKey()));
         }
 
+        /// #1415 at the boundary itself, on a non-UTC host: a `+05:00` host's local midnight (19:00Z) does not
+        /// roll the key, and UTC midnight does. A UTC-zoned clock cannot tell the two apart.
+        @Test
+        void dayBoundary_onANonUtcHost_isUtcMidnight_notLocalMidnight() {
+            var plusFive = ZoneOffset.ofHours(5);
+            var beforeLocalMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T18:59:59Z"), plusFive));
+            var afterLocalMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T19:00:00Z"), plusFive));
+            var beforeUtcMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T23:59:59Z"), plusFive));
+            var afterUtcMidnight = provider(Clock.fixed(Instant.parse("2026-09-22T00:00:00Z"), plusFive));
+
+            assertThat(keyId(afterLocalMidnight.currentGossipKey())).as("the host's local midnight is not a gossip-day boundary")
+                      .isEqualTo(keyId(beforeLocalMidnight.currentGossipKey()));
+            assertThat(keyId(afterUtcMidnight.currentGossipKey())).as("UTC midnight is the gossip-day boundary")
+                      .isEqualTo(keyId(beforeUtcMidnight.nextGossipKey()))
+                      .isNotEqualTo(keyId(beforeUtcMidnight.currentGossipKey()));
+        }
+
         /// The day boundary is UTC midnight (#1415).
         @Test
         void dayBoundary_isUtcMidnight() {
