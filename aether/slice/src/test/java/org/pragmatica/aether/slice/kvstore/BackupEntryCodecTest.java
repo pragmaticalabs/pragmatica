@@ -141,7 +141,7 @@ class BackupEntryCodecTest {
         }
 
         private void assertRoundTrips(AetherKey key, AetherValue value) {
-            CODEC.encode(HEADER, Map.of(key, value))
+            CODEC.encode(REVISION, Map.of(key, value))
                  .flatMap(CODEC::decode)
                  .onFailure(cause -> Assertions.fail(cause.message()))
                  .onSuccess(document -> assertThat(document.entries()).containsExactlyEntriesOf(Map.of(key, value)));
