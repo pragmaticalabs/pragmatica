@@ -374,8 +374,7 @@ public interface HttpRouteRegistry {
             ///   stamps the previous run's incarnation, and such a value must never be taken as current (v1640).
             /// - within one incarnation the term threshold below applies, as before #1529.
             private boolean isStaleFence(NodeId nodeId, String artifact, NodeRoutesValue value) {
-                var valueIncarnation = value.observedCoreEpoch()
-                                            .incarnation();
+                var valueIncarnation = value.observedCoreEpoch().incarnation();
                 var observedIncarnation = snapshotSource.observedEpochIncarnation();
 
                 if (valueIncarnation > observedIncarnation) {
@@ -385,9 +384,11 @@ public interface HttpRouteRegistry {
                 if (valueIncarnation < observedIncarnation) {
                     staleFenceCounter.incrementAndGet();
                     staleFenceWarning.report(List.of("incarnation", valueIncarnation, observedIncarnation),
-                                             () -> "Stale route update for " + nodeId + "/" + artifact + ": value.incarnation="
-                                                   + valueIncarnation + " observed.incarnation=" + observedIncarnation
-                                                   + " — REJECTED (older incarnation)");
+                                             () -> "Stale route update for " + nodeId
+                                                  + "/" + artifact
+                                                  + ": value.incarnation=" + valueIncarnation
+                                                  + " observed.incarnation=" + observedIncarnation
+                                                  + " — REJECTED (older incarnation)");
 
                     return true;
                 }
@@ -398,9 +399,11 @@ public interface HttpRouteRegistry {
                 if (observedTerm - valueTerm > STALE_FENCE_TERM_THRESHOLD) {
                     staleFenceCounter.incrementAndGet();
                     staleFenceWarning.report(List.of("term", valueTerm, observedTerm),
-                                             () -> "Stale route update for " + nodeId + "/" + artifact + ": value.rabiaTerm="
-                                                   + valueTerm + " observed.rabiaTerm=" + observedTerm
-                                                   + " — REJECTED (hard fence)");
+                                             () -> "Stale route update for " + nodeId
+                                                  + "/" + artifact
+                                                  + ": value.rabiaTerm=" + valueTerm
+                                                  + " observed.rabiaTerm=" + observedTerm
+                                                  + " — REJECTED (hard fence)");
 
                     return true;
                 }

@@ -7,6 +7,9 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.lang.Contract;
+
+
 /// A WARN for fence refusals that cannot flood (#1529). After a failover every in-flight write of the deposed
 /// writer is a refusal on every replica, which is normal, so each refusal must still be COUNTED (by the caller)
 /// but not each one logged. The first refusal of each distinct cause (for example an epoch pair) is logged in
@@ -41,6 +44,7 @@ public final class ThrottledWarning {
 
     /// Logs `message` if `cause` has not been seen; otherwise counts it and, once per interval, logs how many
     /// were suppressed since the last line.
+    @Contract
     public void report(Object cause, Supplier<String> message) {
         if (seen.size() >= MAX_REMEMBERED) {
             seen.clear();
@@ -57,7 +61,9 @@ public final class ThrottledWarning {
         var last = lastSummaryAt.get();
 
         if (now - last >= intervalNanos && lastSummaryAt.compareAndSet(last, now)) {
-            emit(suppressed.getAndSet(0) + " more " + subject + " since the last report (repeats of causes already logged)");
+            emit(suppressed.getAndSet(0)
+                + " more " + subject
+                + " since the last report (repeats of causes already logged)");
         }
     }
 

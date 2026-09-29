@@ -27,6 +27,7 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,10 +39,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private static final long REFUSAL_SUMMARY_INTERVAL_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
 
     private final AtomicLong staleEpochRefusals = new AtomicLong();
+
     private final ThrottledWarning refusalWarning = ThrottledWarning.throttledWarning(log::warn,
-                                                                                   System::nanoTime,
-                                                                                   REFUSAL_SUMMARY_INTERVAL_NANOS,
-                                                                                   "stale-epoch write refusals");
+                                                                                      System::nanoTime,
+                                                                                      REFUSAL_SUMMARY_INTERVAL_NANOS,
+                                                                                      "stale-epoch write refusals");
+
     /// Serializes writers and notification delivery without blocking read-only store captures.
     private final Object mutationLock = new Object();
     private final java.util.ArrayDeque<PendingNotification> notifications = new java.util.ArrayDeque<>();
@@ -328,12 +331,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// repeats are summarised at most once per interval.
     private void reportStaleEpochRefusal(K key, Object incoming) {
         if (incoming instanceof EpochBearing<?> in && storage.get(key) instanceof EpochBearing<?> stored && incomingEpochIsStale(in,
-                                                                                                                                stored)) {
+                                                                                                                                 stored)) {
             var refusals = staleEpochRefusals.incrementAndGet();
 
             refusalWarning.report(List.of(in.fenceEpoch(), stored.fenceEpoch()),
-                                  () -> "Refused a stale-epoch write to " + key + ": incoming epoch " + in.fenceEpoch()
-                                        + " is older than the committed " + stored.fenceEpoch() + " (refusals: " + refusals + ")");
+                                  () -> "Refused a stale-epoch write to " + key
+                                       + ": incoming epoch " + in.fenceEpoch()
+                                       + " is older than the committed " + stored.fenceEpoch()
+                                       + " (refusals: " + refusals
+                                       + ")");
         }
     }
 
