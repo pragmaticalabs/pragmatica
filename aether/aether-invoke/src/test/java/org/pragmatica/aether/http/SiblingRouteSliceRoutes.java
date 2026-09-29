@@ -42,6 +42,67 @@ public final class SiblingRouteSliceRoutes {
                     .asJson();
     }
 
+    /// Two SLICES sharing the base `/orders/`: one serves only `GET /orders/{id}` (PUBLIC), the other only
+    /// `GET /orders/{id}/admin` (`role:admin`) -- the case where picking the artifact by prefix and the route by a
+    /// separate match could authorize one slice's route and dispatch to the other's.
+    public static final class PublicOrdersSlice {}
+
+    public static final class AdminOrdersSlice {}
+
+    public static final class PublicOrders implements RouteSource, SliceRouterFactory<PublicOrdersSlice> {
+        @Override
+        public Class<PublicOrdersSlice> sliceType() {
+            return PublicOrdersSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(PublicOrdersSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(PublicOrdersSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(publicOrder());
+        }
+    }
+
+    public static final class AdminOrders implements RouteSource, SliceRouterFactory<AdminOrdersSlice> {
+        @Override
+        public Class<AdminOrdersSlice> sliceType() {
+            return AdminOrdersSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(AdminOrdersSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(AdminOrdersSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(adminOrder());
+        }
+    }
+
     public static final class PublicFirstSlice {}
 
     public static final class AdminFirstSlice {}

@@ -75,6 +75,72 @@ class HttpRoutePublisherSiblingRoutePolicyTest {
         assertThat(policy(publisher, "/orders/5/unknown")).isEqualTo(SecurityPolicy.roleRequired("admin"));
     }
 
+    /// The #1678 ruling's condition: ONE resolution for authorization and dispatch. Two slices share `/orders/`,
+    /// published in both orders; each request must be authorized against, AND dispatched to, the slice that serves
+    /// its shape -- never one slice's policy with the other slice's router.
+    @Test
+    void twoSlicesSharingABase_authorizationAndDispatchNameTheSameSlice_inEitherPublishOrder() {
+        for (var adminFirst : List.of(false, true)) {
+            var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
+
+            if (adminFirst) {
+                publishInto(publisher, ADMIN_ORDERS, new SiblingRouteSliceRoutes.AdminOrdersSlice());
+                publishInto(publisher, PUBLIC_ORDERS, new SiblingRouteSliceRoutes.PublicOrdersSlice());
+            } else {
+                publishInto(publisher, PUBLIC_ORDERS, new SiblingRouteSliceRoutes.PublicOrdersSlice());
+                publishInto(publisher, ADMIN_ORDERS, new SiblingRouteSliceRoutes.AdminOrdersSlice());
+            }
+
+            assertThat(policy(publisher, "/orders/5/admin")).as("admin first: %s", adminFirst)
+                                                            .isEqualTo(SecurityPolicy.roleRequired("admin"));
+            assertThat(servedBody(publisher, "/orders/5/admin")).as("admin first: %s", adminFirst).contains("ADMIN-SECRET-5");
+            assertThat(policy(publisher, "/orders/5")).as("admin first: %s", adminFirst).isEqualTo(SecurityPolicy.publicRoute());
+            assertThat(servedBody(publisher, "/orders/5")).as("admin first: %s", adminFirst).contains("public-order-5");
+        }
+    }
+
+    /// The shared selector, run over the SAME fixture through both callers: the slice's `RequestRouter` (over
+    /// `Route`s) and the publisher's resolution (over the `HttpRouteDefinition`s extracted from those routes) must pick
+    /// the same shape for every probe path -- hit, spacer hit, arity miss, spacer miss, bare base.
+    @Test
+    void routerAndDefinitions_pickTheSameShape_forEveryProbePath() {
+        for (var source : List.<org.pragmatica.http.routing.RouteSource>of(new SiblingRouteSliceRoutes.PublicFirst(),
+                                                                          new SiblingRouteSliceRoutes.AdminFirst())) {
+            var router = org.pragmatica.http.routing.RequestRouter.with(source);
+            var definitions = RouteMetadataExtractor.routeMetadataExtractor()
+                                                    .extract(source, "org.example:parity:1.0.0");
+
+            for (var path : List.of("/orders/5", "/orders/5/admin", "/orders/5/unknown", "/orders/5/6/7", "/orders/")) {
+                var routed = router.findRoute(org.pragmatica.http.HttpMethod.GET, path)
+                                   .map(route -> route.pathParamCount() + ":" + route.spacers());
+                var selected = org.pragmatica.http.routing.RouteShapeSelector.select(definitions, path)
+                                                                               .map(definition -> definition.pathParamCount() + ":" + definition.spacers());
+
+                assertThat(selected).as("%s %s", source.getClass().getSimpleName(), path).isEqualTo(routed);
+            }
+        }
+    }
+
+    private static final Artifact PUBLIC_ORDERS = Artifact.artifact("org.example:orders-public:1.0.0").unwrap();
+    private static final Artifact ADMIN_ORDERS = Artifact.artifact("org.example:orders-admin:1.0.0").unwrap();
+
+    private static void publishInto(HttpRoutePublisher publisher, Artifact artifact, Object slice) {
+        publisher.publishRoutes(artifact, HttpRoutePublisherSiblingRoutePolicyTest.class.getClassLoader(), slice, stubInvokerFacade())
+                 .await(timeSpan(30).seconds())
+                 .onFailure(cause -> Assertions.fail("route publication must succeed: " + cause.message()));
+    }
+
+    /// Dispatch through the router the publisher RESOLVES for this path, as `AppHttpServer` does.
+    private static String servedBody(HttpRoutePublisher publisher, String path) {
+        var served = publisher.findServingRouter("GET", path)
+                              .unwrap()
+                              .handle(HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of(), "req"))
+                              .await(timeSpan(10).seconds())
+                              .unwrap();
+
+        return new String(served.body());
+    }
+
     private static HttpRoutePublisher publish(Object slice) {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 
