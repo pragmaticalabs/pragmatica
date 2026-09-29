@@ -90,15 +90,19 @@ class StorageMaintenanceWiringTest {
         assertThat(setup.demotionManager().isActive()).isTrue();
     }
 
-    /// Same proof, for the garbage collector side of the pair.
+    /// Same proof, for the garbage collector side of the pair. Since #1604 the streams collector starts
+    /// ACTIVE -- a node's streams instance is its own and its GC runs on every node, not only the leader --
+    /// so "real, not the always-false no-op" is shown by the flag following deactivate/activate.
     @Test
     void defaultStreamStorage_garbageCollector_isReal_notTheAlwaysFalseNoOp() {
         var setup = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "test-node").unwrap();
 
+        assertThat(setup.garbageCollector().isActive()).as("active per node from the start (#1604)").isTrue();
+
+        setup.garbageCollector().deactivate();
         assertThat(setup.garbageCollector().isActive()).isFalse();
 
         setup.garbageCollector().activate();
-
         assertThat(setup.garbageCollector().isActive()).isTrue();
     }
 
