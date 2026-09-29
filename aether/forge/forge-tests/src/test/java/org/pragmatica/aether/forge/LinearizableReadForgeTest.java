@@ -120,6 +120,10 @@ class LinearizableReadForgeTest {
                .until(() -> committedOwner(PARTITION).map(v -> v.owner().equals(owner)).or(false));
         log.info("LINEARIZABLE-READ: committed ownership for {}[{}] owner={}", STREAM, PARTITION, owner.id());
 
+        // #1555: a committed owner acts only once its promotion completes (fresh ownership view + catch-up); the
+        // first check starts it.
+        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
+               .until(() -> ownerNode.streamPartitionManager().mayServeAsOwner(STREAM, PARTITION));
         // The committed owner publishes the authoritative events locally.
         ownerNode.streamPartitionManager()
                  .publishLocal(STREAM, PARTITION, "lin-0".getBytes(UTF_8), System.currentTimeMillis())

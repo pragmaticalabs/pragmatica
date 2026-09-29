@@ -224,7 +224,10 @@ public final class StreamWriteRouter {
         return ownerResolver.resolve(streamName, partition)
                             .filter(this::isRemote)
                             .flatMap(owner -> forwardTo(owner, streamName, partition, payload, timestamp))
-                            .or(() -> publishLocal(streamName, partition, payload, timestamp));
+                            .or(() -> StreamForwardRetry.withPromotionRetry(() -> publishLocal(streamName,
+                                                                                               partition,
+                                                                                               payload,
+                                                                                               timestamp)));
     }
 
     /// Forwardable only when known to differ from this node; a self owner, or an unknown self, never forwards,
