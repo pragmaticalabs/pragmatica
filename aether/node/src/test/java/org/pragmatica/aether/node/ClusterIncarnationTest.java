@@ -149,6 +149,16 @@ class ClusterIncarnationTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
 
+        /// The `restored` arm of the max: a floor BELOW the restored incarnation must not win
+        /// (adopted from v1621's probe `OK_floorBelowRestored_landsAtRestoredPlusOne`).
+        @Test
+        void restoreWithAFloorBelowTheRestored_landsAtRestoredPlusOne() {
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5), 3));
+
+            assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1",
+                                                                                                                                     6)));
+        }
+
         /// The fence the restore sidesteps with its Remove: a plain successor-skipping write is refused.
         @Test
         void aNonSuccessorWrite_isRefused() {

@@ -417,7 +417,8 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `DEPLOYMENT_FAILED` -- an artifact deployment failed on a node (`details` carries `reason`). Severity WARNING.
 - `SCALE_UP` -- an artifact was scaled up to more instances. Severity INFO.
 - `SCALE_DOWN` -- an artifact was scaled down to fewer instances. Severity INFO.
-- `SLICE_FAILURE` -- all instances of a slice method failed. Severity CRITICAL.
+- `SLICE_FAILURE` -- every live instance of a slice version reported only bridge-level defects within the detection window (leader-detected, #1573). Severity CRITICAL.
+- `AUTO_ROLLBACK` -- the leader committed an automatic rollback. `details`: `artifact`, `from`, `to`, `rollbackNumber`, `windowMs`, `requestId`, and `defects.<nodeId>` per hosting node. Severity CRITICAL.
 - `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
 - `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
 - `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
@@ -3682,6 +3683,42 @@ land.
 }
 ```
 
+### POST /api/v1/backup/declare-genesis
+
+Make this cluster's state the KV backup head in place of a backup of ANOTHER lineage (#1532). The
+leader raises its committed cluster incarnation to `max(its own, the head's) + 1` — never backwards
+(`ClusterIncarnationKey`, lineage unchanged) — then commits a declaration naming exactly that lineage and incarnation (`declared-lineage.txt`)
+beside the backup and pushes it; the next change-triggered flush then supersedes the head as a
+fast-forward, and the old lineage stays in git history. The declaration is the only way the backup's
+lineage changes: a head of another lineage is otherwise gated whatever the incarnations. The incarnation
+write is a leader transaction witnessed on the incarnation the leader read, so a concurrent restore or
+declaration makes it refuse (`NOT_COMMITTED`) rather than be overwritten. Re-running after a failed push
+publishes the declaration already committed locally, without moving the incarnation again.
+
+**Refusals:**
+
+| Status | When |
+|---|---|
+| 409 `SameLineage` | The head already belongs to this cluster's lineage — nothing to supersede |
+| 409 `RemoteIsNewer` | The head is this cluster's lineage and AHEAD of it — restore it instead |
+| 409 `NOTHING_TO_SUPERSEDE` | The backup is empty — the first flush establishes this cluster's lineage |
+| 409 `NOT_COMMITTED` | A concurrent write won; re-read and retry |
+| 503 `DeclarationNotPublished` | The incarnation committed but the declaration did not reach the backup; re-run the command |
+| 409 `BACKUP_NOT_ENABLED` | `[backup]` is not enabled with a path on this node |
+| 503 `NOT_LEADER` / `NO_INCARNATION` / `HeadUnreadable` | Retry against the leader, after genesis, or once the head is reachable and readable |
+
+**RBAC:** ADMIN (exact route) · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "lineageId": "01K4ZT9Q6W3X8Y2B7C5D1E0F9G",
+  "incarnation": 4,
+  "supersededLineageId": "01K4ZS0000000000000000OLD0",
+  "supersededIncarnation": 3
+}
+```
+
 ### GET /api/v1/cluster/keys/audit
 
 List API key audit trail (create, rotate, revoke, expire events).
@@ -5092,6 +5129,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
   "servedByOwner": true,
   "ownerHeadOffset": 256,
   "earliestRetainedOffset": 0,
+  "ownerActivationBlock": "",
   "replicas": [
     {"nodeId": "core-1", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": true},
     {"nodeId": "core-3", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": false},
@@ -5108,6 +5146,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
 | `servedByOwner` | Whether the answering node is itself the HRW owner — i.e. whether `replicas` is the complete authoritative view |
 | `ownerHeadOffset` | The answering node's local next-expected offset (head + 1); on the owner this is the true tail used to spot a lagging `CAUGHT_UP` replica (#333) |
 | `earliestRetainedOffset` | Earliest offset still retained locally (`-1` when the partition is absent/empty) |
+| `ownerActivationBlock` | Why the answering node's owner promotion of the partition waits for an operator (#1555), `""` when it does not. Two causes: a live peer disagrees with the local log where both hold records (a divergent tail — neither lineage is served; pick the source with #1569's surface), or live members have not answered the promotion probe for longer than the alarm window (the partition waits for them or for an operator). A non-empty value is also raised once as a CRITICAL operator warning |
 | `replicas[]` | Every registered replica for the partition, sorted by node id |
 | `replicas[].state` | Replication state: `SYNCING` / `CAUGHT_UP` / `LAGGING` |
 | `replicas[].confirmedOffset` | The replica's acked confirmed watermark |

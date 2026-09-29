@@ -26,6 +26,8 @@ public interface FactorySlice {
     Promise<ShortResponse> updateItem(UpdateItemRequest request);
     // Path only, request record declares a validating factory
     Promise<ShortResponse> lookup(LookupRequest request);
+    // Path only, request record declares NO factory and its constructor throws on bad input (#1573 R2-2)
+    Promise<ShortResponse> strict(StrictRequest request);
 
     static FactorySlice factorySlice() {
         return new FactorySlice() {
@@ -46,6 +48,11 @@ public interface FactorySlice {
 
             @Override
             public Promise<ShortResponse> lookup(LookupRequest request) {
+                return Promise.success(new ShortResponse(request.code()));
+            }
+
+            @Override
+            public Promise<ShortResponse> strict(StrictRequest request) {
                 return Promise.success(new ShortResponse(request.code()));
             }
         };

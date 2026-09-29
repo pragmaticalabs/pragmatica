@@ -616,14 +616,64 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Rollback bookkeeping for one artifact base. `updatedAt` is when `currentVersion` became the target —
+    /// the anchor of the auto-rollback bake window (#1573). `rollbackCount`, `lastRollbackAt` and
+    /// `failedVersions` are committed in the SAME batch as the rollback's SliceTarget put, so cooldown,
+    /// maxRollbacks and the never-roll-back-to-a-failed-version rule survive a leader change.
     record PreviousVersionValue(ArtifactBase artifactBase,
                                 Version previousVersion,
                                 Version currentVersion,
-                                long updatedAt) implements AetherValue {
+                                long updatedAt,
+                                int rollbackCount,
+                                long lastRollbackAt,
+                                List<Version> failedVersions) implements AetherValue {
+        public PreviousVersionValue {
+            failedVersions = List.copyOf(failedVersions);
+        }
+
         public static PreviousVersionValue previousVersionValue(ArtifactBase artifactBase,
                                                                 Version previousVersion,
                                                                 Version currentVersion) {
-            return new PreviousVersionValue(artifactBase, previousVersion, currentVersion, System.currentTimeMillis());
+            return new PreviousVersionValue(artifactBase,
+                                            previousVersion,
+                                            currentVersion,
+                                            System.currentTimeMillis(),
+                                            0,
+                                            0,
+                                            List.of());
+        }
+
+        /// A new target version was deployed: the rollback history carries over.
+        public PreviousVersionValue withVersionChange(Version newVersion, long nowMs) {
+            return new PreviousVersionValue(artifactBase,
+                                            currentVersion,
+                                            newVersion,
+                                            nowMs,
+                                            rollbackCount,
+                                            lastRollbackAt,
+                                            failedVersions);
+        }
+
+        /// An automatic rollback from `failedVersion` to `target` committed at `nowMs`.
+        public PreviousVersionValue withRollback(Version failedVersion, Version target, long nowMs) {
+            var failed = new ArrayList<>(failedVersions);
+
+            if (!failed.contains(failedVersion)) {
+                failed.add(failedVersion);
+            }
+
+            return new PreviousVersionValue(artifactBase, failedVersion, target, nowMs, rollbackCount + 1, nowMs, failed);
+        }
+
+        /// Operator reset of the rollback budget; the failed-version record is kept.
+        public PreviousVersionValue withRollbackCountReset() {
+            return new PreviousVersionValue(artifactBase,
+                                            previousVersion,
+                                            currentVersion,
+                                            updatedAt,
+                                            0,
+                                            0,
+                                            failedVersions);
         }
     }
 
