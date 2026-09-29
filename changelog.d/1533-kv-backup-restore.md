@@ -25,6 +25,10 @@
   `BACKUP_HEAD_AHEAD` then says the head is at a higher incarnation it will never pass). Backup format:
   header line `incarnation-id=` (format version stays 1).
   `[verified: KvBackupServiceTest.Fork]`
+- **Backup conditions are cluster events (#1617):** `BACKUP_RESTORE_BLOCKED`, `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED`
+  and `BACKUP_FORKED` are raised as `OperatorWarning` events (codes `backup-restore-blocked`,
+  `backup-restore-entity-checkpoints-dropped`, `backup-forked`, subsystem `kv-backup`) as well as logged.
+  `[verified: BackupWarningOperatorEventTest; EmberKvBackupRestoreTest — the blocked restore reaches the event log]`
 - **`declare-genesis` clears the same floor as a restore:** it commits `max(own, head, highest recorded
   for its lineage) + 1`, so it never reuses an incarnation the backup history records for its lineage
   `[verified: KvBackupServiceTest.Genesis#declareGenesis_clearsEveryIncarnationTheHistoryRecordsForThisLineage]`.

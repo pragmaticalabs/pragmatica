@@ -154,17 +154,14 @@ public final class BackupRestoreCoordinator {
         this.scheduler = scheduler;
     }
 
-    /// The production coordinator: logged warnings and the process-wide scheduler. A backup with no remote
+    /// The production coordinator: the node's warning sink and the process-wide scheduler. A backup with no remote
     /// is announced here, once, because its restore source is only the local repository of whichever node
     /// leads the cold start.
     public static BackupRestoreCoordinator backupRestoreCoordinator(KVStore<AetherKey, AetherValue> kvStore,
                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                                                    Option<Source> source) {
-        var coordinator = new BackupRestoreCoordinator(kvStore,
-                                                       applier,
-                                                       source,
-                                                       BackupWarning.Sink.logging(),
-                                                       SharedScheduler::schedule);
+                                                                    Option<Source> source,
+                                                                    BackupWarning.Sink warnings) {
+        var coordinator = new BackupRestoreCoordinator(kvStore, applier, source, warnings, SharedScheduler::schedule);
 
         source.filter(present -> !present.service()
                                          .repository()
@@ -345,8 +342,7 @@ public final class BackupRestoreCoordinator {
         var withheld = entityCheckpointsNotRestored(document);
 
         if (!withheld.isEmpty()) {
-            // WARN log only: the OperatorWarning cluster event arrives with #1617; whichever of #1533 and #1617
-            // merges second wires it here.
+            // Also an OperatorWarning cluster event through the node's sink ([BackupWarning.Sink#operatorWarnings]).
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED,
                                                       "entity checkpoints from the previous cluster were not restored: their"
                                                      + " offsets belong to a log that did not survive, so entity state"
@@ -630,8 +626,7 @@ public final class BackupRestoreCoordinator {
     @Contract
     private void onFailure(Cause cause) {
         if (cause instanceof RestoreError.Blocked && blocked.compareAndSet(false, true)) {
-            // WARN log only: the OperatorWarning cluster event arrives with #1617; whichever of #1533 and #1617
-            // merges second wires it here.
+            // Also an OperatorWarning cluster event through the node's sink ([BackupWarning.Sink#operatorWarnings]).
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
                                                      + "; this cluster will not start fresh over a backup it"

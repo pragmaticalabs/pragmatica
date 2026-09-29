@@ -34,7 +34,16 @@ public enum OperatorWarningCode {
     CORE_ABSENCE_FENCE("core-absence-fence", "worker-isolation", WarningLevel.CRITICAL),
     /// A replica failed to fsync an applied batch and is withholding its ack. The owner's durability
     /// barrier will not count this copy.
-    REPLICA_FSYNC_FAILED("replica-fsync-failed", "stream-replication", WarningLevel.WARNING);
+    REPLICA_FSYNC_FAILED("replica-fsync-failed", "stream-replication", WarningLevel.WARNING),
+    /// A whole-cluster restore withheld the previous cluster's entity checkpoints; entity state restarts empty
+    /// for the named partitions (#1533).
+    BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED("backup-restore-entity-checkpoints-dropped", "kv-backup", WarningLevel.WARNING),
+    /// A cold start cannot read the KV backup (unreachable, undecodable); cluster-state writes stay refused
+    /// until it can, or until a restart with `[backup] restore = "fresh"` (#1533).
+    BACKUP_RESTORE_BLOCKED("backup-restore-blocked", "kv-backup", WarningLevel.CRITICAL),
+    /// Another cluster holds the backup head at this cluster's own lineage and incarnation (a different
+    /// incarnation id); this cluster backs up nothing until an operator resolves the fork (#1533).
+    BACKUP_FORKED("backup-forked", "kv-backup", WarningLevel.CRITICAL);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

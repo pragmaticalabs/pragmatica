@@ -198,10 +198,11 @@ public final class KvBackupService {
 
     /// The production service: its own single-threaded worker (so a slow or hung git never delays another
     /// component), a monotonic clock (every bound here is a duration, which a wall-clock step would make
-    /// fire early or never), logged warnings, default timing. [#stop] shuts the worker down.
+    /// fire early or never), the node's warning sink, default timing. [#stop] shuts the worker down.
     public static KvBackupService kvBackupService(KVStore<AetherKey, AetherValue> kvStore,
                                                   BackupEntryCodec codec,
-                                                  GitBackupRepository repository) {
+                                                  GitBackupRepository repository,
+                                                  BackupWarning.Sink warnings) {
         var worker = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform()
                                                                       .name("kv-backup")
                                                                       .daemon(true)
@@ -212,7 +213,7 @@ public final class KvBackupService {
                                    repository,
                                    (task, delay) -> worker.schedule(task, delay, TimeUnit.MILLISECONDS),
                                    KvBackupService::monotonicMillis,
-                                   BackupWarning.Sink.logging(),
+                                   warnings,
                                    Timing.DEFAULT,
                                    worker::shutdownNow);
     }

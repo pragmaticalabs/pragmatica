@@ -5,6 +5,10 @@
 package org.pragmatica.aether.node.backup;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,17 +52,42 @@ public record BackupWarning(Code code, String detail) {
         return new BackupWarning(code, detail);
     }
 
-    /// Where warnings go. Loud operator warnings are also cluster events (owner ruling); until the
-    /// `OperatorWarning` event exists this sink logs.
+    /// Where warnings go. Loud operator warnings are also cluster events (owner ruling, #1617).
     @FunctionalInterface
     public interface Sink {
         @Contract
         void emit(BackupWarning warning);
 
-        /// WARN (INFO for a recovery). The `OperatorWarning` cluster event arrives with #1617.
+        /// WARN (INFO for a recovery), log only.
         static Sink logging() {
             return BackupWarning::log;
         }
+
+        /// The node's sink: the restore-blocked, dropped-checkpoints and forked conditions are raised as
+        /// `OperatorWarning` cluster events through `operatorWarnings` (which also logs them); every other
+        /// code is logged as by [#logging].
+        static Sink operatorWarnings(OperatorWarningSink operatorWarnings) {
+            return warning -> operatorWarningCode(warning.code()).onPresent(code -> OperatorWarnings.raise(LOG,
+                                                                                                           operatorWarnings,
+                                                                                                           code,
+                                                                                                           SUBJECT,
+                                                                                                           "{}",
+                                                                                                           warning.detail()))
+                                                 .onEmpty(() -> log(warning));
+        }
+    }
+
+    /// The `OperatorWarning` subject of every backup condition: the node's KV backup.
+    static final String SUBJECT = "kv-backup";
+
+    /// The backup conditions that are also cluster events (#1617).
+    static Option<OperatorWarningCode> operatorWarningCode(Code code) {
+        return switch (code) {
+            case BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED -> Option.some(OperatorWarningCode.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED);
+            case BACKUP_RESTORE_BLOCKED -> Option.some(OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
+            case BACKUP_FORKED -> Option.some(OperatorWarningCode.BACKUP_FORKED);
+            default -> Option.none();
+        };
     }
 
     private static final Logger LOG = LoggerFactory.getLogger(BackupWarning.class);

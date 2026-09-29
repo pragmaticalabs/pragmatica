@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
+import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.NodeCodecs;
@@ -137,6 +138,22 @@ class EmberKvBackupRestoreTest {
                                .allMatch(node -> node.kvStore()
                                                      .get(ClusterIncarnationKey.clusterIncarnationKey())
                                                      .isPresent()));
+        // #1533 × #1617: the blocked restore is also an OperatorWarning cluster event, raised through the
+        // node's sink — it reaches the cluster event log, not only the deciding leader's log file.
+        awaitTrue("the blocked restore is in the cluster event log as an OperatorWarning",
+                  () -> cluster.allNodes()
+                               .stream()
+                               .anyMatch(node -> node.eventAggregator()
+                                                     .events()
+                                                     .await(TimeSpan.timeSpan(5).seconds())
+                                                     .map(events -> events.stream()
+                                                                          .anyMatch(EmberKvBackupRestoreTest::isBlockedRestoreWarning))
+                                                     .or(false)));
+    }
+
+    private static boolean isBlockedRestoreWarning(ClusterEvent event) {
+        return event instanceof ClusterEvent.OperatorWarning warning && "backup-restore-blocked".equals(warning.details()
+                                                                                                             .get("code"));
     }
 
     @Test

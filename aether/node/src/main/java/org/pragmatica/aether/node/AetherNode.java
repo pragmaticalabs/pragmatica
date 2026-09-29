@@ -64,6 +64,7 @@ import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
+import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.GitBackupRepository;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
@@ -825,10 +826,12 @@ public interface AetherNode extends ManageableNode {
     /// repository is `<path>/kv-backup`, apart from anything else written under `[backup] path`.
     private static Option<KvBackupService> createKvBackupService(AetherNodeConfig config,
                                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                                 SliceCodec nodeCodec) {
+                                                                 SliceCodec nodeCodec,
+                                                                 BackupWarning.Sink warnings) {
         return enabledBackup(config).map(backup -> KvBackupService.kvBackupService(kvStore,
                                                                                    BackupEntryCodec.backupEntryCodec(nodeCodec),
-                                                                                   kvBackupRepository(backup)));
+                                                                                   kvBackupRepository(backup),
+                                                                                   warnings));
     }
 
     /// #1533 — the restore source, when this node backs up: the service and the configured restore mode.
@@ -5447,7 +5450,9 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  clusterIncarnationRegistrar::onLeaderChange));
         // #1532: change-triggered, leader-only KV backup — only when [backup] is enabled with a path.
-        var kvBackupService = createKvBackupService(config, kvStore, nodeCodec);
+        // #1533 × #1617: the restore-blocked, dropped-checkpoints and forked conditions are also cluster events.
+        var backupWarnings = BackupWarning.Sink.operatorWarnings(operatorWarningSink);
+        var kvBackupService = createKvBackupService(config, kvStore, nodeCodec, backupWarnings);
 
         kvBackupService.onPresent(service -> routeKvBackup(allEntries, service));
         // #1533: the restore decision precedes every cluster-state seeder — on EVERY node, so a leader
@@ -5455,7 +5460,8 @@ public interface AetherNode extends ManageableNode {
         var backupRestoreCoordinator = BackupRestoreCoordinator.backupRestoreCoordinator(kvStore,
                                                                                          clusterCommandApplier,
                                                                                          restoreSource(config,
-                                                                                                       kvBackupService));
+                                                                                                       kvBackupService),
+                                                                                         backupWarnings);
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  backupRestoreCoordinator::onLeaderChange));
