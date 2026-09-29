@@ -1229,7 +1229,7 @@ public sealed interface AetherValue {
         /// overrides applied); `declaredSecurity` is the slice-declared policy BEFORE any override (#1659). An
         /// ingress node that does not host the route re-applies ITS OWN committed overrides to `declaredSecurity`,
         /// so an override takes effect -- and a relaxed one relaxes -- at every ingress without waiting for the
-        /// hosting nodes to republish. A missing `declaredSecurity` is read as `security`.
+        /// hosting nodes to republish.
         public record RouteEntry(String httpMethod,
                                  String pathPrefix,
                                  String sliceMethod,
@@ -1238,12 +1238,6 @@ public sealed interface AetherValue {
                                  long registeredAt,
                                  String security,
                                  String declaredSecurity) {
-            public RouteEntry {
-                if (declaredSecurity == null) {
-                    declaredSecurity = security;
-                }
-            }
-
             public static RouteEntry activeRoute(String httpMethod,
                                                  String pathPrefix,
                                                  String sliceMethod,

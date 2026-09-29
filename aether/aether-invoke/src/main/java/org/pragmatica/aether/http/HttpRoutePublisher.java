@@ -653,6 +653,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                                                                .equals(pathPrefix)).flatMap(entry -> Option.option(sliceRouters.get(entry.getKey())));
     }
 
+    /// #1659: the policy THIS node's committed overrides assign to a route it does not host, known by its method,
+    /// prefix and declared policy. Empty when no committed override matches the route. Read from the same
+    /// `activeOverrides` and the same rule as [#findLocalRoute], so an ingress judges a remote route exactly as the
+    /// hosting node would once it has republished -- and a relaxed override relaxes here immediately.
+    @Override
+    public Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
+        return SecurityOverrideApplier.overriddenPolicy(httpMethod, pathPrefix, declared, activeOverrides.get());
+    }
+
     /// #887: the matched route's security policy is resolved against the CURRENT overrides here,
     /// at read time, because this is the value the hosting node's authorization decision uses
     /// (`AppHttpServer.findRouteSecurityPolicy`). `publishedRoutes` deliberately keeps the RAW
@@ -669,15 +678,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// picked which security policy applied. Nested prefixes across slices are legal; the more
     /// specific route owns its subtree. `startsWith` is a segment-boundary test because
     /// `HttpRouteDefinition` normalizes every prefix to a trailing slash in its constructor.
-    /// #1659: the policy THIS node's committed overrides assign to a route it does not host, known by its method,
-    /// prefix and declared policy. Empty when no committed override matches the route. Read from the same
-    /// `activeOverrides` and the same rule as [#findLocalRoute], so an ingress judges a remote route exactly as the
-    /// hosting node would once it has republished -- and a relaxed override relaxes here immediately.
-    @Override
-    public Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
-        return SecurityOverrideApplier.overriddenPolicy(httpMethod, pathPrefix, declared, activeOverrides.get());
-    }
-
     @Override
     public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
         var normalizedPath = normalizePath(path);
