@@ -42,7 +42,11 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     private static final int VIRTUAL_NODES_PER_PHYSICAL = 150;
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
-    private final NavigableMap<Integer, N> ring = new TreeMap<>();
+    /// Each ring point holds EVERY node with a virtual node there, in the nodes' natural order (#1324).
+    /// Two virtual nodes can hash to one point; keeping one node per point let the later insertion
+    /// overwrite the earlier, so identical memberships placed differently by insertion order, and removing
+    /// either node deleted the shared point even while it belonged to the other.
+    private final NavigableMap<Integer, SortedSet<N>> ring = new TreeMap<>();
     private final Map<N, List<Integer>> nodeToVirtualNodes = new HashMap<>();
     private final int virtualNodesPerPhysical;
 
@@ -74,7 +78,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
             for (int i = 0; i < virtualNodesPerPhysical; i++) {
                 int hash = hash(node.toString() + "#" + i);
 
-                ring.put(hash, node);
+                ring.computeIfAbsent(hash, _ -> new TreeSet<>()).add(node);
                 virtualNodes.add(hash);
             }
 
@@ -89,10 +93,18 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     public void removeNode(N node) {
         lock.writeLock().lock();
         try {
-            Option.option(nodeToVirtualNodes.remove(node)).onPresent(virtualNodes -> virtualNodes.forEach(ring::remove));
+            Option.option(nodeToVirtualNodes.remove(node))
+                  .onPresent(virtualNodes -> virtualNodes.forEach(point -> removeFromPoint(point, node)));
         } finally {
             lock.writeLock().unlock();
         }
+    }
+
+    /// Removes `node` from `point` only; the point stays while another node still holds it.
+    private void removeFromPoint(int point, N node) {
+        ring.computeIfPresent(point, (_, holders) -> holders.remove(node) && holders.isEmpty()
+                                                     ? null
+                                                     : holders);
     }
 
     /// Get the partition for a given key.
@@ -160,13 +172,16 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
             }
 
             Set<N> seen = new LinkedHashSet<>();
-            // Start from the hash position and walk clockwise
+            // Start from the hash position and walk clockwise; a shared point yields its nodes in order
             int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
             while (seen.size() < replicaCount && seen.size() < nodeToVirtualNodes.size()) {
-                N node = ring.get(current);
+                for (var node : ring.get(current)) {
+                    if (seen.size() < replicaCount) {
+                        seen.add(node);
+                    }
+                }
 
-                seen.add(node);
                 current = Option.option(ring.higherKey(current)).or(ring::firstKey);
             }
 
@@ -201,10 +216,10 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
             int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
             while (seen.size() < replicaCount && visited.size() < nodeToVirtualNodes.size()) {
-                N node = ring.get(current);
-
-                if (visited.add(node) && filter.test(node)) {
-                    seen.add(node);
+                for (var node : ring.get(current)) {
+                    if (seen.size() < replicaCount && visited.add(node) && filter.test(node)) {
+                        seen.add(node);
+                    }
                 }
 
                 current = Option.option(ring.higherKey(current)).or(ring::firstKey);
@@ -255,7 +270,8 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     Set<N> nodesAtPoint(int point) {
         lock.readLock().lock();
         try {
-            return Option.option(ring.get(point)).map(node -> Set.of(node)).or(Set.of());
+            return Option.option(ring.get(point)).<Set<N>>map(holders -> new LinkedHashSet<>(holders))
+                         .or(Set.of());
         } finally {
             lock.readLock().unlock();
         }
@@ -264,7 +280,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     private N getNodeForHash(int hash) {
         int key = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
-        return ring.get(key);
+        return ring.get(key).first();
     }
 
     /// The ring position of a partition — the one place the partition-to-position mapping lives.
