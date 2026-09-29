@@ -64,11 +64,12 @@ import static org.pragmatica.aether.slice.kvstore.BackupFixtures.FIXTURES;
 /// accepts only its own canonical rendering, and reports every malformed line precisely instead of
 /// throwing.
 class BackupEntryCodecTest {
+    static final String INSTANCE = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(BackupFixtures.codec());
     private static final long REVISION = 42L;
     private static final NodeId NODE = NodeId.nodeId("node-1")
                                              .unwrap();
-    private static final int FIRST_ENTRY_LINE = 7;
+    private static final int FIRST_ENTRY_LINE = 8;
 
     @Nested
     class RoundTrip {
@@ -179,7 +180,7 @@ class BackupEntryCodecTest {
         /// Before genesis there is no incarnation entry: the header carries incarnation 0, no lineage.
         @Test
         void header_roundTrips_forAnEmptyStore() {
-            var header = BackupHeader.backupHeader("", 0L, 0L);
+            var header = BackupHeader.backupHeader("", 0L, "", 0L);
 
             CODEC.encode(0L, Map.of())
                  .flatMap(CODEC::decode)
@@ -192,9 +193,9 @@ class BackupEntryCodecTest {
         /// because the revision restarts with every cold restart.
         @Test
         void isAhead_ordersByIncarnationThenRevision() {
-            var restarted = BackupHeader.backupHeader("l", 2L, 5L);
-            var beforeRestart = BackupHeader.backupHeader("l", 1L, 900L);
-            var laterSameIncarnation = BackupHeader.backupHeader("l", 2L, 6L);
+            var restarted = BackupHeader.backupHeader("l", 2L, INSTANCE, 5L);
+            var beforeRestart = BackupHeader.backupHeader("l", 1L, INSTANCE, 900L);
+            var laterSameIncarnation = BackupHeader.backupHeader("l", 2L, INSTANCE, 6L);
 
             assertThat(restarted.isAhead(beforeRestart)).isTrue();
             assertThat(beforeRestart.isAhead(restarted)).isFalse();
@@ -206,7 +207,7 @@ class BackupEntryCodecTest {
         /// header with no entry behind it is refused.
         @Test
         void decode_headerLineageWithoutAnIncarnationEntry_isRefused() {
-            var document = seal(List.of("aether-kv-backup/1", "lineage=l", "incarnation=1", "revision=1", "entries=0"));
+            var document = seal(List.of("aether-kv-backup/1", "lineage=l", "incarnation=1", "revision=1", "instance=", "entries=0"));
 
             assertThat(failures(CODEC.decode(document))).singleElement()
                                                         .isInstanceOf(BackupError.HeaderEntryMismatch.class);
@@ -234,7 +235,7 @@ class BackupEntryCodecTest {
             var incarnation = (AetherValue.ClusterIncarnationValue) fixtureMap().get(AetherKey.ClusterIncarnationKey.clusterIncarnationKey());
 
             assertThat(document.header()).isEqualTo(BackupHeader.backupHeader(incarnation.lineageId(),
-                                                                                incarnation.incarnation(),
+                                                                                incarnation.incarnation(), incarnation.instanceId(),
                                                                                 REVISION));
         }
     }
@@ -329,8 +330,8 @@ class BackupEntryCodecTest {
                                                 .lines()
                                                 .toList());
 
-            unsealed.remove(5);
-            Collections.swap(unsealed, 5, 6);
+            unsealed.remove(6);
+            Collections.swap(unsealed, 6, 7);
 
             assertNonCanonical(seal(unsealed));
         }
@@ -391,7 +392,7 @@ class BackupEntryCodecTest {
             var accepted = new ArrayList<String>();
 
             IntStream.range(0, lines.size())
-                     .filter(index -> index != 5)
+                     .filter(index -> index != 6)
                      .forEach(index -> mutations.forEach(mutation -> collectAccepted(resealedAt(lines, index, mutation), accepted)));
 
             assertThat(accepted).as("mutated documents that decoded yet did not re-encode to themselves")
@@ -453,9 +454,9 @@ class BackupEntryCodecTest {
                                                            BackupError.UnrecognisedKey.class,
                                                            BackupError.MalformedEntry.class);
             assertThat(failures).extracting(Cause::message)
-                                .anyMatch(message -> message.startsWith("Line 8:"))
                                 .anyMatch(message -> message.startsWith("Line 9:"))
-                                .anyMatch(message -> message.startsWith("Line 10:"));
+                                .anyMatch(message -> message.startsWith("Line 10:"))
+                                .anyMatch(message -> message.startsWith("Line 11:"));
         }
 
         @Test
@@ -463,7 +464,7 @@ class BackupEntryCodecTest {
             var fixture = FIXTURES.getFirst();
             var entry = line(fixture.value(), fixture.key()
                                                      .asString());
-            var document = seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "entries=2", entry));
+            var document = seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "instance=", "entries=2", entry));
 
             assertThat(failures(CODEC.decode(document))).singleElement()
                                                         .isInstanceOf(BackupError.EntryCountMismatch.class);
@@ -481,15 +482,15 @@ class BackupEntryCodecTest {
 
         @Test
         void decode_missingHeader_namesEveryMissingField() {
-            assertThat(failures(CODEC.decode(""))).hasSize(6)
+            assertThat(failures(CODEC.decode(""))).hasSize(7)
                                                   .allMatch(BackupError.MissingHeaderLine.class::isInstance);
         }
 
         @Test
         void decode_malformedHeaderValues_areReported() {
-            var document = seal(List.of("aether-kv-backup/1", "lineage=bad\\q", "incarnation=x", "revision=abc", "entries=-1"));
+            var document = seal(List.of("aether-kv-backup/1", "lineage=bad\\q", "incarnation=x", "revision=abc", "instance=bad\\q", "entries=-1"));
 
-            assertThat(failures(CODEC.decode(document))).hasSize(4)
+            assertThat(failures(CODEC.decode(document))).hasSize(5)
                                                         .allMatch(BackupError.MalformedHeaderValue.class::isInstance);
         }
 
@@ -554,9 +555,9 @@ class BackupEntryCodecTest {
         @Test
         void decode_hostileInput_neverThrows() {
             var inputs = List.of("\u0000\u0001",
-                                 seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "entries=1", " ")),
-                                 seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "entries=1", "AAAA slices/")),
-                                 seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "entries=1", "//// topic-sub/a/b/c/d/e")),
+                                 seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "instance=", "entries=1", " ")),
+                                 seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "instance=", "entries=1", "AAAA slices/")),
+                                 seal(List.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "instance=", "entries=1", "//// topic-sub/a/b/c/d/e")),
                                  "aether-kv-backup/99999999999\n");
 
             assertThat(inputs).allMatch(input -> Result.lift(() -> CODEC.decode(input))
@@ -698,16 +699,16 @@ class BackupEntryCodecTest {
 
     /// Header fields for `entries`, with a correct checksum, so a test exercises exactly the rule it names.
     private static String sealedDocument(String... entries) {
-        return seal(Stream.concat(Stream.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "entries=" + entries.length),
+        return seal(Stream.concat(Stream.of("aether-kv-backup/1", "lineage=", "incarnation=0", "revision=1", "instance=", "entries=" + entries.length),
                                   Arrays.stream(entries))
                           .toList());
     }
 
-    /// Joins `unsealed` (five header fields, then entries) with a correct `sha256=` line inserted.
+    /// Joins `unsealed` (six header fields, then entries) with a correct `sha256=` line inserted.
     private static String seal(List<String> unsealed) {
         var lines = new ArrayList<>(unsealed);
 
-        lines.add(Math.min(5, lines.size()), "sha256=" + BackupEntryCodec.checksum(unsealed)
+        lines.add(Math.min(6, lines.size()), "sha256=" + BackupEntryCodec.checksum(unsealed)
                                                                          .unwrap());
 
         return lines.stream()
@@ -718,7 +719,7 @@ class BackupEntryCodecTest {
         var lines = new ArrayList<>(document.lines()
                                             .toList());
 
-        lines.remove(5);
+        lines.remove(6);
 
         return seal(lines);
     }
@@ -728,7 +729,7 @@ class BackupEntryCodecTest {
         var lines = new ArrayList<>(document.lines()
                                             .toList());
 
-        lines.remove(5);
+        lines.remove(6);
 
         return seal(lines.stream()
                          .map(edit)
@@ -742,7 +743,7 @@ class BackupEntryCodecTest {
                                          .lines()
                                          .toList());
 
-        lines.remove(5);
+        lines.remove(6);
 
         return seal(lines.stream()
                          .map(edit)
@@ -753,7 +754,7 @@ class BackupEntryCodecTest {
         var mutated = new ArrayList<>(lines);
 
         mutated.set(index, mutation.apply(mutated.get(index)));
-        mutated.remove(5);
+        mutated.remove(6);
 
         return seal(mutated);
     }
@@ -770,7 +771,7 @@ class BackupEntryCodecTest {
 
     private static List<String> entryLines(String document) {
         return document.lines()
-                       .skip(6)
+                       .skip(7)
                        .toList();
     }
 

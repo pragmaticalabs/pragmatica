@@ -73,6 +73,7 @@ import static org.pragmatica.aether.node.backup.GitFixtures.git;
 /// batch through [RestoreGate] first, as a node's consensus engine does, so the coordinator's own writes are
 /// proven to pass the gate it keeps closed for everyone else.
 class BackupRestoreCoordinatorTest {
+    static final String INSTANCE = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final SliceCodec NODE_CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(NODE_CODEC);
     private static final KvBackupService.Timing TIMING = KvBackupService.Timing.timing(500, 5_000, 1_000, 8_000, 3_000);
@@ -131,7 +132,7 @@ class BackupRestoreCoordinatorTest {
         void aLiveClusterIsNeverRestoredOver() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
             applyDirect(new KVCommand.Put<>(ConfigKey.forKey("live"), BETA));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
 
@@ -145,7 +146,7 @@ class BackupRestoreCoordinatorTest {
         void restoreFresh_ignoresTheBackup() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.FRESH)));
 
             runToCompletion(coordinator);
@@ -170,7 +171,7 @@ class BackupRestoreCoordinatorTest {
         void runtimeKeysAlone_doNotCountAsExistingState() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
             applyDirect(new KVCommand.Put<>(GossipKeyRotationKey.gossipKeyRotationKey(),
                                             GossipKeyRotationValue.gossipKeyRotationValue(1, "k1")));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
@@ -190,8 +191,8 @@ class BackupRestoreCoordinatorTest {
         void theHead_isRestored_aboveTheHighestRecordedIncarnation() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 5, 90), Map.of(ConfigKey.forKey("old"), ALPHA), "kv backup (hand-written)");
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 5, INSTANCE, 90), Map.of(ConfigKey.forKey("old"), ALPHA), "kv backup (hand-written)");
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
                                                                                   ConfigKey.forKey("beta"), BETA));
             var head = git(Path.of(remote), "rev-parse", "backup").strip();
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
@@ -201,8 +202,13 @@ class BackupRestoreCoordinatorTest {
             assertThat(kvStore.get(ConfigKey.forKey("alpha"))).isEqualTo(Option.some(ALPHA));
             assertThat(kvStore.get(ConfigKey.forKey("beta"))).isEqualTo(Option.some(BETA));
             assertThat(kvStore.get(ConfigKey.forKey("old"))).as("only the head is restored").isEqualTo(Option.none());
-            assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue(LINEAGE,
-                                                                                                                                  6)));
+            assertThat(ClusterIncarnation.committed(kvStore)
+                                         .unwrap()).satisfies(committed -> {
+                                                       assertThat(committed.lineageId()).isEqualTo(LINEAGE);
+                                                       assertThat(committed.incarnation()).isEqualTo(6);
+                                                       assertThat(committed.instanceId()).as("a restored cluster is a new instance")
+                                                                                         .isNotEqualTo(INSTANCE);
+                                                   });
             assertThat(RestoreGate.decision(kvStore)
                                   .unwrap()).satisfies(marker -> {
                                                 assertThat(marker.outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
@@ -220,7 +226,7 @@ class BackupRestoreCoordinatorTest {
             var published = new ArrayList<Object>();
 
             router.addRoute(KVStoreNotification.ValuePut.class, put -> published.add(put.cause().key()));
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
                                                                                   ConfigKey.forKey("beta"), BETA));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
 
@@ -238,7 +244,7 @@ class BackupRestoreCoordinatorTest {
         void afterARestore_theNextBackupIsNotBehindTheHead() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
             var service = service(Option.some(remote));
             var coordinator = coordinator(Option.some(BackupRestoreCoordinator.Source.source(service, RestoreMode.AUTO)));
 
@@ -263,12 +269,12 @@ class BackupRestoreCoordinatorTest {
         void anInterruptedRestore_isResumed_fromItsOwnCommit() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
                                                                                   ConfigKey.forKey("beta"), BETA,
                                                                                   ClusterConfigKey.CURRENT, CLUSTER_CONFIG));
             var commit = git(Path.of(remote), "rev-parse", "backup").strip();
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 60), Map.of(ConfigKey.forKey("later"), ALPHA));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 60), Map.of(ConfigKey.forKey("later"), ALPHA));
             applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
                                             BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
@@ -315,7 +321,7 @@ class BackupRestoreCoordinatorTest {
             var remote = bareRemote(temp.resolve("remote.git"));
             var checkpointKey = EntityCheckpointKey.entityCheckpointKey("orders", 3);
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INSTANCE, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
                                                                                   checkpointKey,
                                                                                   EntityFoldCheckpointValue.entityFoldCheckpointValue(500, "ab")));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
@@ -501,7 +507,7 @@ class BackupRestoreCoordinatorTest {
         var all = new HashMap<>(entries);
 
         all.put(ClusterIncarnationKey.clusterIncarnationKey(),
-                ClusterIncarnationValue.clusterIncarnationValue(header.lineageId(), header.incarnation()));
+                ClusterIncarnationValue.clusterIncarnationValue(header.lineageId(), header.incarnation(), header.instanceId()));
         commitOnRemote(remote, CODEC.encode(header.revision(), all)
                                     .unwrap(), subject);
     }

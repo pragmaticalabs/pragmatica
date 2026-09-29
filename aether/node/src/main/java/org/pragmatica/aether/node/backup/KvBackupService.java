@@ -153,6 +153,7 @@ public final class KvBackupService {
     public enum Status {
         CURRENT,
         GATED,
+        FORKED,
         HEAD_AHEAD,
         HEAD_UNREADABLE,
         PUSH_FAILING,
@@ -352,8 +353,10 @@ public final class KvBackupService {
         var matcher = SUBJECT.matcher(subject);
 
         if (matcher.matches()) {
+            // The subject names no instance; the floor reads only lineage and incarnation.
             return success(Option.some(BackupHeader.backupHeader(matcher.group(1),
                                                                  Long.parseLong(matcher.group(2)),
+                                                                 "",
                                                                  Long.parseLong(matcher.group(3)))));
         }
 
@@ -557,6 +560,7 @@ public final class KvBackupService {
         return switch (BackupDecision.decide(header, existing, head.declaration())) {
             case STALE -> success(Outcome.stale(existing.unwrap(), header));
             case GATED -> success(Outcome.gated(existing.unwrap(), header));
+            case FORKED -> success(Outcome.forked(existing.unwrap(), header));
             case WRITE -> write(document, body, head, pushAttempts);
         };
     }
@@ -671,6 +675,7 @@ public final class KvBackupService {
             case STALE -> onHeadAhead(outcome);
             case AWAITING_GENESIS -> scheduleRetry();
             case GATED -> enter(Status.GATED, gatedDetail(outcome));
+            case FORKED -> enter(Status.FORKED, forkedDetail(outcome));
             case HEAD_UNREADABLE -> enter(Status.HEAD_UNREADABLE,
                                           "the backup head cannot be read as a backup document (written by a newer" + " version, or corrupted); inspect the backup repository and repair or move" + " the head — this cluster will not overwrite what it cannot read");
             case PUSH_FAILED -> onPushFailed();
@@ -687,6 +692,27 @@ public final class KvBackupService {
                                   + "; restore that backup, or run `" + DECLARE_GENESIS_COMMAND
                                   + "` to make this cluster's state the backup head")
                       .or("the backup head belongs to another lineage; run `" + DECLARE_GENESIS_COMMAND + "`");
+    }
+
+    /// #1533: another cluster instance holds the head at this cluster's own lineage and incarnation. Neither
+    /// is written over the other; an operator decides which history continues.
+    private static String forkedDetail(Outcome outcome) {
+        return "the backup head was written by ANOTHER cluster instance at this cluster's own lineage and incarnation"
+             + " (head: instance " + outcome.head()
+                                            .map(BackupHeader::instanceId)
+                                            .or("?")
+             + ", this cluster: instance " + outcome.ours()
+                                                    .map(BackupHeader::instanceId)
+                                                    .or("?")
+             + ", lineage " + outcome.ours()
+                                     .map(BackupHeader::lineageId)
+                                     .or("?")
+             + ", incarnation " + outcome.ours()
+                                         .map(BackupHeader::incarnation)
+                                         .or(0L)
+             + "): two clusters were restored from the same backup. Nothing is backed up until one is"
+             + " retired; run `" + DECLARE_GENESIS_COMMAND
+             + "` on the cluster whose state should become the head";
     }
 
     /// Never written while behind (the head stays; see [BackupDecision]). A head briefly ahead is routine —
@@ -787,6 +813,7 @@ public final class KvBackupService {
     private static Code codeFor(Status status) {
         return switch (status) {
             case GATED -> Code.BACKUP_GATED;
+            case FORKED -> Code.BACKUP_FORKED;
             case HEAD_AHEAD -> Code.BACKUP_HEAD_AHEAD;
             case HEAD_UNREADABLE -> Code.BACKUP_REMOTE_UNREADABLE;
             case PUSH_FAILING -> Code.BACKUP_PUSH_FAILING;
@@ -826,6 +853,7 @@ public final class KvBackupService {
         STALE,
         AWAITING_GENESIS,
         GATED,
+        FORKED,
         HEAD_UNREADABLE,
         PUSH_FAILED
     }
@@ -847,6 +875,10 @@ public final class KvBackupService {
 
         static Outcome gated(BackupHeader head, BackupHeader ours) {
             return new Outcome(OutcomeKind.GATED, Option.some(head), Option.some(ours));
+        }
+
+        static Outcome forked(BackupHeader head, BackupHeader ours) {
+            return new Outcome(OutcomeKind.FORKED, Option.some(head), Option.some(ours));
         }
     }
 }

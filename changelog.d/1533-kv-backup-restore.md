@@ -17,6 +17,13 @@
   names the partitions); schema MIGRATING → PENDING.
 - **One restore-commit hook** re-drives the components that load cluster state once at activation: the
   bootstrap config seed, the rollout manager and the A/B test manager.
+- **Cluster instance id — forks are refused, not overwritten.** `ClusterIncarnationValue` and the backup
+  header carry an `instanceId` minted with every incarnation (genesis, restore, declare-genesis); leader
+  changes keep it. Two clusters restored from the same backup at once reach the same lineage and
+  incarnation as different instances: the backup never lets one replace the other's head (`BACKUP_FORKED`,
+  both instance ids named); `declare-genesis` resolves it. Wire: the `ClusterIncarnationValue` SHAPE gains
+  `instanceId` (pre-GA). Backup format: header line `instance=` (format version stays 1).
+  `[verified: KvBackupServiceTest.Fork]`
 - **`declare-genesis` clears the same floor as a restore:** it commits `max(own, head, highest recorded
   for its lineage) + 1`, so it never reuses an incarnation the backup history records for its lineage
   `[verified: KvBackupServiceTest.Genesis#declareGenesis_clearsEveryIncarnationTheHistoryRecordsForThisLineage]`.

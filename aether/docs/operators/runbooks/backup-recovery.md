@@ -72,6 +72,15 @@ two exits; the restore retries with backoff capped at 60 s. Exits: fix the remot
 `[backup] restore = "fresh"` to abandon the backup `[verified: BackupRestoreCoordinatorTest.Blocked,
 EmberKvBackupRestoreTest]`.
 
+**Hazard — restoring the same backup into two live clusters.** Each restore mints a new cluster instance
+id (#1533), so two clusters restored from the same head at the same time reach the same lineage and
+incarnation as different instances. The backup refuses to let either one replace the other's head:
+whichever cluster finds the other's head raises `BACKUP_FORKED`, naming both instance ids, and backs up
+nothing from then on. `[verified: KvBackupServiceTest.Fork]` The cluster that pushed first keeps writing
+and raises nothing, so `BACKUP_FORKED` on ONE cluster means another live cluster owns this lineage's head.
+To resolve it, retire one cluster and run `aether backup declare-genesis` on the one whose state should
+continue: it moves to a new incarnation and instance, which supersedes the forked head.
+
 **`restore = "fresh"` against an existing backup** starts a new lineage, and its backup is then GATED
 (`BACKUP_GATED`) until `aether backup declare-genesis` makes it the head; the old lineage stays in git
 history.
@@ -180,6 +189,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 | Code | Meaning | Operator action |
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
+| `BACKUP_FORKED` | Another cluster instance holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
 | `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s | Nothing is backed up meanwhile; find the other writer of this lineage |
 | `BACKUP_HEAD_REPLACED` | This cluster's state replaced a newer head | The replaced commit is in git history; inspect it |
 | `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |

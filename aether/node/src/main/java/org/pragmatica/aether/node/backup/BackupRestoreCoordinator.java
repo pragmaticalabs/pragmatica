@@ -51,6 +51,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.ULID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -514,8 +515,10 @@ public final class BackupRestoreCoordinator {
                                                   BackupRestoreValue marker) {
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
-        netEffect(ClusterIncarnation.restoreCommands(restored, highestRecorded)).forEach((key, value) -> mutations.add(mutation(key,
-                                                                                                                                value)));
+        netEffect(ClusterIncarnation.restoreCommands(restored,
+                                                     highestRecorded,
+                                                     ULID.ulid().encoded())).forEach((key, value) -> mutations.add(mutation(key,
+                                                                                                                            value)));
         mutations.add(new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
                                                Option.<AetherValue> some(marker),
                                                Option.<AetherValue> some(marker.restored())));

@@ -1052,21 +1052,23 @@ public sealed interface AetherValue {
     /// immediate successor of the committed value. A Remove is NOT fenced, and a restore deliberately goes
     /// Remove-then-Put to bypass the fence; a restore's monotonicity comes from the floor in
     /// `ClusterIncarnation.restoreCommands`, not from this fence.
-    record ClusterIncarnationValue(String lineageId, long incarnation) implements AetherValue, VersionFenced {
+    ///
+    /// `instanceId` (#1533) names this running cluster instance. It is minted with every new incarnation — at
+    /// genesis, at a restore and at `declare-genesis` — and is replicated state, so a leader change keeps it.
+    /// Two clusters that reach the same `(lineageId, incarnation)` independently (restored from the same
+    /// backup at once) differ in it, and the backup refuses to let either replace the other's head.
+    record ClusterIncarnationValue(String lineageId, long incarnation, String instanceId) implements AetherValue, VersionFenced {
         public static final long GENESIS = 1L;
 
-        public static ClusterIncarnationValue clusterIncarnationValue(String lineageId, long incarnation) {
-            return new ClusterIncarnationValue(lineageId, incarnation);
+        public static ClusterIncarnationValue clusterIncarnationValue(String lineageId,
+                                                                      long incarnation,
+                                                                      String instanceId) {
+            return new ClusterIncarnationValue(lineageId, incarnation, instanceId);
         }
 
-        /// A brand-new cluster: a fresh lineage at the first incarnation.
-        public static ClusterIncarnationValue genesis(String lineageId) {
-            return new ClusterIncarnationValue(lineageId, GENESIS);
-        }
-
-        /// The same lineage, one incarnation later — what a restore commits.
-        public ClusterIncarnationValue next() {
-            return new ClusterIncarnationValue(lineageId, incarnation + 1);
+        /// A brand-new cluster: a fresh lineage at the first incarnation, as a fresh instance.
+        public static ClusterIncarnationValue genesis(String lineageId, String instanceId) {
+            return new ClusterIncarnationValue(lineageId, GENESIS, instanceId);
         }
 
         @Override

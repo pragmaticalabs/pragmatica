@@ -23,6 +23,7 @@ import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.ULID;
 
 
 /// `aether backup declare-genesis` (#1532): the operator's statement that this cluster's state — not the
@@ -33,9 +34,10 @@ import org.pragmatica.lang.utils.Causes;
 /// and every one the backup history records for its lineage ([ClusterIncarnation#superseding]), and
 /// the next backup flush then supersedes it as a fast-forward (the old lineage stays in git history).
 ///
-/// It refuses whenever the head is not another lineage's: a head of this cluster's own lineage is either
-/// already this cluster's backup, or AHEAD of it — in which case the right action is a restore (#1533),
-/// and declaring genesis would throw that state away.
+/// It refuses a head of this cluster's own lineage — that is either already this cluster's backup, or AHEAD
+/// of it, in which case the right action is a restore (#1533) and declaring genesis would throw that state
+/// away — with one exception: a FORKED head, the same lineage and incarnation written by another cluster
+/// instance (#1533). Declaring genesis is how the operator picks the cluster whose state continues.
 public record BackupGenesis(KvBackupService service) {
     public static BackupGenesis backupGenesis(KvBackupService service) {
         return new BackupGenesis(service);
@@ -154,7 +156,7 @@ public record BackupGenesis(KvBackupService service) {
     private Promise<GenesisDeclared> supersedeExisting(ClusterIncarnationValue current,
                                                        BackupHeader head,
                                                        Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        if (head.lineageId().equals(current.lineageId())) {
+        if (head.lineageId().equals(current.lineageId()) && !isForkedBy(head, current)) {
             return refuseSameLineage(current, head);
         }
 
@@ -194,7 +196,10 @@ public record BackupGenesis(KvBackupService service) {
                                                      BackupHeader head,
                                                      long highestRecorded,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        var next = ClusterIncarnation.superseding(current, head.incarnation(), highestRecorded);
+        var next = ClusterIncarnation.superseding(current,
+                                                  head.incarnation(),
+                                                  highestRecorded,
+                                                  ULID.ulid().encoded());
         var transactionId = "declare-genesis:" + UUID.randomUUID();
 
         return service.kvStore()
@@ -207,9 +212,18 @@ public record BackupGenesis(KvBackupService service) {
                       .flatMap(results -> confirm(results, transactionId, next, head));
     }
 
+    /// #1533: the head is this cluster's lineage and incarnation, written by ANOTHER cluster instance — a
+    /// fork. Declaring genesis is how the operator picks this cluster to continue: it moves to a new
+    /// incarnation and instance, which then supersedes the forked head as a successor.
+    private static boolean isForkedBy(BackupHeader head, ClusterIncarnationValue current) {
+        return head.incarnation() == current.incarnation() && !head.instanceId()
+                                                                   .equals(current.instanceId());
+    }
+
     private Promise<GenesisDeclared> refuseSameLineage(ClusterIncarnationValue current, BackupHeader head) {
         var ours = BackupHeader.backupHeader(current.lineageId(),
                                              current.incarnation(),
+                                             current.instanceId(),
                                              service.kvStore().committedRevision());
 
         return head.isAhead(ours)

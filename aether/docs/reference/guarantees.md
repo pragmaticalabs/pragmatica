@@ -114,15 +114,18 @@ Consensus runs in memory on every node; the old per-node consensus snapshot (`Gi
   newest head across nodes is not implemented]`; `BACKUP_RESTORE_SOURCE_LOCAL` warns at startup.
 - **The #1625 residual:** an incarnation that ran but whose key never reached the backup before a crash is
   invisible to the restore floor and can be reused `[unverified]`; #1532 narrows the window by flushing an
-  incarnation change immediately. Likewise, two clusters restored from the same head AT ONCE both land on
-  the same incarnation, because neither has recorded its own yet; whichever writes second then sees
-  `BACKUP_HEAD_AHEAD` `[design intent — unverified]`.
+  incarnation change immediately. Two clusters restored from the same head AT ONCE both land on the same
+  incarnation, because neither has recorded its own yet. They are told apart by the cluster instance id
+  (below).
 - **The change-triggered backup (#1532)** is a separate, leader-only git repository at
   `<path>/kv-backup`, written only when `[backup] enabled = true`; it backs up cluster-state keys only
   `[mechanism: sealed AetherKey = ClusterStateKey | RuntimeKey]`. **The remote's lineage changes
   only by an operator declaration** (`aether backup declare-genesis`, which commits a declaration for
   exactly this cluster's lineage and incarnation): a head of any other lineage is gated, whatever the
-  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. A head of this cluster's own lineage that is ahead of its state is never written over while it is
+  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. **A head of this cluster's own lineage and incarnation written by ANOTHER cluster instance is never
+  written over** (`BACKUP_FORKED`, gated until `declare-genesis` or a restore moves this cluster to a new
+  incarnation) `[mechanism: BackupDecision — the instance id, minted with every incarnation, must match;
+  verified: KvBackupServiceTest.Fork]`. A head of this cluster's own lineage that is ahead of its state is never written over while it is
   ahead; routine lag after a leader change resolves by itself, and a stall longer than 30 s (monotonic
   clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`
   `[unverified: a false-positive BACKUP_HEAD_AHEAD WARN needs >30 s apply lag in a newly elected leader;
