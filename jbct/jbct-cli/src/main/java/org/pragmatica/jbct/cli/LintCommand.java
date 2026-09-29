@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
@@ -114,7 +115,11 @@ public class LintCommand implements Callable<Integer> {
     }
 
     /// A collected file the linter could not read or parse, with the reason.
-    private record Unanalysed(Path file, String reason) {}
+    private record Unanalysed(Path file, String reason) {
+        static Unanalysed unanalysed(Path file, String reason) {
+            return new Unanalysed(file, reason);
+        }
+    }
 
     private void processFile(Path file,
                              JbctLinter linter,
@@ -139,7 +144,7 @@ public class LintCommand implements Callable<Integer> {
                              })
                   .onFailure(cause -> {
                       counters[3]++;
-                      unanalysed.add(new Unanalysed(file, cause.message()));
+                      unanalysed.add(Unanalysed.unanalysed(file, cause.message()));
                       System.err.println("  ✗ " + file + ": " + cause.message());
                   });
     }
@@ -189,15 +194,9 @@ public class LintCommand implements Callable<Integer> {
         sb.append("  \"collected\": %d,\n".formatted(collected));
         sb.append("  \"examined\": %d,\n".formatted(collected - unanalysed.size()));
         sb.append("  \"skipped\": [");
-        for (int i = 0; i < unanalysed.size(); i++) {
-            var skipped = unanalysed.get(i);
-
-            sb.append(i == 0 ? "\n" : ",\n");
-            sb.append("    { \"file\": \"%s\", \"reason\": \"%s\" }".formatted(escapeJson(skipped.file().toString()),
-                                                                               escapeJson(skipped.reason())));
-        }
-
-        sb.append(unanalysed.isEmpty() ? "],\n" : "\n  ],\n");
+        sb.append(unanalysed.isEmpty()
+                  ? "],\n"
+                  : "\n" + unanalysed.stream().map(this::skippedJson).collect(Collectors.joining(",\n")) + "\n  ],\n");
         sb.append("  \"diagnostics\": [\n");
         for (int i = 0; i < diagnostics.size(); i++) {
             var d = diagnostics.get(i);
@@ -220,6 +219,11 @@ public class LintCommand implements Callable<Integer> {
         sb.append("  ]\n");
         sb.append("}\n");
         System.out.print(sb);
+    }
+
+    private String skippedJson(Unanalysed skipped) {
+        return "    { \"file\": \"%s\", \"reason\": \"%s\" }".formatted(escapeJson(skipped.file().toString()),
+                                                                     escapeJson(skipped.reason()));
     }
 
     private void printSarifResults(List<Diagnostic> diagnostics, int collected, List<Unanalysed> unanalysed) {

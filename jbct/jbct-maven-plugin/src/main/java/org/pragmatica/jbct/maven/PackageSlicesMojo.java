@@ -51,6 +51,9 @@ import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.archiver.jar.JarArchiver;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+
 
 /// Packages slices into separate JAR artifacts.
 /// Reads slice manifests from META-INF/slice/*.manifest and creates:
@@ -167,8 +170,7 @@ public class PackageSlicesMojo extends AbstractMojo {
             var isDirectDependency = directDependencyKeys.contains(key);
             // Only a direct dependency can be a slice dependency, so only its jar is scanned, once.
             var sliceManifests = isDirectDependency
-                                 ? sliceManifestsOf(artifact).onFailure(cause -> unreadable.add(cause.message()))
-                                                             .or(List.of())
+                                 ? scannedManifests(artifact, unreadable)
                                  : List.<Properties>of();
 
             if (artifactId.startsWith("infra-") && isDirectDependency) {
@@ -178,8 +180,7 @@ public class PackageSlicesMojo extends AbstractMojo {
                 // Slice dependencies (direct only)
                 // Read actual artifact names from manifest (not Maven artifact ID)
                 sliceDeps.add(toSliceArtifactInfo(artifact, sliceManifests.getFirst()));
-                sliceManifests.forEach(props -> Option.option(props.getProperty("slice.interface"))
-                                                      .onPresent(providedInterfaces::add));
+                sliceManifests.forEach(props -> option(props.getProperty("slice.interface")).onPresent(providedInterfaces::add));
             } else if ("provided".equals(scope) && isDirectDependency) {
                 // Shared dependencies (provided scope, non-infra, direct only)
                 sharedDeps.add(toArtifactInfo(artifact));
@@ -277,6 +278,12 @@ public class PackageSlicesMojo extends AbstractMojo {
         return "org.pragmatica-lite".equals(groupId) && artifactId.equals("slice-processor");
     }
 
+    /// The slice manifests of a direct dependency; a jar that cannot be read is recorded in `unreadable`.
+    private static List<Properties> scannedManifests(Artifact artifact, List<String> unreadable) {
+        return sliceManifestsOf(artifact).onFailure(cause -> unreadable.add(cause.message()))
+                                         .or(List.of());
+    }
+
     /// Every slice manifest in `artifact`'s jar, read in ONE scan (#1700 review: three copies of this scan
     /// existed, each swallowing an IOException at DEBUG). An artifact with no jar file has none. A jar that
     /// cannot be read is a [SliceJarUnreadable] failure, never "no manifests": that silence turned an
@@ -285,34 +292,42 @@ public class PackageSlicesMojo extends AbstractMojo {
         var file = artifact.getFile();
 
         if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
-            return Result.success(List.of());
+            return success(List.of());
         }
 
         var coordinate = artifact.getGroupId() + ":" + artifact.getArtifactId();
 
+        // Result::allOf is overloaded (List, Stream, varargs), so the reference is ambiguous here.
         return Result.lift(thrown -> unreadable(coordinate, file.toString(), thrown),
                            () -> readSliceManifests(coordinate, new JarFile(file)))
                      .flatMap(results -> Result.allOf(results));
     }
 
-    /// Closes `jar` once its manifests are read; each manifest's own read failure names that entry.
+    /// JDK boundary: closing a `JarFile` throws IOException. Closes `jar` once its manifests are read; each
+    /// manifest's own read failure names that entry.
+    @SuppressWarnings("JBCT-EX-03")
     private static List<Result<Properties>> readSliceManifests(String coordinate, JarFile jar) {
         try (jar) {
             return jar.stream()
                       .filter(PackageSlicesMojo::isSliceManifestEntry)
-                      .map(entry -> Result.lift(thrown -> unreadable(coordinate, entry.getName(), thrown),
-                                                () -> loadProperties(jar, entry)))
+                      .map(entry -> manifestIn(coordinate, jar, entry))
                       .toList();
         } catch (IOException closeFailure) {
-            return List.of(Result.failure(unreadable(coordinate, jar.getName(), closeFailure)));
+            return List.of(unreadable(coordinate, jar.getName(), closeFailure).result());
         }
+    }
+
+    private static Result<Properties> manifestIn(String coordinate, JarFile jar, JarEntry entry) {
+        return Result.lift(thrown -> unreadable(coordinate, entry.getName(), thrown), () -> propertiesIn(jar, entry));
     }
 
     private static boolean isSliceManifestEntry(JarEntry entry) {
         return entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest");
     }
 
-    private static Properties loadProperties(JarFile jar, JarEntry entry) throws IOException {
+    /// JDK boundary: `JarFile.getInputStream` and `Properties.load` throw IOException, lifted by [#manifestIn].
+    @SuppressWarnings("JBCT-EX-01")
+    private static Properties propertiesIn(JarFile jar, JarEntry entry) throws IOException {
         var props = new Properties();
 
         try (var stream = jar.getInputStream(entry)) {
@@ -323,17 +338,19 @@ public class PackageSlicesMojo extends AbstractMojo {
     }
 
     private static SliceJarUnreadable unreadable(String coordinate, String location, Throwable thrown) {
-        return new SliceJarUnreadable(coordinate, location, thrown.getMessage());
+        return SliceJarUnreadable.sliceJarUnreadable(coordinate, location, thrown.getMessage());
     }
 
     /// A direct dependency's jar could not be read while looking for its slice manifests, so whether it
     /// provides a slice this one depends on cannot be decided. `jbct:package-slices` refuses rather than
     /// guess (#1408, #1700 review).
-    record SliceJarUnreadable(String artifact, String file, String detail) implements Cause {
-        @Override
-        public String message() {
-            return "Cannot read " + artifact + " (" + file + ") to find its slice manifests: " + detail
-                   + ". Whether it provides a slice dependency cannot be decided; re-resolve or rebuild that artifact.";
+    record SliceJarUnreadable(String artifact, String location, String message) implements Cause {
+        static SliceJarUnreadable sliceJarUnreadable(String artifact, String location, String detail) {
+            return new SliceJarUnreadable(artifact,
+                                          location,
+                                          "Cannot read " + artifact + " (" + location + ") to find its slice manifests: "
+                                          + detail
+                                          + ". Whether it provides a slice dependency cannot be decided; re-resolve or rebuild that artifact.");
         }
     }
 
