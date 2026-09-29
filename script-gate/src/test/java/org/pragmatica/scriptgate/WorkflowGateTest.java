@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// The subject is the REAL workflow files. Every `upload-artifact` step whose path names `failsafe-reports` must set
 /// `if-no-files-found: error`.
-class WorkflowReportUploadTest {
+class WorkflowGateTest {
     private static final List<String> WORKFLOWS = List.of("ci.yml", "heavy-forge.yml", "release.yml");
 
     @Test
@@ -35,6 +35,17 @@ class WorkflowReportUploadTest {
                                    .hasSizeGreaterThanOrEqualTo(3);
         assertThat(failsafeUploads).allSatisfy(step -> assertThat(step).as("upload step:%n%s", step)
                                                                         .contains("if-no-files-found: error"));
+    }
+
+    /// #1684 - the standalone test blueprints are outside the reactor, so a reactor build never checks their format.
+    /// CI must run `jbct:check` over every `aether/tests/blueprints/*/pom.xml`, refusing an empty glob.
+    @Test
+    void ci_jbctChecksEveryStandaloneBlueprint() {
+        var ci = String.join("\n", read(ScriptRunner.repoRoot().resolve(Path.of(".github", "workflows", "ci.yml"))));
+
+        assertThat(ci).contains("poms=(aether/tests/blueprints/*/pom.xml)")
+                      .contains("mvn -B jbct:check -f \"$pom\"")
+                      .contains("refusing to continue");
     }
 
     /// Each `actions/upload-artifact` step of `workflow`, as its text: from the step's `- ` line to the next step at
