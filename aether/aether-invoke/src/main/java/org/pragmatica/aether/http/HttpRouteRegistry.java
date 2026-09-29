@@ -6,7 +6,6 @@ package org.pragmatica.aether.http;
 
 import java.util.List;
 import java.util.stream.Collectors;
-import java.util.function.Function;
 import java.util.HashMap;
 import java.util.Comparator;
 import java.util.Map;
@@ -55,15 +54,25 @@ public interface HttpRouteRegistry {
         }
     }
 
-    /// A route and the policies EACH node serving it published (#1659). Before, the route kept whichever policy was
-    /// registered FIRST for as long as any node stayed registered, so an override republished afterwards never
+    /// Who published a route entry: a node, for one artifact it serves (#1659, v1670 F3). One node can serve the
+    /// same route from two artifacts (two versions during a rollout); keyed by node alone, the later put overwrote
+    /// the other and removing either artifact's key dropped the node from every route it still served.
+    record RouteSource(NodeId nodeId, String artifact) {
+        public static RouteSource routeSource(NodeId nodeId, String artifact) {
+            return new RouteSource(nodeId, artifact);
+        }
+    }
+
+    /// A route and the policies EACH source serving it published (#1659). Before, the route kept whichever policy
+    /// was registered FIRST for as long as any node stayed registered, so an override republished afterwards never
     /// reached it, and a node that did not host the route authorized requests against the stale policy -- fail
-    /// OPEN. Now a node's re-put replaces its own entry, its removal or departure drops it, and the route reports
-    /// the STRONGEST policy across the nodes serving it: while they disagree (a republish still in flight or
-    /// failed) the route is as strict as its strictest node, and it relaxes once every node has republished.
-    record RouteInfo(String httpMethod, String pathPrefix, Map<NodeId, NodeRouteSecurity> securityByNode) {
+    /// OPEN. Now a source's re-put replaces its own entry, its key's removal drops that entry, a node's departure
+    /// drops all of its entries, and the route reports the STRONGEST policy across them: while they disagree (a
+    /// republish still in flight or failed) the route is as strict as its strictest source, and it relaxes once
+    /// every source has republished.
+    record RouteInfo(String httpMethod, String pathPrefix, Map<RouteSource, NodeRouteSecurity> securityBySource) {
         public RouteInfo {
-            securityByNode = Map.copyOf(securityByNode);
+            securityBySource = Map.copyOf(securityBySource);
         }
 
         public static RouteInfo routeInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes, String security) {
@@ -75,38 +84,51 @@ public interface HttpRouteRegistry {
         }
 
         public Set<NodeId> nodes() {
-            return securityByNode.keySet();
+            return securityBySource.keySet()
+                                   .stream()
+                                   .map(RouteSource::nodeId)
+                                   .collect(Collectors.toUnmodifiableSet());
         }
 
-        /// The strongest policy any serving node enforces.
+        /// The strongest policy any serving source enforces.
         public String security() {
-            return strongest(securityByNode.values().stream().map(NodeRouteSecurity::enforced).toList());
+            return strongest(securityBySource.values().stream().map(NodeRouteSecurity::enforced).toList());
         }
 
-        /// The strongest slice-declared policy among the serving nodes (they agree unless versions differ).
+        /// The strongest slice-declared policy among the serving sources (they agree unless versions differ).
         public String declaredSecurity() {
-            return strongest(securityByNode.values().stream().map(NodeRouteSecurity::declared).toList());
+            return strongest(securityBySource.values().stream().map(NodeRouteSecurity::declared).toList());
         }
 
-        RouteInfo withNode(NodeId nodeId, NodeRouteSecurity security) {
-            var updated = new HashMap<>(securityByNode);
+        RouteInfo withSource(RouteSource source, NodeRouteSecurity security) {
+            var updated = new HashMap<>(securityBySource);
 
-            updated.put(nodeId, security);
+            updated.put(source, security);
+
+            return new RouteInfo(httpMethod, pathPrefix, updated);
+        }
+
+        RouteInfo withoutSource(RouteSource source) {
+            var updated = new HashMap<>(securityBySource);
+
+            updated.remove(source);
 
             return new RouteInfo(httpMethod, pathPrefix, updated);
         }
 
         RouteInfo withoutNode(NodeId nodeId) {
-            var updated = new HashMap<>(securityByNode);
+            var updated = new HashMap<>(securityBySource);
 
-            updated.remove(nodeId);
+            updated.keySet()
+                   .removeIf(source -> source.nodeId()
+                                             .equals(nodeId));
 
             return new RouteInfo(httpMethod, pathPrefix, updated);
         }
 
-        private static Map<NodeId, NodeRouteSecurity> uniform(Set<NodeId> nodes, String security) {
+        private static Map<RouteSource, NodeRouteSecurity> uniform(Set<NodeId> nodes, String security) {
             return nodes.stream()
-                        .collect(Collectors.toMap(Function.identity(),
+                        .collect(Collectors.toMap(node -> RouteSource.routeSource(node, ""),
                                                   _ -> NodeRouteSecurity.nodeRouteSecurity(security, security)));
         }
 
@@ -114,8 +136,15 @@ public interface HttpRouteRegistry {
         /// global mode") ranks just ABOVE `PUBLIC`, never below it -- the global mode is at least public, so an
         /// explicit `PUBLIC` must not outrank a node that inherits a stricter global policy. An empty set is
         /// `UNSPECIFIED`.
+        ///
+        /// A TOTAL order (v1670 F4): equal strengths (`API_KEY` and `BEARER_TOKEN`, `ROLE:a` and `ROLE:b`) are broken
+        /// by the policy's canonical string. The values arrive in `Map.copyOf` iteration order, which is seeded per
+        /// JVM, so without the tie-break two ingresses could resolve one route to different policies.
         private static String strongest(List<String> policies) {
-            return Option.from(policies.stream().max(Comparator.comparingInt(RouteInfo::rank))).or("UNSPECIFIED");
+            return Option.from(policies.stream()
+                                       .max(Comparator.comparingInt(RouteInfo::rank)
+                                                      .thenComparing(Comparator.naturalOrder())))
+                         .or("UNSPECIFIED");
         }
 
         private static int rank(String policy) {
@@ -164,9 +193,10 @@ public interface HttpRouteRegistry {
                     var method = route.httpMethod();
                     var prefix = route.pathPrefix();
                     var security = NodeRouteSecurity.nodeRouteSecurity(route.security(), route.declaredSecurity());
+                    var source = RouteSource.routeSource(nodeId, key.artifact().asString());
                     var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
 
-                    ref.updateAndGet(current -> addNodeToRoute(current, method, prefix, nodeId, security));
+                    ref.updateAndGet(current -> addSourceToRoute(current, method, prefix, source, security));
                     log.debug("HttpRouteRegistry: Registered compound route {} {} node={}", method, prefix, nodeId);
                 }
             }
@@ -198,18 +228,19 @@ public interface HttpRouteRegistry {
             @SuppressWarnings("JBCT-RET-01")
             public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 var key = valueRemove.cause().key();
-                var nodeId = key.nodeId();
+                var source = RouteSource.routeSource(key.nodeId(), key.artifact().asString());
 
                 routesByMethod.values()
-                              .forEach(ref -> ref.updateAndGet(current -> removeNodeFromAllRoutes(current, nodeId)));
+                              .forEach(ref -> ref.updateAndGet(current -> removeSourceFromAllRoutes(current, source)));
             }
 
-            private TreeMap<String, RouteInfo> removeNodeFromAllRoutes(TreeMap<String, RouteInfo> current,
-                                                                       NodeId nodeId) {
+            /// #1659 (v1670 F3): only THIS artifact's entries go; the node keeps serving routes from its others.
+            private TreeMap<String, RouteInfo> removeSourceFromAllRoutes(TreeMap<String, RouteInfo> current,
+                                                                         RouteSource source) {
                 var updated = new TreeMap<String, RouteInfo>();
 
                 for (var entry : current.entrySet()) {
-                    var remaining = entry.getValue().withoutNode(nodeId);
+                    var remaining = entry.getValue().withoutSource(source);
 
                     if (!remaining.nodes().isEmpty()) {
                         updated.put(entry.getKey(), remaining);
@@ -219,16 +250,16 @@ public interface HttpRouteRegistry {
                 return updated;
             }
 
-            /// #1659: the node's own entry is REPLACED, so a republish carrying a changed policy reaches the route.
-            private TreeMap<String, RouteInfo> addNodeToRoute(TreeMap<String, RouteInfo> current,
-                                                              String method,
-                                                              String prefix,
-                                                              NodeId nodeId,
-                                                              NodeRouteSecurity security) {
+            /// #1659: the source's own entry is REPLACED, so a republish carrying a changed policy reaches the route.
+            private TreeMap<String, RouteInfo> addSourceToRoute(TreeMap<String, RouteInfo> current,
+                                                                String method,
+                                                                String prefix,
+                                                                RouteSource source,
+                                                                NodeRouteSecurity security) {
                 var updated = new TreeMap<>(current);
                 var existing = Option.option(updated.get(prefix)).or(() -> new RouteInfo(method, prefix, Map.of()));
 
-                updated.put(prefix, existing.withNode(nodeId, security));
+                updated.put(prefix, existing.withSource(source, security));
 
                 return updated;
             }

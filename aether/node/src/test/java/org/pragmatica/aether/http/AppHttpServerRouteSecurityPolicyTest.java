@@ -332,6 +332,22 @@ class AppHttpServerRouteSecurityPolicyTest {
         assertThat(response.body()).contains("role 'admin' required");
     }
 
+    /// v1670 P5 control: with NO rollout, an ingress hosting a PUBLIC `/api/` serves `/api/admin/secret` through its
+    /// local `/api/` -- local-first dispatch, the protected remote child is never forwarded to. The rollout variant
+    /// forwards it; that forward is refused by the host (`AppHttpServerForwardReauthorizationTest`, P5).
+    @Test
+    void p5Control_withoutARollout_theLocalParentServesAndNothingIsForwarded() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRouteOf(TEST_ARTIFACT, "/api/admin/", "ROLE:admin"));
+
+        startServer("/api/", SecurityPolicy.publicRoute(), registry);
+
+        var response = get("/api/admin/secret");
+
+        assertThat(response.statusCode()).as("body: %s", response.body()).isEqualTo(200);
+        assertThat(response.body()).contains("served-locally");
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRouteOf(Artifact artifact, String prefix, String security) {
         var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, artifact);
         var route = RouteEntry.activeRoute("GET", prefix, "handle", security, security);

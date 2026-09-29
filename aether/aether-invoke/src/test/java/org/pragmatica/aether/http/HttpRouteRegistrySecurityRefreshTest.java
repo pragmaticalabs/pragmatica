@@ -29,6 +29,7 @@ class HttpRouteRegistrySecurityRefreshTest {
     private static final NodeId NODE_A = NodeId.nodeId("node-a").unwrap();
     private static final NodeId NODE_B = NodeId.nodeId("node-b").unwrap();
     private static final Artifact ECHO = Artifact.artifact("com.example:echo:1.0.0").unwrap();
+    private static final Artifact ECHO_V2 = Artifact.artifact("com.example:echo:2.0.0").unwrap();
 
     /// The CI shape: registered before the override, republished with it.
     @Test
@@ -123,6 +124,74 @@ class HttpRouteRegistrySecurityRefreshTest {
                                         .satisfies(route -> assertThat(route.declaredSecurity()).isEqualTo("UNSPECIFIED"));
     }
 
+    /// v1670 F4: "strongest" is a TOTAL order. Equal strengths (`ROLE:a` vs `ROLE:b`, `API_KEY` vs `BEARER_TOKEN`)
+    /// used to resolve in `Map.copyOf` iteration order, which is seeded per JVM and varies with the node ids -- two
+    /// ingresses could pick different credential types for one route. Across 64 node-id pairs, in both put orders,
+    /// every registry must resolve to the SAME policy.
+    @Test
+    void equallyStrongPolicies_resolveToTheSamePolicy_whateverTheNodeIdsOrPutOrder() {
+        for (var pair : List.of(List.of("ROLE:a", "ROLE:b"), List.of("API_KEY", "BEARER_TOKEN"))) {
+            var resolved = new java.util.HashSet<String>();
+
+            for (var i = 0; i < 64; i++) {
+                var first = NodeId.nodeId("tie-a-" + i).unwrap();
+                var second = NodeId.nodeId("tie-b-" + i).unwrap();
+                var forward = HttpRouteRegistry.httpRouteRegistry();
+                var backward = HttpRouteRegistry.httpRouteRegistry();
+
+                forward.onNodeRoutesPut(put(first, pair.get(0)));
+                forward.onNodeRoutesPut(put(second, pair.get(1)));
+                backward.onNodeRoutesPut(put(second, pair.get(1)));
+                backward.onNodeRoutesPut(put(first, pair.get(0)));
+                resolved.add(security(forward));
+                resolved.add(security(backward));
+            }
+
+            assertThat(resolved).as("one resolution for %s across 64 node-id pairs and both put orders", pair).hasSize(1);
+        }
+    }
+
+    /// v1670 F3: one node serving the same route from TWO artifacts (two versions during a rollout) keeps both
+    /// entries. Keyed by node alone, the later put (a weaker PUBLIC) overwrote the stricter one the node still served.
+    @Test
+    void oneNodeTwoArtifacts_bothEntriesCount_theStrongerGoverns() {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+
+        registry.onNodeRoutesPut(put(NODE_A, ECHO_V2, "ROLE:admin"));
+        registry.onNodeRoutesPut(put(NODE_A, ECHO, "PUBLIC"));
+
+        assertThat(security(registry)).isEqualTo("ROLE:admin");
+    }
+
+    /// v1670 F3: removing ONE artifact's key drops only that artifact's entries -- the node keeps serving the route
+    /// from its other artifact. Keyed by node alone, the removal dropped the node from every route.
+    @Test
+    void oneArtifactRemoved_theNodeKeepsServingTheRouteFromTheOther() {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+
+        registry.onNodeRoutesPut(put(NODE_A, ECHO_V2, "ROLE:admin"));
+        registry.onNodeRoutesPut(put(NODE_A, ECHO, "PUBLIC"));
+        registry.onNodeRoutesRemove(remove(NODE_A, ECHO));
+
+        assertThat(registry.allRoutes()).singleElement()
+                                        .satisfies(route -> {
+                                            assertThat(route.nodes()).containsExactly(NODE_A);
+                                            assertThat(route.security()).isEqualTo("ROLE:admin");
+                                        });
+    }
+
+    /// CONTROL for the two above: a DEPARTURE still drops every entry of the node, whatever artifact published it.
+    @Test
+    void departedNode_dropsTheEntriesOfAllItsArtifacts() {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+
+        registry.onNodeRoutesPut(put(NODE_A, ECHO_V2, "ROLE:admin"));
+        registry.onNodeRoutesPut(put(NODE_A, ECHO, "PUBLIC"));
+        registry.evictNode(NODE_A);
+
+        assertThat(registry.allRoutes()).isEmpty();
+    }
+
     private static String security(HttpRouteRegistry registry) {
         return registry.allRoutes()
                        .getFirst()
@@ -130,13 +199,21 @@ class HttpRouteRegistrySecurityRefreshTest {
     }
 
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> put(NodeId node, String security) {
+        return put(node, ECHO, security);
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> put(NodeId node, Artifact artifact, String security) {
         var route = RouteEntry.activeRoute("GET", "/echo/", "echo", security, "UNSPECIFIED");
         var value = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.ZERO);
 
-        return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, ECHO), value), Option.none());
+        return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, artifact), value), Option.none());
     }
 
     private static ValueRemove<NodeRoutesKey, NodeRoutesValue> remove(NodeId node) {
-        return new ValueRemove<>(new KVCommand.Remove<>(NodeRoutesKey.nodeRoutesKey(node, ECHO)), Option.none());
+        return remove(node, ECHO);
+    }
+
+    private static ValueRemove<NodeRoutesKey, NodeRoutesValue> remove(NodeId node, Artifact artifact) {
+        return new ValueRemove<>(new KVCommand.Remove<>(NodeRoutesKey.nodeRoutesKey(node, artifact)), Option.none());
     }
 }

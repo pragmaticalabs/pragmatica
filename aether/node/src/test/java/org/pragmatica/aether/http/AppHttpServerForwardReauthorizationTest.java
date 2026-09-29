@@ -113,6 +113,22 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(router.handleCount()).isZero();
     }
 
+    /// v1670 P5, the rollout forward: an ingress hosting a PUBLIC `/api/` under an active rollout admits
+    /// `GET /api/admin/secret` WITHOUT a credential under its local route, then its strategy step forwards it to the
+    /// remote `/api/admin/` (`role:admin`). The ingress never checks the child's policy; this host must, and does:
+    /// 401, the slice never runs. The ingress half is pinned as `…RouteSecurityPolicyTest` P5 control.
+    @Test
+    void forwardedRequest_fromARolloutForwardAdmittedUnderAPublicLocalParent_isRefusedByTheHostsChildRoute() {
+        var host = hostServing("/api/admin/", SecurityPolicy.roleRequired("admin"), withoutCredential("/api/admin/secret"));
+
+        host.onHttpForwardRequest(forwardRequest("corr-p5"));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).as("the host's child route governs: %s", body(relayed)).isEqualTo(401);
+        assertThat(router.handleCount()).as("an unauthenticated rollout forward must never reach the admin slice").isZero();
+    }
+
     /// CONTROL: a forwarded request the host's own policy admits is served exactly as before.
     @Test
     void forwardedRequest_admittedByTheHostsPolicy_isServed() {
