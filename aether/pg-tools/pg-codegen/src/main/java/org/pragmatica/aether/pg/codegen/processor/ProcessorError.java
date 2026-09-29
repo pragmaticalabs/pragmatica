@@ -25,6 +25,13 @@ public final class ProcessorError {
         return PREFIX + "Method parameter '" + param + "' is not used in the query";
     }
 
+    public static String positionalParameterCountMismatch(int highestPlaceholder, int parameterCount) {
+        return PREFIX
+             + "Positional placeholders go up to $" + highestPlaceholder
+             + " but the method declares " + parameterCount
+             + " parameter(s); each $n binds the n-th declared parameter";
+    }
+
     public static String typeMismatch(String param, String javaType, String column, String table, String pgType) {
         return PREFIX
              + "Type mismatch: parameter '" + param

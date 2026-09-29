@@ -226,7 +226,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if (rejectsDataModifyingCte(execElement, methodName, sql, originalParamNames)) {
             return null;
         }
-        validateQueryParams(execElement, methodName, sql, originalParamNames);
+        if (rejectsParamMismatch(execElement, sql, originalParamNames)) {
+            return null;
+        }
         var expansion = expandRecordParams(execElement, sql, originalParams);
         var boundBody = boundBodyParams(execElement, expansion.bodyParams());
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
@@ -258,6 +260,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.scalarAccessor());
     }
 
+    /// A positional `$n` placeholder (#1139).
+    private static final Pattern POSITIONAL_PARAM_PATTERN = Pattern.compile("\\$(\\d+)");
     private static final Pattern CTE_HINT_PATTERN = Pattern.compile("(?i)\\bWITH\\b");
 
     /// Rejects data-modifying CTEs — a `WITH` clause whose body is `INSERT`/`UPDATE`/`DELETE`
@@ -843,23 +847,49 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return List.of();
     }
 
-    // --- Compile-time validation (Bug 4) ---
-    /// Validates that all named params in the SQL have matching method parameters,
-    /// and that all method parameters are used in the query.
-    private void validateQueryParams(
-    ExecutableElement execElement,
-    String methodName,
-    String sql,
-    List<String> availableParamNames) {
+    // --- Compile-time validation (Bug 4, #1139) ---
+    /// Refuses a query whose placeholders and method parameters disagree. These are ERRORS, not warnings (#1139): a
+    /// named placeholder with no parameter, or a parameter the SQL never names, generates a bind list whose length
+    /// differs from the placeholder count, which Postgres rejects at the first execution. A query written with
+    /// positional `$n` placeholders is checked by count instead: its highest `$n` must equal the parameter count,
+    /// since `$n` binds the n-th declared parameter.
+    private boolean rejectsParamMismatch(ExecutableElement execElement, String sql, List<String> availableParamNames) {
         var sqlParams = QueryRewriter.extractNamedParams(sql);
+
+        if (sqlParams.isEmpty()) {
+            return rejectsPositionalCountMismatch(execElement, sql, availableParamNames.size());
+        }
         var availableSet = new HashSet<>(availableParamNames);
-        for ( var sqlParam : sqlParams) {
-        if ( !availableSet.contains(sqlParam)) {
-        warning(ProcessorError.parameterNotInMethod(sqlParam), execElement);}}
         var sqlParamSet = new HashSet<>(sqlParams);
-        for ( var paramName : availableParamNames) {
-        if ( !sqlParamSet.contains(paramName)) {
-        warning(ProcessorError.unusedMethodParameter(paramName), execElement);}}
+        var rejected = false;
+
+        for (var sqlParam : sqlParams) {
+            if (!availableSet.contains(sqlParam)) {
+                error(ProcessorError.parameterNotInMethod(sqlParam), execElement);
+                rejected = true;
+            }
+        }
+        for (var paramName : availableParamNames) {
+            if (!sqlParamSet.contains(paramName)) {
+                error(ProcessorError.unusedMethodParameter(paramName), execElement);
+                rejected = true;
+            }
+        }
+        return rejected;
+    }
+
+    private boolean rejectsPositionalCountMismatch(ExecutableElement execElement, String sql, int parameterCount) {
+        var highest = POSITIONAL_PARAM_PATTERN.matcher(sql)
+                                              .results()
+                                              .mapToInt(match -> Integer.parseInt(match.group(1)))
+                                              .max()
+                                              .orElse(0);
+
+        if (highest != parameterCount) {
+            error(ProcessorError.positionalParameterCountMismatch(highest, parameterCount), execElement);
+            return true;
+        }
+        return false;
     }
 
     // --- Stage 3: Schema-aware validation ---
