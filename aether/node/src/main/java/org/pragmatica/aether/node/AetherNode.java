@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -457,9 +458,31 @@ public interface AetherNode extends ManageableNode {
         return Unit.unit();
     }
 
+    /// Process exit code after a completed drain (`DrainProcedure`) and a failed SWIM start.
+    int EXIT_DRAINED = 2;
+    /// Process exit code when the cluster refused this process's identity (#1558, terminal removal): its
+    /// NodeId belongs to a retired or different process, so it can never be admitted. Distinct from
+    /// [#EXIT_DRAINED] so orchestration and the CTM can tell "refused — replace with a fresh NodeId" from
+    /// "drained" by exit status alone. 78 is `EX_CONFIG` in sysexits(3): the node's configured identity is
+    /// unusable, and restarting it unchanged cannot succeed.
+    int EXIT_IDENTITY_REFUSED = 78;
+
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
+        return aetherNode(config, Runtime.getRuntime()::halt);
+    }
+
+    /// `processExit` receives the node's exit code — [#EXIT_DRAINED] after a completed drain,
+    /// [#EXIT_IDENTITY_REFUSED] when the cluster refuses this process's identity. Production halts the JVM
+    /// with it; an in-JVM host records it and stops the node.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config, IntConsumer processExit) {
+        var delegateRouter = MessageRouter.DelegateRouter.delegate();
+        var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+
         return aetherNode(config,
-                          () -> Runtime.getRuntime().halt(2));
+                          delegateRouter,
+                          nodeCodec,
+                          () -> processExit.accept(EXIT_DRAINED),
+                          () -> processExit.accept(EXIT_IDENTITY_REFUSED));
     }
 
     /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
@@ -480,15 +503,27 @@ public interface AetherNode extends ManageableNode {
         return aetherNode(config,
                           delegateRouter,
                           nodeCodec,
-                          () -> Runtime.getRuntime().halt(2));
+                          () -> Runtime.getRuntime().halt(EXIT_DRAINED),
+                          () -> Runtime.getRuntime().halt(EXIT_IDENTITY_REFUSED));
     }
 
+    /// In-JVM hosts: the one `jvmExit` hook serves both the drain exit and an identity refusal.
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec,
                                          Runnable jvmExit) {
+        return aetherNode(config, delegateRouter, nodeCodec, jvmExit, jvmExit);
+    }
+
+    /// `identityRefusedExit` runs when the cluster refuses this process's identity (production:
+    /// `halt(EXIT_IDENTITY_REFUSED)`); `jvmExit` runs after a completed drain (production: `halt(EXIT_DRAINED)`).
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit,
+                                         Runnable identityRefusedExit) {
         return config.validate()
-                     .flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit));
+                     .flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit, identityRefusedExit));
     }
 
     /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
@@ -496,11 +531,13 @@ public interface AetherNode extends ManageableNode {
     private static Result<AetherNode> createNode(AetherNodeConfig config,
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
-                                                 Runnable jvmExit) {
+                                                 Runnable jvmExit,
+                                                 Runnable identityRefusedExit) {
         return ClusterEventsLimits.clusterEventsLimits().flatMap(limits -> createNodeWithBootToken(config,
                                                                                                    delegateRouter,
                                                                                                    nodeCodec,
                                                                                                    jvmExit,
+                                                                                                   identityRefusedExit,
                                                                                                    BootToken.bootToken(),
                                                                                                    limits));
     }
@@ -509,12 +546,14 @@ public interface AetherNode extends ManageableNode {
                                                               MessageRouter.DelegateRouter delegateRouter,
                                                               SliceCodec nodeCodec,
                                                               Runnable jvmExit,
+                                                              Runnable identityRefusedExit,
                                                               long bootToken,
                                                               ClusterEventsLimits clusterEventsLimits) {
         return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
                                                                                                 delegateRouter,
                                                                                                 nodeCodec,
                                                                                                 jvmExit,
+                                                                                                identityRefusedExit,
                                                                                                 keyring,
                                                                                                 resolvePersistence(config),
                                                                                                 bootToken,
@@ -525,6 +564,7 @@ public interface AetherNode extends ManageableNode {
                                                             MessageRouter.DelegateRouter delegateRouter,
                                                             SliceCodec nodeCodec,
                                                             Runnable jvmExit,
+                                                            Runnable identityRefusedExit,
                                                             Option<EncryptionKeyring> storageKeyring,
                                                             RabiaPersistence<KVCommand<AetherKey>> persistence,
                                                             long bootToken,
@@ -691,6 +731,7 @@ public interface AetherNode extends ManageableNode {
                                                              metricsCollectorRef,
                                                              syncHoldRegistry,
                                                              jvmExit,
+                                                             identityRefusedExit,
                                                              storageKeyring,
                                                              bootToken,
                                                              clusterEventsLimits));
@@ -723,15 +764,15 @@ public interface AetherNode extends ManageableNode {
 
     /// Terminal removal (#1528): a peer refused this process's identity — its NodeId belongs to a retired or
     /// different process, so this process can never be admitted. Log ERROR naming the NodeId and exit
-    /// through the node's exit hook (production: `halt(2)`, a non-zero exit orchestration/CTM sees as a
-    /// failed node; Ember: stop and remove the node). Runs off the transport thread that delivered the
+    /// through the identity-refused exit hook (production: `halt(EXIT_IDENTITY_REFUSED)` = 78, distinct from
+    /// a drain's [#EXIT_DRAINED], so orchestration/CTM can tell the two apart; Ember: stop and remove the node). Runs off the transport thread that delivered the
     /// refusal, so stopping the node cannot block on its own event loop.
-    private static Unit exitRefusedIdentity(NodeId self, String reason, Runnable jvmExit) {
+    private static Unit exitRefusedIdentity(NodeId self, String reason, Runnable identityRefusedExit) {
         LOG.error("FATAL: this node's identity {} was refused by the cluster: {}. This NodeId belongs to a retired"
                  + " process; start with a fresh identity. Exiting.",
                   self.id(),
                   reason);
-        Thread.ofVirtual().name("refused-identity-exit").start(jvmExit);
+        Thread.ofVirtual().name("refused-identity-exit").start(identityRefusedExit);
 
         return Unit.unit();
     }
@@ -1599,6 +1640,7 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicReference<ClusterSyncCollector> metricsCollectorRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit,
+                                                   Runnable identityRefusedExit,
                                                    Option<EncryptionKeyring> storageKeyring,
                                                    long bootToken,
                                                    ClusterEventsLimits clusterEventsLimits) {
@@ -3680,7 +3722,7 @@ public interface AetherNode extends ManageableNode {
 
         swimHealthDetector.setBootTokens(bootTokens);
         clusterNode.network().setBootTokens(bootTokens);
-        bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, jvmExit));
+        bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, identityRefusedExit));
         // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
         // independent refutation counter, seeded from wall-clock time, and also carries the token.
         var bootIncarnation = System.currentTimeMillis();
@@ -4174,7 +4216,7 @@ public interface AetherNode extends ManageableNode {
                                                                  presenceSampler,
                                                                  membershipFsm,
                                                                  configuredCoreCountSupplier,
-                                                                 leaderTerm::localGainCount,
+                                                                 leaderTerm::committedTerm,
                                                                  clusterTopologyManager,
                                                                  clusterNameSupplier,
                                                                  TimeSource.system(),

@@ -125,6 +125,8 @@ public final class EmberCluster {
     /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
     /// new process at the SAME address as the killed one.
     private final Map<String, Integer> lastSlotByNodeId = new ConcurrentHashMap<>();
+    /// Exit code each node exited with (see [#exitCodeOf]); the latest exit wins for a reused NodeId.
+    private final Map<String, Integer> exitCodes = new ConcurrentHashMap<>();
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -1426,12 +1428,14 @@ public final class EmberCluster {
         Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8)));
 
         lastNodeConfig.set(Option.some(config));
-        // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
-        // phase, do NOT halt the JVM (would kill all other in-process nodes). Stop the
-        // node gracefully and remove it from the cluster's registry instead.
-        Runnable jvmExit = () -> handleSelfDrain(nodeId.id());
-
-        return AetherNode.aetherNode(config, jvmExit).unwrap();
+        // Single-JVM hosting: when this node would exit (drain complete, or its identity refused by the
+        // cluster), do NOT halt the JVM (would kill all other in-process nodes). Record the exit code
+        // the process would have exited with, then stop the node gracefully and remove it from the
+        // cluster's registry instead.
+        return AetherNode.aetherNode(config,
+                                     code -> onNodeExit(nodeId.id(),
+                                                        code))
+                         .unwrap();
     }
 
     /// Per-node `storageConfig` map for [#createNode]. When a writable base dir was set via
@@ -1550,6 +1554,18 @@ public final class EmberCluster {
                                                  defaults.snapshotRetentionCount());
 
         return Map.of("artifacts", config);
+    }
+
+    private void onNodeExit(String nodeIdStr, int exitCode) {
+        exitCodes.put(nodeIdStr, exitCode);
+        handleSelfDrain(nodeIdStr);
+    }
+
+    /// The process exit code a node exited with in this harness (`AetherNode.EXIT_DRAINED`,
+    /// `AetherNode.EXIT_IDENTITY_REFUSED`, ...), or none while it has not exited. Kept after the node is
+    /// removed, so a test can read why a node left.
+    public Option<Integer> exitCodeOf(String nodeIdStr) {
+        return Option.option(exitCodes.get(nodeIdStr));
     }
 
     private void handleSelfDrain(String nodeIdStr) {
