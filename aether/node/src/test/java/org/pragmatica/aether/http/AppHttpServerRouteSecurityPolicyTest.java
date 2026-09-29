@@ -375,6 +375,41 @@ class AppHttpServerRouteSecurityPolicyTest {
         }
     }
 
+    /// #1678 (CodeRabbit C1): THIS node serves only the PUBLIC sibling `GET /orders/{id}`; the admin sibling
+    /// `GET /orders/{id}/admin` lives only on another node. The request for the admin sibling must not be answered
+    /// by the local public sibling (a 404 there); it resolves to the REMOTE admin sibling and is authorized by it --
+    /// 401 without a credential, 403 for a key without the role -- while `/orders/5` is still served locally.
+    @Test
+    void siblingServedOnlyElsewhere_isAuthorizedByTheRemoteSibling_notAnsweredByTheLocalOne() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        var localPublic = RouteEntry.activeRoute("GET", "/orders/", "getOrder", "PUBLIC", "PUBLIC", 1, List.of());
+        var remoteAdmin = RouteEntry.activeRoute("GET", "/orders/", "adminOrder", "ROLE:admin", "ROLE:admin", 2, List.of("admin"));
+
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(SELF_NODE, TEST_ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(localPublic), Epoch.ZERO)),
+                                                Option.none()));
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, REMOTE_ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(remoteAdmin), Epoch.ZERO)),
+                                                Option.none()));
+        startServer(new StubRoutePublisher("GET",
+                                           "/orders/",
+                                           SecurityPolicy.publicRoute(),
+                                           new StubSliceRouter(),
+                                           SecurityOverrides.EMPTY,
+                                           SecurityPolicy.publicRoute(),
+                                           path -> !path.contains("/admin"),
+                                           Option.some(Set.of(HttpRouteRegistry.RouteInfo.shapeKeyOf(1, List.of())))),
+                    registry);
+
+        assertThat(get("/orders/5/admin").statusCode()).as("no credential, remote admin sibling").isEqualTo(401);
+        var withKey = getWithApiKey("/orders/5/admin", VALID_API_KEY);
+        assertThat(withKey.statusCode()).as("a key without the admin role: %s", withKey.body()).isEqualTo(403);
+        assertThat(withKey.body()).contains("role 'admin' required");
+        var publicSibling = get("/orders/5");
+        assertThat(publicSibling.statusCode()).as("CONTROL: the local public sibling is still served: %s", publicSibling.body())
+                                              .isEqualTo(200);
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> siblingRoutes(boolean adminFirst) {
         var publicOrder = RouteEntry.activeRoute("GET", "/orders/", "getOrder", "PUBLIC", "PUBLIC", 1, List.of());
         var adminOrder = RouteEntry.activeRoute("GET", "/orders/", "adminOrder", "ROLE:admin", "ROLE:admin", 2, List.of("admin"));
@@ -397,7 +432,9 @@ class AppHttpServerRouteSecurityPolicyTest {
                                            SecurityPolicy.roleRequired("admin"),
                                            new StubSliceRouter(),
                                            SecurityOverrides.EMPTY,
-                                           SecurityPolicy.publicRoute()),
+                                           SecurityPolicy.publicRoute(),
+                                           _ -> true,
+                                           Option.none()),
                     HttpRouteRegistry.httpRouteRegistry());
 
         assertThat(get("/local/thing").statusCode()).isEqualTo(401);
@@ -468,13 +505,27 @@ class AppHttpServerRouteSecurityPolicyTest {
                                       SecurityPolicy security,
                                       SliceRouter router,
                                       SecurityOverrides committed,
-                                      SecurityPolicy separateLookupSecurity)
+                                      SecurityPolicy separateLookupSecurity,
+                                      java.util.function.Predicate<String> servesPath,
+                                      Option<Set<String>> shapeKeys)
         implements HttpRoutePublisher {
         static StubRoutePublisher hosting(String httpMethod,
                                           String pathPrefix,
                                           SecurityPolicy security,
                                           SecurityOverrides committed) {
-            return new StubRoutePublisher(httpMethod, pathPrefix, security, new StubSliceRouter(), committed, security);
+            return new StubRoutePublisher(httpMethod,
+                                          pathPrefix,
+                                          security,
+                                          new StubSliceRouter(),
+                                          committed,
+                                          security,
+                                          _ -> true,
+                                          Option.none());
+        }
+
+        @Override
+        public Option<Set<String>> localShapeKeys(String method, String prefix) {
+            return shapeKeys;
         }
 
         @Override
@@ -511,7 +562,7 @@ class AppHttpServerRouteSecurityPolicyTest {
 
         @Override
         public Option<LocalRouteInfo> findLocalRoute(String method, String path) {
-            return matches(method, path)
+            return matches(method, path) && servesPath.test(path)
                    ? Option.some(new LocalRouteInfo(httpMethod, pathPrefix, TEST_ARTIFACT.asString(), "create", separateLookupSecurity))
                    : Option.none();
         }

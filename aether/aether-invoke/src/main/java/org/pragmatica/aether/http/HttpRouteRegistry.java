@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.HashMap;
@@ -53,6 +54,12 @@ public interface HttpRouteRegistry {
     record NodeRouteSecurity(String enforced, String declared) {
         public static NodeRouteSecurity nodeRouteSecurity(String enforced, String declared) {
             return new NodeRouteSecurity(enforced, declared);
+        }
+
+        /// The stronger of two entries for one sibling, field by field, in the route's total order.
+        static NodeRouteSecurity strongerOf(NodeRouteSecurity left, NodeRouteSecurity right) {
+            return nodeRouteSecurity(RouteInfo.strongest(List.of(left.enforced(), right.enforced())),
+                                     RouteInfo.strongest(List.of(left.declared(), right.declared())));
         }
     }
 
@@ -154,9 +161,38 @@ public interface HttpRouteRegistry {
                                                                                                                                        shape.spacers())))
                                          .toList();
 
-            return RouteShapeSelector.select(shapes, path)
-                                     .map(this::narrowedTo)
-                                     .or(this);
+            return matchingShape(shapes, path).or(this);
+        }
+
+        /// #1678 (C1): this route narrowed to the sibling that serves `path`, or empty when no sibling's shape matches
+        /// it -- for routing decisions that must not fall back to the whole base.
+        public Option<RouteInfo> matchingShape(String path) {
+            return matchingShape(securityBySource.keySet()
+                                                 .stream()
+                                                 .map(source -> source.shape(pathPrefix))
+                                                 .distinct()
+                                                 .sorted(Comparator.comparingInt(ShapeView::pathParamCount).thenComparing(shape -> String.join("/",
+                                                                                                                                               shape.spacers())))
+                                                 .toList(),
+                                 path);
+        }
+
+        private Option<RouteInfo> matchingShape(List<ShapeView> shapes, String path) {
+            return RouteShapeSelector.select(shapes, path).map(this::narrowedTo);
+        }
+
+        /// #1678 (C1): this route without the sibling shapes named by `shapeKeys` (see [#shapeKey]); empty when no
+        /// entry is left. A node excludes from its REMOTE view only the siblings it serves itself, so a sibling that
+        /// lives only elsewhere stays reachable by forwarding.
+        public Option<RouteInfo> withoutShapeKeys(Set<String> shapeKeys) {
+            var remaining = securityBySource.entrySet()
+                                            .stream()
+                                            .filter(entry -> !shapeKeys.contains(keyOf(entry.getKey().shape(pathPrefix))))
+                                            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+
+            return remaining.isEmpty()
+                   ? Option.none()
+                   : Option.some(new RouteInfo(httpMethod, pathPrefix, remaining));
         }
 
         /// Separates a route identity's base from its sibling shape (`GET:/orders/#2:admin`) -- a character a
@@ -185,7 +221,12 @@ public interface HttpRouteRegistry {
         }
 
         private static String keyOf(ShapeView shape) {
-            return SHAPE_MARK + shape.pathParamCount() + ":" + String.join("/", shape.spacers());
+            return shapeKeyOf(shape.pathParamCount(), shape.spacers());
+        }
+
+        /// The key of a sibling shape, `#<arity>:<spacer/spacer>` -- one format for the registry and the publisher.
+        public static String shapeKeyOf(int pathArity, List<String> spacers) {
+            return SHAPE_MARK + pathArity + ":" + String.join("/", spacers);
         }
 
         private RouteInfo narrowedTo(ShapeView shape) {
@@ -264,24 +305,43 @@ public interface HttpRouteRegistry {
                                  value)) {
                     return;
                 }
+                // #1678 (CodeRabbit C2): one publication can carry the same sibling shape more than once -- header-mode
+                // versions of one route. They are merged to the STRONGEST before registering, as the hosting node takes
+                // the strictest of them; entry by entry, the one listed last would silently win.
+                var merged = new LinkedHashMap<PublishedEntry, NodeRouteSecurity>();
 
                 for (var route : value.routes()) {
                     if (!route.isRoutable()) {
                         continue;
                     }
 
-                    var method = route.httpMethod();
-                    var prefix = route.pathPrefix();
-                    var security = NodeRouteSecurity.nodeRouteSecurity(route.security(), route.declaredSecurity());
                     var source = RouteSource.routeSource(nodeId,
                                                          key.artifact().asString(),
                                                          route.pathArity(),
                                                          route.spacers());
-                    var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
 
-                    ref.updateAndGet(current -> addSourceToRoute(current, method, prefix, source, security));
-                    log.debug("HttpRouteRegistry: Registered compound route {} {} node={}", method, prefix, nodeId);
+                    merged.merge(new PublishedEntry(route.httpMethod(), route.pathPrefix(), source),
+                                 NodeRouteSecurity.nodeRouteSecurity(route.security(), route.declaredSecurity()),
+                                 NodeRouteSecurity::strongerOf);
                 }
+
+                merged.forEach((entry, security) -> register(entry, security, nodeId));
+            }
+
+            private record PublishedEntry(String method, String prefix, RouteSource source) {}
+
+            private void register(PublishedEntry entry, NodeRouteSecurity security, NodeId nodeId) {
+                var ref = routesByMethod.computeIfAbsent(entry.method(), _ -> new AtomicReference<>(new TreeMap<>()));
+
+                ref.updateAndGet(current -> addSourceToRoute(current,
+                                                             entry.method(),
+                                                             entry.prefix(),
+                                                             entry.source(),
+                                                             security));
+                log.debug("HttpRouteRegistry: Registered compound route {} {} node={}",
+                          entry.method(),
+                          entry.prefix(),
+                          nodeId);
             }
 
             @Override

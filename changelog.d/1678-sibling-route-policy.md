@@ -24,3 +24,10 @@
   forwarded request and then discarded the SecurityContext it had validated, so a slice saw no principal on a forwarded
   call and the caller on a local one. The context is now bound for the forwarded dispatch as it is locally. The host's
   `security_mode = "none"` guard, the only refusal of an auth-requiring forward in that mode, now has a pin (R2-N5).
+- **A sibling served only on another node is forwarded, not answered 404 by a local sibling (CodeRabbit C1).** Local
+  resolution now requires a SHAPE match. A node serving only `GET /orders/{id}` no longer resolves
+  `/orders/5/admin` locally; the request is authorized by, and forwarded to, the remote `GET /orders/{id}/admin`.
+  The remote view drops only the sibling shapes this node serves itself, and a deployment-strategy forward requires
+  the same shape remotely.
+- **One publication carrying a sibling shape twice registers the strongest (CodeRabbit C2).** Header-mode versions of
+  one route used to leave whichever was listed last.

@@ -79,7 +79,9 @@ class HttpForwarderSiblingShapeTest {
             forwarder.forward(ctx, admin, "req-sibling-" + i).await();
         }
 
-        assertThat(network.sendTargets()).as("CONTROL: the forward was retried at least once").hasSizeGreaterThan(1);
+        // CONTROL (CodeRabbit C4): six forwards send at least six times without any retry, so only MORE than six
+        // sends proves the retry path -- `freshCandidatesForRoute` and `withShapeKey` -- ran at all.
+        assertThat(network.sendTargets()).as("CONTROL: at least one forward was retried").hasSizeGreaterThan(6);
         assertThat(network.distinctSendTargets()).as("only the nodes serving the admin sibling, retries included")
                                                  .isSubsetOf(B, D);
     }

@@ -744,11 +744,24 @@ class AppHttpServerAdapter implements AppHttpServer {
                                          .collect(java.util.stream.Collectors.toSet());
         var remoteRoutes = routeRegistry.allRoutes()
                                         .stream()
-                                        .filter(route -> !localIdentities.contains(route.httpMethod()
-                                                                                  + ":" + route.pathPrefix()))
+                                        .flatMap(route -> remoteView(route, localIdentities).stream())
                                         .toList();
 
         return RouteTable.routeTable(localRoutes, remoteRoutes);
+    }
+
+    /// #1678 (C1): a base this node also serves keeps, in the REMOTE view, the sibling shapes it does NOT serve, so a
+    /// request for a sibling that lives only elsewhere is forwarded instead of answered 404 by a local sibling. When
+    /// the publisher cannot name its shapes, the whole base is local, as before.
+    private Option<HttpRouteRegistry.RouteInfo> remoteView(HttpRouteRegistry.RouteInfo route,
+                                                           Set<String> localIdentities) {
+        if (!localIdentities.contains(route.routeIdentity())) {
+            return Option.some(route);
+        }
+
+        return httpRoutePublisher.flatMap(pub -> pub.localShapeKeys(route.httpMethod(),
+                                                                    route.pathPrefix()))
+                                 .flatMap(route::withoutShapeKeys);
     }
 
     @Override
@@ -989,7 +1002,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var localRouteKey = routeKeyOf(local.route());
 
         if (shouldForwardForStrategy(local.route(), method, normalizedPath, routeTable)) {
-            var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
+            var remoteRouteOpt = findRemoteRouteOfTheServingShape(routeTable.remoteRoutes(), method, normalizedPath);
 
             if (remoteRouteOpt.isPresent()) {
                 log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
@@ -1149,7 +1162,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private boolean hasMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                            String method,
                                            String normalizedPath) {
-        return findMatchingRemoteRoute(remoteRoutes, method, normalizedPath).isPresent();
+        return findRemoteRouteOfTheServingShape(remoteRoutes, method, normalizedPath).isPresent();
     }
 
     private void handleSecurityFailure(ResponseWriter response,
@@ -1246,6 +1259,19 @@ class AppHttpServerAdapter implements AppHttpServer {
                                        .filter(route -> pathMatchesPrefix(normalizedPath,
                                                                           route.pathPrefix()))
                                        .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length()))).map(route -> route.servingShape(normalizedPath));
+    }
+
+    /// #1678 (C1): as [#findMatchingRemoteRoute], but only when a remote sibling's SHAPE matches `normalizedPath`. A
+    /// deployment-strategy forward must reach a node serving the same route, never the whole base's fallback.
+    private Option<HttpRouteRegistry.RouteInfo> findRemoteRouteOfTheServingShape(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
+                                                                                 String method,
+                                                                                 String normalizedPath) {
+        return Option.from(remoteRoutes.stream()
+                                       .filter(route -> route.httpMethod()
+                                                             .equalsIgnoreCase(method))
+                                       .filter(route -> pathMatchesPrefix(normalizedPath,
+                                                                          route.pathPrefix()))
+                                       .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length()))).flatMap(route -> route.matchingShape(normalizedPath));
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {

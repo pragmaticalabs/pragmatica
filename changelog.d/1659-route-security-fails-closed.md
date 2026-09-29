@@ -23,7 +23,8 @@
   overrides propagate that view can lack a narrower, stricter route the host already serves. A rollout forward from a
   local PUBLIC parent could otherwise reach a protected child unauthenticated. A request is served only when both ends
   admit it. A refusal returns the same 401/403 response the ingress would send.
-- **Wire.** `NodeRoutesValue.RouteEntry` gained `declaredSecurity`, which changes its byte layout. The codec is
+- **Wire.** `NodeRoutesValue.RouteEntry` gained `declaredSecurity` and, with #1678, `pathArity` and `spacers`, which
+  change its byte layout. The codec is
   positional and does not refuse a mismatch; a mixed-version cluster misparses SILENTLY. A node on the previous build
   reading a new entry desynchronises inside the `routes` list and misreads the rest of the value without an error, and
   a new node reads past the end of an old entry. A route snapshot taken before the upgrade misreads the same way. This

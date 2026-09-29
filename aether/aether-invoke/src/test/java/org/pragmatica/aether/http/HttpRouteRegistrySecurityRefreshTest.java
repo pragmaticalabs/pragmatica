@@ -220,6 +220,24 @@ class HttpRouteRegistrySecurityRefreshTest {
         }
     }
 
+    /// CodeRabbit C2: one publication carrying the SAME sibling shape twice (header-mode versions of one route) is
+    /// registered as the strongest of the two, as the hosting node takes the strictest -- in either listed order.
+    /// Entry by entry, the one listed last won, and a non-hosting ingress could hold the weaker policy.
+    @Test
+    void duplicateShapeInOnePublication_registersTheStrongest_inEitherOrder() {
+        var admin = RouteEntry.activeRoute("GET", "/echo/", "v2", "ROLE:admin", "ROLE:admin", 1, List.of());
+        var pub = RouteEntry.activeRoute("GET", "/echo/", "v1", "PUBLIC", "PUBLIC", 1, List.of());
+
+        for (var routes : List.of(List.of(admin, pub), List.of(pub, admin))) {
+            var registry = HttpRouteRegistry.httpRouteRegistry();
+            var value = NodeRoutesValue.nodeRoutesValue(routes, Epoch.ZERO);
+
+            registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(NODE_A, ECHO), value), Option.none()));
+
+            assertThat(security(registry)).as("order %s", routes.stream().map(RouteEntry::sliceMethod).toList()).isEqualTo("ROLE:admin");
+        }
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> shaped(NodeId node,
                                                                    Artifact artifact,
                                                                    String security,

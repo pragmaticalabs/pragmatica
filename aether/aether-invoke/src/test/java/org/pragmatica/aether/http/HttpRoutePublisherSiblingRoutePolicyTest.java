@@ -6,6 +6,7 @@ package org.pragmatica.aether.http;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -66,13 +67,28 @@ class HttpRoutePublisherSiblingRoutePolicyTest {
         }
     }
 
-    /// A path neither sibling serves (the router answers 404) resolves to the STRICTEST sibling: an ambiguity
-    /// fails closed.
+    /// A path neither sibling serves (the router would answer 404) has NO local route (CodeRabbit C1): it falls
+    /// through to the remote registry, where another node may serve it, and to 404 when none does.
     @Test
-    void unmatchedPath_underTheSharedBase_resolvesToTheStrictestSibling() {
+    void unmatchedPath_underTheSharedBase_hasNoLocalRoute() {
         var publisher = publish(new SiblingRouteSliceRoutes.PublicFirstSlice());
 
-        assertThat(policy(publisher, "/orders/5/unknown")).isEqualTo(SecurityPolicy.roleRequired("admin"));
+        assertThat(publisher.findLocalRoute("GET", "/orders/5/unknown").isPresent()).isFalse();
+        assertThat(publisher.resolveLocal("GET", "/orders/5/unknown").isPresent()).isFalse();
+    }
+
+    /// CodeRabbit C1 (v1670's cross-node probe): this node serves ONLY the public sibling's slice; the admin sibling
+    /// lives on another node. `/orders/5/admin` must not resolve locally -- it is forwarded -- while `/orders/5`
+    /// still does, and the node names only the public shape as local.
+    @Test
+    void nodeServingOnlyThePublicSibling_doesNotResolveTheAdminSiblingLocally() {
+        var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
+
+        publishInto(publisher, PUBLIC_ORDERS, new SiblingRouteSliceRoutes.PublicOrdersSlice());
+
+        assertThat(publisher.resolveLocal("GET", "/orders/5/admin").isPresent()).as("forwarded, not resolved locally").isFalse();
+        assertThat(publisher.resolveLocal("GET", "/orders/5").isPresent()).as("CONTROL: the public sibling is local").isTrue();
+        assertThat(publisher.localShapeKeys("GET", "/orders/").or(Set.of())).containsExactly(HttpRouteRegistry.RouteInfo.shapeKeyOf(1, List.of()));
     }
 
     /// The #1678 ruling's condition: ONE resolution for authorization and dispatch. Two slices share `/orders/`,

@@ -93,6 +93,12 @@ public interface HttpRoutePublisher {
     /// resolution -- two separate lookups could straddle an undeploy and pair a parent's policy with a child's router.
     record LocalResolution(LocalRouteInfo route, Option<SliceRouter> router) {}
 
+    /// #1678 (C1): the sibling shape keys this node serves under a base, or EMPTY when the publisher cannot tell --
+    /// then the whole base is treated as local, as a publisher holding one route per prefix does.
+    default Option<Set<String>> localShapeKeys(String httpMethod, String pathPrefix) {
+        return Option.none();
+    }
+
     /// The default composes the two lookups, as a publisher holding one route per prefix may; the production
     /// publisher answers both from a single resolution.
     default Option<LocalResolution> resolveLocal(String httpMethod, String path) {
@@ -809,8 +815,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// authorize one slice's route and dispatch to another's; there is nothing here left to disagree.
     ///
     /// Header-mode versions publish the same shape once per version; the strictest of those governs, because the
-    /// version is chosen per request by a header this lookup does not see. When no shape matches (the router would
-    /// answer 404), the base's strictest policy governs: an ambiguity fails closed.
+    /// version is chosen per request by a header this lookup does not see. When no local shape matches, there is NO
+    /// local route (CodeRabbit C1): the request falls through to the remote registry, where another node may serve the
+    /// sibling, and to 404 when nothing does -- never to a local sibling that would answer 404 in its place.
     private Option<ServedRoute> resolveServed(String httpMethod, String path) {
         var normalizedPath = normalizePath(path);
         var candidates = publishedRoutes.entrySet()
@@ -839,11 +846,25 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                              .toList();
         var shapes = base.stream().map(ServedRoute::definition).toList();
 
-        return Option.some(RouteShapeSelector.select(shapes,
-                                                     routerPath(path))
-                                             .map(selected -> base.get(shapes.indexOf(selected)))
-                                             .map(served -> strictestOfItsShape(served, base))
-                                             .or(() -> strictestOfTheBase(base)));
+        return RouteShapeSelector.select(shapes,
+                                         routerPath(path))
+                                 .map(selected -> base.get(shapes.indexOf(selected)))
+                                 .map(served -> strictestOfItsShape(served, base));
+    }
+
+    /// #1678 (C1): the sibling shapes this node serves under `(httpMethod, pathPrefix)`, keyed as the registry keys
+    /// them, so the remote view drops only these and keeps a sibling served only elsewhere.
+    @Override
+    public Option<Set<String>> localShapeKeys(String httpMethod, String pathPrefix) {
+        return Option.some(publishedRoutes.values()
+                                          .stream()
+                                          .flatMap(List::stream)
+                                          .filter(route -> route.httpMethod()
+                                                                .equalsIgnoreCase(httpMethod) && route.pathPrefix()
+                                                                                                      .equals(pathPrefix))
+                                          .map(route -> HttpRouteRegistry.RouteInfo.shapeKeyOf(route.pathArity(),
+                                                                                               route.spacers()))
+                                          .collect(java.util.stream.Collectors.toUnmodifiableSet()));
     }
 
     private static ServedRoute strictestOfItsShape(ServedRoute served, List<ServedRoute> base) {
@@ -857,15 +878,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
         return new ServedRoute(served.artifact(),
                                served.definition().withSecurity(strictest(sameShape).or(served.definition().security())));
-    }
-
-    private static ServedRoute strictestOfTheBase(List<ServedRoute> base) {
-        var first = base.getFirst();
-        var policies = base.stream().map(served -> served.definition()
-                                                         .security()).toList();
-
-        return new ServedRoute(first.artifact(),
-                               first.definition().withSecurity(strictest(policies).or(first.definition().security())));
     }
 
     private static boolean sameShape(HttpRouteDefinition left, HttpRouteDefinition right) {
