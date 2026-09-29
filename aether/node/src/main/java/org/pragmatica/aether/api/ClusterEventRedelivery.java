@@ -70,14 +70,19 @@ final class ClusterEventRedelivery {
         PERMANENT
     }
 
-    /// One waiting event. `attempts` counts failed publishes so far; `nextAttemptAt` is when it is next due.
-    private record Pending(ClusterEvent event, long firstFailedAt, int attempts, long nextAttemptAt) {
-        static Pending pending(ClusterEvent event, long now) {
-            return new Pending(event, now, 1, now + INITIAL_BACKOFF_MS);
+    /// One waiting event. `attempts` counts failed publishes so far; `nextAttemptAt` is when it is next due;
+    /// `onGivenUp` runs if redelivery finally drops it.
+    private record Pending(ClusterEvent event,
+                           long firstFailedAt,
+                           int attempts,
+                           long nextAttemptAt,
+                           Runnable onGivenUp) {
+        static Pending pending(ClusterEvent event, long now, Runnable onGivenUp) {
+            return new Pending(event, now, 1, now + INITIAL_BACKOFF_MS, onGivenUp);
         }
 
         Pending failedAgain(long now) {
-            return new Pending(event, firstFailedAt, attempts + 1, now + backoff(attempts + 1));
+            return new Pending(event, firstFailedAt, attempts + 1, now + backoff(attempts + 1), onGivenUp);
         }
 
         boolean expiredAt(long now) {
@@ -122,8 +127,17 @@ final class ClusterEventRedelivery {
     /// First publish of a freshly produced event. A failure that a retry could fix is buffered.
     @Contract
     void deliver(ClusterEvent event) {
+        deliver(event,
+                () -> {});
+    }
+
+    /// As [#deliver(ClusterEvent)], and runs `onGivenUp` once if the event is finally dropped (permanent failure,
+    /// expiry past the horizon, or overflow), never if it lands (#1617: the operator-warning throttle reopens a
+    /// short retry window only when its event is really lost).
+    @Contract
+    void deliver(ClusterEvent event, Runnable onGivenUp) {
         accepted.incrementAndGet();
-        attempt(event).onFailure(cause -> onFirstFailure(event, cause));
+        attempt(event).onFailure(cause -> onFirstFailure(event, cause, onGivenUp));
     }
 
     /// Re-sends every due event (or every waiting event when `all`, used when the partition's owner changes).
@@ -217,10 +231,10 @@ final class ClusterEventRedelivery {
                       .getSimpleName();
     }
 
-    private Unit onFirstFailure(ClusterEvent event, Cause cause) {
+    private Unit onFirstFailure(ClusterEvent event, Cause cause, Runnable onGivenUp) {
         return isPermanent(cause)
-               ? drop(DropReason.PERMANENT, event)
-               : hold(Pending.pending(event, clock.getAsLong()));
+               ? drop(DropReason.PERMANENT, event, onGivenUp)
+               : hold(Pending.pending(event, clock.getAsLong(), onGivenUp));
     }
 
     /// Starts holding a newly failed event. When CAPACITY events are already held, the OLDEST waiting one is dropped
@@ -232,10 +246,10 @@ final class ClusterEventRedelivery {
                 var oldest = Option.option(waiting.pollFirst());
 
                 if (oldest.isEmpty()) {
-                    return drop(DropReason.OVERFLOW, pending.event());
+                    return drop(DropReason.OVERFLOW, pending.event(), pending.onGivenUp());
                 }
 
-                oldest.onPresent(entry -> dropHeld(DropReason.OVERFLOW, entry.event()));
+                oldest.onPresent(entry -> dropHeld(DropReason.OVERFLOW, entry));
             }
 
             held.incrementAndGet();
@@ -255,7 +269,7 @@ final class ClusterEventRedelivery {
         var now = clock.getAsLong();
 
         if (isPermanent(cause)) {
-            return dropHeld(DropReason.PERMANENT, pending.event());
+            return dropHeld(DropReason.PERMANENT, pending);
         }
 
         return pending.expiredAt(now)
@@ -309,17 +323,18 @@ final class ClusterEventRedelivery {
                       pending.attempts());
         }
 
-        return dropHeld(DropReason.EXPIRED, pending.event());
+        return dropHeld(DropReason.EXPIRED, pending);
     }
 
     /// Drops an event that was being held for redelivery.
-    private Unit dropHeld(DropReason reason, ClusterEvent event) {
+    private Unit dropHeld(DropReason reason, Pending pending) {
         held.decrementAndGet();
 
-        return drop(reason, event);
+        return drop(reason, pending.event(), pending.onGivenUp());
     }
 
-    private Unit drop(DropReason reason, ClusterEvent event) {
+    private Unit drop(DropReason reason, ClusterEvent event, Runnable onGivenUp) {
+        onGivenUp.run();
         dropped.computeIfAbsent(reason, _ -> new AtomicLong()).incrementAndGet();
         synchronized (droppedTypesSinceReport) {
             droppedTypesSinceReport.merge(event.type() + "/" + reason.name(),

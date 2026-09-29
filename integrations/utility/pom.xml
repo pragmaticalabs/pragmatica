@@ -20,6 +20,11 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
+        <!-- Logging: OperatorWarnings logs every warning before emitting it (#1574) -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
 
         <!-- Testing -->
         <dependency>

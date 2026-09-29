@@ -60,6 +60,8 @@ import org.pragmatica.swim.SwimMessage.PingReq;
 import org.pragmatica.swim.SwimMessage.WhoAmI;
 import org.pragmatica.swim.SwimMessage.WhoAmIReply;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +70,7 @@ import static org.pragmatica.consensus.topology.TransportObservation.Observation
 import static org.pragmatica.consensus.topology.TransportObservation.peerObservedFaulty;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.utility.warning.OperatorWarningCode.SWIM_KILL_GATE_HELD;
 
 
 /// Core SWIM protocol implementation providing failure detection and membership dissemination.
@@ -127,6 +130,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
     private final Object membershipScopeGuard = new Object();
     private volatile Predicate<NodeId> membershipEligibility = _ -> true;
+    /// Where operator warnings go beyond the log (#1574). It is log-only until the node assembly binds
+    /// it to its own node's cluster event aggregator.
+    private volatile OperatorWarningSink operatorWarningSink = OperatorWarningSink.logOnly();
 
     /// Restrict retained gossip state. Scope removal is not a death verdict and emits no departure.
     public org.pragmatica.lang.Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
@@ -1918,6 +1924,14 @@ public final class SwimProtocol implements SwimMessageHandler {
         return bootTokens.refusals();
     }
 
+    /// Bind this protocol's operator warnings to the node's cluster event log (#1574). Until this is
+    /// called, a warning is logged and nothing more.
+    public Unit setOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarningSink = sink;
+
+        return Unit.unit();
+    }
+
     /// Install the node's boot-token registry — the SAME instance the QUIC transport admits Hellos
     /// through — before any peer evidence arrives. The registry's own token is this process's.
     public Unit setBootTokens(BootTokens registry) {
@@ -2582,7 +2596,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // departed on this node's lone say-so — hold the death broadcast (emit UNKNOWN) until
         // the verdict is independently corroborated, letting evidence accumulate / recovery happen.
         if (everSeenHealthy.contains(peer) && !coConfirmedFaulty(peer, firstHand)) {
-            logUnderConfirmedFaulty(peer);
+            reportUnderConfirmedFaulty(peer);
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
 
             return;
@@ -2629,13 +2643,17 @@ public final class SwimProtocol implements SwimMessageHandler {
                      .or(0);
     }
 
-    private void logUnderConfirmedFaulty(NodeId peer) {
-        LOG.warn("SWIM co-confirmation kill-gate (#336): holding terminal DepartedObserved for ever-HEALTHY peer {} — "
-                + "first-hand FAULTY under-confirmed ({} distinct accuser(s) < {}, no transport veto); emitting UNKNOWN "
-                + "and letting evidence accumulate / allowing recovery",
-                 peer.id(),
-                 distinctAccusers(peer),
-                 SwimConfig.MIN_FAULTY_CONFIRMERS);
+    private Unit reportUnderConfirmedFaulty(NodeId peer) {
+        return OperatorWarnings.raise(LOG,
+                                      operatorWarningSink,
+                                      SWIM_KILL_GATE_HELD,
+                                      peer.id(),
+                                      "SWIM co-confirmation kill-gate (#336): holding terminal DepartedObserved for ever-HEALTHY peer {} — "
+                                     + "first-hand FAULTY under-confirmed ({} distinct accuser(s) < {}, no transport veto); emitting UNKNOWN "
+                                     + "and letting evidence accumulate / allowing recovery",
+                                      peer.id(),
+                                      distinctAccusers(peer),
+                                      SwimConfig.MIN_FAULTY_CONFIRMERS);
     }
 
     /// Emit the FAULTY-edge pair: `FaultyObserved` immediately followed by
