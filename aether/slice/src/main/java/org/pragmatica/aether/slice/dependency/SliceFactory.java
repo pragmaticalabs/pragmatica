@@ -189,10 +189,10 @@ public interface SliceFactory {
     /// one reach that state identically, so the message names the mismatch and a remedy that holds in both
     /// directions; it used to assert "compiled against an older runtime", the opposite of the truth for a
     /// newer slice.
-    private static final String FACTORY_CONTRACT_MISMATCH = " — the factory's signature does not match this runtime's factory"
-                                                          + " contract. A slice built by a different Aether version, older"
-                                                          + " or newer, reaches this state; build the slice with the same"
-                                                          + " Aether version as this runtime";
+    String FACTORY_CONTRACT_MISMATCH = " — the factory's signature does not match this runtime's factory"
+                                     + " contract. A slice built by a different Aether version, older"
+                                     + " or newer, reaches this state; build the slice with the same"
+                                     + " Aether version as this runtime";
 
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
