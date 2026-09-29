@@ -114,7 +114,9 @@ Consensus runs in memory on every node; the old per-node consensus snapshot (`Gi
   newest head across nodes is not implemented]`; `BACKUP_RESTORE_SOURCE_LOCAL` warns at startup.
 - **The #1625 residual:** an incarnation that ran but whose key never reached the backup before a crash is
   invisible to the restore floor and can be reused `[unverified]`; #1532 narrows the window by flushing an
-  incarnation change immediately.
+  incarnation change immediately. Likewise, two clusters restored from the same head AT ONCE both land on
+  the same incarnation, because neither has recorded its own yet; whichever writes second then sees
+  `BACKUP_HEAD_AHEAD` `[design intent — unverified]`.
 - **The change-triggered backup (#1532)** is a separate, leader-only git repository at
   `<path>/kv-backup`, written only when `[backup] enabled = true`; it backs up cluster-state keys only
   `[mechanism: sealed AetherKey = ClusterStateKey | RuntimeKey]`. **The remote's lineage changes
@@ -125,15 +127,16 @@ Consensus runs in memory on every node; the old per-node consensus snapshot (`Gi
   clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`
   `[unverified: a false-positive BACKUP_HEAD_AHEAD WARN needs >30 s apply lag in a newly elected leader;
   election catch-up criterion not checked]`.
-  `declare-genesis` never moves this cluster's incarnation backwards (it commits `max(own, head) + 1`,
-  witnessed on the incarnation it read, so a concurrent write makes it refuse instead of being
+  `declare-genesis` never moves this cluster's incarnation backwards and never reuses one the backup has
+  recorded for its lineage (it commits `max(own, head, highest recorded for its lineage) + 1` — the restore
+  floor — witnessed on the incarnation it read, so a concurrent write makes it refuse instead of being
   overwritten) and is safe to re-run after any push failure `[verified: KvBackupServiceTest.Genesis]`.
 
-**Declared vs. derivable — the type system is the authoritative split (#1530).** Every `AetherKey` is either `AetherKey.ClusterStateKey` (cluster state, carried in a KV backup for a whole-cluster cold restart) or `AetherKey.RuntimeKey` (rebuilt by the running cluster, never backed up); `AetherKey` permits nothing else, so a new key cannot skip the choice `[mechanism: sealed interface AetherKey permits ClusterStateKey, RuntimeKey]`. `ConfigKey` backs up only its cluster-wide rows (`ConfigKey.isBackedUp()` is false for node-scoped overrides). The backup format is `BackupEntryCodec` (#1531). The earlier hand-maintained `EphemeralKeys` set and the TOML `KVStoreSerializer` it served are deleted — neither had a production caller. The split is pinned by `BackupKeyClassificationTest` (no backed-up key or value may reach a `NodeId` outside a commented allowlist), which is a unit-level pin, not a live-path verification: no restore path consumes a backup yet `[design intent — unverified]`.
+**Declared vs. derivable — the type system is the authoritative split (#1530).** Every `AetherKey` is either `AetherKey.ClusterStateKey` (cluster state, carried in a KV backup for a whole-cluster cold restart) or `AetherKey.RuntimeKey` (rebuilt by the running cluster, never backed up); `AetherKey` permits nothing else, so a new key cannot skip the choice `[mechanism: sealed interface AetherKey permits ClusterStateKey, RuntimeKey]`. `ConfigKey` backs up only its cluster-wide rows (`ConfigKey.isBackedUp()` is false for node-scoped overrides). The backup format is `BackupEntryCodec` (#1531). The earlier hand-maintained `EphemeralKeys` set and the TOML `KVStoreSerializer` it served are deleted — neither had a production caller. The split is pinned by `BackupKeyClassificationTest` (no backed-up key or value may reach a `NodeId` outside a commented allowlist), which is a unit-level pin. On the live path, the restore (#1533) brings back no reference to a node of the old cluster: after a restart onto fresh cores the restored slice and every stream partition owner sit on the fresh nodes only `[verified: ApiKeyFullRestartForgeTest]`.
 
 **Dead key types, deleted (#1530):** `StorageBlockKey`, `StorageRefKey`, `CloudCredentialsKey`, `StreamMetadataKey`, `AbTestRoutingKey`, with their value records — no production writer or reader. Their wire tags stay pinned as RETIRED in `SystemTags` so they are never reused. `StreamPartitionAssignmentKey` was removed earlier by #1271.
 
-**Wired end to end: `GossipKeyRotationKey` (#683).** An emergency rotation is operator-triggered: `POST /cluster/gossip-key/rotate` (`GossipKeyRoutes.rotate`; CLI `aether cluster rotate-gossip-key`) writes the key through consensus and confirms that the committed record is the one it wrote. Every node applies it through the `GossipKeyRotationKey` subscription to `GossipKeyRotationHandler::onGossipKeyRotationPut` in `AetherNode`, the sole delivery path (a late joiner receives the current rotation as a replayed put). For backups it is runtime state (#1530): the change-triggered backup excludes it, so a restore from that backup (#1533) reverts an emergency rotation and the gossip key is regenerated `[design intent — unverified]`. Until #1533 removes it, the old consensus-snapshot path still restores it with the whole KV.
+**Wired end to end: `GossipKeyRotationKey` (#683).** An emergency rotation is operator-triggered: `POST /cluster/gossip-key/rotate` (`GossipKeyRoutes.rotate`; CLI `aether cluster rotate-gossip-key`) writes the key through consensus and confirms that the committed record is the one it wrote. Every node applies it through the `GossipKeyRotationKey` subscription to `GossipKeyRotationHandler::onGossipKeyRotationPut` in `AetherNode`, the sole delivery path (a late joiner receives the current rotation as a replayed put). For backups it is runtime state (#1530): the change-triggered backup excludes it, so a restore from that backup (#1533) reverts an emergency rotation and the gossip key is regenerated `[design intent — unverified]`.
 
 **Earned key types, spot-checked:**
 - `StreamCursorCheckpointKey` — resolved via `ClusterCursorStore` (see §4 row 19); the ticket's original "may not be durable" guess is superseded. Since #1271 it is `AssignmentGuarded`: the applier admits a write only from the committed `ConsumerAssignmentKey` assignee at that record's epoch (`KVStore.unassignedWrite`).
