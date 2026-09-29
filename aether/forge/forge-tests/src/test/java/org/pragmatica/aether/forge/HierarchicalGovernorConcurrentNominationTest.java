@@ -40,7 +40,7 @@ import static org.awaitility.Awaitility.await;
 /// transport, with bounded retries. Each round starts every worker's send before awaiting any send outcome,
 /// so the nominations are in flight together; whether the leader's handlers overlap is not observed. Every
 /// reply that carries an authority, across all rounds, must name the same single governor and the same
-/// positive community term as the committed announcement.
+/// positive community term as the committed announcement; the one-owner half is checked on every poll.
 ///
 /// This is the nomination half of the former `HierarchicalGovernorConcurrencyRestartTest`. Its other half
 /// restarted the cores over preserved journals, a mode #1545 removed with durable control storage.
@@ -86,6 +86,7 @@ class HierarchicalGovernorConcurrentNominationTest {
         await().pollInterval(TimeSpan.timeSpan(1).seconds().duration())
              .atMost(BUDGET.duration())
              .until(() -> {
+                        assertSingleOwner(history);
                         if (replies.size() == workers.size() && replies.values()
                                                                        .stream()
                                                                        .allMatch(response -> response.authority()
@@ -122,6 +123,18 @@ class HierarchicalGovernorConcurrentNominationTest {
         assertThat(granted.stream().map(value -> value.governorId()).distinct().toList()).containsExactly(committed.governorId());
         assertThat(granted.stream().map(value -> value.communityTerm()).distinct().toList()).containsExactly(committed.communityTerm());
         assertThat(committed.communityTerm()).isPositive();
+    }
+
+    /// Checked on every poll, not only after the loop: a split grant is a violation the moment it is answered, even if
+    /// the churn it causes keeps the loop from ever completing.
+    private static void assertSingleOwner(ConcurrentLinkedQueue<GovernorAuthorityMessage.Response> history) {
+        var granted = history.stream().flatMap(response -> response.authority()
+                                                                   .stream()).toList();
+
+        assertThat(granted.stream().map(value -> value.governorId()).distinct().toList()).as("governors granted so far")
+                  .hasSizeLessThanOrEqualTo(1);
+        assertThat(granted.stream().map(value -> value.communityTerm()).distinct().toList()).as("community terms granted so far")
+                  .hasSizeLessThanOrEqualTo(1);
     }
 
     private List<AetherNode> addWorkers() {
