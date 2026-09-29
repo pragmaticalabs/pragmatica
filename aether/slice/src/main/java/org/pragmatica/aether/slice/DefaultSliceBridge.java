@@ -142,19 +142,30 @@ public record DefaultSliceBridge(Artifact artifact,
 
     @SuppressWarnings("unchecked")
     private <T> Promise<T> deserializeInput(byte[] input) {
-        return Promise.lift(Causes::fromThrowable, () -> (T) codec.decode(input));
+        return Promise.lift(DefaultSliceBridge::codecDefect, () -> (T) codec.decode(input));
     }
 
     @SuppressWarnings("unchecked")
     private <T, R> Promise<R> invokeMethod(SliceMethod<?, ?> method, T parameter) {
-        return Promise.lift(Causes::fromThrowable,
+        return Promise.lift(DefaultSliceBridge::methodDefect,
                             () -> ((SliceMethod<R, T>) method).apply(parameter))
                       .flatMap(promise -> promise);
     }
 
     private <R> Promise<byte[]> serializeResponse(R response) {
-        return Promise.lift(Causes::fromThrowable, () -> codec.encode(response));
+        return Promise.lift(DefaultSliceBridge::codecDefect, () -> codec.encode(response));
     }
 
-    private static final Fn1<Cause, String> METHOD_NOT_FOUND = Causes.forOneValue("Method not found: {0}");
+    /// #1573: bridge-side failures are tagged [SliceDefect] so the leader's all-instances-failed
+    /// detector can tell a broken version from a business failure the method returned. Only the
+    /// synchronous throw is tagged here; the Promise the method returns carries its own causes.
+    private static Cause methodDefect(Throwable throwable) {
+        return SliceDefect.MethodThrew.FACTORY.apply(Causes.fromThrowable(throwable));
+    }
+
+    private static Cause codecDefect(Throwable throwable) {
+        return SliceDefect.CodecFailed.FACTORY.apply(Causes.fromThrowable(throwable));
+    }
+
+    private static final Fn1<SliceDefect.MethodNotFound, String> METHOD_NOT_FOUND = SliceDefect.MethodNotFound.FACTORY;
 }

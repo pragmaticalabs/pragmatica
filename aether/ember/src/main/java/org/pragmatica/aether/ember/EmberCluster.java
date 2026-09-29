@@ -56,7 +56,6 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.HttpProtocol;
-import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
@@ -1379,7 +1378,6 @@ public final class EmberCluster {
                                           Option.empty(),
                                           quicTls,
                                           TtmConfig.ttmConfig(),
-                                          RollbackConfig.rollbackConfig(),
                                           AppHttpConfig.appHttpConfig(true,
                                                                       appHttpPort,
                                                                       appHttpApiKeys.get(),

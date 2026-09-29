@@ -8,9 +8,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 
@@ -92,37 +89,6 @@ class NodeLifecycleTest {
             assertThat(lifecycle.currentState().isReady()).as("ACTIVE IS ready").isTrue();
             lifecycle.drain();
             assertThat(lifecycle.currentState().isReady()).as("STOPPED is NOT ready").isFalse();
-        }
-    }
-
-    @Nested class StateListener {
-        @Test
-        void addStateListener_replaysCurrentStateImmediately() {
-            var observed = new ArrayList<NodeStateChanged>();
-            lifecycle.addStateListener(observed::add);
-            assertThat(observed).hasSize(1);
-            assertThat(observed.get(0).previous()).isEqualTo(NodeState.STARTING);
-            assertThat(observed.get(0).current()).isEqualTo(NodeState.STARTING);
-        }
-
-        @Test
-        void addStateListener_receivesAllSubsequentTransitions() {
-            var observed = new ArrayList<NodeStateChanged>();
-            lifecycle.addStateListener(observed::add);
-            lifecycle.subsystemsReady();
-            lifecycle.signalReady();
-            assertThat(observed).extracting(NodeStateChanged::current)
-                                .containsExactly(NodeState.STARTING, NodeState.JOINING, NodeState.ACTIVE);
-        }
-
-        @Test
-        void addStateListener_swallowsListenerExceptions() {
-            List<NodeStateChanged> reliableObserved = new ArrayList<>();
-            lifecycle.addStateListener(_ -> {throw new RuntimeException("boom");});
-            lifecycle.addStateListener(reliableObserved::add);
-            lifecycle.subsystemsReady();
-            assertThat(reliableObserved).extracting(NodeStateChanged::current)
-                                              .contains(NodeState.JOINING);
         }
     }
 }

@@ -53,6 +53,8 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
+import org.pragmatica.aether.controller.AllInstancesFailedDetector;
+import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -260,8 +262,10 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
+import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
+import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.cluster.metrics.ConnectivityState;
@@ -2556,6 +2560,12 @@ public interface AetherNode extends ManageableNode {
                                                                        GenerationSnapshotSource.noop(),
                                                                        routeMountMode(config.appHttp()));
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
+        // #1573 B1: HTTP routes call the typed slice instance, not the bridge, so they record into the
+        // same execution counters here. recordExecution cannot fail (it returns unitResult()).
+        httpRoutePublisher.setRouteOutcomeRecorder((artifact, method, outcome) -> invocationMetrics.recordExecution(artifact,
+                                                                                                                    method,
+                                                                                                                    outcome)
+                                                                                                   .or(Unit.unit()));
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
         var traceStore = InvocationTraceStore.invocationTraceStore();
         // #277 increment 5a: the strategy-cell system is the ONE observability engine. Unconfigured
@@ -3264,13 +3274,28 @@ public interface AetherNode extends ManageableNode {
                                                                                             .scalingConfig()
                                                                                             .evaluationInterval()
                                                                                             .millis());
-        var rollbackManager = config.rollback().enabled()
-                              ? RollbackManager.rollbackManager(config.self(),
-                                                                config.rollback(),
-                                                                clusterNode,
-                                                                kvStore,
-                                                                clusterNode.leaderManager())
-                              : RollbackManager.disabled();
+        // #1573: rollback policy is cluster-wide — the committed cluster TOML's [rollback] section, read at every
+        // decision, so committing `enabled = false` turns automatic rollback off without a restart.
+        var rollbackManager = RollbackManager.rollbackManager(config.self(),
+                                                              () -> committedRollbackPolicy(clusterConfigReader),
+                                                              clusterNode,
+                                                              kvStore,
+                                                              clusterNode.leaderManager(),
+                                                              delegateRouter::route);
+        // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
+        // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
+        // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
+        // non-leader, so a new leader starts from fresh windows.
+        var allInstancesFailedDetector = AllInstancesFailedDetector.allInstancesFailedDetector(metricsCollector::allObservations,
+                                                                                               () -> activeInstancesByArtifact(deploymentMap,
+                                                                                                                               Option.option(membershipFsmRef.get())),
+                                                                                               isLeaderSupplier,
+                                                                                               delegateRouter::route,
+                                                                                               System::currentTimeMillis);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(allInstancesFailedDetector::tick,
+                                                                      config.timeouts().cluster().pingInterval(),
+                                                                      config.timeouts().cluster().pingInterval()));
         var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
@@ -6003,6 +6028,51 @@ public interface AetherNode extends ManageableNode {
         return () -> Epoch.epoch(ClusterIncarnation.current(kvStore), rabiaTermSupplier.get(), 0L);
     }
 
+    /// #1573: the committed cluster-wide automatic-rollback policy. Absent or blank (seed) cluster TOML is the
+    /// built-in default (ON). The section was validated at apply, so a failure here means a document committed
+    /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
+    /// that cannot be read — and the failure is logged.
+    private static RollbackConfig committedRollbackPolicy(Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader) {
+        return clusterConfigReader.get()
+                                  .map(AetherValue.ClusterConfigValue::tomlContent)
+                                  .map(RollbackPolicyParser::fromClusterToml)
+                                  .or(() -> Result.success(RollbackConfig.rollbackConfig()))
+                                  .onFailure(cause -> LOG.error("Committed [rollback] policy unreadable, automatic rollback OFF: {}",
+                                                                cause.message()))
+                                  .or(RollbackConfig.rollbackConfig(false));
+    }
+
+    /// #1573: the ACTIVE instances of every deployed artifact version on nodes the membership FSM still counts,
+    /// as the all-instances-failed detector needs them. An instance left in KV on a node membership has declared
+    /// DEAD serves nothing and is not a host; a counted node that stopped reporting still is — and its stale
+    /// metrics make the version undecidable. An unparsable artifact or node id is skipped, never guessed.
+    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap,
+                                                                        Option<MembershipFsm> membershipFsm) {
+        return membershipFsm.map(fsm -> activeInstancesByArtifact(deploymentMap, fsm))
+                            .or(Map.of());
+    }
+
+    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap,
+                                                                        MembershipFsm membershipFsm) {
+        var result = new HashMap<Artifact, Set<NodeId>>();
+
+        deploymentMap.allDeployments()
+                     .forEach(info -> Artifact.artifact(info.artifact()).onSuccess(artifact -> result.put(artifact,
+                                                                                                          activeNodes(info,
+                                                                                                                      membershipFsm))));
+
+        return Map.copyOf(result);
+    }
+
+    private static Set<NodeId> activeNodes(DeploymentMap.SliceDeploymentInfo info, MembershipFsm membershipFsm) {
+        return info.instances()
+                   .stream()
+                   .filter(instance -> instance.state() == SliceState.ACTIVE)
+                   .map(instance -> new NodeId(instance.nodeId()))
+                   .filter(membershipFsm::isCountedMember)
+                   .collect(Collectors.toUnmodifiableSet());
+    }
+
     private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
@@ -7977,6 +8047,9 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(RollbackEvent.AutoRollbackExecuted.class, eventAggregator::onAutoRollback));
+        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
+                                              alertManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaleCapped.class, eventAggregator::onScaleCapped));

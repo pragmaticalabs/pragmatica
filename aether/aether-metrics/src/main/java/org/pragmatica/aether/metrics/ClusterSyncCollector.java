@@ -1046,6 +1046,17 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         }
 
         invMetrics.snapshot().forEach(snapshot -> addInvocationSnapshot(metrics, snapshot));
+        invMetrics.executionCounts().forEach(counts -> addExecutionCounts(metrics, counts));
+    }
+
+    /// #1573: cumulative execution outcomes under [ExecutionOutcomeKeys]; the leader's all-instances-failed
+    /// detector takes per-window deltas of them per producer.
+    private static void addExecutionCounts(Map<String, Double> metrics,
+                                           InvocationMetricsCollector.ExecutionCounts counts) {
+        metrics.put(ExecutionOutcomeKeys.successKey(counts.artifact(), counts.method()),
+                    (double) counts.successes());
+        metrics.put(ExecutionOutcomeKeys.defectKey(counts.artifact(), counts.method()),
+                    (double) counts.defects());
     }
 
     private void addInvocationSnapshot(Map<String, Double> metrics,
