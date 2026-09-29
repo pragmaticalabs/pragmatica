@@ -2071,8 +2071,7 @@ public class RabiaEngine<C extends Command> {
                     + "and runs no reconciler while this persists.",
                      self,
                      round,
-                     authorityFailure.map(Cause::message)
-                                     .or("see the preceding ERROR"));
+                     authorityFailure.map(Cause::message).or("see the preceding ERROR"));
 
             return;
         }
