@@ -50,7 +50,7 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// `split(";")` whose middle fragment fails against the same engine — the real-engine proof of fix.
 ///
 /// If Docker is unavailable the whole class is skipped via [#dockerAvailable] rather than failing.
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class StatementSplitterPostgresDiffTest {
     private static final DialectSpec PG = Dialects.POSTGRESQL;
 
