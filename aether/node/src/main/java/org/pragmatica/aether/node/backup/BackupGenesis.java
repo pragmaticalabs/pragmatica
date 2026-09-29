@@ -29,8 +29,8 @@ import org.pragmatica.lang.utils.Causes;
 /// backup already there — is the one to keep.
 ///
 /// A freshly started cluster mints its own lineage at incarnation 1 and is GATED while the backup head
-/// belongs to another lineage. Declaring genesis moves this cluster's incarnation past both its own and the
-/// head's ([ClusterIncarnation#superseding]), and
+/// belongs to another lineage. Declaring genesis moves this cluster's incarnation past its own, the head's
+/// and every one the backup history records for its lineage ([ClusterIncarnation#superseding]), and
 /// the next backup flush then supersedes it as a fast-forward (the old lineage stays in git history).
 ///
 /// It refuses whenever the head is not another lineage's: a head of this cluster's own lineage is either
@@ -184,7 +184,17 @@ public record BackupGenesis(KvBackupService service) {
     private Promise<GenesisDeclared> commitSupersede(ClusterIncarnationValue current,
                                                      BackupHeader head,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        var next = ClusterIncarnation.superseding(current, head.incarnation());
+        return service.onWorker(() -> service.highestRecordedForLineage(current.lineageId(),
+                                                                        current.incarnation()))
+                      .mapError(DeclareGenesisError.HeadUnreadable.FACTORY::apply)
+                      .flatMap(highestRecorded -> commitSupersede(current, head, highestRecorded, applier));
+    }
+
+    private Promise<GenesisDeclared> commitSupersede(ClusterIncarnationValue current,
+                                                     BackupHeader head,
+                                                     long highestRecorded,
+                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+        var next = ClusterIncarnation.superseding(current, head.incarnation(), highestRecorded);
         var transactionId = "declare-genesis:" + UUID.randomUUID();
 
         return service.kvStore()

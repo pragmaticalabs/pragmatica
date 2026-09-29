@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
@@ -64,6 +65,11 @@ import static org.pragmatica.lang.Result.success;
 /// **Warnings** are transition-only ([BackupWarning]).
 public final class KvBackupService {
     private static final Logger LOG = LoggerFactory.getLogger(KvBackupService.class);
+    private static final String SUBJECT_PREFIX = "kv backup";
+
+    /// The subject every backup commit carries ([#commitMessage]): `kv backup lineage=… incarnation=… revision=…`.
+    private static final Pattern SUBJECT = Pattern.compile("kv backup lineage=(\\S*) incarnation=(\\d+) revision=(\\d+)");
+
     /// The operator action that resolves a gated backup.
     public static final String DECLARE_GENESIS_COMMAND = "aether backup declare-genesis";
 
@@ -308,6 +314,54 @@ public final class KvBackupService {
 
     BackupEntryCodec codec() {
         return codec;
+    }
+
+    /// The incarnation floor for `lineageId`: the highest incarnation the backup's history records for it,
+    /// never below `floor`. Both paths that move the incarnation off the successor step clear it — a
+    /// restore (#1533) and `declare-genesis` (#1532) — so neither reuses an incarnation this backup has
+    /// already recorded for the lineage. Worker thread only.
+    Result<Long> highestRecordedForLineage(String lineageId, long floor) {
+        return repository.fetchRestoreRef()
+                         .flatMap(ref -> ref.map(present -> highestRecorded(present, lineageId, floor))
+                                            .or(() -> success(floor)));
+    }
+
+    /// As [#highestRecordedForLineage], over the history reachable from `ref`. Read from the commit subjects
+    /// this service writes ([#commitMessage]); a backup commit whose subject is not in that form is decoded
+    /// from its document instead, so it is never silently left out.
+    Result<Long> highestRecorded(String ref, String lineageId, long floor) {
+        return repository.history(ref)
+                         .flatMap(lines -> Result.allOf(lines.stream().map(this::recordedHeader).toList()))
+                         .map(headers -> headers.stream()
+                                                .flatMap(Option::stream)
+                                                .filter(recorded -> recorded.lineageId()
+                                                                            .equals(lineageId))
+                                                .mapToLong(BackupHeader::incarnation)
+                                                .reduce(floor, Math::max));
+    }
+
+    /// `<sha> <subject>` → the header that commit recorded, absent for a commit that is not a backup.
+    private Result<Option<BackupHeader>> recordedHeader(String line) {
+        var separator = line.indexOf(' ');
+        var commit = separator < 0
+                     ? line
+                     : line.substring(0, separator);
+        var subject = separator < 0
+                      ? ""
+                      : line.substring(separator + 1);
+        var matcher = SUBJECT.matcher(subject);
+
+        if (matcher.matches()) {
+            return success(Option.some(BackupHeader.backupHeader(matcher.group(1),
+                                                                 Long.parseLong(matcher.group(2)),
+                                                                 Long.parseLong(matcher.group(3)))));
+        }
+
+        return subject.startsWith(SUBJECT_PREFIX)
+               ? repository.documentAt(commit)
+                           .flatMap(codec::decode)
+                           .map(document -> Option.some(document.header()))
+               : success(Option.none());
     }
 
     // --- triggers (applier / router threads) ---
@@ -560,11 +614,12 @@ public final class KvBackupService {
     }
 
     private static String commitMessage(String document) {
-        return "kv backup " + document.lines()
-                                      .skip(1)
-                                      .limit(3)
-                                      .reduce((left, right) -> left + " " + right)
-                                      .orElse("");
+        return SUBJECT_PREFIX
+             + " " + document.lines()
+                             .skip(1)
+                             .limit(3)
+                             .reduce((left, right) -> left + " " + right)
+                             .orElse("");
     }
 
     private Boolean rememberWritten(String body) {
@@ -668,8 +723,8 @@ public final class KvBackupService {
                                       .map(BackupHeader::revision)
                                       .or(0L)
              + ") for " + seconds
-             + "s, so nothing is being backed up; this cluster may have been restored from an"
-             + " older snapshot (the old persistence path) while a newer backup head exists — see #1533. Once this"
+             + "s, so nothing is being backed up; another cluster may be writing this lineage and incarnation"
+             + " to the same remote (for example, two clusters restored from the same backup at once). Once this"
              + " cluster's revision passes the head's, its state REPLACES that head (git history keeps it)";
     }
 
@@ -716,8 +771,8 @@ public final class KvBackupService {
                                                                                                   .or(0L)
              + ", revision " + aheadHead.map(BackupHeader::revision)
                                         .or(0L)
-             + ") it had been waiting behind; git history retains the replaced commit. If this cluster was"
-             + " restored from an older snapshot, the replaced head holds newer state — see #1533";
+             + ") it had been waiting behind; git history retains the replaced commit. If another cluster wrote"
+             + " that head, the replaced commit holds its newer state";
     }
 
     @Contract

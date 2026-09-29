@@ -13,7 +13,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
-import java.util.regex.Pattern;
 
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.ClusterIncarnation;
@@ -93,11 +92,6 @@ public final class BackupRestoreCoordinator {
     /// Rendered-entry bytes per restore transaction. A consensus frame is capped at 32 MiB
     /// (`OutboundMessageLimit.MAX_FRAME_BYTES`); a quarter of it leaves room for the batch envelope.
     static final long CHUNK_BYTES = 8L * 1024 * 1024;
-
-    /// The subject [KvBackupService] gives every backup commit: `kv backup lineage=… incarnation=… revision=…`.
-    private static final Pattern SUBJECT = Pattern.compile("kv backup lineage=(\\S*) incarnation=(\\d+) revision=(\\d+)");
-
-    private static final String SUBJECT_PREFIX = "kv backup";
 
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
@@ -339,52 +333,10 @@ public final class BackupRestoreCoordinator {
         return service.repository()
                       .documentAt(commit)
                       .flatMap(service.codec()::decode)
-                      .flatMap(document -> highestRecorded(service,
-                                                           ref,
-                                                           document.header()).map(highest -> new Loaded(commit,
-                                                                                                        document,
-                                                                                                        highest)));
-    }
-
-    /// The highest incarnation the backup's history records for `header`'s lineage — the floor a restore
-    /// must clear. Read from the commit subjects [KvBackupService] writes; a backup commit whose subject is
-    /// not in that form is decoded from its document instead, so it is never silently left out.
-    private Result<Long> highestRecorded(KvBackupService service, String ref, BackupHeader header) {
-        return service.repository()
-                      .history(ref)
-                      .flatMap(lines -> Result.allOf(lines.stream().map(line -> recordedHeader(service, line)).toList()))
-                      .map(headers -> headers.stream()
-                                             .flatMap(Option::stream)
-                                             .filter(recorded -> recorded.lineageId()
-                                                                         .equals(header.lineageId()))
-                                             .mapToLong(BackupHeader::incarnation)
-                                             .max()
-                                             .orElse(header.incarnation()));
-    }
-
-    /// `<sha> <subject>` → the header that commit recorded, absent for a commit that is not a backup.
-    private static Result<Option<BackupHeader>> recordedHeader(KvBackupService service, String line) {
-        var separator = line.indexOf(' ');
-        var commit = separator < 0
-                     ? line
-                     : line.substring(0, separator);
-        var subject = separator < 0
-                      ? ""
-                      : line.substring(separator + 1);
-        var matcher = SUBJECT.matcher(subject);
-
-        if (matcher.matches()) {
-            return success(Option.some(BackupHeader.backupHeader(matcher.group(1),
-                                                                 Long.parseLong(matcher.group(2)),
-                                                                 Long.parseLong(matcher.group(3)))));
-        }
-
-        return subject.startsWith(SUBJECT_PREFIX)
-               ? service.repository()
-                        .documentAt(commit)
-                        .flatMap(service.codec()::decode)
-                        .map(document -> Option.some(document.header()))
-               : success(Option.none());
+                      .flatMap(document -> service.highestRecorded(ref,
+                                                                   document.header().lineageId(),
+                                                                   document.header().incarnation())
+                                                  .map(highest -> new Loaded(commit, document, highest)));
     }
 
     @Contract

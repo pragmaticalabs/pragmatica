@@ -17,6 +17,9 @@
   names the partitions); schema MIGRATING → PENDING.
 - **One restore-commit hook** re-drives the components that load cluster state once at activation: the
   bootstrap config seed, the rollout manager and the A/B test manager.
+- **`declare-genesis` clears the same floor as a restore:** it commits `max(own, head, highest recorded
+  for its lineage) + 1`, so it never reuses an incarnation the backup history records for its lineage
+  `[verified: KvBackupServiceTest.Genesis#declareGenesis_clearsEveryIncarnationTheHistoryRecordsForThisLineage]`.
 - **Entity folds validate a checkpoint pointer at its point of use:** an unreadable, undecodable or
   beyond-the-log-head pointer is ignored and the partition folds from its log.
 - **Removed:** the old consensus-snapshot persistence (`RabiaPersistence.gitBacked`,

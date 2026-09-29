@@ -77,11 +77,17 @@ public sealed interface ClusterIncarnation {
     }
 
     /// The incarnation `aether backup declare-genesis` moves this cluster to (#1532): its own lineage, past
-    /// BOTH its own incarnation and the head's. Never backwards — a cluster at L@9 declaring over another
-    /// lineage's head at 3 goes to L@10, never L@4, which would reuse an incarnation L already ran.
-    static ClusterIncarnationValue superseding(ClusterIncarnationValue current, long headIncarnation) {
-        return ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(),
-                                                               Math.max(current.incarnation(), headIncarnation) + 1);
+    /// its own incarnation, the head's, AND every incarnation the backup has recorded for its lineage —
+    /// the same floor a restore clears ([#restoreCommands]). Never backwards — a cluster at L@9 declaring
+    /// over another lineage's head at 3 goes to L@10, never L@4, which would reuse an incarnation L already
+    /// ran; and a cluster at L@1 over a history that recorded L@7 goes to L@8, never L@4.
+    static ClusterIncarnationValue superseding(ClusterIncarnationValue current,
+                                               long headIncarnation,
+                                               long highestRecordedForLineage) {
+        var next = Math.max(Math.max(current.incarnation(), headIncarnation),
+                            highestRecordedForLineage) + 1;
+
+        return ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(), next);
     }
 
     /// The declaration's write, as two leader transactions submitted in ONE batch and applied in order. The

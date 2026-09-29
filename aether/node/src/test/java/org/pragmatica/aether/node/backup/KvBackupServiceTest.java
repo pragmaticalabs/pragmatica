@@ -441,11 +441,12 @@ class KvBackupServiceTest {
                                 .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_HEAD_REPLACED, Code.BACKUP_HEAD_AHEAD);
         }
 
-        /// Hazard (d), pinned as it is (v1621's probe): under the interim old persistence path a cold restart
-        /// can come back with the same lineage and incarnation and an OLDER revision. Its changes are not
-        /// backed up while the head is ahead — the sustained warning is the only signal — and once its
-        /// revision overtakes, its state REPLACES the newer head (git history keeps the replaced commit).
-        /// #1533 removes the old path.
+        /// Hazard (d), pinned as it is (v1621's probe): a cluster whose state has the head's lineage and
+        /// incarnation and an OLDER revision. The old persistence path that produced this on a cold restart is
+        /// gone (#1533 restores past the head's incarnation); a second writer of the same lineage and
+        /// incarnation still can. Its changes are not backed up while the head is ahead — the sustained warning
+        /// is the only signal — and once its revision overtakes, its state REPLACES the newer head (git
+        /// history keeps the replaced commit).
         @Test
         void afterAnOldPathRestart_theStallIsWarned_andTheOvertakingStateReplacesTheHead() {
             var remote = bareRemote(temp.resolve("remote.git"));
@@ -568,6 +569,26 @@ class KvBackupServiceTest {
 
             assertThat(declared.incarnation()).isEqualTo(10);
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(10);
+        }
+
+        /// The declaration clears the same floor a restore does: a history that recorded this lineage at 7
+        /// (an earlier run of it, then superseded by another lineage's head at 3) must not see this cluster,
+        /// now at 1, declare 4 — that would reuse an incarnation the backup already records for the lineage.
+        @Test
+        void declareGenesis_clearsEveryIncarnationTheHistoryRecordsForThisLineage() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, 30), recordedSubject(LINEAGE, 7, 30));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            var service = leaderService(Option.some(remote), 1);
+
+            var declared = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)))
+                                        .unwrap();
+
+            assertThat(declared.incarnation()).as("past the recorded L@7, not max(1, 3) + 1")
+                                              .isEqualTo(8);
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
 
         /// N3: the supersede is witnessed on the incarnation it read. A concurrent write landing first (a
@@ -844,17 +865,26 @@ class KvBackupServiceTest {
     }
 
     private void seedRemote(String remote, BackupHeader header) {
+        seedRemote(remote, header, "seed");
+    }
+
+    /// Seed with `message` as the commit subject — [#recordedSubject] gives the one a backup commit carries.
+    private void seedRemote(String remote, BackupHeader header, String message) {
         var seeder = temp.resolve("seeder-" + header.revision());
 
         git(temp, "clone", "--quiet", remote, seeder.toString());
-        commitDocument(seeder, header, remoteHasBranch(remote));
+        commitDocument(seeder, header, remoteHasBranch(remote), message);
+    }
+
+    private static String recordedSubject(String lineageId, long incarnation, long revision) {
+        return "kv backup lineage=" + lineageId + " incarnation=" + incarnation + " revision=" + revision;
     }
 
     private void seedRemoteOnTop(String remote, BackupHeader header) {
         seedRemote(remote, header);
     }
 
-    private void commitDocument(Path clone, BackupHeader header, boolean onTopOfExisting) {
+    private void commitDocument(Path clone, BackupHeader header, boolean onTopOfExisting, String message) {
         var document = CODEC.encode(header.revision(),
                                     Map.of(ConfigKey.forKey("seed"),
                                            ConfigValue.configValue("seed", "x"),
@@ -870,7 +900,7 @@ class KvBackupServiceTest {
         }
         writeFile(clone.resolve(GitBackupRepository.FILE), document);
         git(clone, "add", GitBackupRepository.FILE);
-        git(clone, "-c", "user.email=s@x", "-c", "user.name=seed", "commit", "--quiet", "-m", "seed");
+        git(clone, "-c", "user.email=s@x", "-c", "user.name=seed", "commit", "--quiet", "-m", message);
         git(clone, "push", "--quiet", "origin", "backup");
     }
 
