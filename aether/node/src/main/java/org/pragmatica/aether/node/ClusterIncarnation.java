@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.lang.Option;
 
 
@@ -23,9 +24,12 @@ import org.pragmatica.lang.Option;
 /// - [#genesisCommand] — the leader's mint for a cluster that has none yet (incarnation 1, fresh lineage).
 /// - [#restoreCommands] — what a restore (#1533) commits: the restored lineage, above every incarnation
 ///   the backup has recorded for it.
+/// - [#superseding]/[#supersedeCommands] — what `aether backup declare-genesis` commits (#1532).
 public sealed interface ClusterIncarnation {
     /// The value [#current] answers before genesis.
     long NONE = 0L;
+    String REMOVE_SUFFIX = ":remove";
+    String PUT_SUFFIX = ":put";
 
     /// The committed incarnation, or [#NONE] before genesis.
     static long current(KVStore<AetherKey, AetherValue> kvStore) {
@@ -70,6 +74,54 @@ public sealed interface ClusterIncarnation {
 
         return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()),
                        put(ClusterIncarnationValue.clusterIncarnationValue(restored.lineageId(), next)));
+    }
+
+    /// The incarnation `aether backup declare-genesis` moves this cluster to (#1532): its own lineage, past
+    /// BOTH its own incarnation and the head's. Never backwards — a cluster at L@9 declaring over another
+    /// lineage's head at 3 goes to L@10, never L@4, which would reuse an incarnation L already ran.
+    static ClusterIncarnationValue superseding(ClusterIncarnationValue current, long headIncarnation) {
+        return ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(),
+                                                               Math.max(current.incarnation(), headIncarnation) + 1);
+    }
+
+    /// The declaration's write, as two leader transactions submitted in ONE batch and applied in order. The
+    /// first removes the incarnation only while it still holds `current` — a read witness, so a concurrent
+    /// restore or declaration makes it refuse instead of being overwritten. The second writes `next` only
+    /// where the first left the key empty (the jump is not a successor step, so it must be a first write).
+    /// The declaration committed iff BOTH are accepted; the caller checks [#supersedeAccepted], never a
+    /// re-read that its own write could satisfy.
+    static List<KVCommand<AetherKey>> supersedeCommands(LeaderValue leader,
+                                                        String transactionId,
+                                                        ClusterIncarnationValue current,
+                                                        ClusterIncarnationValue next) {
+        return List.of(transaction(leader, transactionId + REMOVE_SUFFIX, Option.some(current), Option.none()),
+                       transaction(leader, transactionId + PUT_SUFFIX, Option.none(), Option.some(next)));
+    }
+
+    /// Whether both transactions of [#supersedeCommands] were accepted.
+    static boolean supersedeAccepted(List<Object> results, String transactionId) {
+        return accepted(results, transactionId + REMOVE_SUFFIX) && accepted(results, transactionId + PUT_SUFFIX);
+    }
+
+    private static boolean accepted(List<Object> results, String transactionId) {
+        return results.stream()
+                      .filter(KVCommand.TransactionResult.class::isInstance)
+                      .map(KVCommand.TransactionResult.class::cast)
+                      .anyMatch(result -> result.transactionId()
+                                                .equals(transactionId) && result.accepted());
+    }
+
+    private static KVCommand<AetherKey> transaction(LeaderValue leader,
+                                                    String transactionId,
+                                                    Option<ClusterIncarnationValue> expected,
+                                                    Option<ClusterIncarnationValue> replacement) {
+        return new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterIncarnationKey.clusterIncarnationKey(),
+                                                                       transactionId,
+                                                                       leader,
+                                                                       List.of(),
+                                                                       List.of(new KVCommand.Mutation<>(ClusterIncarnationKey.clusterIncarnationKey(),
+                                                                                                        expected.map(AetherValue.class::cast),
+                                                                                                        replacement.map(AetherValue.class::cast))));
     }
 
     private static KVCommand<AetherKey> put(ClusterIncarnationValue value) {

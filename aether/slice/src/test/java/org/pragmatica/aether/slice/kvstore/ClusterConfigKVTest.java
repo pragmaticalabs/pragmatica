@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
-import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
@@ -26,8 +25,6 @@ class ClusterConfigKVTest {
             List.of(new AetherValue.TopologyEntry("primary", "core", 5));
 
     private static final BackupEntryCodec BACKUP = BackupEntryCodec.backupEntryCodec(BackupFixtures.codec());
-    private static final BackupEntryCodec.BackupHeader HEADER = BackupEntryCodec.BackupHeader.backupHeader(42L,
-                                                                                                            Option.none());
 
     @Nested
     class KeyTests {
@@ -116,7 +113,7 @@ class ClusterConfigKVTest {
                 1711461000000L
             );
 
-            BACKUP.encode(HEADER, Map.of(key, value))
+            BACKUP.encode(42L, Map.of(key, value))
                              .flatMap(BACKUP::decode)
                              .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailureRun(Assertions::fail)
@@ -147,7 +144,7 @@ class ClusterConfigKVTest {
                 tomlContent, "prod", "0.21.1", CORE_5, 3, 9, "hetzner", 1, 1711461000000L
             );
 
-            BACKUP.encode(HEADER, Map.of(key, value))
+            BACKUP.encode(42L, Map.of(key, value))
                              .flatMap(BACKUP::decode)
                              .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailureRun(Assertions::fail)
@@ -254,7 +251,7 @@ class ClusterConfigKVTest {
             var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3),
                                                     new AetherValue.TopologyEntry("us", "worker", 4)));
 
-            BACKUP.encode(HEADER, Map.of(ClusterConfigKey.CURRENT, value))
+            BACKUP.encode(42L, Map.of(ClusterConfigKey.CURRENT, value))
                              .flatMap(BACKUP::decode)
                              .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
