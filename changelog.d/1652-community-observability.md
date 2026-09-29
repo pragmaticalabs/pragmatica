@@ -17,7 +17,7 @@
   `CommunityValue` / governor-roster writes, so every node observes them and only the cluster-events owner publishes them
   (the owner-gated delivery contract, `guarantees.md` row 14b: at-least-once across an ownership handover).
   [unverified: pending bigboy run — `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` —
-  minted, member joined, FORMING→ACTIVE, ACTIVE→DEGRADED and the killed worker's member left on a live cluster]
+  minted, exactly one member joined per admitted worker, FORMING→ACTIVE and ACTIVE→DEGRADED on a live cluster]
 - The `→ DISSOLVED` edge for placement-policy retirement is not drivable in an in-JVM cluster; it is pinned by
   committing the retirement write exactly as `CommunityPlacementReconciler.markDissolved` does, through the real
   applier and the node codec. [mechanism: the applier's `ValuePut` for the retirement write;
