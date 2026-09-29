@@ -70,7 +70,8 @@ import static org.mockito.Mockito.when;
 ///   - FIX C: the event-driven close listener evicts a peer the instant its QUIC channel closes,
 ///     but only when the closed connection is STILL the bound one (adopt-newer supersede must not
 ///     evict the live replacement).
-@Timeout(10)
+/// #807: the class timeout must exceed [#CONNECT_BOUND], or it re-imposes the fixed wall-clock bound the waits removed.
+@Timeout(60)
 class QuicClusterNetworkLivenessSweepTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(1).seconds();
