@@ -7,6 +7,7 @@ package org.pragmatica.aether.http;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.ServiceLoader;
@@ -79,6 +80,13 @@ public interface HttpRoutePublisher {
     Set<HttpNodeRouteKey> allLocalRoutes();
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
+
+    /// #1659: the policy this node's committed security overrides assign to a route served elsewhere; empty when
+    /// no committed override matches it. The default holds no overrides, as a publisher without an override set
+    /// does; the production publisher answers from its committed overrides.
+    default Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
+        return Option.none();
+    }
 
     Unit updateSecurityOverrides(SecurityOverrides overrides);
 
@@ -453,7 +461,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         var effectiveRoutes = SecurityOverrideApplier.applyOverrides(routes, activeOverrides.get());
 
         log.debug("Publishing {} HTTP routes for slice {}", effectiveRoutes.size(), artifact);
-        var routeEntries = effectiveRoutes.stream().map(HttpRoutePublisherImpl::toRouteEntry).toList();
+        var routeEntries = IntStream.range(0,
+                                           routes.size())
+                                    .mapToObj(index -> toRouteEntry(effectiveRoutes.get(index),
+                                                                    routes.get(index)))
+                                    .toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
         var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
         var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
@@ -465,11 +477,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                                                             stampedEpoch));
     }
 
-    private static RouteEntry toRouteEntry(HttpRouteDefinition route) {
-        return RouteEntry.activeRoute(route.httpMethod(),
-                                      route.pathPrefix(),
-                                      route.sliceMethod(),
-                                      route.security().asString());
+    /// #1659: the entry carries both the policy this node enforces and the declared one it was derived from, so
+    /// an ingress that does not host the route can re-apply its own committed overrides to the declared policy.
+    /// `applyOverrides` maps the list element-wise, so `effective` and `declared` are the same route.
+    private static RouteEntry toRouteEntry(HttpRouteDefinition effective, HttpRouteDefinition declared) {
+        return RouteEntry.activeRoute(effective.httpMethod(),
+                                      effective.pathPrefix(),
+                                      effective.sliceMethod(),
+                                      effective.security().asString(),
+                                      declared.security().asString());
     }
 
     @Override
@@ -711,6 +727,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         return selectRoute(route -> route.httpMethod()
                                          .equalsIgnoreCase(httpMethod) && route.pathPrefix()
                                                                                .equals(pathPrefix)).flatMap(entry -> Option.option(sliceRouters.get(entry.getKey())));
+    }
+
+    /// #1659: the policy THIS node's committed overrides assign to a route it does not host, known by its method,
+    /// prefix and declared policy. Empty when no committed override matches the route. Read from the same
+    /// `activeOverrides` and the same rule as [#findLocalRoute], so an ingress judges a remote route exactly as the
+    /// hosting node would once it has republished -- and a relaxed override relaxes here immediately.
+    @Override
+    public Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
+        return SecurityOverrideApplier.overriddenPolicy(httpMethod, pathPrefix, declared, activeOverrides.get());
     }
 
     /// #887: the matched route's security policy is resolved against the CURRENT overrides here,

@@ -28,7 +28,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | SliceVersionLifecycleTest     | 12500     | 12600          | 0          | 3 nodes (shared cluster, app-http 12700; #198 §8.2/§11.3) |
 | StreamFanoutConsumerTest      | 13000     | 13100          | 0          | 5 nodes (shared cluster, app-http 13200; #265 STEP 0 streaming baseline) |
 | StreamCrashDurabilityTest     | 13500     | 13600          | 0          | 5 nodes (shared cluster, app-http 13700; streaming-persistence A6 WAL crash-durability) |
-| StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership) |
+| StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership; per-PR since #1550) |
 | StreamOwnerFailoverPinnedTest | 15000     | 15100          | 0          | 5 nodes (shared cluster, app-http 15200; #491 RF=2 owner-kill failover, pinned membership) |
 | MultiPartitionStreamTest      | 16000     | 16100          | 0          | 5 nodes (shared cluster, app-http 16200; #429 multi-partition e2e — distribution/order/read-paths) |
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
@@ -37,6 +37,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
 | DurableTopicDeliveryForgeTest | 19000     | 19100          | 0          | 5 nodes (shared cluster, app-http 19200; #386 composed durable pub/sub path, Heavy) |
 | DurableEntityForgeTest        | 24300     | 24320          | 0          | 5 nodes (shared cluster, app-http 24340, SWIM UDP 24400-24404; durable entities, Heavy). Moved off 19000, which it shared unregistered with the row above (#1627) |
+| ClusterEventOwnerFailoverTest | 24210     | 24230          | 0          | 5 nodes (single method, app-http 24250, SWIM UDP 24310-24314; #1640 events survive the cluster-events owner and leader dying) |
 | CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
