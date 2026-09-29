@@ -87,8 +87,7 @@ class DlqStreamSinkTest {
         DurableTopicSubstrate.durableTopicSubstrate(manager)
                              .activateTopic(ADDRESS,
                                             org.pragmatica.aether.resource.DurableTopicSpec.durableTopicSpec(1,
-                                                                                                             3,
-                                                                                                             3,
+                                                                                                             new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), java.util.List.of()),
                                                                                                              org.pragmatica.lang.parse.TimeSpan.timeSpan("7d")
                                                                                                                                                .unwrap())
                                                                                            .unwrap())
@@ -307,8 +306,7 @@ class DlqStreamSinkTest {
         DurableTopicSubstrate.durableTopicSubstrate(manager)
                              .activateTopic(ADDRESS,
                                             org.pragmatica.aether.resource.DurableTopicSpec.durableTopicSpec(1,
-                                                                                                             3,
-                                                                                                             3,
+                                                                                                             new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), java.util.List.of()),
                                                                                                              org.pragmatica.lang.parse.TimeSpan.timeSpan("7d")
                                                                                                                                                .unwrap())
                                                                                            .unwrap())

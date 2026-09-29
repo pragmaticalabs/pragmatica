@@ -8,8 +8,10 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Cause;
@@ -46,6 +48,12 @@ import org.slf4j.LoggerFactory;
 ///     (`STREAM_CONFIG_COMMIT_FAILED`, "Node is inactive", etc.) is retried; a genuine CONFIG error
 ///     (`STREAM_MEMORY_EXCEEDED`, `AHSE_REQUIRED_FOR_STRONG`) is terminal — the leg latches DONE
 ///     (logged) and never thrashes consensus over an un-fixable config.
+///   - **A replication-policy REFUSAL is terminal and loud (#1564 B1).** A cause the replication policy raised
+///     ([ReplicationFactorsError], or the engine's [StreamError.ReplicationRefused]) cannot succeed on retry: the
+///     leg latches DONE and hands the cause to the refusal sink once (production: the CRITICAL
+///     `cluster-events-registration-refused` operator warning — an ERROR log plus a cluster event). It is
+///     re-armed by the next committed cluster config ([#onClusterConfigChanged]), which is how
+///     the operator clears it — the refusal names `[replication.cluster_events]`.
 ///   - **Stops on leadership loss.** `onLeaderChange(loss)` (or any non-leader pass) cancels the
 ///     pending retry and disarms; only the leader can commit.
 ///   - **Bounded backoff.** Exponential from `INITIAL_BACKOFF` to `MAX_BACKOFF`; never busy-loops, at
@@ -80,11 +88,14 @@ public final class SystemStreamRegistrar {
     private final Supplier<Result<?>> createStreamLeg;
     private final Supplier<Result<?>> bootstrapLeg;
     private final RetryScheduler scheduler;
+    private final Consumer<Cause> refusalSink;
     private final AtomicLong activationEpoch = new AtomicLong();
     private final AtomicBoolean executing = new AtomicBoolean();
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean createStreamDone = new AtomicBoolean(false);
     private final AtomicBoolean bootstrapDone = new AtomicBoolean(false);
+    private final AtomicBoolean createStreamRefused = new AtomicBoolean(false);
+    private final AtomicBoolean bootstrapRefused = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
 
@@ -97,23 +108,38 @@ public final class SystemStreamRegistrar {
 
     private SystemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
                                   Supplier<Result<?>> bootstrapLeg,
-                                  RetryScheduler scheduler) {
+                                  RetryScheduler scheduler,
+                                  Consumer<Cause> refusalSink) {
         this.createStreamLeg = createStreamLeg;
         this.bootstrapLeg = bootstrapLeg;
         this.scheduler = scheduler;
+        this.refusalSink = refusalSink;
     }
 
-    /// Production factory bound to the process-wide [`SharedScheduler`].
+    /// Production factory bound to the process-wide [`SharedScheduler`]. `refusalSink` receives each
+    /// replication-policy refusal once, when it latches (#1564 B1).
     public static SystemStreamRegistrar systemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
-                                                              Supplier<Result<?>> bootstrapLeg) {
-        return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, SharedScheduler::schedule);
+                                                              Supplier<Result<?>> bootstrapLeg,
+                                                              Consumer<Cause> refusalSink) {
+        return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, SharedScheduler::schedule, refusalSink);
     }
 
     /// Test factory accepting an explicit scheduler seam.
     static SystemStreamRegistrar systemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
                                                        Supplier<Result<?>> bootstrapLeg,
                                                        RetryScheduler scheduler) {
-        return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, scheduler);
+        return systemStreamRegistrar(createStreamLeg,
+                                     bootstrapLeg,
+                                     scheduler,
+                                     _ -> {});
+    }
+
+    /// Test factory accepting an explicit scheduler seam and refusal sink.
+    static SystemStreamRegistrar systemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
+                                                       Supplier<Result<?>> bootstrapLeg,
+                                                       RetryScheduler scheduler,
+                                                       Consumer<Cause> refusalSink) {
+        return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, scheduler, refusalSink);
     }
 
     /// `LeaderChange` route hook. On leader-gain arm the retry loop and hand the first pass to the
@@ -146,6 +172,29 @@ public final class SystemStreamRegistrar {
         schedulePass(activationEpoch.incrementAndGet(), FIRST_PASS_DELAY);
     }
 
+    /// #1564 B1: a newly committed cluster config is the operator's way to clear a replication-policy refusal, so
+    /// it re-arms every REFUSED leg (never a committed one) and, on the leader, schedules a pass at once.
+    @Contract
+    public synchronized void onClusterConfigChanged() {
+        var rearmed = rearmIfRefused(createStreamRefused, createStreamDone) | rearmIfRefused(bootstrapRefused,
+                                                                                             bootstrapDone);
+
+        if (rearmed) {
+            nextBackoff.set(INITIAL_BACKOFF);
+            schedulePass(activationEpoch.get(), FIRST_PASS_DELAY);
+        }
+    }
+
+    private static boolean rearmIfRefused(AtomicBoolean refused, AtomicBoolean done) {
+        if (!refused.compareAndSet(true, false)) {
+            return false;
+        }
+
+        done.set(false);
+
+        return true;
+    }
+
     @Contract
     synchronized void deactivate() {
         if (!leader.compareAndSet(true, false)) {
@@ -176,14 +225,14 @@ public final class SystemStreamRegistrar {
             return;
         }
 
-        attemptLeg("system:cluster-events createStream", createStreamLeg, createStreamDone);
+        attemptLeg("system:cluster-events createStream", createStreamLeg, createStreamDone, createStreamRefused);
         if (!isCurrent(epoch)) {
             finishPass();
 
             return;
         }
 
-        attemptLeg("system-stream bootstrap", bootstrapLeg, bootstrapDone);
+        attemptLeg("system-stream bootstrap", bootstrapLeg, bootstrapDone, bootstrapRefused);
         if (isComplete()) {
             LOG.info("SystemStreamRegistrar: all system streams registered");
             finishPass();
@@ -197,7 +246,7 @@ public final class SystemStreamRegistrar {
     /// Attempt one leg if it is not already DONE. Latches DONE on success or a TERMINAL (config) cause;
     /// leaves it pending on a TRANSIENT (commit-timeout / not-quorate) cause so the next pass retries.
     @Contract
-    private void attemptLeg(String name, Supplier<Result<?>> leg, AtomicBoolean done) {
+    private void attemptLeg(String name, Supplier<Result<?>> leg, AtomicBoolean done, AtomicBoolean refused) {
         // Re-check leadership immediately before the consensus write: deactivate() may land on the
         // dispatch thread between runPass's leader.get() and here. The residual check-then-write window
         // is irreducible without a lock, but at most yields one idempotent (STREAM_ALREADY_EXISTS) Put,
@@ -206,7 +255,9 @@ public final class SystemStreamRegistrar {
             return;
         }
 
-        leg.get().onSuccess(_ -> latchSuccess(name, done)).onFailure(cause -> classifyFailure(name, cause, done));
+        leg.get()
+           .onSuccess(_ -> latchSuccess(name, done))
+           .onFailure(cause -> classifyFailure(name, cause, done, refused));
     }
 
     @Contract
@@ -217,7 +268,13 @@ public final class SystemStreamRegistrar {
     }
 
     @Contract
-    private void classifyFailure(String name, Cause cause, AtomicBoolean done) {
+    private void classifyFailure(String name, Cause cause, AtomicBoolean done, AtomicBoolean refused) {
+        if (isReplicationRefusal(cause)) {
+            refuse(name, cause, done, refused);
+
+            return;
+        }
+
         if (isTerminal(cause)) {
             LOG.warn("SystemStreamRegistrar: {} failed with a terminal (non-retryable) cause: {} — not retrying",
                      name,
@@ -228,6 +285,21 @@ public final class SystemStreamRegistrar {
         }
 
         LOG.debug("SystemStreamRegistrar: {} transient failure: {} — will retry", name, cause.message());
+    }
+
+    @Contract
+    private void refuse(String name, Cause cause, AtomicBoolean done, AtomicBoolean refused) {
+        LOG.debug("SystemStreamRegistrar: {} refused by the replication policy — not retrying", name);
+        done.set(true);
+        refused.set(true);
+        refusalSink.accept(cause);
+    }
+
+    /// #1564 B1: a refusal the replication policy raised — the cluster config's own factors
+    /// ([ReplicationFactorsError]) or the engine's backstop ([StreamError.ReplicationRefused]). Retrying the same
+    /// committed config cannot change either.
+    private static boolean isReplicationRefusal(Cause cause) {
+        return cause instanceof ReplicationFactorsError || cause instanceof StreamError.ReplicationRefused;
     }
 
     /// A TERMINAL cause is one that retrying cannot resolve, so the leg latches DONE and stops:

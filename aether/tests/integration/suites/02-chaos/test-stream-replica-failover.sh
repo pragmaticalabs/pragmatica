@@ -31,7 +31,7 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 # The stream under test is declared by the test-stream-repl blueprint with
 # replicas=3 (owner + 2 replicas; 3 is the stream replication minimum, #1547) and
-# min-sync-replicas=2. The blueprint's stream name is fixed; the deploy step deletes+redeploys it
+# confirmation_factor=2. The blueprint's stream name is fixed; the deploy step deletes+redeploys it
 # so a re-run (or a prior run) cannot pollute the partition with stale offsets.
 STREAM_NAME="${STREAM_NAME:-repl-failover-events}"
 STREAM_BP="${STREAM_BP:-org.pragmatica.aether.test:test-stream-repl:1.0.0}"
@@ -270,7 +270,7 @@ has_caught_up_replica_excluding() {
 # Gate the FIRST publish on the owner AUTHORITATIVELY serving a placed RF=3 replica
 # set (owner + >=1 CAUGHT_UP non-owner) — proof the committed replicas=2/min-sync=2
 # config is in EFFECT, not merely committed. No management endpoint exposes the
-# minSyncReplicas scalar, so the owner-authoritative replicas view (servedByOwner=true)
+# confirmation_factor scalar, so the owner-authoritative replicas view (servedByOwner=true)
 # is the only authoritative surface; an RF=1 default has NO CAUGHT_UP non-owner replica.
 # Load-bearing because replica placement is EDGE-triggered (ReplicaSetController.reconcile
 # runs on boot/membership/quorum edges + the stream-config-committed edge) — without this
@@ -377,7 +377,7 @@ test_initial_state() {
 
 test_deploy_repl_stream_blueprint() {
     # Deploy the dedicated test-stream-repl blueprint whose 'repl-failover-events'
-    # stream is partitions=1, replicas=3 (owner + 2 replicas), min-sync-replicas=2.
+    # stream is partitions=1, replication_factor=3 (owner + 2 replicas), confirmation_factor=2.
     #
     # ORDERING is load-bearing: the slice must ACTIVATE (committing the RF=3
     # StreamConfig via StreamPublisherFactory.createStream) BEFORE the first
@@ -405,7 +405,7 @@ test_deploy_repl_stream_blueprint() {
     if ! wait_for_stream_config_committed 60; then
         return 1   # log_fail already emitted by the gate
     fi
-    log_pass "Deployed ${STREAM_BP}; RF=3 stream ${STREAM_NAME} committed (partitions=1, min-sync-replicas=2)"
+    log_pass "Deployed ${STREAM_BP}; RF=3 stream ${STREAM_NAME} committed (partitions=1, confirmation_factor=2)"
 }
 
 test_publish_initial_history() {

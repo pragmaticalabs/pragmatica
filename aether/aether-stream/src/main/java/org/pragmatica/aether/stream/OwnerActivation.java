@@ -98,8 +98,8 @@ import org.slf4j.LoggerFactory;
 /// never activated, so an ex-owner that heals back re-runs the whole gate before it serves again.
 ///
 /// Residual (accepted, #1555 decision c): an append admitted on the previous owner in the instant before the
-/// ownership flip reaches it is not seen by this catch-up. At `min-sync-replicas` 0 the acknowledgement is
-/// owner-local by definition, so this is part of that documented loss window; `min-sync-replicas` >= 1 closes it.
+/// ownership flip reaches it is not seen by this catch-up. At `confirmation_factor` 1 the acknowledgement is
+/// owner-local by definition, so this is part of that documented loss window; `confirmation_factor` >= 2 closes it.
 public final class OwnerActivation {
     private static final Logger log = LoggerFactory.getLogger(OwnerActivation.class);
 

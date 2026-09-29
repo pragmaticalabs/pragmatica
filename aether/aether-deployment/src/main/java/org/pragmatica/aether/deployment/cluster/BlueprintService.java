@@ -9,10 +9,15 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.zip.ZipInputStream;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
@@ -44,6 +49,10 @@ import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator.SliceJar;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
+import org.pragmatica.aether.deployment.validation.ReplicationPreflight;
+import org.pragmatica.aether.deployment.validation.StreamValidationWarning;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
 import org.pragmatica.aether.deployment.validation.StreamValidationFailures;
 import org.pragmatica.aether.slice.repository.Location;
@@ -162,20 +171,54 @@ public interface BlueprintService {
                                              Repository repository,
                                              ArtifactStore artifactStore,
                                              Option<ConfigurationProvider> nodeComposite) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), nodeComposite);
+        return blueprintService(cluster, store, repository, artifactStore, nodeComposite, OperatorWarningSink.logOnly());
+    }
+
+    /// The node's factory: deploy warnings are raised through `operatorWarnings` as `deploy-warning` operator
+    /// warnings (#1564 / #1617), so they reach the cluster event log as well as the WARN log and the response.
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite,
+                                             OperatorWarningSink operatorWarnings) {
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.some(artifactStore),
+                                            nodeComposite,
+                                            operatorWarnings);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository,
                                              ArtifactStore artifactStore) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), Option.empty());
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.some(artifactStore),
+                                            Option.empty(),
+                                            OperatorWarningSink.logOnly());
+    }
+
+    /// No artifact store; deploy warnings raised through `operatorWarnings` (#1564 / #1617).
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             OperatorWarningSink operatorWarnings) {
+        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty(), operatorWarnings);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty());
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.empty(),
+                                            Option.empty(),
+                                            OperatorWarningSink.logOnly());
     }
 
     static int extractVersionNumber(String filename) {
@@ -202,17 +245,20 @@ class BlueprintServiceInstance implements BlueprintService {
     private final Repository repository;
     private final Option<ArtifactStore> artifactStore;
     private final Option<ConfigurationProvider> nodeComposite;
+    private final OperatorWarningSink operatorWarnings;
 
     BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                              KVStore<AetherKey, AetherValue> store,
                              Repository repository,
                              Option<ArtifactStore> artifactStore,
-                             Option<ConfigurationProvider> nodeComposite) {
+                             Option<ConfigurationProvider> nodeComposite,
+                             OperatorWarningSink operatorWarnings) {
         this.cluster = cluster;
         this.store = store;
         this.repository = repository;
         this.artifactStore = artifactStore;
         this.nodeComposite = nodeComposite;
+        this.operatorWarnings = operatorWarnings;
     }
 
     @Override
@@ -222,6 +268,7 @@ class BlueprintServiceInstance implements BlueprintService {
                               .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
                               .flatMap(this::validatePubSub)
                               .flatMap(this::storeBlueprint)
+                              .onSuccess(this::raiseDeployWarnings)
                               .onFailure(cause -> log.warn("Failed to publish blueprint: {}",
                                                            cause.message()));
     }
@@ -443,28 +490,34 @@ class BlueprintServiceInstance implements BlueprintService {
                                 .flatMap(expanded -> applyResourcesConfig(expanded,
                                                                           blueprintArtifact.resourcesConfig()))
                                 .flatMap(this::validatePubSub)
-                                .flatMap(expanded -> storeAllInSingleBatch(expanded,
-                                                                           blueprintArtifact.resourcesConfig(),
-                                                                           blueprintArtifact.roleHints(),
-                                                                           blueprintArtifact.schemaMigrations(),
-                                                                           artifactCoords,
-                                                                           registerOnly));
+                                .flatMap(preflighted -> storeAllInSingleBatch(preflighted,
+                                                                              blueprintArtifact.resourcesConfig(),
+                                                                              blueprintArtifact.roleHints(),
+                                                                              blueprintArtifact.schemaMigrations(),
+                                                                              artifactCoords,
+                                                                              registerOnly))
+                                .onSuccess(this::raiseDeployWarnings);
     }
 
     /// #1336: the stream bindings are derived BEFORE any command is built, so a gating stream rule
     /// refuses the publish with its named cause and nothing is applied; the rejected declarations
     /// ride out on the answer.
-    private Promise<PublishedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
+    private Promise<PublishedBlueprint> storeAllInSingleBatch(Preflighted preflighted,
                                                               Option<String> resourcesConfig,
                                                               Map<String, String> roleHints,
                                                               Map<String, List<MigrationEntry>> migrations,
                                                               String artifactCoords,
                                                               boolean registerOnly) {
+        var expanded = preflighted.expanded();
+
         return ensureMigrationOwnership(expanded.id(),
                                         migrations).flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
-                                       .flatMap(_ -> streamBindings(expanded.id(),
-                                                                    resourcesConfig,
-                                                                    roleHints))
+                                       .flatMap(_ -> replicationContext())
+                                       .flatMap(replication -> streamBindings(expanded.id(),
+                                                                              resourcesConfig,
+                                                                              roleHints,
+                                                                              replication))
+                                       .map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
                                        .async()
                                        .flatMap(bindings -> applyAllCommands(expanded,
                                                                              bindings,
@@ -487,7 +540,8 @@ class BlueprintServiceInstance implements BlueprintService {
         return cluster.apply(commands)
                       .flatMap(_ -> confirmOutcomeStart(expanded, 0))
                       .map(stored -> PublishedBlueprint.publishedBlueprint(stored,
-                                                                           bindings.rejected()));
+                                                                           bindings.rejected(),
+                                                                           bindings.warnings()));
     }
 
     /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
@@ -577,10 +631,49 @@ class BlueprintServiceInstance implements BlueprintService {
 
     /// #1336 — one derivation's answer: the aliases that bind and the declarations that did not, by
     /// field and rule.
-    private record StreamBindings(List<NamedAddress> bound, List<StreamValidationFailure> rejected) {
-        static StreamBindings streamBindings(List<NamedAddress> bound, List<StreamValidationFailure> rejected) {
-            return new StreamBindings(bound, rejected);
+    private record StreamBindings(List<NamedAddress> bound,
+                                  List<StreamValidationFailure> rejected,
+                                  List<StreamValidationWarning> warnings) {
+        static StreamBindings streamBindings(List<NamedAddress> bound,
+                                             List<StreamValidationFailure> rejected,
+                                             List<StreamValidationWarning> warnings) {
+            return new StreamBindings(bound, rejected, warnings);
         }
+
+        /// These bindings with `more` warnings appended (#1564: the slice-jar replication preflight's).
+        StreamBindings withWarnings(List<StreamValidationWarning> more) {
+            return new StreamBindings(bound,
+                                      rejected,
+                                      Stream.concat(warnings.stream(), more.stream()).toList());
+        }
+    }
+
+    /// #1564: the slice-jar pre-flights passed, with the replication warnings they raised — carried to the
+    /// publish answer, since the blueprint record itself must not hold deploy-response data.
+    private record Preflighted(ExpandedBlueprint expanded, List<StreamValidationWarning> replicationWarnings) {}
+
+    /// #1564: the committed cluster config read as replication state — the `[replication]` defaults and the
+    /// desired core count — the same conversion the nodes resolve resource declarations with at activation.
+    private Result<ReplicationContext> replicationContext() {
+        return ClusterReplication.context(store.getTyped(AetherKey.ClusterConfigKey.CURRENT, ClusterConfigValue.class));
+    }
+
+    /// #1564 (owner ruling, know 596bdfd07(3)): every deploy warning is LOUD — the deploy response carries it,
+    /// and it is raised as a `deploy-warning` operator warning (#1617, R10): a WARN log plus a cluster event.
+    @Contract
+    private void raiseDeployWarnings(PublishedBlueprint published) {
+        var blueprint = published.blueprint().id().asString();
+
+        published.warnings()
+                 .forEach(warning -> OperatorWarnings.raise(log,
+                                                            operatorWarnings,
+                                                            OperatorWarningCode.DEPLOY_WARNING,
+                                                            blueprint,
+                                                            "Blueprint {} deploy warning [{}] at {}: {}",
+                                                            blueprint,
+                                                            warning.rule(),
+                                                            warning.field(),
+                                                            warning.message()));
     }
 
     /// The ONE derivation of a blueprint's alias→address bindings, shared by both publish paths (#1066).
@@ -595,13 +688,16 @@ class BlueprintServiceInstance implements BlueprintService {
     /// publish — see [StreamResourceValidator#partition] for which rules are which.
     private static Result<StreamBindings> streamBindings(BlueprintId blueprintId,
                                                          Option<String> resourcesConfig,
-                                                         Map<String, String> roleHints) {
+                                                         Map<String, String> roleHints,
+                                                         ReplicationContext replication) {
         return StreamResourceValidator.partition(resourcesConfig,
                                                  blueprintId.artifact(),
-                                                 roleHints)
+                                                 roleHints,
+                                                 replication)
                                       .map(partition -> StreamBindings.streamBindings(toNamedAddresses(blueprintId,
                                                                                                        partition.accepted()),
-                                                                                      partition.rejected()));
+                                                                                      partition.rejected(),
+                                                                                      partition.warnings()));
     }
 
     private static KVCommand<AetherKey> streamBindingsPut(BlueprintId blueprintId, List<NamedAddress> bindings) {
@@ -687,18 +783,22 @@ class BlueprintServiceInstance implements BlueprintService {
         return new Put<>(key, value);
     }
 
-    private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
+    private Promise<Preflighted> validatePubSub(ExpandedBlueprint expanded) {
         return loadAllSliceJars(expanded.loadOrder()).flatMap(sliceJars -> validateSliceJars(expanded, sliceJars));
     }
 
-    private Promise<ExpandedBlueprint> validateSliceJars(ExpandedBlueprint expanded, List<SliceJar> sliceJars) {
+    private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded, List<SliceJar> sliceJars) {
         var topologies = topologiesOf(sliceJars);
 
         noteConfigSectionPreflightSkipIfBlind(topologies);
 
         return PubSubValidator.validate(topologies)
                               .flatMap(_ -> ConfigSectionPreflightValidator.validate(sliceJars, nodeComposite))
-                              .map(_ -> expanded)
+                              .flatMap(_ -> replicationContext())
+                              .flatMap(replication -> ReplicationPreflight.validate(sliceJars,
+                                                                                    nodeComposite,
+                                                                                    replication))
+                              .map(warnings -> new Preflighted(expanded, warnings))
                               .async();
     }
 
@@ -775,12 +875,16 @@ class BlueprintServiceInstance implements BlueprintService {
                                  SliceStore.readSliceResourcesToml(location.url()));
     }
 
-    private Promise<PublishedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
-        return sliceStreamBindings(expanded).flatMap(bindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                                                                       expanded,
-                                                                                       streamBindingsPut(expanded.id(),
-                                                                                                         bindings.bound())).map(stored -> PublishedBlueprint.publishedBlueprint(stored,
-                                                                                                                                                                                bindings.rejected())));
+    private Promise<PublishedBlueprint> storeBlueprint(Preflighted preflighted) {
+        var expanded = preflighted.expanded();
+
+        return sliceStreamBindings(expanded).map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
+                                  .flatMap(bindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                                             expanded,
+                                                                             streamBindingsPut(expanded.id(),
+                                                                                               bindings.bound())).map(stored -> PublishedBlueprint.publishedBlueprint(stored,
+                                                                                                                                                                      bindings.rejected(),
+                                                                                                                                                                      bindings.warnings())));
     }
 
     /// #1066 — the TOML body publish's stream bindings, derived from its slice jars.
@@ -812,7 +916,10 @@ class BlueprintServiceInstance implements BlueprintService {
     /// ([#ensureUnambiguousAliases]): `BlueprintStreamBindingsValue.addressFor` would otherwise answer
     /// with whichever came first and silently misbind the other slice.
     private Promise<StreamBindings> sliceStreamBindings(ExpandedBlueprint expanded) {
-        return loadSliceDeclarations(expanded).flatMap(declarations -> sliceBindings(expanded.id(), declarations).async());
+        return loadSliceDeclarations(expanded).flatMap(declarations -> replicationContext().flatMap(replication -> sliceBindings(expanded.id(),
+                                                                                                                                 declarations,
+                                                                                                                                 replication))
+                                                                                         .async());
     }
 
     private Promise<List<Option<String>>> loadSliceDeclarations(ExpandedBlueprint expanded) {
@@ -835,20 +942,29 @@ class BlueprintServiceInstance implements BlueprintService {
     /// #1336: each declaration is then derived on its own; the bound aliases are unioned as before and the
     /// rejections are unioned with them, de-duplicated because slices packaged from one module ship the
     /// same text. A gating failure in any declaration refuses the publish.
-    private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId, List<Option<String>> declarations) {
+    private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId,
+                                                        List<Option<String>> declarations,
+                                                        ReplicationContext replication) {
         return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> derivedSliceBindings(blueprintId,
-                                                                                                                                                        declarations));
+                                                                                                                                                        declarations,
+                                                                                                                                                        replication));
     }
 
     /// A blueprint whose slices ship no `resources.toml` at all still runs the derivation once, with no
     /// document: `partition` owns the blueprint-namespace guard, and skipping it here left the body path
     /// silent about a reserved namespace the artifact path reports (#1336 review, NIT-5).
     private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId,
-                                                               List<Option<String>> declarations) {
+                                                               List<Option<String>> declarations,
+                                                               ReplicationContext replication) {
         var present = declarations.stream().flatMap(Option::stream).toList();
         var perSlice = present.isEmpty()
-                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of()))
-                       : present.stream().map(toml -> streamBindings(blueprintId, Option.some(toml), Map.of())).toList();
+                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of(), replication))
+                       : present.stream()
+                                .map(toml -> streamBindings(blueprintId,
+                                                            Option.some(toml),
+                                                            Map.of(),
+                                                            replication))
+                                .toList();
 
         return Result.allOf(perSlice).flatMap(BlueprintServiceInstance::unionSliceBindings);
     }
@@ -856,12 +972,16 @@ class BlueprintServiceInstance implements BlueprintService {
     private static Result<StreamBindings> unionSliceBindings(List<StreamBindings> perSlice) {
         var rejected = perSlice.stream().flatMap(bindings -> bindings.rejected()
                                                                      .stream()).distinct().toList();
+        var warnings = perSlice.stream().flatMap(bindings -> bindings.warnings()
+                                                                     .stream()).distinct().toList();
 
         return ensureUnambiguousAliases(perSlice.stream()
                                                 .flatMap(bindings -> bindings.bound()
                                                                              .stream())
                                                 .distinct()
-                                                .toList()).map(bound -> StreamBindings.streamBindings(bound, rejected));
+                                                .toList()).map(bound -> StreamBindings.streamBindings(bound,
+                                                                                                      rejected,
+                                                                                                      warnings));
     }
 
     private static Result<List<NamedAddress>> ensureUnambiguousAliases(List<NamedAddress> bindings) {

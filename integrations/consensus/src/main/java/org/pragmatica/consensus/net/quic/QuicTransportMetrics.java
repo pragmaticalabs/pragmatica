@@ -31,6 +31,8 @@ public final class QuicTransportMetrics {
     private final AtomicInteger activeConnections = new AtomicInteger(0);
     private final LongAdder handshakeTotal = new LongAdder();
     private final LongAdder handshakeFailures = new LongAdder();
+    /// #1578: dials abandoned before their QUIC handshake because the peer went CONNECTED over another link.
+    private final LongAdder dialsAbandoned = new LongAdder();
     private final LongAdder messagesSent = new LongAdder();
     private final LongAdder messagesReceived = new LongAdder();
     private final LongAdder writeFailures = new LongAdder();
@@ -56,6 +58,12 @@ public final class QuicTransportMetrics {
     /// send path is the defect #718 exists to remove. A persistently non-zero value here means the
     /// bound is too small for the offered load, not that the dedup is misbehaving.
     private final LongAdder streamZombieLazyOpenDrops = new LongAdder();
+    /// #1578: writes re-sent once on the stream their lane resolves to now, because the stream or
+    /// connection they were written to was retired under them — the lane moved to the stream
+    /// `QuicPeerConnection.registerStream` kept, or a duplicate dial replaced the connection. Non-zero
+    /// is expected around a lane-ownership change or a dual dial; each one is a message that would
+    /// otherwise have been lost with only a write-failure line to show for it.
+    private final LongAdder retiredStreamResends = new LongAdder();
     /// #487: count of sends DROPPED to a peer with no PeerState (dead or never-connected). Counts EVERY
     /// drop, not just the rate-limited WARNs, so ops see true drop volume (the invisibility of this class
     /// hid the #467/#457 self-send drops for months).
@@ -99,6 +107,11 @@ public final class QuicTransportMetrics {
     @Contract
     public void onHandshakeFailure() {
         handshakeFailures.increment();
+    }
+
+    @Contract
+    public void onDialAbandoned() {
+        dialsAbandoned.increment();
     }
 
     @Contract
@@ -173,6 +186,13 @@ public final class QuicTransportMetrics {
         streamZombieLazyOpenDrops.increment();
     }
 
+    /// #1578: records a write re-sent on the stream its lane resolves to now, after its own stream or
+    /// connection was retired.
+    @Contract
+    public void onRetiredStreamResend() {
+        retiredStreamResends.increment();
+    }
+
     /// #487: records a send DROPPED to a peer with no PeerState. Every drop is counted, whether or not
     /// the accompanying WARN was rate-limited.
     @Contract
@@ -217,6 +237,7 @@ public final class QuicTransportMetrics {
         metrics.put("quic_active_connections", activeConnections.get());
         metrics.put("quic_handshake_total", handshakeTotal.sum());
         metrics.put("quic_handshake_failures_total", handshakeFailures.sum());
+        metrics.put("quic_dial_abandoned_total", dialsAbandoned.sum());
         metrics.put("quic_messages_sent_total", messagesSent.sum());
         metrics.put("quic_messages_received_total", messagesReceived.sum());
         metrics.put("quic_write_failures_total", writeFailures.sum());
@@ -252,6 +273,10 @@ public final class QuicTransportMetrics {
 
     public long handshakeFailureCount() {
         return handshakeFailures.sum();
+    }
+
+    public long dialAbandonedCount() {
+        return dialsAbandoned.sum();
     }
 
     public long messagesSentCount() {
@@ -298,6 +323,11 @@ public final class QuicTransportMetrics {
     /// #718: pending messages dropped on per-(peer, lane) queue overflow during an open, cumulative.
     public long streamZombieLazyOpenDropCount() {
         return streamZombieLazyOpenDrops.sum();
+    }
+
+    /// #1578: writes re-sent on the kept stream after their own stream was retired, cumulative.
+    public long retiredStreamResendCount() {
+        return retiredStreamResends.sum();
     }
 
     public long dropToUnknownPeerCount() {

@@ -50,7 +50,7 @@ class StreamEngineKeyQualificationTest {
     /// EVENTUAL (DROP_OLDEST) so the manager does not require AHSE, and a budget large enough to admit
     /// the partition floor — the create must SUCCEED here, unlike its exhaustion-propagation sibling.
     private static StreamConfig declaredConfig() {
-        return StreamConfig.streamConfig(ALIAS, 1, RETENTION, "earliest", 1024 * 1024L, ConsistencyMode.EVENTUAL, 0);
+        return StreamConfig.streamConfig(ALIAS, 1, RETENTION, "earliest", 1024 * 1024L, ConsistencyMode.EVENTUAL, 1);
     }
 
     private static StreamPartitionManager manager() {
@@ -261,7 +261,7 @@ class StreamEngineKeyQualificationTest {
                                                          "earliest",
                                                          1024 * 1024L,
                                                          ConsistencyMode.EVENTUAL,
-                                                         0);
+                                                         1);
             StreamAddressResolver systemResolver = (_, alias) -> Result.success(alias);
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(StreamAddressResolver.class, systemResolver)

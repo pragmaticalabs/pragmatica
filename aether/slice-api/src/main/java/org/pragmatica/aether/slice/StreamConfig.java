@@ -10,12 +10,11 @@ import org.pragmatica.serialization.Codec;
 import static org.pragmatica.lang.Option.none;
 
 
-/// `replicas` is the replication factor — the total number of copies of each partition INCLUDING the
-/// owner (Kafka `replication.factor`). `minSyncReplicas` is the minimum in-sync replica count,
-/// INCLUDING the owner, that must confirm a write before it resolves (Kafka `min.insync.replicas`):
-/// `<= 1` resolves on the local owner write (0 = eventual, 1 = owner-only), `>= 2` awaits
-/// `minSyncReplicas - 1` distinct non-self replica acks. Invariant: `0 <= minSyncReplicas <= replicas`
-/// and `replicas >= MIN_REPLICAS` for a declared app stream. `consistencyMode` remains the independent READ knob.
+/// `replicationFactor` and `confirmationFactor` are the resource's [ReplicationFactors] (#1564): the number of
+/// copies of each partition, the owner included, and how many of them, the owner included, hold a write before
+/// it is acknowledged. They are stored resolved: a stream's declaration is resolved against the cluster defaults
+/// once, through [ReplicationDeclaration#resolve], before the config is committed. `consistencyMode` remains the
+/// independent READ knob.
 @Codec
 public record StreamConfig(String name,
                            int partitions,
@@ -23,8 +22,8 @@ public record StreamConfig(String name,
                            String autoOffsetReset,
                            long maxEventSizeBytes,
                            ConsistencyMode consistencyMode,
-                           int replicas,
-                           int minSyncReplicas,
+                           int replicationFactor,
+                           int confirmationFactor,
                            StreamCompression compression,
                            Option<String> encryptionKeyId) {
     private static final int DEFAULT_PARTITIONS = 4;
@@ -42,16 +41,10 @@ public record StreamConfig(String name,
     /// the validator agreeing only with the other one.
     private static final String DEFAULT_AUTO_OFFSET_RESET = "earliest";
     private static final long DEFAULT_MAX_EVENT_SIZE_BYTES = 1_048_576L;
-    /// #1547 (owner ruling, session 28): the stream replication factor has a MINIMUM of 3. Under terminal
-    /// removal a dead owner never returns, so at `replicas = 1` losing one node loses every partition it
-    /// owned — the new owner starts at an empty watermark. Clusters form with at least 3 nodes (ruling
-    /// 2026-09-03), so 3 is always placeable at formation. `StreamConfigParser` refuses a declared value
-    /// below this rather than clamping it.
-    public static final int MIN_REPLICAS = 3;
-    /// The default is the minimum: the config binder resolves an absent `replicas` key from [#DEFAULT], so
-    /// this is also the runtime default for every declared stream that omits the key.
-    private static final int DEFAULT_REPLICAS = MIN_REPLICAS;
-    private static final int DEFAULT_MIN_SYNC_REPLICAS = 0;
+    /// #1564: the owner's built-in replication factors (RF 3, CF 2). Every declared stream resolves its own
+    /// factors against the committed cluster defaults instead; this reaches only programmatic construction.
+    private static final int DEFAULT_REPLICATION_FACTOR = ReplicationFactors.BUILT_IN.replicationFactor();
+    private static final int DEFAULT_CONFIRMATION_FACTOR = ReplicationFactors.BUILT_IN.confirmationFactor();
 
     public static final StreamConfig DEFAULT = new StreamConfig("",
                                                                 DEFAULT_PARTITIONS,
@@ -59,8 +52,8 @@ public record StreamConfig(String name,
                                                                 DEFAULT_AUTO_OFFSET_RESET,
                                                                 DEFAULT_MAX_EVENT_SIZE_BYTES,
                                                                 ConsistencyMode.EVENTUAL,
-                                                                DEFAULT_REPLICAS,
-                                                                DEFAULT_MIN_SYNC_REPLICAS,
+                                                                DEFAULT_REPLICATION_FACTOR,
+                                                                DEFAULT_CONFIRMATION_FACTOR,
                                                                 StreamCompression.NONE,
                                                                 none());
 
@@ -79,8 +72,28 @@ public record StreamConfig(String name,
                                 autoOffsetReset,
                                 maxEventSizeBytes,
                                 consistencyMode,
-                                replicas,
-                                minSyncReplicas,
+                                replicationFactor,
+                                confirmationFactor,
+                                compression,
+                                encryptionKeyId);
+    }
+
+    /// The stored factors as a pair. The engine re-checks them with [ReplicationFactors#replicationFactors].
+    public ReplicationFactors replication() {
+        return new ReplicationFactors(replicationFactor, confirmationFactor);
+    }
+
+    /// This config carrying `factors`, every other field carried over verbatim (#1564: resolution happens
+    /// after the rest of the declaration is parsed).
+    public StreamConfig withReplication(ReplicationFactors factors) {
+        return new StreamConfig(name,
+                                partitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                factors.replicationFactor(),
+                                factors.confirmationFactor(),
                                 compression,
                                 encryptionKeyId);
     }
@@ -92,8 +105,8 @@ public record StreamConfig(String name,
                                 DEFAULT_AUTO_OFFSET_RESET,
                                 DEFAULT_MAX_EVENT_SIZE_BYTES,
                                 ConsistencyMode.EVENTUAL,
-                                DEFAULT_REPLICAS,
-                                DEFAULT_MIN_SYNC_REPLICAS,
+                                DEFAULT_REPLICATION_FACTOR,
+                                DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none());
     }
@@ -108,8 +121,8 @@ public record StreamConfig(String name,
                                 autoOffsetReset,
                                 DEFAULT_MAX_EVENT_SIZE_BYTES,
                                 ConsistencyMode.EVENTUAL,
-                                DEFAULT_REPLICAS,
-                                DEFAULT_MIN_SYNC_REPLICAS,
+                                DEFAULT_REPLICATION_FACTOR,
+                                DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none());
     }
@@ -125,8 +138,8 @@ public record StreamConfig(String name,
                                 autoOffsetReset,
                                 maxEventSizeBytes,
                                 ConsistencyMode.EVENTUAL,
-                                DEFAULT_REPLICAS,
-                                DEFAULT_MIN_SYNC_REPLICAS,
+                                DEFAULT_REPLICATION_FACTOR,
+                                DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none());
     }
@@ -143,8 +156,8 @@ public record StreamConfig(String name,
                                 autoOffsetReset,
                                 maxEventSizeBytes,
                                 consistencyMode,
-                                DEFAULT_REPLICAS,
-                                DEFAULT_MIN_SYNC_REPLICAS,
+                                DEFAULT_REPLICATION_FACTOR,
+                                DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none());
     }
@@ -155,15 +168,15 @@ public record StreamConfig(String name,
                                             String autoOffsetReset,
                                             long maxEventSizeBytes,
                                             ConsistencyMode consistencyMode,
-                                            int minSyncReplicas) {
+                                            int confirmationFactor) {
         return new StreamConfig(name,
                                 partitions,
                                 retention,
                                 autoOffsetReset,
                                 maxEventSizeBytes,
                                 consistencyMode,
-                                DEFAULT_REPLICAS,
-                                minSyncReplicas,
+                                DEFAULT_REPLICATION_FACTOR,
+                                confirmationFactor,
                                 StreamCompression.NONE,
                                 none());
     }
@@ -174,8 +187,8 @@ public record StreamConfig(String name,
                                             String autoOffsetReset,
                                             long maxEventSizeBytes,
                                             ConsistencyMode consistencyMode,
-                                            int replicas,
-                                            int minSyncReplicas,
+                                            int replicationFactor,
+                                            int confirmationFactor,
                                             StreamCompression compression,
                                             Option<String> encryptionKeyId) {
         return new StreamConfig(name,
@@ -184,8 +197,8 @@ public record StreamConfig(String name,
                                 autoOffsetReset,
                                 maxEventSizeBytes,
                                 consistencyMode,
-                                replicas,
-                                minSyncReplicas,
+                                replicationFactor,
+                                confirmationFactor,
                                 compression,
                                 encryptionKeyId);
     }
