@@ -374,6 +374,48 @@ class ReplicaCatchupTierFallbackTest {
         }
     }
 
+    /// #1555 (adopted from v1555 round 2, X5): the minimal divergent tail — the lower peer holds ONE acked record
+    /// (offset 11) beyond the common prefix 0..10, the shape seen at the ex-owner in every nl run. The peer's window
+    /// must be read through its top offset: a window short by one compares only the common prefix and the divergent
+    /// candidate would activate over the peer's acknowledged record. The two-record shape above cannot see that.
+    @Test
+    void ownerGate_divergentCandidateOverASingleAckedRecord_isRefusedOverTheLowerAckedPeer() {
+        var peerNode = NodeId.randomNodeId();
+        var peer = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            peer.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+            publishTagged(owner, "common", 11);
+            publishTagged(owner, "divergent", 5);
+            publishTagged(peer, "common", 11);
+            publishTagged(peer, "acked", 1);
+            awaitSealedThrough(13);
+
+            var alarms = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+            var gate = OwnerActivation.ownerActivation(OWNER,
+                                                       (_, _) -> Option.none(),
+                                                       (_, _) -> true,
+                                                       Option.none(),
+                                                       () -> List.of(OWNER, peerNode),
+                                                       (_, _, _) -> Promise.success(11L),
+                                                       (_, _) -> ownerRing().headOffset(),
+                                                       (_, _, _, _) -> Promise.success(-1L),
+                                                       () -> true,
+                                                       OwnerPeerReads.ownerRange(OWNER, owner, tieredStreamReader(index, storage), OwnerPeerReads.localPages(peer, Option.none()), 100),
+                                                       block -> {
+                                                           alarms.add(block);
+                                                           return Unit.unit();
+                                                       },
+                                                       TimeSpan.timeSpan(1).hours());
+
+            assertThat(ownerRing().tailOffset()).as("arming: the candidate's ring starts above the peer's head").isGreaterThan(11L);
+            assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("a divergent candidate never activates over a single acked record").isFalse();
+            assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+        } finally {
+            peer.close();
+        }
+    }
+
     /// The gate's peer read where the test reads only the candidate's own window: reaching it is a dispatch defect.
     private static Promise<StreamForwardClient.ReadForwardResult> noPeerPages(NodeId target,
                                                                              String streamName,

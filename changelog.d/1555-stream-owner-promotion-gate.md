@@ -83,6 +83,7 @@
   gate's DECISION over a divergent candidate whose ring is evicted below a lower acked peer — it models each copy's
   retention itself and does not exercise the production read. The production overlap read
   (`OwnerPeerReads.ownerRange`, the node's only call site) is pinned by `ReplicaCatchupTierFallbackTest`:
-  `ownerGate_divergentCandidateWithEvictedRing_isRefusedOverTheLowerAckedPeer` on a real evicted ring and tier, and
-  `ownerGateLocalWindow_readsTheEvictedPrefixThroughTheTier`; `StreamAccessOwnerGateTest` pins the gated
+  `ownerGate_divergentCandidateWithEvictedRing_isRefusedOverTheLowerAckedPeer` on a real evicted ring and tier,
+  `ownerGate_divergentCandidateOverASingleAckedRecord_isRefusedOverTheLowerAckedPeer` (one acked record at the top of
+  the peer's window), and `ownerGateLocalWindow_readsTheEvictedPrefixThroughTheTier`; `StreamAccessOwnerGateTest` pins the gated
   stream-access read, and `StreamReadRouterReplicaSnapshotTest` the gated `servedByOwner`.
