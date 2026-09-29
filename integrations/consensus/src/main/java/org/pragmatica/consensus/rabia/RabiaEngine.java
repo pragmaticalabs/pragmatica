@@ -705,6 +705,8 @@ public class RabiaEngine<C extends Command> {
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
     /// when the engine activates, so the reported count is the length of the current stall.
     private final AtomicInteger syncRounds = new AtomicInteger();
+    /// Whether the current sync episode already reported its refusal to activate outside the electorate.
+    private final AtomicBoolean electorateRefusalReported = new AtomicBoolean();
 
     @SuppressWarnings("rawtypes")
     private final Map<CorrelationId, Promise> correlationMap = new ConcurrentHashMap<>();
@@ -1095,6 +1097,7 @@ public class RabiaEngine<C extends Command> {
     private void doClusterConnected() {
         syncResponses.clear();
         syncRounds.set(0);
+        electorateRefusalReported.set(false);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
         // syncRetryInterval for the timer below. A replacement that joins a cluster hundreds of
         // phases ahead must start its snapshot-install round at once — otherwise it sits silently in
@@ -2075,7 +2078,7 @@ public class RabiaEngine<C extends Command> {
                     + "and runs no reconciler while this persists.",
                      self,
                      round,
-                     authorityFailure.map(Cause::message).or("see the preceding ERROR"));
+                     authorityFailure.map(Cause::message).or("see the preceding ERROR or WARN"));
 
             return;
         }
@@ -2583,13 +2586,24 @@ public class RabiaEngine<C extends Command> {
                                   .isSuccess();
     }
 
+    /// Once per sync episode: every retry of the adoption loop re-enters [#activate], so an unguarded WARN
+    /// repeated at the retry cadence without bound (measured: one per `syncRetryInterval`). The stall
+    /// itself stays reported periodically by [#warnIfSyncStuck].
+    private void warnOutsideElectorate() {
+        if (electorateRefusalReported.compareAndSet(false, true)) {
+            log.warn("Node {} cannot activate outside the core electorate; it keeps retrying synchronization", self);
+        } else {
+            log.debug("Node {} cannot activate outside the core electorate", self);
+        }
+    }
+
     private void activate() {
         if (authorityFailure.isPresent()) {
             return;
         }
 
         if (!observerMode && !isVoter(self)) {
-            log.warn("Node {} cannot activate outside the core electorate", self);
+            warnOutsideElectorate();
 
             return;
         }
