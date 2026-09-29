@@ -43,13 +43,17 @@ import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// #1727 — acknowledged writes on a stream the peer finishes mid-burst, under packet LOSS. Same shape as
+/// #1727 — acknowledged writes on a stream the peer finishes, under packet LOSS. Same shape as
 /// `QuicLaneOwnershipTest.peerFinishesTheStreamMidBurst_…` (the dialer bursts onto the acceptor's stand-in; at the pivot
 /// it opens its own lane stream, the acceptor finishes the stand-in, and the dialer finishes its half behind its
-/// queued writes), but the connection runs through a relay that drops datagrams in both directions, so QUIC loss
-/// recovery is always in play. Every write the dialer saw succeed must reach the acceptor.
+/// queued writes), but the connection runs through a relay that drops datagrams in both directions (default 3%,
+/// `-Dquic.test.dropRate`). Armed per run: loss really happened (the dialer's QUIC stack lost bytes) and the acceptor
+/// really finished the stand-in. Whether the finish lands MID-burst depends on how fast the pivot's stream opens under
+/// loss — at 3% it usually does (writes after it fail visibly), at 20% the burst usually resolves first. Every write
+/// the dialer saw succeed must reach the acceptor either way.
 @Timeout(120)
 class QuicLaneFinishUnderLossTest {
     private static final NodeId ACCEPTOR = new NodeId("lf-acceptor");
@@ -57,7 +61,7 @@ class QuicLaneFinishUnderLossTest {
     private static final NodeAddress UNUSED_ADDRESS = new NodeAddress("127.0.0.1", 9000);
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(20).seconds();
     private static final StreamType LANE = StreamType.FORWARD;
-    private static final double DROP_RATE = Double.parseDouble(System.getProperty("s7.dropRate", "0.03"));
+    private static final double DROP_RATE = Double.parseDouble(System.getProperty("quic.test.dropRate", "0.03"));
     private static final int SENT = 400;
 
     private final SliceCodec codec = LaneProbe.codec();
@@ -115,8 +119,10 @@ class QuicLaneFinishUnderLossTest {
                  + " dialerStandIn.active=" + standIn.isActive() + " acceptorStandIn.active=" + acceptorStandIn.isActive()
                  + " statsAt20s=" + statsAt + " statsAt35s=" + stats());
         }
-        System.out.println("S7-LOSS-GREEN rep=" + repetition.getCurrentRepetition() + " delivered=" + finMarkers().size()
-                           + " succeeded=" + succeeded.get() + " failed=" + failed.get() + " closes=" + closes + " " + stats());
+        assertThat(lostBytes(dialerSide.connection())).as("arming: the relay made the dialer's QUIC stack lose bytes").isPositive();
+        assertThat(acceptorSide.get().stream(LANE).map(QuicStreamChannel::streamId))
+            .as("arming: the acceptor moved the lane off the stand-in, so it finished it")
+            .isNotEqualTo(Option.some(standIn.streamId()));
     }
 
     private void connectThroughLossyRelay(long seed) {
@@ -153,6 +159,14 @@ class QuicLaneFinishUnderLossTest {
                    + " retransB=" + st.streamRetransBytes();
         } catch (Exception e) {
             return "active=" + channel.isActive() + " stats-unavailable:" + e;
+        }
+    }
+
+    private static long lostBytes(QuicChannel channel) {
+        try {
+            return channel.collectStats().get(5, TimeUnit.SECONDS).lostBytes();
+        } catch (Exception e) {
+            return -1;
         }
     }
 

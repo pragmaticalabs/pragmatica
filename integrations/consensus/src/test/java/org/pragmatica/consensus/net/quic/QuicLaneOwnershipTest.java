@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -161,18 +162,16 @@ class QuicLaneOwnershipTest {
         var sent = 400;
         var padding = "x".repeat(8 * 1024);
         var trace = new DeliveryTrace("fin-", sent, padding, standIn, acceptorSide.get().stream(LANE));
-        var succeeded = trace.succeeded;
-        var failed = trace.failed;
 
         assertThat(standIn.streamId() & 0x1L).as("arming: the burst rides the ACCEPTOR-opened stand-in").isEqualTo(1L);
         IntStream.range(0, sent)
-                 .forEach(i -> burstWrite(standIn, i, padding, sent / 2, succeeded, failed));
+                 .forEach(i -> burstWrite(standIn, i, padding, sent / 2, trace));
 
         trace.awaitEveryAcknowledgedWriteDelivered();
         assertThat(acceptorSide.get().stream(LANE).map(QuicStreamChannel::streamId))
             .as("arming: the acceptor moved FORWARD off the stand-in, so it finished it")
             .isNotEqualTo(Option.some(standIn.streamId()));
-        assertThat(sent - finMarkers().size() - failed.get()).as("0 unaccounted").isZero();
+        assertThat(sent - finMarkers().size() - trace.failed.get()).as("0 unaccounted").isZero();
     }
 
     /// #1578 / i-genesis-stall (s29/i-genesis-stall-report.md): the CI order that stalled genesis. The acceptor's lazy
@@ -258,18 +257,13 @@ class QuicLaneOwnershipTest {
 
     /// One burst write; at `pivot` the dialer opens its own FORWARD stream, which makes the acceptor finish
     /// the stand-in while the burst is still being written.
-    private void burstWrite(QuicStreamChannel stream,
-                            int index,
-                            String padding,
-                            int pivot,
-                            AtomicInteger succeeded,
-                            AtomicInteger failed) {
+    private void burstWrite(QuicStreamChannel stream, int index, String padding, int pivot, DeliveryTrace trace) {
         if (index == pivot) {
             var _ = openLaneAsync(dialerSide);
         }
 
         stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "fin-" + index + "|" + padding))))
-              .addListener(future -> countWrite(future.isSuccess(), succeeded, failed));
+              .addListener(future -> trace.record(index, future.isSuccess()));
     }
 
     private static void countWrite(boolean success, AtomicInteger succeeded, AtomicInteger failed) {
@@ -321,7 +315,7 @@ class QuicLaneOwnershipTest {
 
         IntStream.range(0, burst)
                  .forEach(i -> retiring.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "burst-" + i + "|" + padding))))
-                                       .addListener(future -> countWrite(future.isSuccess(), trace.succeeded, trace.failed)));
+                                       .addListener(future -> trace.record(i, future.isSuccess())));
         openLane(dialerSide);
 
         trace.awaitEveryAcknowledgedWriteDelivered();
@@ -333,13 +327,14 @@ class QuicLaneOwnershipTest {
 
     /// #1727 — the accounting of one write burst, and on a delivery timeout a SELF-ATTRIBUTING failure: a CI red says where
     /// the acknowledged writes stopped without a rerun. A write future succeeds when netty hands the bytes to quiche, not when
-    /// the peer reads them, so "delivered < succeeded" can stop in either QUIC stack or above the acceptor's. The verdict
-    /// compares the acceptor's QUIC receive count with the bytes the acknowledged writes carry:
+    /// the peer reads them, so an acknowledged write can stop in either QUIC stack or above the acceptor's. Delivery is judged
+    /// BY INDEX: every write whose future succeeded must be read. The verdict compares what the acceptor's QUIC stack received
+    /// since the burst began with the bytes the undelivered acknowledged writes carry:
     /// - CONNECTION-CLOSED: the connection is gone, and quiche discarded what it held;
-    /// - RECEIVER-SIDE: the acceptor's QUIC stack received at least those bytes, and the app did not read them;
-    /// - SENDER-SIDE: it received fewer, so they stopped at or before the dialer's QUIC stack.
-    /// recvBytes also counts retransmitted duplicates and the other lanes, so the verdict leans RECEIVER-SIDE when close;
-    /// the raw numbers are in the message.
+    /// - RECEIVER-SIDE: the acceptor's QUIC stack received at least that, and the app did not read it;
+    /// - SENDER-SIDE: it received less, so the bytes stopped at or before the dialer's QUIC stack.
+    /// The received count also includes retransmitted duplicates and the other lanes, so the verdict leans RECEIVER-SIDE when
+    /// close; the raw numbers are in the message. Writes that never resolve get the same diagnosis (their count is PENDING).
     private final class DeliveryTrace {
         private static final TimeSpan DELIVERY = TimeSpan.timeSpan(10).seconds();
         private static final TimeSpan GRACE = TimeSpan.timeSpan(15).seconds();
@@ -349,8 +344,10 @@ class QuicLaneOwnershipTest {
         private final long bytesPerWrite;
         private final QuicStreamChannel dialerStream;
         private final Option<QuicStreamChannel> acceptorStream;
+        private final long acceptorReceivedAtStart;
         private final AtomicInteger succeeded = new AtomicInteger();
         private final AtomicInteger failed = new AtomicInteger();
+        private final Set<Integer> acknowledged = ConcurrentHashMap.newKeySet();
         private final List<String> closes = new CopyOnWriteArrayList<>();
         private final long startNanos = System.nanoTime();
 
@@ -360,37 +357,58 @@ class QuicLaneOwnershipTest {
             this.bytesPerWrite = codec.encode(LaneProbe.laneProbe(DIALER, LANE, prefix + "0|" + padding)).length + 4L;
             this.dialerStream = dialerStream;
             this.acceptorStream = acceptorStream;
+            this.acceptorReceivedAtStart = receivedBytes(acceptorSide.get().connection());
             dialerStream.closeFuture().addListener(_ -> closes.add("dialer@" + elapsedMillis() + "ms"));
             acceptorStream.onPresent(stream -> stream.closeFuture().addListener(_ -> closes.add("acceptor@" + elapsedMillis() + "ms")));
         }
 
+        void record(int index, boolean success) {
+            if (success) {
+                acknowledged.add(index);
+                succeeded.incrementAndGet();
+            } else {
+                failed.incrementAndGet();
+            }
+        }
+
         void awaitEveryAcknowledgedWriteDelivered() {
-            awaitTrue(() -> succeeded.get() + failed.get() == sent, "every write resolves");
-            if (waitForDelivery(DELIVERY)) {
+            if (waitFor(this::settled, DELIVERY)) {
                 return;
             }
 
-            var atTimeout = delivered().size();
+            var undeliveredAtTimeout = undelivered().size();
+            var pendingAtTimeout = pending();
             var statsAtTimeout = stats();
-            var laterDelivered = waitForDelivery(GRACE);
+            var caughtUp = waitFor(this::settled, GRACE);
 
-            fail("acknowledged writes not delivered — " + verdict() + " | delivered@10s=" + atTimeout + " delivered@+15s="
-                 + delivered().size() + (laterDelivered ? " (caught up: SLOW, not lost)" : "") + " succeeded=" + succeeded.get()
-                 + " failed=" + failed.get() + " missing=" + missing() + " closes=" + closes + " dialerStream.active="
-                 + dialerStream.isActive() + " acceptorStream.active=" + acceptorStream.map(QuicStreamChannel::isActive).or(false)
+            fail((pending() > 0 ? "writes never resolved" : "acknowledged writes not delivered") + " — " + verdict()
+                 + " | at 10s: undelivered=" + undeliveredAtTimeout + " pending=" + pendingAtTimeout + "; at +15s: undelivered="
+                 + undelivered().size() + " pending=" + pending() + (caughtUp ? " (caught up: SLOW, not lost)" : "")
+                 + " sent=" + sent + " succeeded=" + succeeded.get() + " failed=" + failed.get() + " undelivered-indices="
+                 + indices(undelivered()) + " closes=" + closes + " dialerStream.active=" + dialerStream.isActive()
+                 + " acceptorStream.active=" + acceptorStream.map(QuicStreamChannel::isActive).or(false)
                  + " stats@10s=" + statsAtTimeout + " stats@+15s=" + stats());
         }
 
-        private boolean waitForDelivery(TimeSpan window) {
+        /// Every write resolved and every acknowledged one was read.
+        private boolean settled() {
+            return pending() == 0 && undelivered().isEmpty();
+        }
+
+        private int pending() {
+            return sent - succeeded.get() - failed.get();
+        }
+
+        private boolean waitFor(BooleanSupplier condition, TimeSpan window) {
             var deadline = System.nanoTime() + window.nanos();
 
             while (System.nanoTime() < deadline) {
-                if (delivered().size() >= succeeded.get()) {
+                if (condition.getAsBoolean()) {
                     return true;
                 }
                 LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
             }
-            return delivered().size() >= succeeded.get();
+            return condition.getAsBoolean();
         }
 
         private String verdict() {
@@ -398,12 +416,16 @@ class QuicLaneOwnershipTest {
                 return "CONNECTION-CLOSED";
             }
 
-            var acknowledgedBytes = succeeded.get() * bytesPerWrite;
-            var acceptorReceived = receivedBytes(acceptorSide.get().connection());
+            var missingBytes = undelivered().size() * bytesPerWrite;
+            var receivedSinceStart = receivedBytes(acceptorSide.get().connection()) - acceptorReceivedAtStart;
+            var deliveredBytes = delivered().size() * bytesPerWrite;
+            var receivedBeyondDelivered = receivedSinceStart - deliveredBytes;
 
-            return acceptorReceived >= acknowledgedBytes
-                   ? "RECEIVER-SIDE (acceptor QUIC recvBytes " + acceptorReceived + " >= acknowledged " + acknowledgedBytes + ")"
-                   : "SENDER-SIDE (acceptor QUIC recvBytes " + acceptorReceived + " < acknowledged " + acknowledgedBytes + ")";
+            return receivedBeyondDelivered >= missingBytes
+                   ? "RECEIVER-SIDE (acceptor QUIC received " + receivedBeyondDelivered + " B beyond what the app read >= "
+                     + missingBytes + " B undelivered)"
+                   : "SENDER-SIDE (acceptor QUIC received " + receivedBeyondDelivered + " B beyond what the app read < "
+                     + missingBytes + " B undelivered)";
         }
 
         private Set<Integer> delivered() {
@@ -413,13 +435,16 @@ class QuicLaneOwnershipTest {
                                               .collect(Collectors.toSet());
         }
 
-        private String missing() {
+        private List<Integer> undelivered() {
             var got = delivered();
-            var gaps = IntStream.range(0, sent)
-                                .filter(i -> !got.contains(i))
-                                .boxed()
-                                .toList();
 
+            return acknowledged.stream()
+                               .filter(index -> !got.contains(index))
+                               .sorted()
+                               .toList();
+        }
+
+        private static String indices(List<Integer> gaps) {
             return gaps.size() > 20
                    ? gaps.subList(0, 10) + "…" + gaps.subList(gaps.size() - 5, gaps.size()) + " (" + gaps.size() + ")"
                    : gaps.toString();
