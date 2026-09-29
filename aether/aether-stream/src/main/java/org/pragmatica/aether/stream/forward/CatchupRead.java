@@ -52,8 +52,8 @@ public sealed interface CatchupRead {
                : cause.promise();
     }
 
-    /// An evicted offset the sealer still retains is IN FLIGHT: its seal is not indexed yet, so it is in neither
-    /// place, and the read fails transient ([SegmentError.SealInFlight]) for the backfill to redrive — never
+    /// An evicted offset the sealer still retains is IN FLIGHT: its seal may not be indexed yet (and for a moment
+    /// after it is, the sealer still holds it — #1682), and the read fails transient ([SegmentError.SealInFlight]) for the backfill to redrive — never
     /// `CursorExpired`, which names an offset nobody holds. Asked BEFORE the tier read, as the consumer path
     /// does: the sink indexes a segment before the sealer releases its copy, so an offset not retained here is
     /// already findable in the index. Without a tier wired the ring's own refusal stands.
