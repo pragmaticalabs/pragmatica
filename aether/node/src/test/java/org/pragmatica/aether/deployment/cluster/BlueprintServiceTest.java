@@ -739,6 +739,54 @@ class BlueprintServiceTest {
                                                              .isInstanceOf(SliceSpecError.InstancesBelowMinimum.class));
         }
 
+        /// The ARTIFACT publish path (`publishFromArtifact`) parses the jar's `META-INF/blueprint.toml` and wraps the
+        /// same refusal in [BlueprintRejected], so a blueprint jar below the floor answers 400 like the body path.
+        @Test
+        void publishFromArtifact_instancesTwo_respondsBadRequestNamingTheFloor(@TempDir Path dir) throws IOException {
+            var artifact = Artifact.artifact("org.example:floor-blueprint:1.0.0")
+                                   .unwrap();
+            var jar = writeBlueprintJar(dir, """
+                    id = "org.example:floor-blueprint:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:floor-slice:1.0.0"
+                    instances = 2
+                    """);
+            Repository jarRepository = requested -> requested.equals(artifact)
+                                                    ? Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
+                                                            .flatMap(url -> Location.location(requested, url))
+                                                            .async()
+                                                    : Causes.cause("Artifact not present in local repository").promise();
+            var holder = new AtomicReference<Cause>();
+
+            BlueprintService.blueprintService(cluster, store, jarRepository)
+                            .publishFromArtifact(artifact.asString())
+                            .await()
+                            .onSuccess(value -> fail("Publish must be refused, got: " + value))
+                            .onFailure(holder::set);
+            var recorder = writeProblem(holder.get());
+
+            assertThat(recorder.status.get()).as("a blueprint jar below the instance floor is a malformed request")
+                                             .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(recorder.body()).contains("declares instances = 2")
+                                       .contains("must run at least 3 instances");
+            assertThat(holder.get()).isInstanceOfSatisfying(BlueprintRejected.class,
+                                                            rejected -> assertThat(rejected.origin())
+                                                                    .isInstanceOf(SliceSpecError.InstancesBelowMinimum.class));
+        }
+
+        private static Path writeBlueprintJar(Path dir, String blueprintToml) throws IOException {
+            var target = dir.resolve("floor-blueprint-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target))) {
+                out.putNextEntry(new ZipEntry("META-INF/blueprint.toml"));
+                out.write(blueprintToml.getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+
+            return target;
+        }
+
         @Test
         void publishRoute_malformedBlueprint_respondsBadRequest() {
             var recorder = writeProblem(publishCause("this is [not toml"));
