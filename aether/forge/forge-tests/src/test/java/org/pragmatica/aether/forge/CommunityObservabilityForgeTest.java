@@ -45,8 +45,8 @@ import static org.awaitility.Awaitility.await;
 /// ACTIVE) at exactly three live members, and killing one non-governor worker drops the leader's live
 /// count below the floor (ACTIVE → DEGRADED) once the community-absence window (20s default) passes.
 ///
-/// A killed worker does NOT produce MEMBER_LEFT here, by the #1652 design: the roster is assignment, not
-/// liveness. Measured at d67fb06cf: only the surviving WORKERS' SWIM confirmed the death; no core raised
+/// No MEMBER_LEFT is asserted for the killed worker: the roster is assignment, not liveness, and in one run
+/// at d67fb06cf none arrived within 180s (#1717): only the surviving WORKERS' SWIM confirmed the death; no core raised
 /// a worker-leave, so the directive and roster stayed and no MEMBER_LEFT arrived within 180s. The roster
 /// diff that emits MEMBER_LEFT is pinned in `CommunityLifecycleEventsTest$Roster`.
 ///

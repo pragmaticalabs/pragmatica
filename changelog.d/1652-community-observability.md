@@ -13,7 +13,7 @@
   it drops below the floor after a real worker kill]
 - **Four new cluster events** (wire tags 1740–1743): `COMMUNITY_MINTED`, `COMMUNITY_STATE_CHANGED` (one event
   per edge, `from`/`to` in `details`; WARNING only for the edge into `DEGRADED`), `COMMUNITY_MEMBER_JOINED` and
-  `COMMUNITY_MEMBER_LEFT` (roster changes: assignment, not liveness; a force-killed worker produces no MEMBER_LEFT, measured in Ember. [unverified: no live MEMBER_LEFT trigger is demonstrated; the roster diff is pinned at unit level]). They are derived from the committed
+  `COMMUNITY_MEMBER_LEFT` (roster changes: assignment, not liveness; a force-killed worker did not produce MEMBER_LEFT within 180 s of the kill, one Ember run; see #1717. [unverified: no live MEMBER_LEFT trigger is demonstrated; the roster diff is pinned at unit level]). They are derived from the committed
   `CommunityValue` / governor-roster writes, so every node observes them and only the cluster-events owner publishes them
   (the owner-gated delivery contract, `guarantees.md` row 14b: at-least-once across an ownership handover).
   [verified: Ember on cloudbb-2 at af036c27e, 1/1 — `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` —
