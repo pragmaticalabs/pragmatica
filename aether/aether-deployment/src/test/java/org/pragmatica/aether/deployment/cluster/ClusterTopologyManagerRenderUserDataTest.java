@@ -208,12 +208,20 @@ class ClusterTopologyManagerRenderUserDataTest {
                 .contains("ssh_key_ids = \"113681412\"");
     }
 
-    private static TomlDocument withEmptyGenesisVoters(TomlDocument document) {
-        var sections = new java.util.HashMap<>(document.sections());
-        var cluster = new java.util.HashMap<>(sections.getOrDefault("cluster", java.util.Map.of()));
-        cluster.put("genesis_voters", "");
-        sections.put("cluster", java.util.Map.copyOf(cluster));
-        return new TomlDocument(sections, document.tableArrays());
+    /// #1526: a replacement joins the formed electorate through a Rabia §4 add command, and a cold
+    /// restart forms a fresh genesis, so a replacement's rendered config must not carry a genesis roster.
+    @Test
+    void provisionReplacement_cloudConfig_rendersNoGenesisVoters() {
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.setGenesisVoters(() -> List.of(SELF, PEER_A, PEER_B));
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-r5").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var userData = lifecycleManager.lastSpec().userData().or("");
+        assertThat(userData).as("the replacement's user data must be rendered").isNotBlank();
+        assertThat(userData).doesNotContain("genesis_voters");
     }
 
     private static AutoHealConfig renderTestAutoHeal() {
@@ -264,8 +272,7 @@ class ClusterTopologyManagerRenderUserDataTest {
         var secret = Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank());
         var composed = ReplacementNodeConfigComposer.compose(config, source, secret)
             .flatMap(document -> org.pragmatica.aether.config.cluster.SourceCloudBindings.resolveOverlayFromConfig(document,
-                config, source.name(), NodeRole.CORE))
-            .map(ClusterTopologyManagerRenderUserDataTest::withEmptyGenesisVoters).unwrap();
+                config, source.name(), NodeRole.CORE)).unwrap();
         var peers = lifecycleManager.lastSpec().context().peers().or("");
         var expected = NodeUserDataRenderer.render(config,
                                                    source,
