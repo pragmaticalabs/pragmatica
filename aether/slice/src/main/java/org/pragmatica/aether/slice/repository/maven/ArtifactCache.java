@@ -20,6 +20,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// #1599 — the local artifact cache a later boot loads jars from.
 ///
 /// A jar is PUBLISHED, never written in place: its bytes go to a sibling temp file in the target's own
@@ -35,7 +36,9 @@ import org.slf4j.LoggerFactory;
 /// checked and is trusted, as before.
 final class ArtifactCache {
     private static final Logger log = LoggerFactory.getLogger(ArtifactCache.class);
-    private static final List<Sidecar> SIDECARS = List.of(new Sidecar(".sha256", "SHA-256"), new Sidecar(".sha1", "SHA-1"));
+
+    private static final List<Sidecar> SIDECARS = List.of(new Sidecar(".sha256", "SHA-256"),
+                                                          new Sidecar(".sha1", "SHA-1"));
 
     private record Sidecar(String suffix, String algorithm) {
         Path of(Path jar) {
@@ -56,7 +59,9 @@ final class ArtifactCache {
         return FileOps.createDirectoriesDurable(directory)
                       .flatMap(_ -> publish(target, content, writer))
                       .flatMap(_ -> digest(content, "SHA-256"))
-                      .flatMap(sha256 -> publish(SIDECARS.getFirst().of(target), sha256.getBytes(StandardCharsets.US_ASCII), writer))
+                      .flatMap(sha256 -> publish(SIDECARS.getFirst().of(target),
+                                                 sha256.getBytes(StandardCharsets.US_ASCII),
+                                                 writer))
                       .flatMap(_ -> FileOps.forceDirectory(directory))
                       .map(_ -> target);
     }
@@ -94,9 +99,11 @@ final class ArtifactCache {
 
     private static boolean matches(Path jar, Sidecar sidecar) {
         return FileOps.readString(sidecar.of(jar))
-                      .map(body -> body.trim().split("\\s")[0])
+                      .map(body -> body.trim()
+                                       .split("\\s") [0])
                       .flatMap(expected -> FileOps.readBytes(jar)
-                                                  .flatMap(bytes -> digest(bytes, sidecar.algorithm()))
+                                                  .flatMap(bytes -> digest(bytes,
+                                                                           sidecar.algorithm()))
                                                   .map(expected::equalsIgnoreCase))
                       .or(false);
     }

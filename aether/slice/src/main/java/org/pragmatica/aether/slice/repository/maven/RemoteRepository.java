@@ -55,7 +55,6 @@ public interface RemoteRepository extends Repository {
                                                      Path localRepo,
                                                      Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
-
         // #1599: a cached jar is loaded only if it still matches its checksum sidecar; otherwise it is
         // evicted and fetched again rather than failing the boot with a classloading error.
         if (exists(cachedPath) && ArtifactCache.usable(cachedPath)) {
@@ -220,7 +219,9 @@ public interface RemoteRepository extends Repository {
     /// `targetPath`.
     private static Promise<Path> cacheAndReturn(Path targetPath, byte[] jarBytes, Artifact artifact) {
         return ArtifactCache.store(targetPath, jarBytes)
-                            .onSuccessRun(() -> log.info("Cached {} to {}", artifact.asString(), targetPath))
+                            .onSuccessRun(() -> log.info("Cached {} to {}",
+                                                         artifact.asString(),
+                                                         targetPath))
                             .async();
     }
 

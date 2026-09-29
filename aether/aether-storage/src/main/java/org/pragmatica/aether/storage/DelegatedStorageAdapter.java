@@ -111,8 +111,7 @@ public final class DelegatedStorageAdapter {
             return Promise.success(unit());
         }
 
-        var demotion = demotionManager.activate()
-                                      .onFailure(cause -> logActivationFailure("demotion manager", cause));
+        var demotion = demotionManager.activate().onFailure(cause -> logActivationFailure("demotion manager", cause));
         var collector = garbageCollector.activate()
                                         .onFailure(cause -> logActivationFailure("garbage collector", cause));
 
@@ -127,8 +126,7 @@ public final class DelegatedStorageAdapter {
 
     private void stopPartiallyActivated(Result<Unit> demotion, Result<Unit> collector) {
         demotion.onSuccessRun(() -> demotionManager.deactivate()
-                                                   .onFailure(cause -> logDeactivationFailure("demotion manager",
-                                                                                              cause)));
+                                                   .onFailure(cause -> logDeactivationFailure("demotion manager", cause)));
         collector.onSuccessRun(() -> garbageCollector.deactivate()
                                                      .onFailure(cause -> logDeactivationFailure("garbage collector",
                                                                                                 cause)));
@@ -142,10 +140,8 @@ public final class DelegatedStorageAdapter {
             return Promise.success(unit());
         }
 
-        Result.all(garbageCollector.deactivate()
-                                   .onFailure(cause -> logDeactivationFailure("garbage collector", cause)),
-                   demotionManager.deactivate()
-                                  .onFailure(cause -> logDeactivationFailure("demotion manager", cause)))
+        Result.all(garbageCollector.deactivate().onFailure(cause -> logDeactivationFailure("garbage collector", cause)),
+                   demotionManager.deactivate().onFailure(cause -> logDeactivationFailure("demotion manager", cause)))
               .map((_, _) -> unit())
               .onSuccessRun(() -> active.set(false))
               .onSuccessRun(() -> log.info("STORAGE delegation group deactivated"));
