@@ -4670,10 +4670,13 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode);
 
         attachQuicConnectivityReporter(clusterNode.network(),
-                                       peerObservationStore,
-                                       transportEpochSupplier(kvStore, leaderTerm, generationCounter, allEntries),
-                                       nttConnectTap,
-                                       nttDisconnectTap);
+                                       connectivityWiring(peerObservationStore,
+                                                          kvStore,
+                                                          leaderTerm,
+                                                          generationCounter,
+                                                          allEntries,
+                                                          nttConnectTap,
+                                                          nttDisconnectTap));
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, metricsScheduler::onLinkEstablished);
         attachBroadcastMembershipView(clusterNode.network(), membershipFsm);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -6859,16 +6862,37 @@ public interface AetherNode extends ManageableNode {
     /// P3 (membership unification): the former leader-side `ReachabilityAggregator`
     /// `ingestSelfTransition` fast-path is removed — SWIM (fed by these QUIC hints) is now the
     /// single liveness signal, so the separate reachability fold is gone.
-    /// The epoch the transport reads when it reports a peer connecting or leaving (#1529): the connectivity
-    /// reporter below and its `ObservedEpochSupplier` adapter. An inbound attach calls both synchronously on
-    /// the QUIC event loop (`QuicClusterServer` Hello handler -> `QuicClusterNetwork.onPeerConnected` ->
-    /// `processViewChange(ADD)` -> `reportPeerConnection`), so nothing here may take the `KVStore` monitor:
-    /// the incarnation comes from an [ObservedIncarnation] fed by the committed key's notifications, never
-    /// from [ClusterIncarnation#current], whose `getTyped` waits out a whole snapshot restore.
-    static Supplier<Epoch> transportEpochSupplier(KVStore<AetherKey, AetherValue> kvStore,
-                                                  LeaderTerm leaderTerm,
-                                                  AtomicLong generationCounter,
-                                                  List<MessageRouter.Entry<?>> routes) {
+    private static void attachQuicConnectivityReporter(ClusterNetwork network, ConnectivityWiring wiring) {
+        if (! (network instanceof QuicClusterNetwork quicNetwork)) {
+            return;
+        }
+
+        quicNetwork.setFollowerObservationWiring(wiring.reporter(), wiring.epoch());
+    }
+
+    /// The connectivity reporter and its `ObservedEpochSupplier` adapter, which the transport calls when it
+    /// reports a peer connecting or leaving (#1529).
+    record ConnectivityWiring(PeerConnectivityReporter reporter, QuicClusterNetwork.ObservedEpochSupplier epoch) {}
+
+    /// Builds [ConnectivityWiring]. An inbound attach calls the reporter and the adapter synchronously on the
+    /// QUIC event loop (`QuicClusterServer` Hello handler -> `QuicClusterNetwork.onPeerConnected` ->
+    /// `processViewChange(ADD)` -> `reportPeerConnection`), and a channel-driven removal calls them on the loop
+    /// too, so neither may take the `KVStore` monitor. `ClusterIncarnation.current` reads through the
+    /// synchronized `getTyped`, which waits out a whole snapshot restore. The incarnation therefore comes from
+    /// an [ObservedIncarnation] that the committed key's notifications keep current — every commit that
+    /// changes it (genesis, restore, declare-genesis) and every replay after a snapshot install.
+    ///
+    /// #1529 (v1635 N3), known tear, metrics only: the transport hands over `term`/`counter` from the epoch
+    /// it captured, while `incarnation` is read at report time. An observation straddling an incarnation
+    /// change can therefore mix two epochs. Nothing fences on these observations (they feed connectivity
+    /// telemetry), so it is recorded rather than fixed.
+    static ConnectivityWiring connectivityWiring(PeerObservationBuffer buffer,
+                                                 KVStore<AetherKey, AetherValue> kvStore,
+                                                 LeaderTerm leaderTerm,
+                                                 AtomicLong generationCounter,
+                                                 List<MessageRouter.Entry<?>> routes,
+                                                 Consumer<NodeId> onNttConnect,
+                                                 Consumer<NodeId> onNttDisconnect) {
         var incarnation = ObservedIncarnation.observedIncarnation(ClusterIncarnation.current(kvStore));
 
         routes.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
@@ -6876,23 +6900,9 @@ public interface AetherNode extends ManageableNode {
                                           .onRemove(AetherKey.ClusterIncarnationKey.class, incarnation::onRemove)
                                           .build()
                                           .asRouteEntries());
-
-        return () -> Epoch.epoch(incarnation.current(), leaderTerm.current(), generationCounter.get());
-    }
-
-    private static void attachQuicConnectivityReporter(ClusterNetwork network,
-                                                       PeerObservationBuffer buffer,
-                                                       Supplier<Epoch> epochSupplier,
-                                                       Consumer<NodeId> onNttConnect,
-                                                       Consumer<NodeId> onNttDisconnect) {
-        if (! (network instanceof QuicClusterNetwork quicNetwork)) {
-            return;
-        }
-        // #1529 (v1635 N3), known tear, metrics only: the transport hands over `term`/`counter` from the epoch it
-        // captured, while `incarnation` is read here from `epochSupplier` at report time (lock-free, see
-        // [#transportEpochSupplier]). An observation straddling
-        // an incarnation change can therefore mix two epochs. Nothing fences on these observations (they feed
-        // connectivity telemetry), so it is recorded rather than fixed.
+        Supplier<Epoch> epochSupplier = () -> Epoch.epoch(incarnation.current(),
+                                                          leaderTerm.current(),
+                                                          generationCounter.get());
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
             @Contract
             @Override
@@ -6901,7 +6911,7 @@ public interface AetherNode extends ManageableNode {
 
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.DISCONNECTED,
-                                                                        epochSupplier.get().incarnation(),
+                                                                        incarnation.current(),
                                                                         term,
                                                                         counter,
                                                                         now));
@@ -6922,7 +6932,7 @@ public interface AetherNode extends ManageableNode {
 
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.CONNECTED,
-                                                                        epochSupplier.get().incarnation(),
+                                                                        incarnation.current(),
                                                                         term,
                                                                         counter,
                                                                         now));
@@ -6943,7 +6953,7 @@ public interface AetherNode extends ManageableNode {
             }
         };
 
-        quicNetwork.setFollowerObservationWiring(reporter, epochAdapter);
+        return new ConnectivityWiring(reporter, epochAdapter);
     }
 
     /// #1050 — only the FAULTY edge reaches [`ClusterTopologyManager#onSwimFaulty`]; every other observation
