@@ -42,9 +42,35 @@ class WorkflowGateTest {
         var ci = String.join("\n",
                              read(ScriptRunner.repoRoot().resolve(Path.of(".github", "workflows", "ci.yml"))));
 
-        assertThat(ci).contains("poms=(aether/tests/blueprints/*/pom.xml)")
+        assertThat(ci).contains("poms=(aether/tests/blueprints/*/pom.xml ")
                   .contains("mvn -B jbct:check -f \"$pom\"")
                   .contains("refusing to continue");
+    }
+
+    /// #919 - every example with a `pom.xml` is either aggregated by `examples/pom.xml` (and so compiled, verified and
+    /// JBCT-checked with the reactor) or JBCT-checked standalone in CI. An example in neither is built by nothing.
+    @Test
+    void everyExample_isAggregatedOrCheckedStandalone() {
+        var examples = ScriptRunner.repoRoot().resolve("examples");
+        var aggregator = String.join("\n", read(examples.resolve("pom.xml")));
+        var ci = String.join("\n",
+                             read(ScriptRunner.repoRoot().resolve(Path.of(".github", "workflows", "ci.yml"))));
+        var dirs = Result.lift(() -> {
+            try (var stream = Files.list(examples)) {
+                return stream.filter(dir -> Files.exists(dir.resolve("pom.xml")))
+                             .map(dir -> dir.getFileName()
+                                            .toString())
+                             .sorted()
+                             .toList();
+            }
+        }).fold(cause -> fail("Cannot list " + examples + ": " + cause.message()),
+                list -> list);
+
+        assertThat(dirs).as("control: examples found").contains("banking", "step-composition", "url-shortener");
+        assertThat(dirs).allSatisfy(dir -> assertThat(aggregator.contains("<module>" + dir + "</module>") || ci.contains("examples/" + dir
+                                                                                                                        + "/pom.xml")).as("example '%s' is neither an examples/pom.xml module nor JBCT-checked standalone in ci.yml",
+                                                                                                                                          dir)
+                                                     .isTrue());
     }
 
     /// Each `actions/upload-artifact` step of `workflow`, as its text: from the step's `- ` line to the next step at

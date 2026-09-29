@@ -85,15 +85,16 @@ jobs:
       - name: Build test-stream-repl blueprint
         run: mvn -B -f aether/tests/blueprints/test-stream-repl/pom.xml clean install -DskipTests
 
-      # #1684: the standalone test blueprints are outside the reactor, so no reactor gate checks their format or lint.
-      - name: JBCT check standalone test blueprints
+      # #1684, #919: the standalone test blueprints and the standalone url-shortener examples are outside the reactor,
+      # so no reactor gate checks their format or lint.
+      - name: JBCT check standalone test blueprints and examples
         run: |
-          poms=(aether/tests/blueprints/*/pom.xml)
-          (( ${#poms[@]} > 0 )) || { echo "no aether/tests/blueprints/*/pom.xml found; refusing to continue" >&2; exit 1; }
+          poms=(aether/tests/blueprints/*/pom.xml examples/url-shortener/pom.xml examples/url-shortener-v2/pom.xml)
+          (( ${#poms[@]} > 2 )) || { echo "no aether/tests/blueprints/*/pom.xml found; refusing to continue" >&2; exit 1; }
           for pom in "${poms[@]}"; do
             mvn -B jbct:check -f "$pom"
           done
-          echo "JBCT-checked ${#poms[@]} standalone blueprint(s)"
+          echo "JBCT-checked ${#poms[@]} standalone pom(s)"
 
       - name: Run Forge tests
         run: >
