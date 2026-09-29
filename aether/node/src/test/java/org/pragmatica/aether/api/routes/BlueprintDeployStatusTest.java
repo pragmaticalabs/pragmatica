@@ -254,7 +254,10 @@ class BlueprintDeployStatusTest {
     void bodyRoute_omitsRejectedStreamBindings_whenEveryDeclarationBound() {
         var body = routeBody(ManagementRoute.BLUEPRINT_PUBLISH_BODY.prefix(), "id = \"org.example:orders-app:1.0.0\"\n", List.of());
 
-        assertThat(body).contains("\"status\":\"applied\"").doesNotContain("rejectedStreamBindings");
+        assertThat(body).contains("\"status\":\"applied\"")
+                        .doesNotContain("rejectedStreamBindings")
+                        .as("#1564: an empty warnings list is omitted too, as management-api.md states")
+                        .doesNotContain("\"warnings\"");
     }
 
     /// #1564: a deploy-time warning — here the LOUD replication warning — reaches the operator in the JSON body, by
