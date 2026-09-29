@@ -293,7 +293,8 @@ public final class ForgeServer {
                                                                                            entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  metricsInstance,
-                                                                 configurableLoadRunnerInstance);
+                                                                 configurableLoadRunnerInstance,
+                                                                 operatorApiKey::get);
 
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);

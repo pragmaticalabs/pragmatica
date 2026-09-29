@@ -29,6 +29,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | StreamFanoutConsumerTest      | 13000     | 13100          | 0          | 5 nodes (shared cluster, app-http 13200; #265 STEP 0 streaming baseline) |
 | StreamCrashDurabilityTest     | 13500     | 13600          | 0          | 5 nodes (shared cluster, app-http 13700; streaming-persistence A6 WAL crash-durability) |
 | StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership; per-PR since #1550) |
+| ForgeProxyApiKeyForgeTest     | 14500     | 14600          | 0          | 3 nodes (shared cluster, app-http 14700; #1105 Forge proxy calls carry the operator key under API_KEY). Inside the 14200-15000 gap, below 32768, outside the aether/ember scan windows |
 | StreamOwnerFailoverPinnedTest | 15000     | 15100          | 0          | 5 nodes (shared cluster, app-http 15200; #491 RF=2 owner-kill failover, pinned membership) |
 | MultiPartitionStreamTest      | 16000     | 16100          | 0          | 5 nodes (shared cluster, app-http 16200; #429 multi-partition e2e — distribution/order/read-paths) |
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
