@@ -475,17 +475,27 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .flatMap(clusterWide -> unmanagedOrMissed(clusterWide, cluster, source));
     }
 
+    /// #1503: only INGRESS firewalls count as evidence that the selector missed — those Aether created for a
+    /// source, which carry [#SOURCE_LABEL] as well as the cluster label ([#createIngressFirewall]). A firewall
+    /// that carries only the cluster label (a harness partition firewall, #1500, or one an operator labelled
+    /// by hand) says nothing about this source's ingress; counting it turned every replacement into a
+    /// fail-closed refusal and disabled auto-heal for the whole cluster.
     private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide,
                                                          ClusterName cluster,
                                                          SourceName source) {
-        if (clusterWide.isEmpty()) {
+        var ingress = clusterWide.stream().filter(HetznerComputeProvider::isIngressFirewall).count();
+
+        if (ingress == 0) {
             return ingressUnmanaged(cluster, source);
         }
 
-        return FirewallSelectorMissed.firewallSelectorMissed(cluster,
-                                                             source,
-                                                             clusterWide.size())
-                                     .promise();
+        return FirewallSelectorMissed.firewallSelectorMissed(cluster, source, (int) ingress).promise();
+    }
+
+    private static boolean isIngressFirewall(Firewall firewall) {
+        return Option.option(firewall.labels())
+                     .map(labels -> labels.containsKey(SOURCE_LABEL))
+                     .or(false);
     }
 
     private static Promise<List<Long>> ingressUnmanaged(ClusterName cluster, SourceName source) {
