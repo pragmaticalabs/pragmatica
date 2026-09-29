@@ -205,6 +205,27 @@ class BootstrapPhaseDeploySshSourceTest {
                   .doesNotContain(":latest");
     }
 
+    /// #1650 F2 (v1650 MI): the launch line `deploySshSource` builds stamps the node's OWN source -- the one being
+    /// deployed -- and never the default, nor the operator host's `AETHER_SOURCE`. Driven through the call site,
+    /// not the builder, so a wrong argument at the call cannot hide behind a correct builder.
+    @Test
+    void sshSource_launchLineStampsTheDeployedSource_neverTheDefaultOrTheHostsOwn() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of("10.0.0.2"), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1"), ssh("dc-worker-0", "10.0.0.2")));
+        var result = deploy(ctx, "dc", name -> name.equals("AETHER_SOURCE")
+                                               ? "operator-host-source"
+                                               : null);
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands).as("CONTROL: both SSH nodes were launched").hasSize(2);
+        startCommands.forEach((host, cmd) -> assertThat(cmd).as("launch line on %s", host)
+                                                          .contains("-e AETHER_SOURCE=\"dc\"")
+                                                          .doesNotContain("AETHER_SOURCE=\"default\"")
+                                                          .doesNotContain("operator-host-source"));
+    }
+
     /// Review N-1: the config dir is created by its own ssh call BEFORE the scp that lands in it —
     /// the launch line's `mkdir -p` prefix runs too late to help the scp.
     @Test

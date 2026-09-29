@@ -365,6 +365,8 @@ sealed interface BootstrapPhaseDeploy {
             var command = isJvm
                           ? buildJvmRestartCommand(node.nodeId(),
                                                    role,
+                                                   sourceName,
+                                                   source.knownZone(),
                                                    clusterPort,
                                                    managementPort,
                                                    peers,
@@ -375,6 +377,8 @@ sealed interface BootstrapPhaseDeploy {
                                                 clusterName,
                                                 node.nodeId(),
                                                 role,
+                                                sourceName,
+                                                source.knownZone(),
                                                 clusterPort,
                                                 managementPort,
                                                 peers,
@@ -476,6 +480,8 @@ sealed interface BootstrapPhaseDeploy {
                                       ClusterName clusterName,
                                       String nodeId,
                                       NodeRole role,
+                                      SourceName source,
+                                      Option<String> zone,
                                       int clusterPort,
                                       int managementPort,
                                       String peers,
@@ -484,6 +490,8 @@ sealed interface BootstrapPhaseDeploy {
                                    clusterName,
                                    nodeId,
                                    role,
+                                   source,
+                                   zone,
                                    clusterPort,
                                    managementPort,
                                    peers,
@@ -507,6 +515,8 @@ sealed interface BootstrapPhaseDeploy {
                                       ClusterName clusterName,
                                       String nodeId,
                                       NodeRole role,
+                                      SourceName source,
+                                      Option<String> zone,
                                       int clusterPort,
                                       int managementPort,
                                       String peers,
@@ -527,7 +537,7 @@ sealed interface BootstrapPhaseDeploy {
              + " -e PEERS=\"" + peers
              + "\""
              + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
-             + "\"" + identityEnvFlags(clusterName, role, envLookup)
+             + "\"" + identityEnvFlags(clusterName, role, source, zone, envLookup)
              + " " + image;
     }
 
@@ -535,12 +545,18 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_CLUSTER_SECRET, emitted explicitly by the caller). Mirrors the cloud-init start's
     /// emission so the re-launch keeps full env parity. Empty when no allow-list var is present
     /// (prod-safe: unset host env → nothing emitted).
-    private static String identityEnvFlags(ClusterName clusterName, NodeRole role, Fn1<String, String> envLookup) {
+    private static String identityEnvFlags(ClusterName clusterName,
+                                           NodeRole role,
+                                           SourceName source,
+                                           Option<String> zone,
+                                           Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendRestartEnvFlag(sb, name, value),
                                          clusterName,
                                          role,
+                                         source,
+                                         zone,
                                          Option.empty(),
                                          envLookup);
 
@@ -557,6 +573,8 @@ sealed interface BootstrapPhaseDeploy {
 
     static String buildJvmRestartCommand(String nodeId,
                                          NodeRole role,
+                                         SourceName source,
+                                         Option<String> zone,
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
@@ -564,6 +582,8 @@ sealed interface BootstrapPhaseDeploy {
                                          ClusterName clusterName) {
         return buildJvmRestartCommand(nodeId,
                                       role,
+                                      source,
+                                      zone,
                                       clusterPort,
                                       managementPort,
                                       peers,
@@ -595,6 +615,8 @@ sealed interface BootstrapPhaseDeploy {
     /// carries AETHER_CLUSTER_SECRET.
     static String buildJvmRestartCommand(String nodeId,
                                          NodeRole role,
+                                         SourceName source,
+                                         Option<String> zone,
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
@@ -606,7 +628,7 @@ sealed interface BootstrapPhaseDeploy {
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && printf '%s\\n'"
              + " 'AETHER_CLUSTER_SECRET=" + clusterSecret
-             + "'" + identityEnvAssignments(clusterName, role, envLookup)
+             + "'" + identityEnvAssignments(clusterName, role, source, zone, envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
              + " 'AETHER_CLUSTER_PORT=" + clusterPort
@@ -623,12 +645,16 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_CLUSTER_SECRET, written explicitly by the caller), one env-file line each.
     private static String identityEnvAssignments(ClusterName clusterName,
                                                  NodeRole role,
+                                                 SourceName source,
+                                                 Option<String> zone,
                                                  Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendJvmEnvAssignment(sb, name, value),
                                          clusterName,
                                          role,
+                                         source,
+                                         zone,
                                          Option.empty(),
                                          envLookup);
 
@@ -803,6 +829,8 @@ sealed interface BootstrapPhaseDeploy {
                                                                                                                                                                                        clusterName,
                                                                                                                                                                                        node.nodeId(),
                                                                                                                                                                                        role,
+                                                                                                                                                                                       sourceName,
+                                                                                                                                                                                       source.knownZone(),
                                                                                                                                                                                        clusterPort,
                                                                                                                                                                                        managementPort,
                                                                                                                                                                                        peersValue,
@@ -859,6 +887,8 @@ sealed interface BootstrapPhaseDeploy {
                                        ClusterName clusterName,
                                        String nodeId,
                                        NodeRole role,
+                                       SourceName source,
+                                       Option<String> zone,
                                        int clusterPort,
                                        int managementPort,
                                        String peers,
@@ -869,6 +899,8 @@ sealed interface BootstrapPhaseDeploy {
                                             clusterName,
                                             nodeId,
                                             role,
+                                            source,
+                                            zone,
                                             clusterPort,
                                             managementPort,
                                             peers,
