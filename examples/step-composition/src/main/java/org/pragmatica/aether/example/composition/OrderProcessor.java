@@ -50,7 +50,6 @@ import org.pragmatica.lang.Promise;
 /// validate -> persist -> build confirmation.
 @Slice
 public interface OrderProcessor {
-
     record OrderRequest(String customerId, String productId, int quantity, String amount) {}
 
     record OrderConfirmation(OrderId orderId, String status) {}
@@ -66,13 +65,12 @@ public interface OrderProcessor {
     /// The `listener` parameter is injected for its subscription side-effect —
     /// its @OnOrderEvent method is registered transitively in the manifest.
     /// It does not participate in the request processing chain directly.
-    static OrderProcessor orderProcessor(ValidateOrder validate,
-                                         PersistOrder persist,
-                                         OrderEventListener listener) {
+    static OrderProcessor orderProcessor(ValidateOrder validate, PersistOrder persist, OrderEventListener listener) {
         // listener is injected for its subscription side-effect —
         // its @OnOrderEvent method is registered transitively
         return request -> validate.apply(request)
                                   .flatMap(persist::apply)
-                                  .map(order -> new OrderConfirmation(order.orderId(), "CONFIRMED"));
+                                  .map(order -> new OrderConfirmation(order.orderId(),
+                                                                      "CONFIRMED"));
     }
 }

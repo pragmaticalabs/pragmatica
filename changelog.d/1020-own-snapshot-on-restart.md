@@ -64,7 +64,7 @@
   the docstring claimed activation unconditionally and nothing covered the failure. The docstring now
   states it, and the ERROR names the CONSEQUENCE — node NOT active, serves no requests, every retry
   re-enters — instead of logging a bare cause object, because that line is the entire operator surface
-  for the state: the periodic stuck-in-`Syncing` WARN is structurally suppressed on this path (#1447).
+  for the state: the periodic stuck-in-`Syncing` WARN is structurally suppressed on this path (#1447; since fixed in the same release, see `1447-stuck-sync-warn-on-adoption-loop.md`).
   **Whether the wedge is right, whether it should be bounded or terminal, and what readiness reports
   meanwhile are #1013's decisions and are deliberately NOT taken here.** The pin is an ENABLED
   tripwire, not a `@Disabled` placeholder: it asserts the CURRENT behaviour and its failure message
