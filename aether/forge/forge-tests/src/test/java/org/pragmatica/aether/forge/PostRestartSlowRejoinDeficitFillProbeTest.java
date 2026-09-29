@@ -42,6 +42,7 @@ import org.pragmatica.lang.parse.Number;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
@@ -110,6 +111,16 @@ import static org.awaitility.Awaitility.await;
 ///
 /// PASS  = zero provisions across the hold and the rejoin, the same 5 stable ids come back, AND the
 ///         positive control fills a genuine deficit (so the zero is not vacuous).
+///
+/// ## #1526 fixture change
+/// A full-cluster restart now forms a FRESH genesis from the cores present, and genesis forms only from
+/// the full roster it names, so the held-back members can no longer be genesis members that the others
+/// form without. The restarted genesis roster is the three cores started first (Ember gives
+/// `cluster.genesis_voters` only to started initial nodes); the two held-back members are configured
+/// cores that come back later, join the formed electorate as observers and are voted in through Rabia §4
+/// add commands, after which the electorate is five again. The #509 question is unchanged — slow
+/// configured members must not be replaced by provisioned nodes during the hold or the rejoin — and the
+/// rejoin now additionally waits for the two adds to land before the positive control runs.
 /// FAIL  = any provision during the hold — #509 reproducing at assembly level (the failure names the
 ///         requested node ids and when each was requested).
 @Tag("Heavy")
@@ -325,10 +336,60 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// atomic and never writes `ClusterConfigKey.CURRENT`, so `configuredCoreCountSupplier` would
     /// never see 6 and the control would silently no-op into a false pass. Same resolved caveat as
     /// `ScaleUpFiveToSevenProbeTest` and `ArtifactChurnSurvival5to7to5ProbeTest`.
+    ///
+    /// DISABLED until #1551 is fixed: the scale-up to 7 reaches the leader but the reconciler reports
+    /// `NO_DEFICIT` and provisions nothing, identically at rc4 `b91c7e3a8`, S1 `1eae5d9ea` and #1526.
+    /// [#reconcile_configuredCoreCountRaised_provisionsNothing_tripwire1551] pins that current behaviour
+    /// and reddens the moment the defect is fixed; then delete it and remove this `@Disabled`.
     @Test
     @Order(1)
+    @Disabled("#1551: scale-up deficit-fill provisions nothing (NO_DEFICIT); re-enable when the tripwire reddens")
     @TerminalOperation
     void reconcile_configuredCoreCountRaised_provisionsReplacement() {
+        var fill = runScaleUpControl();
+
+        assertThat(recorder.provisionCalls()).as("CONTROL-1: raising the configured core count %d→%d must reach the provider through "
+                                                + "the CTM provisionReplacement path within %ds. ZERO here means the deficit-fill "
+                                                + "path or the recorder is INERT in this cluster — which would make the zero asserted "
+                                                + "by the slow-rejoin test vacuous rather than meaningful. Reconciler suppression "
+                                                + "reasons seen: %s.",
+                                                 INITIAL_CORES,
+                                                 RAISED_CORES,
+                                                 FILL_BUDGET.toSeconds(),
+                                                 fill.reasons)
+                  .isGreaterThan(0);
+        assertThat(countedCores()).as("CONTROL-2: the provisioned core must actually JOIN and be counted, taking the "
+                                     + "counted-core denominator to %d within %ds. Counted ids=%s, provisions=%s. A "
+                                     + "provision that never joins would leave the control half-proven.",
+                                      RAISED_CORES,
+                                      FILL_BUDGET.toSeconds(),
+                                      countedCoreIds(),
+                                      recorder.render())
+                  .isEqualTo(RAISED_CORES);
+    }
+
+    /// TRIPWIRE for #1551 — ENABLED on purpose. It asserts the CURRENT defective behaviour: raising the
+    /// configured core count 5→7 provisions nothing. When #1551 is fixed this test REDDENS; then delete
+    /// it and remove the `@Disabled` from [#reconcile_configuredCoreCountRaised_provisionsReplacement],
+    /// which carries the real assertions. A disabled test would sit forgotten; this one cannot.
+    @Test
+    @Order(2)
+    @TerminalOperation
+    void reconcile_configuredCoreCountRaised_provisionsNothing_tripwire1551() {
+        var fill = runScaleUpControl();
+
+        assertThat(recorder.provisionCalls()).as("#1551 TRIPWIRE: the 5→7 scale-up now provisions (%s; reasons %s). The defect "
+                                                + "looks FIXED — delete this tripwire and re-enable "
+                                                + "reconcile_configuredCoreCountRaised_provisionsReplacement.",
+                                                 recorder.render(),
+                                                 fill.reasons)
+                  .isZero();
+    }
+
+    /// The positive control's scenario: arm on full membership, POST the scale to [#RAISED_CORES], and
+    /// observe until filled or the fill budget elapses.
+    @TerminalOperation
+    private HoldObservation runScaleUpControl() {
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfStartedNodeDied).until(() -> observedPeak() >= INITIAL_CORES);
         recordMilestone("CONTROL armed: observedPeak=" + observedPeak() + " (reachedFullMembership latch can now open)");
         var leaderPort = cluster.getLeaderManagementPort()
@@ -354,24 +415,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
                        + " provisionCalls=" + recorder.provisionCalls());
         dumpTimeline("DEFICIT-FILL CONTROL", fill.timeline);
         dumpProvisionLedger();
-        assertThat(recorder.provisionCalls()).as("CONTROL-1: raising the configured core count %d→%d must reach the provider through "
-                                                + "the CTM provisionReplacement path within %ds. ZERO here means the deficit-fill "
-                                                + "path or the recorder is INERT in this cluster — which would make the zero asserted "
-                                                + "by the slow-rejoin test vacuous rather than meaningful. Reconciler suppression "
-                                                + "reasons seen: %s.",
-                                                 INITIAL_CORES,
-                                                 RAISED_CORES,
-                                                 FILL_BUDGET.toSeconds(),
-                                                 fill.reasons)
-                  .isGreaterThan(0);
-        assertThat(countedCores()).as("CONTROL-2: the provisioned core must actually JOIN and be counted, taking the "
-                                     + "counted-core denominator to %d within %ds. Counted ids=%s, provisions=%s. A "
-                                     + "provision that never joins would leave the control half-proven.",
-                                      RAISED_CORES,
-                                      FILL_BUDGET.toSeconds(),
-                                      countedCoreIds(),
-                                      recorder.render())
-                  .isEqualTo(RAISED_CORES);
+
+        return fill;
     }
 
     // ----- restart mechanics -----
@@ -428,6 +473,12 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> countedCores() >= INITIAL_CORES);
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> cluster.currentLeader()
                                                                              .isPresent());
+        // #1526: the released configured cores are voted back in through Rabia §4 adds.
+        await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy)
+               .until(() -> cluster.currentLeader().flatMap(cluster::getNode)
+                                   .map(leader -> leader.coreNodeIds().size() == INITIAL_CORES)
+                                   .or(false));
+        recordMilestone("REJOIN: held-back members voted back into the electorate");
     }
 
     // ----- observation -----

@@ -180,6 +180,9 @@ public interface SystemTags {
         pin(table, 86, "org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot");
         pin(table, 87, "org.pragmatica.aether.worker.metrics.PerMethodMetrics");
         pin(table, 88, "org.pragmatica.aether.worker.metrics.PerSliceMetrics");
+        // #1526: genesis agreement. Consensus-prefixed, so it must sit in the one-byte window; 89 was
+        // the next free slot in it (blocks are advisory).
+        pin(table, 89, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement");
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
@@ -213,15 +216,22 @@ public interface SystemTags {
         pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
         pin(table, 113, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest");
         pin(table, 114, "org.pragmatica.consensus.rabia.VoterConfiguration");
+        // RETIRED 2026-09-27 (#1526): `ConfigurationHandoff` went with #1390's certified handoff; voter
+        // reconfiguration now follows Rabia §4. The pin STAYS so the tag is never reused (see the
+        // DHTNotification note under [base 640]). Same for 118, 119, 121 and 122 below.
         pin(table, 115, "org.pragmatica.consensus.rabia.ConfigurationHandoff");
         pin(table, 116, "org.pragmatica.cluster.metrics.MetricObservation");
         pin(table, 117, "org.pragmatica.aether.worker.metrics.SourceMetricsBatch");
+        // RETIRED 2026-09-27 (#1526): `VoterAuthority` and `ConfigurationCertificate`.
         pin(table, 118, "org.pragmatica.consensus.rabia.VoterAuthority");
         pin(table, 119, "org.pragmatica.consensus.rabia.ConfigurationCertificate");
         pin(table, 120, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest");
+        // RETIRED 2026-09-27 (#1526): the `ConfigurationTransfer` and `ConfigurationInstalled` messages.
         pin(table, 121, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationTransfer");
         pin(table, 122, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationInstalled");
-        // Tag 123 is available: the removed uncorrelated LeaderPut never shipped before GA.
+        // #1526: the Rabia §4 command nested in Propose/Decision; consensus-prefixed, so one-byte window.
+        // Tag 123 was free: the removed uncorrelated LeaderPut never shipped before GA.
+        pin(table, 123, "org.pragmatica.consensus.rabia.ReconfigurationCommand");
         pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
         pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
         pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");
