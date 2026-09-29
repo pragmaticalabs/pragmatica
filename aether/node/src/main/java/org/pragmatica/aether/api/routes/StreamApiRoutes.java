@@ -41,6 +41,7 @@ import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -761,7 +762,8 @@ public final class StreamApiRoutes implements RouteSource {
         var partition = Option.option(request.partition()).or(DEFAULT_PUBLISH_PARTITION);
 
         return admit(streamName, partition).async()
-                    .flatMap(_ -> write(streamName, partition, request));
+                    .flatMap(_ -> write(streamName, partition, request))
+                    .mapError(cause -> retryableRefusal(streamName, cause));
     }
 
     /// The pre-write admission checks, separated from the write so the batch form can tell "rejected before
@@ -775,6 +777,14 @@ public final class StreamApiRoutes implements RouteSource {
                                            partition,
                                            decodePayload(request.data()),
                                            System.currentTimeMillis());
+    }
+
+    /// #1564: a single publish refused before the append for want of registered peers answers 503 (retryable), not
+    /// a 500. The batch form reports it per item already (`OUTCOME_UNKNOWN` with the cause).
+    private static Cause retryableRefusal(String streamName, Cause cause) {
+        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS
+               ? new ManagementServerError.PublishRetryable(streamName, cause)
+               : cause;
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the

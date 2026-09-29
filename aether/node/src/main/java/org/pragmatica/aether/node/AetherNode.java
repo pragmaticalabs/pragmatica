@@ -369,6 +369,8 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -1079,8 +1081,6 @@ public interface AetherNode extends ManageableNode {
     /// the metrics-threshold alert path only runs while a dashboard client is connected. Five minutes
     /// matches the RetentionEnforcer cadence — the only mover that can newly violate between checks.
     TimeSpan RETENTION_INVARIANT_CHECK_INTERVAL = TimeSpan.timeSpan(5).minutes();
-    /// #1564 B1: the operator alert raised when the replication policy refuses `system:cluster-events`.
-    String SYSTEM_STREAM_REFUSED_ALERT = "system-stream-registration-refused";
 
     /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
     /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
@@ -3096,11 +3096,6 @@ public interface AetherNode extends ManageableNode {
         }
 
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
-        var blueprintService = BlueprintService.blueprintService(clusterNode,
-                                                                 kvStore,
-                                                                 repository,
-                                                                 artifactStore,
-                                                                 resourceProviderSetup.nodeComposite());
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
@@ -3186,6 +3181,13 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
                                                                       OPERATOR_WARNING_EVICTION_INTERVAL,
                                                                       OPERATOR_WARNING_EVICTION_INTERVAL));
+        // #1564 / #1617 (R10): deploy warnings are raised through this node's operator-warning sink.
+        var blueprintService = BlueprintService.blueprintService(clusterNode,
+                                                                 kvStore,
+                                                                 repository,
+                                                                 artifactStore,
+                                                                 resourceProviderSetup.nodeComposite(),
+                                                                 operatorWarningSink);
         // #1640: a cluster event whose publish did not land (the partition's owner died with it) waits in the
         // aggregator and is re-sent once a second until it lands or its horizon passes.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,
@@ -3400,7 +3402,8 @@ public interface AetherNode extends ManageableNode {
                                                                          sliceInvoker,
                                                                          cacheDhtClient,
                                                                          contentStorage,
-                                                                         kvStore));
+                                                                         kvStore,
+                                                                         operatorWarningSink));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -4838,22 +4841,12 @@ public interface AetherNode extends ManageableNode {
         // Retention is production-grade and config-overridable (item 4 / OOM guard): bounded on count,
         // bytes (off-heap hard cap), and age, mode ANY — see ClusterEventsLimits, checked at boot (#1549). The publisher/consumer refs the aggregator was
         // constructed with are bound here; until then emits fall back to log-only (bootstrap window).
-        var clusterEventsRetention = clusterEventsLimits.retention();
         // #1564 (N2): the local partition the publisher/consumer wiring below creates at construction carries the
-        // SAME factors the SystemStreamRegistrar commits — those of the committed `[replication.cluster_events]`
-        // as this node sees it now — never a separate hardcoded CF. With no committed config (a fresh node) that is
-        // the built-in; an unresolvable committed value (refused at apply since B1) also falls back to the built-in
-        // here, and the registrar reports that refusal.
-        var clusterEventsFactors = ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
-                                                                                            AetherValue.ClusterConfigValue.class)).or(ClusterReplication.CLUSTER_EVENTS_BUILT_IN);
-        var clusterEventsStreamConfig = org.pragmatica.aether.slice.StreamConfig.streamConfig(clusterEventsStreamName,
-                                                                                              1,
-                                                                                              clusterEventsRetention,
-                                                                                              "earliest",
-                                                                                              clusterEventsLimits.maxEventSizeBytes(),
-                                                                                              org.pragmatica.aether.slice.ConsistencyMode.EVENTUAL,
-                                                                                              clusterEventsFactors.confirmationFactor())
-                                                                                .withReplication(clusterEventsFactors);
+        // SAME factors the SystemStreamRegistrar commits — the committed `[replication.cluster_events]` as this node
+        // sees it now, never a separate hardcoded CF (ClusterEventsLimits.streamConfig).
+        var clusterEventsStreamConfig = clusterEventsLimits.streamConfig(clusterEventsStreamName,
+                                                                         kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                          AetherValue.ClusterConfigValue.class));
         // Fix #3 / #1230: the forward-capable cluster-events CONSUMER and PUBLISHER are wired further below,
         // after streamForwardClient + streamReadForwardMetrics are constructed, so a non-replica node
         // read-forwards observability reads to a caught-up replica instead of reading its own empty local
@@ -5437,8 +5430,8 @@ public interface AetherNode extends ManageableNode {
         var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
                                                                                                                                                AetherValue.ClusterConfigValue.class)).flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
                                                                                 streamNamespacesService::bootstrap,
-                                                                                cause -> raiseSystemStreamRefusal(alertManager,
-                                                                                                                  cause));
+                                                                                cause -> raiseClusterEventsRefusal(operatorWarningSink,
+                                                                                                                   cause));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  systemStreamRegistrar::onLeaderChange));
@@ -6036,17 +6029,19 @@ public interface AetherNode extends ManageableNode {
                   presenceSampler.currentMembers());
     }
 
-    /// #1564 B1: the operator-visible half of a refused system-stream registration — a CRITICAL alert on
-    /// `/api/alerts/active` beside the registrar's ERROR log, since `system:cluster-events` itself is what failed.
+    /// #1564 B1: the operator-visible half of a refused `system:cluster-events` registration, a CRITICAL
+    /// `cluster-events-registration-refused` operator warning (#1617, R10): an ERROR log, plus a cluster event. The
+    /// event is offered to the very stream whose registration was refused, so on this path the ERROR log is the
+    /// report the operator can rely on; the event lands only once cluster-events exists (redelivery holds it for
+    /// its horizon).
     @Contract
-    private static void raiseSystemStreamRefusal(AlertManager alertManager, Cause cause) {
-        alertManager.inject(SYSTEM_STREAM_REFUSED_ALERT,
-                            "CRITICAL",
-                            "system:cluster-events was not registered: " + cause.message(),
-                            Option.none(),
-                            Option.none())
-                    .onFailure(failure -> LOG.warn("System-stream refusal alert injection failed: {}",
-                                                   failure.message()));
+    private static void raiseClusterEventsRefusal(OperatorWarningSink sink, Cause cause) {
+        OperatorWarnings.raise(LOG,
+                               sink,
+                               OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED,
+                               "system:cluster-events",
+                               "system:cluster-events was not registered: {} — correct [replication.cluster_events] and re-apply the cluster config",
+                               cause.message());
     }
 
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —
@@ -8443,7 +8438,8 @@ public interface AetherNode extends ManageableNode {
                                                   SliceInvoker sliceInvoker,
                                                   DHTClient cacheDhtClient,
                                                   StorageInstance contentStorage,
-                                                  KVStore<AetherKey, AetherValue> kvStore) {
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  OperatorWarningSink operatorWarningSink) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
         spi.registerExtension(DHTClient.class, cacheDhtClient);
@@ -8474,6 +8470,9 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(ReplicationContext.Source.class,
                               ClusterReplication.source(() -> kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
                                                                                AetherValue.ClusterConfigValue.class)));
+        // #1564 / #1617 (R10): the replication warnings a stream, durable topic or durable entity raises when it
+        // activates reach this node's cluster event log through its own operator-warning sink.
+        spi.registerExtension(OperatorWarningSink.class, operatorWarningSink);
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot

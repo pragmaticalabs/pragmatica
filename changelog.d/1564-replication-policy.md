@@ -12,9 +12,10 @@
   old `min-sync-replicas` default was 0, so a publish acked on the owner's fsync; with CF 2 a publish needs one
   registered peer and fails `NOT_ENOUGH_REPLICAS` without one. Management-API-created streams take the same
   defaults, so the FIRST publish to a stream that publish creates is refused `NOT_ENOUGH_REPLICAS` (typed,
-  `Cause.Transient`, nothing appended) until a peer registers; a retry then succeeds.
+  `Cause.Transient`, nothing appended; a Management-API publish answers 503) until a peer registers; a retry then
+  succeeds.
   [mechanism: `ReplicationDeclaration.resolve` fills an undeclared CF from the cluster default; pinned by
-  `FreshStreamFirstPublishTest`]
+  `FreshStreamFirstPublishTest`, `StreamApiRoutesPublishPartitionTest`]
 - **Cluster-wide defaults live in the committed cluster TOML** (owner ruling, know 596bdfd07(2)): an optional
   `[replication]` section (`replication_factor`, default 3, at least 3; `confirmation_factor`, default 2) and
   `[replication.cluster_events] confirmation_factor` (default 1, the `system:cluster-events` stream, pending the
@@ -24,9 +25,9 @@
   [mechanism: pinned by `ReplicationDefaultsParserTest`, `ClusterReplicationTest`, `ClusterConfigRoutesApplyTest`,
   `ClusterTopologyManagerDesiredCountCasTest`]
 - **A `system:cluster-events` registration the replication policy refuses is terminal and loud**, not retried at
-  DEBUG forever: the leader's registrar logs an ERROR and raises the CRITICAL alert
-  `system-stream-registration-refused`; a newly committed cluster config re-arms it.
-  [mechanism: pinned by `SystemStreamRegistrarTest`]
+  DEBUG forever: the leader raises the CRITICAL OperatorWarning `cluster-events-registration-refused` (an ERROR
+  log plus a cluster event, which lands once the stream exists); a newly committed cluster config re-arms it.
+  [mechanism: pinned by `SystemStreamRegistrarTest`, `OperatorWarningWiringTest`]
 - **Refused, typed, at deploy and at activation:** `1 ≤ CF ≤ RF` violated (a negative CF used to pass the stream
   parser and behave as 0); an RF below 3 that came from a default — only a resource's own declaration may go below
   3; an RF above the cluster's desired core count. The engine itself checks only `1 ≤ CF ≤ RF`. Deploy validation
@@ -49,8 +50,9 @@
 - **Deploy warnings now reach the operator.** An explicitly declared RF below 3 (LOUD), CF == RF and CF == 1 are
   warned at declaration: a WARN log, and a new `warnings` array on the blueprint publish/deploy response
   (`{field, rule, message}`), printed by the CLI after a TABLE publish. Deploy-time stream validation warnings
-  were computed before and reached no operator. The cluster event for the loud warnings is wired by whichever of
-  #1564 and #1617 merges second.
-  [mechanism: pinned by `BlueprintDeployStatusTest` (deploy response) and `StreamSectionBindingTest` (activation WARN)]
+  were computed before and reached no operator. Each is also an OperatorWarning cluster event (#1617): `deploy-warning`
+  at blueprint publish, `replication-policy-warning` when a stream, durable topic or durable entity activates.
+  [mechanism: pinned by `BlueprintDeployStatusTest` (deploy response), `BlueprintServiceTest$DeployWarningEvents`,
+  `StreamSectionBindingTest`, `PublisherFactoryTest`, `DurableEntityFactoryTest` (events), `OperatorWarningWiringTest`]
 - The guarantee table per kind and operation is in `guarantees.md` §4a; `guarantees.md` no longer claims an
   unreachable entity "RF=3 default".

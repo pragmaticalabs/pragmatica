@@ -556,6 +556,33 @@ class StreamSectionBindingTest {
                                                                    .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicationContextUnavailable(ALIAS))));
         }
 
+        /// #1564 / #1617 (R10): the same warnings are raised as `replication-policy-warning` operator warnings through
+        /// the sink the node supplies in the provisioning context, so they reach the cluster event log.
+        @Test
+        void bind_declaredFactorBelowThree_raisesAReplicationPolicyOperatorWarning() {
+            var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            var context = THREE_CORES.withExtension(org.pragmatica.utility.warning.OperatorWarningSink.class,
+                                                    org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf("""
+                                                                                    [streams.orders]
+                                                                                    replication_factor = 1
+                                                                                    """), SECTION, context)
+                                                                   .onFailure(cause -> fail(cause.message())));
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+            while (events.size() < 3 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(events).as("RF 1 declared raises all three warnings").hasSize(3);
+            assertThat(events).allSatisfy(event -> assertThat(event.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING))
+                              .allSatisfy(event -> assertThat(event.subject()).isEqualTo("stream 'orders'"));
+            assertThat(events).anySatisfy(event -> assertThat(event.message()).contains(ReplicationWarning.FACTOR_BELOW_THREE.code()));
+        }
+
         /// V5: the declaration's warnings are LOGGED at activation — the LOUD RF-below-3 warning among them.
         @Test
         void bind_declaredFactorBelowThree_logsTheLoudWarning() {
@@ -571,7 +598,8 @@ class StreamSectionBindingTest {
                 detach.run();
             }
 
-            assertThat(warnings).anySatisfy(line -> assertThat(line).startsWith("LOUD: ")
+            // #1617: OperatorWarnings.raise prefixes the site's template with the operator-warning code.
+            assertThat(warnings).anySatisfy(line -> assertThat(line).startsWith("[replication-policy-warning] LOUD: ")
                                                                     .contains(ReplicationWarning.FACTOR_BELOW_THREE.code())
                                                                     .contains("stream 'orders'"));
         }

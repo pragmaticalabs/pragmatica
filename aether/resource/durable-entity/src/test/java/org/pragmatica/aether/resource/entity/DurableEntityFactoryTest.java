@@ -378,6 +378,33 @@ class DurableEntityFactoryTest {
             assertThat(materializedWith.get()).isNull();
         }
 
+        /// #1564 / #1617 (R10): the declaration's warnings are raised as `replication-policy-warning` operator warnings
+        /// through the sink the node supplies in the provisioning context.
+        @Test
+        void provision_declaredFactorOne_raisesReplicationPolicyOperatorWarnings() {
+            var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            var context = fencedContext().withExtension(EntityLogSubstrate.class, inMemoryLog(new AtomicReference<>()))
+                                         .withExtension(ReplicationContext.Source.class,
+                                                        ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN))
+                                         .withExtension(org.pragmatica.utility.warning.OperatorWarningSink.class,
+                                                        org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+            new DurableEntityFactory().provision(DurableEntityConfig.durableEntityConfig(KEYSPACE, 8, Option.some(1), Option.none())
+                                                                    .unwrap(),
+                                                 context)
+                                      .await(AWAIT)
+                                      .onFailure(DurableEntityFactoryTest::failCause);
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+            while (events.size() < 3 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(events).hasSize(3)
+                              .allSatisfy(event -> assertThat(event.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING))
+                              .allSatisfy(event -> assertThat(event.subject()).isEqualTo("entity keyspace '" + KEYSPACE + "'"));
+        }
+
         @Test
         void provision_withoutReplicationContext_isRefused() {
             var context = fencedContext().withExtension(ReplicationContext.Source.class,

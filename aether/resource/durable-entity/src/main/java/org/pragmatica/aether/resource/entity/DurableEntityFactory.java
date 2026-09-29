@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.EntityPartitionArc;
@@ -153,19 +156,30 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
                       .flatMap(ReplicationContext.Source::current)
                       .flatMap(replication -> replication.resolve(config.replication()))
                       .mapError(EntityProvisioningError.ReplicationRefused::new)
-                      .onSuccess(resolved -> logWarnings(config, resolved))
+                      .onSuccess(resolved -> raiseWarnings(config, resolved, context))
                       .map(ReplicationDeclaration.Resolved::factors);
     }
 
-    private static void logWarnings(DurableEntityConfig config, ReplicationDeclaration.Resolved resolved) {
+    /// #1564 / #1617: raised as `replication-policy-warning` operator warnings through the node's sink, when the
+    /// node supplies one; the WARN log is written either way.
+    private static void raiseWarnings(DurableEntityConfig config,
+                                      ReplicationDeclaration.Resolved resolved,
+                                      ProvisioningContext context) {
+        var resource = "entity keyspace '" + config.keyspace() + "'";
+        var sink = context.extension(OperatorWarningSink.class).or(OperatorWarningSink.logOnly());
+
         resolved.warnings()
-                .forEach(warning -> LOG.warn("{}durable entity replication warning [{}]: {}",
-                                             warning.loud()
-                                             ? "LOUD: "
-                                             : "",
-                                             warning.code(),
-                                             warning.message("entity keyspace '" + config.keyspace() + "'",
-                                                             resolved.factors())));
+                .forEach(warning -> OperatorWarnings.raise(LOG,
+                                                           sink,
+                                                           OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                           resource,
+                                                           "{}durable entity replication warning [{}]: {}",
+                                                           warning.loud()
+                                                           ? "LOUD: "
+                                                           : "",
+                                                           warning.code(),
+                                                           warning.message(resource,
+                                                                           resolved.factors())));
     }
 
     private static Result<DurableEntity> materializedEntity(DurableEntityConfig config,

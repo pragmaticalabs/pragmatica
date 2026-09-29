@@ -5828,6 +5828,13 @@ never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemRespons
 dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
 `NOT_ATTEMPTED` with `200` — see below.
 
+A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
+for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
+registers only after its config commits (the default `confirmation_factor` is 2 since #1564) — answers
+**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. The batch form
+reports the item `OUTCOME_UNKNOWN` with the cause. `[mechanism: ManagementServerError.PublishRetryable; pinned by
+StreamApiRoutesPublishPartitionTest]`
+
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying

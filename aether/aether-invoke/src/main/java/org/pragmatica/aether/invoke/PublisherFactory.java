@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.resource.DurableTopicSpec;
@@ -64,19 +67,28 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
                         .mapError(_ -> new TopicConfigError.ReplicationContextUnavailable(config.topicName()))
                         .flatMap(ReplicationContext.Source::current)
                         .flatMap(config::durableSpec)
-                        .onSuccess(spec -> spec.onPresent(durable -> logWarnings(config, durable)))
+                        .onSuccess(spec -> spec.onPresent(durable -> raiseWarnings(config, durable, context)))
                : config.durableSpec(ReplicationContext.BUILT_IN);
     }
 
-    private static void logWarnings(TopicConfig config, DurableTopicSpec spec) {
+    /// #1564 / #1617: raised as `replication-policy-warning` operator warnings through the node's sink, when the
+    /// node supplies one; the WARN log is written either way.
+    private static void raiseWarnings(TopicConfig config, DurableTopicSpec spec, ProvisioningContext context) {
+        var resource = "topic '" + config.topicName() + "'";
+        var sink = context.extension(OperatorWarningSink.class).or(OperatorWarningSink.logOnly());
+
         spec.replicationWarnings()
-            .forEach(warning -> LOG.warn("{}durable topic replication warning [{}]: {}",
-                                         warning.loud()
-                                         ? "LOUD: "
-                                         : "",
-                                         warning.code(),
-                                         warning.message("topic '" + config.topicName() + "'",
-                                                         spec.replication())));
+            .forEach(warning -> OperatorWarnings.raise(LOG,
+                                                       sink,
+                                                       OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                       resource,
+                                                       "{}durable topic replication warning [{}]: {}",
+                                                       warning.loud()
+                                                       ? "LOUD: "
+                                                       : "",
+                                                       warning.code(),
+                                                       warning.message(resource,
+                                                                       spec.replication())));
     }
 
     /// The D1 tier switch (durable-pubsub-spec §5, ratified on #386): the declared durability class

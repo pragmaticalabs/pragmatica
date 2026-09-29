@@ -50,8 +50,9 @@ import org.slf4j.LoggerFactory;
 ///     (logged) and never thrashes consensus over an un-fixable config.
 ///   - **A replication-policy REFUSAL is terminal and loud (#1564 B1).** A cause the replication policy raised
 ///     ([ReplicationFactorsError], or the engine's [StreamError.ReplicationRefused]) cannot succeed on retry: the
-///     leg latches DONE, logs at ERROR and hands the cause to the refusal sink (production: a CRITICAL operator
-///     alert). It is re-armed by the next committed cluster config ([#onClusterConfigChanged]), which is how
+///     leg latches DONE and hands the cause to the refusal sink once (production: the CRITICAL
+///     `cluster-events-registration-refused` operator warning — an ERROR log plus a cluster event). It is
+///     re-armed by the next committed cluster config ([#onClusterConfigChanged]), which is how
 ///     the operator clears it — the refusal names `[replication.cluster_events]`.
 ///   - **Stops on leadership loss.** `onLeaderChange(loss)` (or any non-leader pass) cancels the
 ///     pending retry and disarms; only the leader can commit.
@@ -288,10 +289,7 @@ public final class SystemStreamRegistrar {
 
     @Contract
     private void refuse(String name, Cause cause, AtomicBoolean done, AtomicBoolean refused) {
-        LOG.error("SystemStreamRegistrar: {} REFUSED by the replication policy: {} — not retrying; correct "
-                 + "[replication.cluster_events] and re-apply the cluster config",
-                  name,
-                  cause.message());
+        LOG.debug("SystemStreamRegistrar: {} refused by the replication policy — not retrying", name);
         done.set(true);
         refused.set(true);
         refusalSink.accept(cause);

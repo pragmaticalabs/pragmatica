@@ -14,6 +14,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.zip.ZipInputStream;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
@@ -167,20 +171,54 @@ public interface BlueprintService {
                                              Repository repository,
                                              ArtifactStore artifactStore,
                                              Option<ConfigurationProvider> nodeComposite) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), nodeComposite);
+        return blueprintService(cluster, store, repository, artifactStore, nodeComposite, OperatorWarningSink.logOnly());
+    }
+
+    /// The node's factory: deploy warnings are raised through `operatorWarnings` as `deploy-warning` operator
+    /// warnings (#1564 / #1617), so they reach the cluster event log as well as the WARN log and the response.
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite,
+                                             OperatorWarningSink operatorWarnings) {
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.some(artifactStore),
+                                            nodeComposite,
+                                            operatorWarnings);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository,
                                              ArtifactStore artifactStore) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), Option.empty());
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.some(artifactStore),
+                                            Option.empty(),
+                                            OperatorWarningSink.logOnly());
+    }
+
+    /// No artifact store; deploy warnings raised through `operatorWarnings` (#1564 / #1617).
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             OperatorWarningSink operatorWarnings) {
+        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty(), operatorWarnings);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty());
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.empty(),
+                                            Option.empty(),
+                                            OperatorWarningSink.logOnly());
     }
 
     static int extractVersionNumber(String filename) {
@@ -207,17 +245,20 @@ class BlueprintServiceInstance implements BlueprintService {
     private final Repository repository;
     private final Option<ArtifactStore> artifactStore;
     private final Option<ConfigurationProvider> nodeComposite;
+    private final OperatorWarningSink operatorWarnings;
 
     BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                              KVStore<AetherKey, AetherValue> store,
                              Repository repository,
                              Option<ArtifactStore> artifactStore,
-                             Option<ConfigurationProvider> nodeComposite) {
+                             Option<ConfigurationProvider> nodeComposite,
+                             OperatorWarningSink operatorWarnings) {
         this.cluster = cluster;
         this.store = store;
         this.repository = repository;
         this.artifactStore = artifactStore;
         this.nodeComposite = nodeComposite;
+        this.operatorWarnings = operatorWarnings;
     }
 
     @Override
@@ -227,7 +268,7 @@ class BlueprintServiceInstance implements BlueprintService {
                               .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
                               .flatMap(this::validatePubSub)
                               .flatMap(this::storeBlueprint)
-                              .onSuccess(BlueprintServiceInstance::logDeployWarnings)
+                              .onSuccess(this::raiseDeployWarnings)
                               .onFailure(cause -> log.warn("Failed to publish blueprint: {}",
                                                            cause.message()));
     }
@@ -455,7 +496,7 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                               blueprintArtifact.schemaMigrations(),
                                                                               artifactCoords,
                                                                               registerOnly))
-                                .onSuccess(BlueprintServiceInstance::logDeployWarnings);
+                                .onSuccess(this::raiseDeployWarnings);
     }
 
     /// #1336: the stream bindings are derived BEFORE any command is built, so a gating stream rule
@@ -617,16 +658,22 @@ class BlueprintServiceInstance implements BlueprintService {
         return ClusterReplication.context(store.getTyped(AetherKey.ClusterConfigKey.CURRENT, ClusterConfigValue.class));
     }
 
-    /// #1564 (owner ruling, know 596bdfd07(3)): every deploy warning is LOUD — a WARN here, and the deploy
-    /// response carries it to the operator. The cluster event for the loud replication warnings is wired by
-    /// whichever of #1564 and #1617 (which introduces the OperatorWarning event) merges second.
-    private static void logDeployWarnings(PublishedBlueprint published) {
+    /// #1564 (owner ruling, know 596bdfd07(3)): every deploy warning is LOUD — the deploy response carries it,
+    /// and it is raised as a `deploy-warning` operator warning (#1617, R10): a WARN log plus a cluster event.
+    @Contract
+    private void raiseDeployWarnings(PublishedBlueprint published) {
+        var blueprint = published.blueprint().id().asString();
+
         published.warnings()
-                 .forEach(warning -> log.warn("Blueprint {} deploy warning [{}] at {}: {}",
-                                              published.blueprint().id().asString(),
-                                              warning.rule(),
-                                              warning.field(),
-                                              warning.message()));
+                 .forEach(warning -> OperatorWarnings.raise(log,
+                                                            operatorWarnings,
+                                                            OperatorWarningCode.DEPLOY_WARNING,
+                                                            blueprint,
+                                                            "Blueprint {} deploy warning [{}] at {}: {}",
+                                                            blueprint,
+                                                            warning.rule(),
+                                                            warning.field(),
+                                                            warning.message()));
     }
 
     /// The ONE derivation of a blueprint's alias→address bindings, shared by both publish paths (#1066).

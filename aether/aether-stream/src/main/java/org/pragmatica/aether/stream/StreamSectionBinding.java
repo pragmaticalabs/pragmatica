@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -28,7 +31,9 @@ public sealed interface StreamSectionBinding {
 
     /// #1564: the section's `replication_factor`/`confirmation_factor` are resolved against the node's
     /// [ReplicationContext] — the committed cluster defaults and desired core count — the same resolution deploy
-    /// validation applies; the declaration's warnings are logged here, at activation.
+    /// validation applies; the declaration's warnings are raised here, at activation, as `replication-policy-warning`
+    /// operator warnings through the node's [OperatorWarningSink] (a WARN log, plus a cluster event when the node
+    /// supplies the sink).
     static Result<StreamConfig> bindStreamSection(ConfigurationProvider provider,
                                                   String section,
                                                   ProvisioningContext context) {
@@ -36,12 +41,16 @@ public sealed interface StreamSectionBinding {
                       .mapError(_ -> new StreamDeclarationError.ReplicationContextUnavailable(StreamSection.providerSection(provider,
                                                                                                                             section).alias()))
                       .flatMap(ReplicationContext.Source::current)
-                      .flatMap(replication -> bindAgainst(provider, section, replication));
+                      .flatMap(replication -> bindAgainst(provider,
+                                                          section,
+                                                          replication,
+                                                          warningSink(context)));
     }
 
     private static Result<StreamConfig> bindAgainst(ConfigurationProvider provider,
                                                     String section,
-                                                    ReplicationContext replication) {
+                                                    ReplicationContext replication,
+                                                    OperatorWarningSink sink) {
         var streamSection = StreamSection.providerSection(provider, section);
 
         return StreamConfigParser.parseStreamDeclaration(streamSection,
@@ -52,20 +61,35 @@ public sealed interface StreamSectionBinding {
                                                               .mapError(cause -> new StreamDeclarationError.ReplicationRefused(streamSection.alias(),
                                                                                                                                cause))
                                                               .map(_ -> declared))
-                                 .onSuccess(declared -> logWarnings(streamSection.alias(),
-                                                                    declared))
+                                 .onSuccess(declared -> raiseWarnings(sink,
+                                                                      streamSection.alias(),
+                                                                      declared))
                                  .map(StreamConfigParser.DeclaredStream::config);
     }
 
-    private static void logWarnings(String alias, StreamConfigParser.DeclaredStream declared) {
+    /// The node's operator-warning sink when it supplies one; otherwise the WARN log is the whole report.
+    static OperatorWarningSink warningSink(ProvisioningContext context) {
+        return context.extension(OperatorWarningSink.class)
+                      .or(OperatorWarningSink.logOnly());
+    }
+
+    private static void raiseWarnings(OperatorWarningSink sink,
+                                      String alias,
+                                      StreamConfigParser.DeclaredStream declared) {
+        var resource = "stream '" + alias + "'";
+
         declared.warnings()
-                .forEach(warning -> LOG.warn("{}stream replication warning [{}]: {}",
-                                             warning.loud()
-                                             ? "LOUD: "
-                                             : "",
-                                             warning.code(),
-                                             warning.message("stream '" + alias + "'",
-                                                             declared.config().replication())));
+                .forEach(warning -> OperatorWarnings.raise(LOG,
+                                                           sink,
+                                                           OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                           resource,
+                                                           "{}stream replication warning [{}]: {}",
+                                                           warning.loud()
+                                                           ? "LOUD: "
+                                                           : "",
+                                                           warning.code(),
+                                                           warning.message(resource,
+                                                                           declared.config().replication())));
     }
 
     record unused() implements StreamSectionBinding {}
