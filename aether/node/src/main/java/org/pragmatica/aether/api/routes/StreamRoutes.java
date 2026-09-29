@@ -303,13 +303,12 @@ public final class StreamRoutes implements RouteSource {
 
     /// #1564: a management-only stream takes the cluster's replication defaults ([ManagementStreamReplication]).
     private Result<StreamConfig> managementDefaultConfig(String name) {
-        return ReservedStreamNames.requireUnreserved(name)
-                                  .flatMap(unreserved -> ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
-                                                                                                                     .kvStore(),
-                                                                                                         StreamConfig.streamConfig(unreserved,
-                                                                                                                                   DEFAULT_PARTITIONS,
-                                                                                                                                   MANAGEMENT_API_RETENTION,
-                                                                                                                                   "latest")));
+        return ReservedStreamNames.requireUnreserved(name).flatMap(unreserved -> ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
+                                                                                                                                             .kvStore(),
+                                                                                                                                 StreamConfig.streamConfig(unreserved,
+                                                                                                                                                           DEFAULT_PARTITIONS,
+                                                                                                                                                           MANAGEMENT_API_RETENTION,
+                                                                                                                                                           "latest")));
     }
 
     private Result<StreamConsumersResponse> streamConsumers(String name) {

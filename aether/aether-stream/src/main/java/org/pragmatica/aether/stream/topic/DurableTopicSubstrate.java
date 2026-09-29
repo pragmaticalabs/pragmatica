@@ -103,8 +103,9 @@ public interface DurableTopicSubstrate {
     TimeSpan DLQ_RETENTION_DEFAULT = TimeSpan.timeSpan("14d").unwrap();
 
     private static Result<Unit> activate(StreamPartitionManager manager, String topicAddress, DurableTopicSpec spec) {
-        return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(topicStreamConfig(topicAddress, spec))).flatMap(_ -> StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(dlqStreamConfig(topicAddress,
-                                                                                                                                                                                                                  spec))));
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(topicStreamConfig(topicAddress,
+                                                                                                        spec))).flatMap(_ -> StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(dlqStreamConfig(topicAddress,
+                                                                                                                                                                                                                    spec))));
     }
 
     static StreamConfig topicStreamConfig(String topicAddress, DurableTopicSpec spec) {

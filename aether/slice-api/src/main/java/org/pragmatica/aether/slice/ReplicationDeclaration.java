@@ -38,8 +38,8 @@ public record ReplicationDeclaration(Option<Integer> replicationFactor, Option<I
             return new ReplicationFactorsError.ImplicitFactorBelowThree(factor).result();
         }
 
-        return ReplicationFactors.replicationFactors(factor, confirmation)
-                                 .map(factors -> new Resolved(factors, factors.warnings(replicationFactor.isPresent())));
+        return ReplicationFactors.replicationFactors(factor, confirmation).map(factors -> new Resolved(factors,
+                                                                                                       factors.warnings(replicationFactor.isPresent())));
     }
 
     /// A resolved policy and the warnings its declaration raised.

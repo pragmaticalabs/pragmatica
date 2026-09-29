@@ -73,9 +73,9 @@ public record DurableEntityConfig(String keyspace,
                                  1,
                                  new InvalidPartitionCount(partitionCount)),
                    declaredFactorsInRange(replicationFactor, confirmationFactor)).map((name, partitions, _) -> new DurableEntityConfig(name,
-                                                                                                                                  partitions,
-                                                                                                                                  replicationFactor,
-                                                                                                                                  confirmationFactor));
+                                                                                                                                       partitions,
+                                                                                                                                       replicationFactor,
+                                                                                                                                       confirmationFactor));
     }
 
     /// The declared replication factors, before any default applies.
@@ -88,8 +88,7 @@ public record DurableEntityConfig(String keyspace,
         var confirmation = confirmationFactor.or(1);
         var factor = replicationFactor.or(Math.max(1, confirmation));
 
-        return ReplicationFactors.replicationFactors(factor, confirmation)
-                                 .mapError(EntityProvisioningError.ReplicationRefused::new);
+        return ReplicationFactors.replicationFactors(factor, confirmation).mapError(EntityProvisioningError.ReplicationRefused::new);
     }
 
     /// Parse-don't-validate for the keyspace name: this factory is the ONE entry point every keyspace

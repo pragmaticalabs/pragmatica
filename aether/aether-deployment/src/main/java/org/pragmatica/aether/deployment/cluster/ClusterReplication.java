@@ -39,14 +39,15 @@ public sealed interface ClusterReplication {
                              .or(ReplicationFactors.BUILT_IN.replicationFactor());
 
         return defaults(committed).flatMap(defaults -> ReplicationFactors.replicationFactors(cores,
-                                                                                          defaults.clusterEventsConfirmationFactor()));
+                                                                                             defaults.clusterEventsConfirmationFactor()));
     }
 
     private static Result<ReplicationContext> contextOf(ClusterConfigValue value) {
         return ReplicationDefaultsParser.fromClusterToml(value.tomlContent())
                                         .flatMap(defaults -> ReplicationFactors.replicationFactors(defaults.replicationFactor(),
                                                                                                    defaults.confirmationFactor()))
-                                        .map(factors -> ReplicationContext.replicationContext(factors, value.coreCount()));
+                                        .map(factors -> ReplicationContext.replicationContext(factors,
+                                                                                              value.coreCount()));
     }
 
     private static Result<ReplicationDefaultsConfig> defaults(Option<ClusterConfigValue> committed) {

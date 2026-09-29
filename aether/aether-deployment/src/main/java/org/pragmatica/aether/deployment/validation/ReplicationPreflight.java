@@ -42,11 +42,11 @@ public sealed interface ReplicationPreflight {
     static Result<List<StreamValidationWarning>> validate(List<SliceJar> sliceJars,
                                                           Option<ConfigurationProvider> nodeComposite,
                                                           ReplicationContext context) {
-        var checks = sliceJars.stream()
-                              .flatMap(sliceJar -> checkSliceJar(sliceJar, nodeComposite, context))
-                              .toList();
+        var checks = sliceJars.stream().flatMap(sliceJar -> checkSliceJar(sliceJar, nodeComposite, context)).toList();
 
-        return Result.allOf(checks).map(perSection -> perSection.stream().flatMap(List::stream).toList());
+        return Result.allOf(checks).map(perSection -> perSection.stream()
+                                                                .flatMap(List::stream)
+                                                                .toList());
     }
 
     private static Stream<Result<List<StreamValidationWarning>>> checkSliceJar(SliceJar sliceJar,
@@ -55,8 +55,7 @@ public sealed interface ReplicationPreflight {
         return ConfigSectionPreflightValidator.bindingView(sliceJar, nodeComposite)
                                               .map(view -> sliceJar.topologies()
                                                                    .stream()
-                                                                   .flatMap(topology -> declaredSections(topology,
-                                                                                                         view))
+                                                                   .flatMap(topology -> declaredSections(topology, view))
                                                                    .map(section -> checkSection(section, view, context)))
                                               .or(Stream.empty());
     }
@@ -66,12 +65,16 @@ public sealed interface ReplicationPreflight {
         var entities = topology.resources()
                                .stream()
                                .filter(resource -> DURABLE_ENTITY_TYPE.equals(resource.type()))
-                               .map(resource -> new DeclaredSection(topology.sliceName(), "entity", resource.config()));
+                               .map(resource -> new DeclaredSection(topology.sliceName(),
+                                                                    "entity",
+                                                                    resource.config()));
         var topics = topology.publishes()
                              .stream()
                              .map(SliceTopology.TopicPub::config)
                              .filter(section -> isDurableTopic(view, section))
-                             .map(section -> new DeclaredSection(topology.sliceName(), "durable topic", section));
+                             .map(section -> new DeclaredSection(topology.sliceName(),
+                                                                 "durable topic",
+                                                                 section));
 
         return Stream.concat(entities, topics).distinct();
     }
@@ -85,25 +88,34 @@ public sealed interface ReplicationPreflight {
     private static Result<List<StreamValidationWarning>> checkSection(DeclaredSection section,
                                                                       ConfigurationProvider view,
                                                                       ReplicationContext context) {
-        return Result.all(declared(view, section.name(), ReplicationDeclaration.FACTOR_KEY),
-                          declared(view, section.name(), ReplicationDeclaration.CONFIRMATION_KEY))
+        return Result.all(declared(view,
+                                   section.name(),
+                                   ReplicationDeclaration.FACTOR_KEY),
+                          declared(view,
+                                   section.name(),
+                                   ReplicationDeclaration.CONFIRMATION_KEY))
                      .map(ReplicationDeclaration::replicationDeclaration)
                      .flatMap(context::resolve)
-                     .mapError(cause -> new ReplicationPreflightFailure(section.slice(), section.kind(), section.name(), cause))
+                     .mapError(cause -> new ReplicationPreflightFailure(section.slice(),
+                                                                        section.kind(),
+                                                                        section.name(),
+                                                                        cause))
                      .map(resolved -> resolved.warnings()
                                               .stream()
-                                              .map(warning -> StreamValidationWarning.streamValidationWarning("[" + section.name() + "]",
-                                                                                                             warning.code(),
-                                                                                                             warning.message(section.kind() + " section '"
-                                                                                                                             + section.name() + "' of slice "
-                                                                                                                             + section.slice(),
-                                                                                                                             resolved.factors())))
+                                              .map(warning -> StreamValidationWarning.streamValidationWarning("[" + section.name()
+                                                                                                             + "]",
+                                                                                                              warning.code(),
+                                                                                                              warning.message(section.kind()
+                                                                                                                             + " section '" + section.name()
+                                                                                                                             + "' of slice " + section.slice(),
+                                                                                                                              resolved.factors())))
                                               .toList());
     }
 
     private static Result<Option<Integer>> declared(ConfigurationProvider view, String section, String key) {
         return view.getString(section + "." + key)
-                   .map(raw -> parsed(key, raw.trim()))
+                   .map(raw -> parsed(key,
+                                      raw.trim()))
                    .or(Result.success(none()));
     }
 

@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
 import org.pragmatica.aether.slice.blueprint.StreamSection;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Result;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,14 +42,16 @@ public sealed interface StreamSectionBinding {
                                                     ReplicationContext replication) {
         var streamSection = StreamSection.providerSection(provider, section);
 
-        return StreamConfigParser.parseStreamDeclaration(streamSection, replication.defaults())
+        return StreamConfigParser.parseStreamDeclaration(streamSection,
+                                                         replication.defaults())
                                  .flatMap(declared -> declared.config()
                                                               .replication()
                                                               .withinCoreCount(replication.desiredCoreCount())
                                                               .mapError(cause -> new StreamDeclarationError.ReplicationRefused(streamSection.alias(),
                                                                                                                                cause))
                                                               .map(_ -> declared))
-                                 .onSuccess(declared -> logWarnings(streamSection.alias(), declared))
+                                 .onSuccess(declared -> logWarnings(streamSection.alias(),
+                                                                    declared))
                                  .map(StreamConfigParser.DeclaredStream::config);
     }
 

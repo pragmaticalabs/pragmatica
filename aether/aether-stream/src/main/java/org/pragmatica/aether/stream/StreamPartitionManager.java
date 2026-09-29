@@ -903,9 +903,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// DECLARATION rule ([org.pragmatica.aether.slice.ReplicationDeclaration]) — the engine cannot know what was
     /// declared. Applied on the create path only; a config already committed is adopted as-is.
     private static Result<Unit> checkReplicationMinimum(StreamConfig config) {
-        return ReplicationFactors.replicationFactors(config.replicationFactor(), config.confirmationFactor())
+        return ReplicationFactors.replicationFactors(config.replicationFactor(),
+                                                     config.confirmationFactor())
                                  .map(_ -> unit())
-                                 .mapError(cause -> new StreamError.ReplicationRefused(config.name(), cause));
+                                 .mapError(cause -> new StreamError.ReplicationRefused(config.name(),
+                                                                                       cause));
     }
 
     /// #1549: every retention bound is at least 1, and the count is one the ring can index — refused before
@@ -1595,7 +1597,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
         ring.advanceVisible(Math.min(ring.durableOffset(),
-                                     replicationManager.replicatedThrough(ack, confirmationFactorFor(ack.streamName()) - 1)));
+                                     replicationManager.replicatedThrough(ack,
+                                                                          confirmationFactorFor(ack.streamName()) - 1)));
     }
 
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
@@ -3304,7 +3307,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                           ? StreamClass.SYSTEM
                           : StreamClass.APP;
 
-        return ReplicaPlacement.replicationFactor(streamClass, config.replicationFactor(), clusterSizeSupplier.getAsInt());
+        return ReplicaPlacement.replicationFactor(streamClass,
+                                                  config.replicationFactor(),
+                                                  clusterSizeSupplier.getAsInt());
     }
 
     /// Release a single materialized partition's ring on confirmed role loss (#265 increment 5). Atomic remove

@@ -836,13 +836,12 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Result<StreamConfig> managementDefaultConfig(String streamName) {
-        return ReservedStreamNames.requireUnreserved(streamName)
-                                  .flatMap(unreserved -> ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
-                                                                                                                     .kvStore(),
-                                                                                                         StreamConfig.streamConfig(unreserved,
-                                                                                                                                   DEFAULT_PARTITIONS,
-                                                                                                                                   MANAGEMENT_API_RETENTION,
-                                                                                                                                   "latest")));
+        return ReservedStreamNames.requireUnreserved(streamName).flatMap(unreserved -> ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
+                                                                                                                                                   .kvStore(),
+                                                                                                                                       StreamConfig.streamConfig(unreserved,
+                                                                                                                                                                 DEFAULT_PARTITIONS,
+                                                                                                                                                                 MANAGEMENT_API_RETENTION,
+                                                                                                                                                                 "latest")));
     }
 
     private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {
@@ -964,8 +963,8 @@ public final class StreamApiRoutes implements RouteSource {
 
     private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-        return ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
-                                                                           .kvStore(),
+
+        return ManagementStreamReplication.withClusterDefaults(nodeSupplier.get().kvStore(),
                                                                StreamConfig.streamConfig(engineKey,
                                                                                          partitions,
                                                                                          MANAGEMENT_API_RETENTION,

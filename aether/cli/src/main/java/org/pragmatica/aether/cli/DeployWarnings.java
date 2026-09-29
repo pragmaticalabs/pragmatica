@@ -38,7 +38,7 @@ public sealed interface DeployWarnings {
 
     private static String renderOne(JsonNode binding) {
         return "WARNING " + binding.path("field")
-                                                   .asText("?")
+                                   .asText("?")
              + " [" + binding.path("rule")
                              .asText("?")
              + "]: " + binding.path("message")

@@ -343,7 +343,9 @@ public final class SliceRoutes implements RouteSource {
     private static List<DeployWarning> deployWarnings(PublishedBlueprint published) {
         return published.warnings()
                         .stream()
-                        .map(warning -> new DeployWarning(warning.field(), warning.rule(), warning.message()))
+                        .map(warning -> new DeployWarning(warning.field(),
+                                                          warning.rule(),
+                                                          warning.message()))
                         .toList();
     }
 

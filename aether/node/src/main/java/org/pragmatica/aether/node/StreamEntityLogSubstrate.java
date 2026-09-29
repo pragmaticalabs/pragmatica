@@ -167,9 +167,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// factors are refused typed ([org.pragmatica.aether.slice.ReplicationFactorsError.ChangedOnLiveResource]),
     /// for a local entry not yet committed as well as the committed one
     /// [StreamPartitionManager#createDeclaredStream] already refuses.
-    private Result<Unit> assertExistingShape(String keyspace,
-                                             int partitionCount,
-                                             ReplicationFactors replication) {
+    private Result<Unit> assertExistingShape(String keyspace, int partitionCount, ReplicationFactors replication) {
         var streamName = EntityPartitionArc.arcName(keyspace);
 
         return partitionManager.replicaCatalog()
@@ -194,7 +192,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         }
 
         return replication.sameAsCommitted("entity log '" + spec.name() + "'",
-                                           new ReplicationFactors(spec.replicationFactor(), spec.confirmationFactor()))
+                                           new ReplicationFactors(spec.replicationFactor(),
+                                                                  spec.confirmationFactor()))
                           .mapToUnit();
     }
 

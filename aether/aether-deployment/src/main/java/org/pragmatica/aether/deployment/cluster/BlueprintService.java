@@ -748,7 +748,9 @@ class BlueprintServiceInstance implements BlueprintService {
         return PubSubValidator.validate(topologies)
                               .flatMap(_ -> ConfigSectionPreflightValidator.validate(sliceJars, nodeComposite))
                               .flatMap(_ -> replicationContext())
-                              .flatMap(replication -> ReplicationPreflight.validate(sliceJars, nodeComposite, replication))
+                              .flatMap(replication -> ReplicationPreflight.validate(sliceJars,
+                                                                                    nodeComposite,
+                                                                                    replication))
                               .map(warnings -> new Preflighted(expanded, warnings))
                               .async();
     }
@@ -830,12 +832,12 @@ class BlueprintServiceInstance implements BlueprintService {
         var expanded = preflighted.expanded();
 
         return sliceStreamBindings(expanded).map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
-                                            .flatMap(bindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                                                                       expanded,
-                                                                                       streamBindingsPut(expanded.id(),
-                                                                                                         bindings.bound())).map(stored -> PublishedBlueprint.publishedBlueprint(stored,
-                                                                                                                                                                                bindings.rejected(),
-                                                                                                                                                                                bindings.warnings())));
+                                  .flatMap(bindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                                             expanded,
+                                                                             streamBindingsPut(expanded.id(),
+                                                                                               bindings.bound())).map(stored -> PublishedBlueprint.publishedBlueprint(stored,
+                                                                                                                                                                      bindings.rejected(),
+                                                                                                                                                                      bindings.warnings())));
     }
 
     /// #1066 — the TOML body publish's stream bindings, derived from its slice jars.
@@ -870,7 +872,7 @@ class BlueprintServiceInstance implements BlueprintService {
         return loadSliceDeclarations(expanded).flatMap(declarations -> replicationContext().flatMap(replication -> sliceBindings(expanded.id(),
                                                                                                                                  declarations,
                                                                                                                                  replication))
-                                                                                          .async());
+                                                                                         .async());
     }
 
     private Promise<List<Option<String>>> loadSliceDeclarations(ExpandedBlueprint expanded) {
@@ -910,7 +912,12 @@ class BlueprintServiceInstance implements BlueprintService {
         var present = declarations.stream().flatMap(Option::stream).toList();
         var perSlice = present.isEmpty()
                        ? List.of(streamBindings(blueprintId, Option.none(), Map.of(), replication))
-                       : present.stream().map(toml -> streamBindings(blueprintId, Option.some(toml), Map.of(), replication)).toList();
+                       : present.stream()
+                                .map(toml -> streamBindings(blueprintId,
+                                                            Option.some(toml),
+                                                            Map.of(),
+                                                            replication))
+                                .toList();
 
         return Result.allOf(perSlice).flatMap(BlueprintServiceInstance::unionSliceBindings);
     }
@@ -925,7 +932,9 @@ class BlueprintServiceInstance implements BlueprintService {
                                                 .flatMap(bindings -> bindings.bound()
                                                                              .stream())
                                                 .distinct()
-                                                .toList()).map(bound -> StreamBindings.streamBindings(bound, rejected, warnings));
+                                                .toList()).map(bound -> StreamBindings.streamBindings(bound,
+                                                                                                      rejected,
+                                                                                                      warnings));
     }
 
     private static Result<List<NamedAddress>> ensureUnambiguousAliases(List<NamedAddress> bindings) {

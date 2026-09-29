@@ -171,13 +171,17 @@ public sealed interface StreamResourceValidator {
         guardBlueprintNamespace(blueprintArtifact, namespaceFailures);
 
         return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesPartitioned(toml,
-                                                                                         roleHints,
-                                                                                         replication.defaults()))
+                                                                                        roleHints,
+                                                                                        replication.defaults()))
                               .or(Result.success(PartitionedStreamResources.partitionedStreamResources(Map.of(),
                                                                                                        List.of())))
                               .mapError(cause -> gating(namespaceFailures,
                                                         List.of(documentFailure(cause))))
-                              .flatMap(parsed -> partition(parsed, resourcesConfig, roleHints, replication, namespaceFailures));
+                              .flatMap(parsed -> partition(parsed,
+                                                           resourcesConfig,
+                                                           roleHints,
+                                                           replication,
+                                                           namespaceFailures));
     }
 
     private static Result<StreamValidationPartition> partition(PartitionedStreamResources parsed,
@@ -191,7 +195,12 @@ public sealed interface StreamResourceValidator {
 
         parsed.rejected().forEach(cause -> rejected.add(toFailure(cause)));
         parsed.accepted()
-              .forEach((alias, resource) -> acceptOrReject(alias, resource, resourcesConfig, replication, accepted, rejected));
+              .forEach((alias, resource) -> acceptOrReject(alias,
+                                                           resource,
+                                                           resourcesConfig,
+                                                           replication,
+                                                           accepted,
+                                                           rejected));
         var declaresStreams = !parsed.accepted().isEmpty() || !parsed.rejected().isEmpty();
         var gatesBySection = rejected.stream().anyMatch(failure -> GATING_SECTION_RULES.contains(failure.rule()));
 
@@ -316,8 +325,8 @@ public sealed interface StreamResourceValidator {
                                                                        ReplicationContext replication,
                                                                        List<StreamValidationFailure> failures) {
         return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesAggregating(toml,
-                                                                                         roleHints,
-                                                                                         replication.defaults()))
+                                                                                        roleHints,
+                                                                                        replication.defaults()))
                               .or(Result.success(Map.<String, StreamResource> of()))
                               .fold(cause -> collectParseFailures(cause, failures),
                                     map -> map);
@@ -391,7 +400,7 @@ public sealed interface StreamResourceValidator {
               .onFailure(cause -> failures.add(StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
                                                                                                RULE_REPLICATION_EXCEEDS_CORE_COUNT,
                                                                                                "Stream resource '" + alias
-                                                                                               + "': " + cause.message())));
+                                                                                              + "': " + cause.message())));
     }
 
     /// #1564: the replication warnings of every ACCEPTED owned section, one [StreamValidationWarning] each, keyed by
@@ -400,7 +409,8 @@ public sealed interface StreamResourceValidator {
                                                    Option<String> resourcesConfig,
                                                    ReplicationContext replication,
                                                    List<StreamValidationWarning> warnings) {
-        resourcesConfig.onPresent(toml -> StreamConfigParser.replicationWarnings(toml, replication.defaults())
+        resourcesConfig.onPresent(toml -> StreamConfigParser.replicationWarnings(toml,
+                                                                                 replication.defaults())
                                                             .forEach((alias, raised) -> reportIfAccepted(alias,
                                                                                                          raised,
                                                                                                          accepted,
@@ -414,9 +424,11 @@ public sealed interface StreamResourceValidator {
         Option.option(accepted.get(alias))
               .filter(StreamResource.Owned.class::isInstance)
               .map(StreamResource.Owned.class::cast)
-              .onPresent(owned -> raised.forEach(warning -> warnings.add(StreamValidationWarning.streamValidationWarning("[streams." + alias + "]",
+              .onPresent(owned -> raised.forEach(warning -> warnings.add(StreamValidationWarning.streamValidationWarning("[streams." + alias
+                                                                                                                        + "]",
                                                                                                                          warning.code(),
-                                                                                                                         warning.message("stream '" + alias + "'",
+                                                                                                                         warning.message("stream '" + alias
+                                                                                                                                        + "'",
                                                                                                                                          owned.config()
                                                                                                                                               .replication())))));
     }

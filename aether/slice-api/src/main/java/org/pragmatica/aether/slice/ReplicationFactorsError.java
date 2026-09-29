@@ -44,12 +44,11 @@ public sealed interface ReplicationFactorsError extends Cause {
         }
     }
 
-    record ChangedOnLiveResource(String resource,
-                                 ReplicationFactors committed,
-                                 ReplicationFactors declared) implements ReplicationFactorsError {
+    record ChangedOnLiveResource(String resource, ReplicationFactors committed, ReplicationFactors declared) implements ReplicationFactorsError {
         @Override
         public String message() {
-            return resource + " is committed with " + committed
+            return resource
+                 + " is committed with " + committed
                  + " and is now declared with " + declared
                  + "; the replication policy of a live resource is not changed in place";
         }

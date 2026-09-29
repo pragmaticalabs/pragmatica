@@ -143,12 +143,16 @@ public final class StreamWriteRouter {
                                                             long timestamp) {
         var confirmationFactor = partitionManager.confirmationFactorFor(streamName);
 
-        return partitionManager.publishLocalBatchAtFloor(streamName, partition, payloads, timestamp, confirmationFactor - 1)
+        return partitionManager.publishLocalBatchAtFloor(streamName,
+                                                         partition,
+                                                         payloads,
+                                                         timestamp,
+                                                         confirmationFactor - 1)
                                .fold(cause -> recoverBatchRefusal(cause, streamName, partition, payloads, timestamp),
                                      lastOffset -> awaitMinSync(streamName, partition, lastOffset, confirmationFactor).fold(result -> Promise.success(result.fold(cause -> unknownOutcomes(payloads.size(),
-                                                                                                                                                                                        cause),
-                                                                                                                                                               _ -> publishedOffsets(lastOffset,
-                                                                                                                                                                                     payloads.size())))));
+                                                                                                                                                                                           cause),
+                                                                                                                                                                  _ -> publishedOffsets(lastOffset,
+                                                                                                                                                                                        payloads.size())))));
     }
 
     private Promise<List<PublishOutcome>> recoverBatchRefusal(Cause cause,

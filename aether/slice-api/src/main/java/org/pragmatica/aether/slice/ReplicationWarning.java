@@ -16,25 +16,20 @@ public enum ReplicationWarning {
     CONFIRMATION_OWNER_ONLY("confirmation-factor-owner-only",
                             false,
                             "confirmation_factor is 1: when the owner dies, records it acknowledged but had not yet replicated are lost");
-
     private final String code;
     private final boolean loud;
     private final String risk;
-
     ReplicationWarning(String code, boolean loud, String risk) {
         this.code = code;
         this.loud = loud;
         this.risk = risk;
     }
-
     public String code() {
         return code;
     }
-
     public boolean loud() {
         return loud;
     }
-
     /// The operator-facing sentence for `resource` declared with `factors`.
     public String message(String resource, ReplicationFactors factors) {
         return resource + " (" + factors + "): " + risk;

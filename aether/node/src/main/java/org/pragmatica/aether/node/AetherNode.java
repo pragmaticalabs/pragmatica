@@ -5404,8 +5404,7 @@ public interface AetherNode extends ManageableNode {
         // `[replication.cluster_events]` (CF default 1 until the owner decides the acked-but-lost question; RF the
         // desired core count), read when the leader commits it.
         var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
-                                                                                                                                                AetherValue.ClusterConfigValue.class))
-                                                                                                        .flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
+                                                                                                                                               AetherValue.ClusterConfigValue.class)).flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
                                                                                 streamNamespacesService::bootstrap);
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,

@@ -92,7 +92,8 @@ public interface ConfigSectionPreflightValidator {
     /// ships is still bound from it at load). Empty only when there is neither.
     static Option<ConfigurationProvider> bindingView(SliceJar sliceJar, Option<ConfigurationProvider> nodeComposite) {
         return nodeComposite.map(composite -> loaderView(sliceJar, composite))
-                            .orElse(() -> SliceStore.sliceIntrinsicLayer(sliceJar.artifact(), sliceJar.resourcesToml()));
+                            .orElse(() -> SliceStore.sliceIntrinsicLayer(sliceJar.artifact(),
+                                                                         sliceJar.resourcesToml()));
     }
 
     /// The layers the loader would consult for this slice's resource sections. The `.or(nodeComposite)` is

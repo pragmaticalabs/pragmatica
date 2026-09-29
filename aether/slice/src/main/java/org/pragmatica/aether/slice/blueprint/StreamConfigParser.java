@@ -164,7 +164,8 @@ public interface StreamConfigParser {
                 continue;
             }
 
-            perSection.add(new ParsedSection(streamName, parseStreamResource(doc, sectionName, streamName, roleHints, defaults)));
+            perSection.add(new ParsedSection(streamName,
+                                             parseStreamResource(doc, sectionName, streamName, roleHints, defaults)));
         }
 
         return perSection;
@@ -239,8 +240,8 @@ public interface StreamConfigParser {
     }
 
     private static Result<Map<String, StreamResource>> parseResourceToml(String toml,
-                                                                        Map<String, String> roleHints,
-                                                                        ReplicationFactors defaults) {
+                                                                         Map<String, String> roleHints,
+                                                                         ReplicationFactors defaults) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
                          .flatMap(doc -> extractStreamResources(doc, roleHints, defaults));
@@ -350,8 +351,8 @@ public interface StreamConfigParser {
                                                              StreamVersionSpec spec,
                                                              ReplicationFactors defaults) {
         return parseStreamConfig(StreamSection.tomlSection(doc, section, streamName), defaults).map(config -> StreamResource.owned(streamName,
-                                                                                                                         spec,
-                                                                                                                         config));
+                                                                                                                                   spec,
+                                                                                                                                   config));
     }
 
     /// Spec §7/§10: a blueprint declaring more than [#MAX_PARTITIONS_PER_STREAM_CEILING] partitions for one
@@ -414,8 +415,7 @@ public interface StreamConfigParser {
     static Result<DeclaredStream> parseStreamDeclaration(StreamSection section, ReplicationFactors defaults) {
         return refuseUnknownKeys(section).flatMap(valid -> parseStreamSection(valid, defaults))
                                 .flatMap(declared -> validatePartitionCeiling(section.alias(),
-                                                                              declared.config())
-                                .map(_ -> declared));
+                                                                              declared.config()).map(_ -> declared));
     }
 
     /// A parsed stream declaration: the config, its factors resolved, and the warnings they raised.
@@ -430,30 +430,32 @@ public interface StreamConfigParser {
     static Map<String, List<ReplicationWarning>> replicationWarnings(String toml, ReplicationFactors defaults) {
         var warnings = new LinkedHashMap<String, List<ReplicationWarning>>();
 
-        TomlParser.parse(toml)
-                  .onSuccess(doc -> doc.sectionNames()
-                                       .stream()
-                                       .filter(StreamConfigParser::isOwnedStreamSection)
-                                       .forEach(name -> ownedSectionWarnings(doc, name, defaults)
-                                                                             .filter(list -> !list.isEmpty())
-                                                                             .onPresent(list -> warnings.put(name.substring(STREAMS_PREFIX.length()),
-                                                                                                             list))));
+        TomlParser.parse(toml).onSuccess(doc -> doc.sectionNames()
+                                                   .stream()
+                                                   .filter(StreamConfigParser::isOwnedStreamSection)
+                                                   .forEach(name -> ownedSectionWarnings(doc, name, defaults).filter(list -> !list.isEmpty())
+                                                                                        .onPresent(list -> warnings.put(name.substring(STREAMS_PREFIX.length()),
+                                                                                                                        list))));
 
         return Map.copyOf(warnings);
     }
 
     private static boolean isOwnedStreamSection(String sectionName) {
-        return isStreamSection(sectionName) && !sectionName.substring(STREAMS_PREFIX.length()).contains(".");
+        return isStreamSection(sectionName) && !sectionName.substring(STREAMS_PREFIX.length())
+                                                           .contains(".");
     }
 
     private static Option<List<ReplicationWarning>> ownedSectionWarnings(TomlDocument doc,
-                                                                          String sectionName,
-                                                                          ReplicationFactors defaults) {
-        return doc.getString(sectionName, "source").isPresent()
+                                                                         String sectionName,
+                                                                         ReplicationFactors defaults) {
+        return doc.getString(sectionName, "source")
+                  .isPresent()
                ? Option.none()
-               : parseStreamDeclaration(StreamSection.tomlSection(doc, sectionName, sectionName.substring(STREAMS_PREFIX.length())),
+               : parseStreamDeclaration(StreamSection.tomlSection(doc,
+                                                                  sectionName,
+                                                                  sectionName.substring(STREAMS_PREFIX.length())),
                                         defaults).option()
-                                                 .map(DeclaredStream::warnings);
+                                       .map(DeclaredStream::warnings);
     }
 
     /// Every key [#parseStreamConfig] reads directly under `[streams.<alias>]`, including the keys the
@@ -477,7 +479,9 @@ public interface StreamConfigParser {
                                                "encryption-key-id");
 
     /// The keys of [#STREAM_SECTION_KEYS] whose values are integers.
-    List<String> INTEGER_KEYS = List.of("partitions", ReplicationDeclaration.FACTOR_KEY, ReplicationDeclaration.CONFIRMATION_KEY);
+    List<String> INTEGER_KEYS = List.of("partitions",
+                                        ReplicationDeclaration.FACTOR_KEY,
+                                        ReplicationDeclaration.CONFIRMATION_KEY);
 
     /// #1564 removed the stream replication keys without aliases (pre-GA); a section still using one is refused
     /// as unknown, naming its replacement.
@@ -571,7 +575,7 @@ public interface StreamConfigParser {
         var retention = parseRetention(section);
 
         return firstFailure(List.of(partitions, factor, confirmation, maxEventSize, consistency, compression, retention)).map(failure -> failure.<DeclaredStream> map(_ -> new DeclaredStream(StreamConfig.DEFAULT,
-                                                                                                                                                                          List.of())))
+                                                                                                                                                                                              List.of())))
                            .or(() -> Result.all(factor, confirmation)
                                            .map(ReplicationDeclaration::replicationDeclaration)
                                            .flatMap(declaration -> declaration.resolve(defaults))
@@ -594,16 +598,16 @@ public interface StreamConfigParser {
                                                  ReplicationFactors factors,
                                                  Result<String> compression) {
         return Result.all(partitions, retention, maxEventSize, consistency, compression).map((p, r, size, mode, codec) -> StreamConfig.streamConfig(section.alias(),
-                                                                                                                                                  p,
-                                                                                                                                                  r,
-                                                                                                                                                  section.string("auto-offset-reset")
-                                                                                                                                                         .or("earliest"),
-                                                                                                                                                  size,
-                                                                                                                                                  parseConsistencyMode(mode),
-                                                                                                                                                  factors.replicationFactor(),
-                                                                                                                                                  factors.confirmationFactor(),
-                                                                                                                                                  parseCompression(codec),
-                                                                                                                                                  section.string("encryption-key-id")));
+                                                                                                                                                    p,
+                                                                                                                                                    r,
+                                                                                                                                                    section.string("auto-offset-reset")
+                                                                                                                                                           .or("earliest"),
+                                                                                                                                                    size,
+                                                                                                                                                    parseConsistencyMode(mode),
+                                                                                                                                                    factors.replicationFactor(),
+                                                                                                                                                    factors.confirmationFactor(),
+                                                                                                                                                    parseCompression(codec),
+                                                                                                                                                    section.string("encryption-key-id")));
     }
 
     private static Option<Result<?>> firstFailure(List<Result<?>> results) {

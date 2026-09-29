@@ -57,21 +57,21 @@ public sealed interface ReplicationDefaultsParser {
         var builtIn = ReplicationDefaultsConfig.BUILT_IN;
 
         return refuseUnknownKeys(doc, SECTION, KEYS).flatMap(_ -> refuseUnknownKeys(doc,
-                                                                                     CLUSTER_EVENTS_SECTION,
-                                                                                     CLUSTER_EVENTS_KEYS))
-                                                    .flatMap(_ -> Result.all(factor(doc,
-                                                                                    SECTION,
-                                                                                    REPLICATION_FACTOR,
-                                                                                    builtIn.replicationFactor()),
-                                                                             factor(doc,
-                                                                                    SECTION,
-                                                                                    CONFIRMATION_FACTOR,
-                                                                                    builtIn.confirmationFactor()),
-                                                                             factor(doc,
                                                                                     CLUSTER_EVENTS_SECTION,
-                                                                                    CONFIRMATION_FACTOR,
-                                                                                    builtIn.clusterEventsConfirmationFactor()))
-                                                                       .flatMap(ReplicationDefaultsParser::validated));
+                                                                                    CLUSTER_EVENTS_KEYS))
+                                .flatMap(_ -> Result.all(factor(doc,
+                                                                SECTION,
+                                                                REPLICATION_FACTOR,
+                                                                builtIn.replicationFactor()),
+                                                         factor(doc,
+                                                                SECTION,
+                                                                CONFIRMATION_FACTOR,
+                                                                builtIn.confirmationFactor()),
+                                                         factor(doc,
+                                                                CLUSTER_EVENTS_SECTION,
+                                                                CONFIRMATION_FACTOR,
+                                                                builtIn.clusterEventsConfirmationFactor()))
+                                                    .flatMap(ReplicationDefaultsParser::validated));
     }
 
     private static Result<ReplicationDefaultsConfig> validated(int rf, int cf, int eventsCf) {
@@ -87,7 +87,8 @@ public sealed interface ReplicationDefaultsParser {
         }
 
         if (eventsCf < 1) {
-            return failed("[replication.cluster_events] confirmation_factor = " + eventsCf + " is invalid: must be at least 1");
+            return failed("[replication.cluster_events] confirmation_factor = " + eventsCf
+                         + " is invalid: must be at least 1");
         }
 
         return success(new ReplicationDefaultsConfig(rf, cf, eventsCf));
@@ -96,16 +97,19 @@ public sealed interface ReplicationDefaultsParser {
     private static Result<Unit> refuseUnknownKeys(TomlDocument doc, String section, Set<String> known) {
         var unknown = doc.hasSection(section)
                       ? doc.keys(section).stream().filter(key -> !known.contains(key)).sorted().toList()
-                      : List.<String>of();
+                      : List.<String> of();
 
         return unknown.isEmpty()
                ? Result.unitResult()
-               : failed("[" + section + "] unknown key(s) " + String.join(", ", unknown)
-                       + "; valid keys: " + String.join(", ", known.stream().sorted().toList()));
+               : failed("[" + section
+                       + "] unknown key(s) " + String.join(", ", unknown)
+                       + "; valid keys: " + String.join(", ",
+                                                        known.stream().sorted().toList()));
     }
 
     private static Result<Integer> factor(TomlDocument doc, String section, String key, int fallback) {
-        return doc.hasSection(section) && doc.keys(section).contains(key)
+        return doc.hasSection(section) && doc.keys(section)
+                                             .contains(key)
                ? doc.getInt(section, key)
                     .toResult(new ClusterConfigError.ParseFailed("[" + section + "] " + key + " must be an integer"))
                : success(fallback);

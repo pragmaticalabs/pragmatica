@@ -73,7 +73,8 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
                                          ? "LOUD: "
                                          : "",
                                          warning.code(),
-                                         warning.message("topic '" + config.topicName() + "'", spec.replication())));
+                                         warning.message("topic '" + config.topicName() + "'",
+                                                         spec.replication())));
     }
 
     /// The D1 tier switch (durable-pubsub-spec §5, ratified on #386): the declared durability class
