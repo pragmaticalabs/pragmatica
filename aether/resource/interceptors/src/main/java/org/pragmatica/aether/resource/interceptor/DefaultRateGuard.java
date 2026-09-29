@@ -9,18 +9,19 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.slice.RateGuard;
 import org.pragmatica.aether.slice.RateGuardError;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.RateLimiter;
 
 
 record DefaultRateGuard(RateLimiter limiter, int limit) implements RateGuard {
-    static DefaultRateGuard defaultRateGuard(RateGuardConfig config) {
-        var limiter = RateLimiter.builder()
-                                 .rate(config.requestsPerSecond())
-                                 .period(config.window())
-                                 .burst(config.burst())
-                                 .withDefaultTimeSource();
-
-        return new DefaultRateGuard(limiter, config.requestsPerSecond());
+    /// #1316: a configuration the limiter cannot represent fails here with its typed cause.
+    static Result<DefaultRateGuard> defaultRateGuard(RateGuardConfig config) {
+        return RateLimiter.builder()
+                          .rate(config.requestsPerSecond())
+                          .period(config.window())
+                          .burst(config.burst())
+                          .withDefaultTimeSource()
+                          .map(limiter -> new DefaultRateGuard(limiter, config.requestsPerSecond()));
     }
 
     @Override

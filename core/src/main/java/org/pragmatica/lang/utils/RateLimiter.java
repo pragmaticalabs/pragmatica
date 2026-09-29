@@ -21,6 +21,8 @@ import java.util.function.Supplier;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -69,6 +71,10 @@ public interface RateLimiter {
                 return "Rate limit exceeded. Retry after " + retryAfter;
             }
         }
+
+        /// #1316 — a configuration the packed state cannot represent, refused at construction instead of
+        /// being truncated or failing later in the acquisition arithmetic.
+        record InvalidConfiguration(String message) implements RateLimiterError {}
     }
 
     /// Create a simple rate limiter with default settings.
@@ -76,15 +82,16 @@ public interface RateLimiter {
     /// @param rate   Number of permits per period
     /// @param period Time period for rate calculation
     ///
-    /// @return A new rate limiter
-    static RateLimiter rateLimiter(int rate, TimeSpan period) {
+    /// @return A new rate limiter, or [RateLimiterError.InvalidConfiguration] when the configuration cannot be
+    /// represented (see [OptionalStage#timeSource])
+    static Result<RateLimiter> rateLimiter(int rate, TimeSpan period) {
         return builder().rate(rate)
                       .period(period)
                       .withDefaultTimeSource();
     }
 
     @Deprecated(forRemoval = true)
-    static RateLimiter create(int rate, TimeSpan period) {
+    static Result<RateLimiter> create(int rate, TimeSpan period) {
         return rateLimiter(rate, period);
     }
 
@@ -114,7 +121,47 @@ public interface RateLimiter {
         /// against a base captured here and stored mod-2^48 (~3.26 days). Active limiters are
         /// unaffected; a limiter idle for longer than 2^48 ns may transiently under-refill on its
         /// next call and self-correct.
-        public RateLimiter timeSource(TimeSource source) {
+        ///
+        /// #1316 — that layout bounds what can be represented, so construction refuses, with
+        /// [RateLimiterError.InvalidConfiguration], a rate below 1, a negative burst, a capacity
+        /// `rate + burst` above 65535 (16 token bits), a missing period or time source, a period shorter
+        /// than one nanosecond per token (`period / rate` would be 0 and divide by zero on acquisition),
+        /// and one token per 2^48 ns or more (the 48-bit clock could never show a token as due).
+        public Result<RateLimiter> timeSource(TimeSource source) {
+            return validate(source).map(_ -> build(source));
+        }
+
+        private static final long MAX_CAPACITY = (1L << 16) - 1L;
+        private static final long MAX_NANOS_PER_TOKEN = (1L << 48) - 1L;
+
+        private Result<Unit> validate(TimeSource source) {
+            if (rate < 1) {
+                return invalid("rate must be at least 1 permit per period, got " + rate);
+            }
+            if (burst < 0) {
+                return invalid("burst must not be negative, got " + burst);
+            }
+            if ((long) rate + (long) burst > MAX_CAPACITY) {
+                return invalid("rate + burst must not exceed " + MAX_CAPACITY + " (16-bit token count), got "
+                               + ((long) rate + (long) burst));
+            }
+            if (period == null || source == null) {
+                return invalid("period and time source are required");
+            }
+            if (period.nanos() / rate < 1L) {
+                return invalid("period " + period + " is shorter than one nanosecond per permit at rate " + rate);
+            }
+            if (period.nanos() / rate > MAX_NANOS_PER_TOKEN) {
+                return invalid("period " + period + " / rate " + rate + " exceeds the 48-bit refill clock");
+            }
+            return Result.unitResult();
+        }
+
+        private static Result<Unit> invalid(String reason) {
+            return new RateLimiterError.InvalidConfiguration("Invalid rate limiter configuration: " + reason).result();
+        }
+
+        private RateLimiter build(TimeSource source) {
             record rateLimiter(long maxTokens,
                                long nanosPerToken,
                                TimeSource timeSource,
@@ -177,7 +224,7 @@ public interface RateLimiter {
             return new rateLimiter(maxTokens, nanosPerToken, source, baseNanos, new AtomicLong(maxTokens << 48));
         }
 
-        public RateLimiter withDefaultTimeSource() {
+        public Result<RateLimiter> withDefaultTimeSource() {
             return timeSource(TimeSource.system());
         }
     }

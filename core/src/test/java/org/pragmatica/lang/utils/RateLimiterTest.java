@@ -45,7 +45,8 @@ class RateLimiterTest {
                 .rate(5)
                 .period(timeSpan(1).seconds())
                 .burst(0)
-                .timeSource(timeSource);
+                .timeSource(timeSource)
+                .unwrap();
     }
 
     @Test
@@ -152,7 +153,8 @@ class RateLimiterTest {
                 .rate(5)
                 .period(timeSpan(1).seconds())
                 .burst(3)
-                .timeSource(timeSource);
+                .timeSource(timeSource)
+                .unwrap();
 
         // Should be able to execute rate + burst = 8 times
         for (int i = 0; i < 8; i++) {
@@ -211,7 +213,8 @@ class RateLimiterTest {
                 .rate(100)
                 .period(timeSpan(1).seconds())
                 .burst(0)
-                .timeSource(timeSource);
+                .timeSource(timeSource)
+                .unwrap();
 
         int contenders = 256;
         int capacity = 100;
@@ -278,7 +281,8 @@ class RateLimiterTest {
                 .rate(5)
                 .period(timeSpan(1).seconds())
                 .burst(3)
-                .timeSource(timeSource);
+                .timeSource(timeSource)
+                .unwrap();
 
         // Advance time by 10 periods without using permits
         timeSource.advanceTime(10_000);
@@ -299,7 +303,7 @@ class RateLimiterTest {
     @Test
     void shouldCreateSimpleRateLimiter() {
         // Uses real system clock — verify the wiring works end-to-end on the default time source.
-        var simpleLimiter = RateLimiter.rateLimiter(10, timeSpan(1).seconds());
+        var simpleLimiter = RateLimiter.rateLimiter(10, timeSpan(1).seconds()).unwrap();
 
         for (int i = 0; i < 10; i++) {
             simpleLimiter.execute(() -> Promise.success("OK"))
@@ -320,7 +324,8 @@ class RateLimiterTest {
                 .rate(100)
                 .period(timeSpan(1).seconds())
                 .burst(50)
-                .timeSource(timeSource);
+                .timeSource(timeSource)
+                .unwrap();
 
         timeSource.advanceTime(60_000); // 60 periods
 
@@ -359,7 +364,8 @@ class RateLimiterTest {
                 .rate(2)
                 .period(timeSpan(1).seconds())
                 .burst(0)
-                .timeSource(source);
+                .timeSource(source)
+                .unwrap();
         var otherGranted = new AtomicInteger();
 
         clock.set(TimeUnit.MILLISECONDS.toNanos(9_900));
@@ -378,5 +384,55 @@ class RateLimiterTest {
         assertEquals(2, otherGranted.get(), "control: the other caller took the whole bucket (rate 2, burst 0)");
         assertFalse(staleGranted, "#1315: a stale time sample must not refill an exhausted bucket");
         assertFalse(limiter.tryAcquire(), "no permit is due 0 ms after the bucket emptied");
+    }
+
+    /// #1316 — construction refuses, with a typed cause, every configuration the packed
+    /// `[tokens:16 | lastRefill:48]` state or the refill arithmetic cannot represent. Before the fix each of
+    /// these either truncated silently, divided by zero on first use, or built a limiter that never refills.
+    @Test
+    void unrepresentableConfigurations_areRefusedWithATypedCause() {
+        assertInvalid(0, timeSpan(1).seconds(), 0, "zero rate");
+        assertInvalid(-5, timeSpan(1).seconds(), 0, "negative rate");
+        assertInvalid(10, timeSpan(1).seconds(), -1, "negative burst");
+        assertInvalid(65_536, timeSpan(1).seconds(), 0, "capacity 65536 by rate");
+        assertInvalid(65_000, timeSpan(1).seconds(), 536, "capacity 65536 by rate + burst");
+        assertInvalid(10, null, 0, "missing period");
+        assertInvalid(10, timeSpan(0).nanos(), 0, "zero period");
+        assertInvalid(10, timeSpan(9).nanos(), 0, "sub-nanosecond per permit (period / rate == 0)");
+        assertInvalid(1, timeSpan(4).days(), 0, "one permit per 2^48 ns or more (never refills)");
+        assertTrue(RateLimiter.builder().rate(1).period(timeSpan(1).seconds()).burst(0).timeSource(null).isFailure(),
+                   "missing time source");
+    }
+
+    /// #1316 boundary — the largest representable capacity (65535) is accepted and grants exactly that many
+    /// permits, and refills correctly: nothing is lost to truncation at the top of the 16-bit field.
+    @Test
+    void maximumRepresentableCapacity_grantsExactlyItsPermits_andRefills() {
+        var limiter = RateLimiter.builder()
+                .rate(62_500)
+                .period(timeSpan(1).seconds())
+                .burst(3_035)
+                .timeSource(timeSource)
+                .unwrap();
+
+        assertEquals(65_535, drain(limiter), "capacity rate + burst = 65535 must be granted in full");
+        timeSource.advanceTime(1_000);
+        assertEquals(62_500, drain(limiter), "one period refills `rate` permits (16 us each, exact)");
+    }
+
+    private void assertInvalid(int rate, TimeSpan period, int burst, String what) {
+        var result = RateLimiter.builder().rate(rate).period(period).burst(burst).timeSource(timeSource);
+
+        assertTrue(result.isFailure(), what + ": must be refused, got " + result);
+        result.onFailure(cause -> assertInstanceOf(RateLimiter.RateLimiterError.InvalidConfiguration.class, cause, what));
+    }
+
+    private static int drain(RateLimiter limiter) {
+        int granted = 0;
+
+        while (limiter.tryAcquire()) {
+            granted++;
+        }
+        return granted;
     }
 }

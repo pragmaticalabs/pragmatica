@@ -22,6 +22,8 @@ public final class RateGuardFactory implements ResourceFactory<RateGuard, RateGu
 
     @Override
     public Promise<RateGuard> provision(RateGuardConfig config) {
-        return Promise.success(DefaultRateGuard.defaultRateGuard(config));
+        return DefaultRateGuard.defaultRateGuard(config)
+                               .<RateGuard>map(guard -> guard)
+                               .async();
     }
 }
