@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.pragmatica.http.HttpStatus;
@@ -264,8 +265,9 @@ public interface QueryParameter<T> {
 
     /// Extract first value from parameter list, if present.
     private static Option<String> firstValue(List<String> values) {
-        return values == null || values.isEmpty()
-               ? Option.none()
-               : Option.option(values.getFirst());
+        return Option.option(values).flatMap(list -> Option.from(list.stream()
+                                                                     .limit(1)
+                                                                     .filter(Objects::nonNull)
+                                                                     .findFirst()));
     }
 }
