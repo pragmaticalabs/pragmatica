@@ -515,6 +515,23 @@ class BlueprintSecurityOverrideClusterWideTest {
         nonHosting.forEach(probe -> assertThat(probe.body()).describedAs("a non-hosting node's refusal must be the OVERRIDE's own role check — %s",
                                                                           probe)
                                              .contains(INSUFFICIENT_ROLE_DETAIL));
+        // ---- Relaxation: withdrawing the override returns the route to SERVED on the non-hosting nodes too, so
+        // a node's stale strict entry cannot pin the route closed once the committed override is gone.
+        deleteBlueprint(leaderMgmtPort, OVERRIDE_CARRIER_BLUEPRINT_ID);
+        // CONTROL: the DELETE landed, so a persisting 403 is a relaxation failure and not a delete that never ran.
+        awaitCarrierSliceUndeployed();
+        var served = awaitEveryNodeAnswers(GOVERNED_PATH,
+                                           SERVED,
+                                           "every node, including those not hosting the route, relaxes once the override is withdrawn");
+
+        assertThat(served.stream()
+                         .filter(probe -> !probe.nodeId()
+                                                .equals(host))
+                         .toList()).describedAs("CONTROL: the two non-hosting nodes relaxed too (host %s): %s", host, served)
+                  .hasSize(NODES - 1);
+        served.forEach(probe -> assertThat(probe.body()).describedAs("SERVED must mean the echo route really answered — %s",
+                                                                     probe)
+                                          .contains(PROBE_MESSAGE));
     }
 
     private static String singleInstanceBlueprintWithoutOverride() {
