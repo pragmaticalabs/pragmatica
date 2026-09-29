@@ -289,4 +289,57 @@ class SecurityOverrideApplierTest {
             assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Public.class);
         }
     }
+
+    /// #1659: the remote-route form an ingress uses for a route another node serves. The override replaces the
+    /// DECLARED policy (subject to STRENGTHEN_ONLY against that declared policy) -- never "the max of the override
+    /// and a previously published one" -- so a relaxed override relaxes at the ingress immediately.
+    @Nested
+    class RemoteRouteForm {
+        private static SecurityOverrides overrides(String pattern, String level, SecurityOverridePolicy policy) {
+            return SecurityOverrides.securityOverrides(List.of(SecurityOverrides.Entry.entry(pattern, level)), policy);
+        }
+
+        @Test
+        void matchingOverride_onUndeclaredRoute_isTheEffectivePolicy() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/echo/",
+                                                                  SecurityPolicy.unspecified(),
+                                                                  overrides("GET /echo/*", "role:admin", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.map(SecurityPolicy::asString).or("none")).isEqualTo("ROLE:admin");
+        }
+
+        @Test
+        void noMatchingOverride_isEmpty() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/other/",
+                                                                  SecurityPolicy.unspecified(),
+                                                                  overrides("GET /echo/*", "role:admin", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.isEmpty()).isTrue();
+        }
+
+        /// Relaxation: an override weakened from `role:admin` to `authenticated` resolves against the DECLARED
+        /// (undeclared) policy, so the ingress relaxes at once whatever peers still advertise.
+        @Test
+        void relaxedOverride_resolvesAgainstTheDeclaredPolicy() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/echo/",
+                                                                  SecurityPolicy.unspecified(),
+                                                                  overrides("GET /echo/*", "authenticated", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.map(SecurityPolicy::asString).or("none")).isEqualTo("AUTHENTICATED");
+        }
+
+        /// STRENGTHEN_ONLY still never weakens the declared policy.
+        @Test
+        void strengthenOnly_keepsAStrongerDeclaredPolicy() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/echo/",
+                                                                  SecurityPolicy.roleRequired("admin"),
+                                                                  overrides("GET /echo/*", "authenticated", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.map(SecurityPolicy::asString).or("none")).isEqualTo("ROLE:admin");
+        }
+    }
 }

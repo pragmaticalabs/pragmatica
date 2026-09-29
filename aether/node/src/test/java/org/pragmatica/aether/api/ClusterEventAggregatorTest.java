@@ -5,13 +5,19 @@
 package org.pragmatica.aether.api;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.controller.RollbackEvent;
+import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
@@ -23,13 +29,22 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
@@ -45,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterEventAggregatorTest {
 
     private static final NodeId SELF = new NodeId("self-node");
+    private static final Artifact ROLLBACK_ARTIFACT = Artifact.artifact("org.example:svc:1.0.0").unwrap();
 
     /// Node runtime codec, built exactly as production builds it. Includes the generated
     /// ClusterEvent codecs, so it can encode/decode the sealed hierarchy over the byte[] transport.
@@ -55,7 +71,10 @@ class ClusterEventAggregatorTest {
     private static final BooleanSupplier LEADER = () -> true;
     private static final BooleanSupplier NOT_LEADER = () -> false;
 
-    private record Harness(ClusterEventAggregator aggregator, HlcClock hlc, StreamPartitionManager manager) {
+    private record Harness(ClusterEventAggregator aggregator,
+                           HlcClock hlc,
+                           StreamPartitionManager manager,
+                           AtomicReference<FrameworkStreamPublisher<ClusterEvent>> publisher) {
         static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck) {
             return create(retention, ownerCheck, () -> false);
         }
@@ -68,6 +87,14 @@ class ClusterEventAggregatorTest {
                               BooleanSupplier ownerCheck,
                               BooleanSupplier replayingCheck,
                               BooleanSupplier leaderCheck) {
+            return create(retention, ownerCheck, replayingCheck, leaderCheck, HlcClock.hlcClock(SELF));
+        }
+
+        static Harness create(RetentionPolicy retention,
+                              BooleanSupplier ownerCheck,
+                              BooleanSupplier replayingCheck,
+                              BooleanSupplier leaderCheck,
+                              HlcClock hlc) {
             // Generous memory budget so calculateStreamBytes (64 + 24*maxCount + maxBytes) fits.
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
             var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
@@ -88,7 +115,6 @@ class ClusterEventAggregatorTest {
                                                                                     config).unwrap();
             var pubRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(publisher);
             var conRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>(consumer);
-            var hlc = HlcClock.hlcClock(SELF);
             var aggregator = ClusterEventAggregator.clusterEventAggregator(pubRef::get,
                                                                            conRef::get,
                                                                            ownerCheck,
@@ -97,7 +123,7 @@ class ClusterEventAggregatorTest {
                                                                            () -> 1,
                                                                            replayingCheck,
                                                                            leaderCheck);
-            return new Harness(aggregator, hlc, manager);
+            return new Harness(aggregator, hlc, manager, pubRef);
         }
 
         static Harness create() {
@@ -356,6 +382,49 @@ class ClusterEventAggregatorTest {
         assertThat(h.events()).isEmpty();
     }
 
+    /// #1573 B2: the automatic-rollback events are produced on the leader only. Under the owner gate they
+    /// were lost whenever another node owned the cluster-events partition (v1608: 2 of 6 clusters).
+    @Test
+    void leader_emitsAutoRollbackAndSliceFailure_evenWhenNotOwner() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, LEADER);
+
+        h.aggregator().onSliceFailure(allInstancesFailed());
+        h.aggregator().onAutoRollback(autoRollbackExecuted());
+
+        assertThat(h.events()).hasSize(2)
+                              .anyMatch(ClusterEvent.SliceFailure.class::isInstance)
+                              .anyMatch(ClusterEvent.AutoRollback.class::isInstance);
+    }
+
+    @Test
+    void nonLeader_suppressesAutoRollbackAndSliceFailure_evenWhenOwner() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+
+        h.aggregator().onSliceFailure(allInstancesFailed());
+        h.aggregator().onAutoRollback(autoRollbackExecuted());
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    private static SliceFailureEvent.AllInstancesFailed allInstancesFailed() {
+        return SliceFailureEvent.AllInstancesFailed.allInstancesFailed("req-1",
+                                                                       ROLLBACK_ARTIFACT,
+                                                                       MethodName.methodName("ping").unwrap(),
+                                                                       Option.none(),
+                                                                       List.of(SELF),
+                                                                       Map.of(SELF, 3L),
+                                                                       30_000L);
+    }
+
+    private static RollbackEvent.AutoRollbackExecuted autoRollbackExecuted() {
+        return new RollbackEvent.AutoRollbackExecuted("req-1",
+                                                      ROLLBACK_ARTIFACT,
+                                                      Version.version("0.9.0").unwrap(),
+                                                      1,
+                                                      Map.of(SELF, 3L),
+                                                      30_000L);
+    }
+
     /// Lifecycle (and leader/quorum/generation) events are cluster-canonical and LEADER-gated: a
     /// non-leader (even when partition owner) must not advertise them.
     @Test
@@ -476,6 +545,596 @@ class ClusterEventAggregatorTest {
         h.aggregator().onStreamMemoryExceeded(createFloorExhaustion("mixed"));
 
         assertThat(h.events()).hasSize(2);
+    }
+
+    // --- #1640 redelivery -----------------------------------------------------------------------
+
+    /// The owner gate is checked when the event is produced, never on redelivery: after a failover the producing
+    /// node is typically no longer the owner, and re-checking would drop the event on its only producer. Here the
+    /// first publish fails (publisher not yet bound), the node then stops being the owner, and the retry still
+    /// lands the event.
+    @Test
+    void emit_firstPublishFails_ownershipMovesAway_retryStillLands() throws InterruptedException {
+        var owner = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var h = Harness.create(Harness.defaultRetention(), owner::get);
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emit(selfDrainInitiated(h));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the failed publish is held").isEqualTo(1);
+        assertThat(h.aggregator().redeliveryFailuresByCause()).as("the unbound publisher is counted by its typed name")
+                                                              .containsEntry("PUBLISHER_NOT_BOUND", 1L);
+
+        owner.set(false);
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().redeliveryWaiting()).isZero();
+    }
+
+    /// An event can be in the log twice (an unknown outcome that landed, then its redelivery). Both copies carry
+    /// the same `details.eventId`, and a read returns one.
+    @Test
+    void events_sameEventLandedTwice_isReadOnce() {
+        var h = Harness.create();
+        var event = new ClusterEvent.AlertInjected(h.hlc().now(),
+                                                   ClusterEvent.Severity.INFO,
+                                                   "landed twice",
+                                                   Map.of(ClusterEventIdentity.EVENT_ID, "incarnation:1"));
+
+        h.aggregator().emitLocal(event);
+        h.aggregator().emitLocal(event);
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies are in the log").isEqualTo(1);
+    }
+
+    /// #1653: the id is stamped ONCE, when the aggregator accepts the event, before the first attempt. Here the first
+    /// attempt LANDS and still fails (the unknown-outcome case), and the retry lands a second copy: both copies carry
+    /// the same id, and a read returns one.
+    @Test
+    void emit_firstAttemptLandsButFails_retryCopyHasTheSameId_andIsReadOnce() {
+        var h = Harness.create();
+        var real = h.publisher().get();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var landsThenFails = FrameworkStreamPublishers.<ClusterEvent>testPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                                  event -> landThenFailFirst(real, event, calls))
+                                                      .unwrap();
+
+        h.publisher().set(landsThenFails);
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "once", Map.of()));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the first attempt failed and is held").isEqualTo(1);
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(calls.get()).as("control: two attempts").isEqualTo(2);
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies landed").isEqualTo(1);
+    }
+
+    /// #1653: the feed's read starts at the offset it is given, not at the start of the retained log, and reports
+    /// where the next read starts. A whole-log read would return all five events for every offset.
+    @Test
+    void eventsFrom_readsFromTheGivenOffset_andReportsTheNextOne() {
+        var h = Harness.create();
+
+        for (int i = 0; i < 5; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+
+        var all = h.aggregator().eventsFrom(0).await().unwrap();
+        var tail = h.aggregator().eventsFrom(3).await().unwrap();
+        var none = h.aggregator().eventsFrom(5).await().unwrap();
+
+        assertThat(all.events()).as("control: every event from offset 0").extracting(landed -> landed.event().summary())
+                                .containsExactly("e0", "e1", "e2", "e3", "e4");
+        assertThat(all.nextOffset()).isEqualTo(5);
+        assertThat(tail.events()).extracting(landed -> landed.event().summary()).containsExactly("e3", "e4");
+        assertThat(tail.nextOffset()).isEqualTo(5);
+        assertThat(none.events()).isEmpty();
+        assertThat(none.nextOffset()).isEqualTo(5);
+    }
+
+    /// #1653 (v1640 V6): once retention has trimmed the head of the log, a read clamped up to the tail still reports
+    /// the offset after the last event it read, not `from` plus the number of events.
+    @Test
+    void eventsFrom_belowTheRetainedTail_nextOffsetFollowsTheLastEventRead() {
+        var h = Harness.create(RetentionPolicy.retentionPolicy(5, 64L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY), OWNER);
+
+        for (int i = 0; i < 12; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+
+        var page = h.aggregator().eventsFrom(0).await().unwrap();
+
+        assertThat(page.tailOffset()).as("control: retention trimmed the head").isPositive();
+        assertThat(page.events().getLast().offset()).as("control").isEqualTo(11);
+        assertThat(page.nextOffset()).isEqualTo(12);
+    }
+
+    /// #1653 (v1640 V2): the production feed wiring reads the node's aggregator from its cursor, not from offset 0.
+    @Test
+    void feed_wiredToTheAggregator_readsFromTheCursor() {
+        var h = Harness.create();
+        var broadcasts = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var feed = EventWebSocketPublisher.eventWebSocketPublisher(new EventWebSocketPublisherTest.CapturingHandler(broadcasts),
+                                                                   h::aggregator,
+                                                                   events -> String.valueOf(events.size()));
+
+        for (int i = 0; i < 30; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+        feed.publish();
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e30", Map.of()));
+        feed.publish();
+
+        assertThat(broadcasts).as("control: 30, then the one new event").containsExactly("30", "1");
+        assertThat(h.aggregator().lastEventsFrom()).isEqualTo(30 - EventWebSocketPublisher.OVERLAP);
+    }
+
+    /// #1653: an ownership change of the cluster-events partition is counted on the page, which is what makes the feed
+    /// re-read a new owner's log.
+    @Test
+    void onStreamPartitionOwnershipPut_clusterEventsPartition_isCountedOnThePage() {
+        var h = Harness.create();
+        var before = h.aggregator().eventsFrom(0).await().unwrap().ownershipChanges();
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(h.aggregator().eventsFrom(0).await().unwrap().ownershipChanges()).isEqualTo(before + 1);
+    }
+
+    /// #1653 (v1640 N3): stamping copies `details`, which throws on a null value. That throw stays inside the
+    /// publish's isolation: the caller is not interrupted and the event is still published, without an id.
+    @Test
+    void emitLocal_detailsWithANullValue_doesNotThrow_andIsPublishedWithoutAnId() {
+        var h = Harness.create();
+        var details = new java.util.HashMap<String, String>();
+
+        details.put("reason", null);
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "null detail", details));
+
+        assertThat(h.aggregator().redeliveryCounters()).as("handed to redelivery").containsEntry("accepted", 1L);
+    }
+
+    /// #1653, the handover limit (CTO ruling on item 8): the owner gate is each node's own view of ownership, so
+    /// across a handover the old and the new owner can both raise one fact. The guarantee pinned here is
+    /// AT-LEAST-ONCE: the old owner's raise, whose publish failed during the handover, is still delivered, and so
+    /// is the new owner's. How many copies a read shows is deliberately not asserted.
+    @Test
+    void emit_ownerHandover_bothOwnersRaiseOneFact_eachRaiseIsDeliveredAtLeastOnce() throws InterruptedException {
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+        var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
+                                               1,
+                                               Harness.defaultRetention(),
+                                               "earliest",
+                                               64L * 1024,
+                                               ConsistencyMode.EVENTUAL,
+                                               1);
+        var publisher = SystemStreamFactories.<ClusterEvent>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS, manager, CODEC, config)
+                                             .unwrap();
+        var consumer = SystemStreamFactories.<ClusterEvent>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS, manager, CODEC, CODEC, config)
+                                            .unwrap();
+        var oldOwnerPublisher = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(null);
+        var oldOwner = handoverSide("old-owner", oldOwnerPublisher, consumer);
+        var newOwner = handoverSide("new-owner", new AtomicReference<>(publisher), consumer);
+
+        oldOwner.aggregator().emit(deploymentStarted(oldOwner.hlc()));
+        newOwner.aggregator().emit(deploymentStarted(newOwner.hlc()));
+        assertThat(oldOwner.aggregator().redeliveryWaiting()).as("control: the old owner's publish failed and is held").isEqualTo(1);
+
+        oldOwnerPublisher.set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        oldOwner.aggregator().redeliverDue();
+
+        var raisedBy = newOwner.aggregator()
+                               .events()
+                               .await()
+                               .unwrap()
+                               .stream()
+                               .filter(event -> event instanceof ClusterEvent.DeploymentStarted)
+                               .map(event -> event.at().nodeId().id())
+                               .toList();
+
+        assertThat(raisedBy).as("the old owner's raise is delivered").contains("old-owner");
+        assertThat(raisedBy).as("the new owner's raise is delivered").contains("new-owner");
+    }
+
+    private record HandoverSide(ClusterEventAggregator aggregator, HlcClock hlc) {}
+
+    private static HandoverSide handoverSide(String node,
+                                             AtomicReference<FrameworkStreamPublisher<ClusterEvent>> publisher,
+                                             FrameworkStreamConsumer<ClusterEvent> consumer) {
+        var hlc = HlcClock.hlcClock(new NodeId(node));
+        var aggregator = ClusterEventAggregator.clusterEventAggregator(publisher::get,
+                                                                       () -> consumer,
+                                                                       OWNER,
+                                                                       new NodeId(node),
+                                                                       hlc,
+                                                                       () -> 3,
+                                                                       () -> false,
+                                                                       LEADER);
+        return new HandoverSide(aggregator, hlc);
+    }
+
+    private static ClusterEvent deploymentStarted(HlcClock hlc) {
+        return new ClusterEvent.DeploymentStarted(hlc.now(),
+                                                  ClusterEvent.Severity.INFO,
+                                                  "Deploying x to n1",
+                                                  Map.of("artifact", "x", "nodeId", "n1"));
+    }
+
+    private static void landThenFailFirst(FrameworkStreamPublisher<ClusterEvent> real,
+                                          ClusterEvent event,
+                                          java.util.concurrent.atomic.AtomicInteger calls) {
+        real.publish(event)
+            .await();
+        if (calls.incrementAndGet() == 1) {
+            throw new IllegalStateException("landed, then the outcome was lost");
+        }
+    }
+
+    /// #1653 round 2: `at` is not an identity. Two DISTINCT events that share `at` (one node, one millisecond,
+    /// for example after a restart with a clock step) are both kept, because each is stamped with its own id.
+    @Test
+    void events_twoDistinctEventsWithTheSameAt_areBothKept() {
+        var h = Harness.create();
+        var at = h.hlc().now();
+
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(at, ClusterEvent.Severity.INFO, "first", Map.of()));
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(at, ClusterEvent.Severity.INFO, "second", Map.of()));
+
+        assertThat(h.events()).extracting(ClusterEvent::summary).containsExactlyInAnyOrder("first", "second");
+        assertThat(h.events()).allMatch(event -> event.details().containsKey(ClusterEventIdentity.EVENT_ID));
+    }
+
+    /// #1653 round 2: a redelivered event lands after events produced later; a read is still a timeline.
+    @Test
+    void events_landedOutOfAtOrder_areReadInAtOrder() {
+        var h = Harness.create();
+        var earlier = h.hlc().now();
+        var later = h.hlc().now();
+
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(later, ClusterEvent.Severity.INFO, "later", Map.of()));
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(earlier, ClusterEvent.Severity.INFO, "earlier", Map.of()));
+
+        assertThat(h.events()).extracting(ClusterEvent::summary).containsExactly("earlier", "later");
+    }
+
+    /// #1653 round 2: an ownership put for cluster-events partition 0 re-sends every held event at once, without
+    /// waiting for its backoff; a put for any other stream or partition does not.
+    @Test
+    void onStreamPartitionOwnershipPut_clusterEventsPartition0_drainsAtOnce_otherPutsDoNot() {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+        h.publisher().set(publisher);
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut("orders", 0));
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 1));
+        assertThat(h.events()).as("control: other puts do not drain").isEmpty();
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(h.events()).as("drained at once, well inside the 1 s backoff").hasSize(1);
+    }
+
+    /// #1653 round 2: `redeliverDue` is what the AetherNode 1 s tick calls; once an event's backoff has passed, it
+    /// re-sends it.
+    @Test
+    void redeliverDue_afterTheBackoff_resends() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+        h.publisher().set(publisher);
+        h.aggregator().redeliverDue();
+        assertThat(h.events()).as("control: not yet due").isEmpty();
+
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).hasSize(1);
+    }
+
+    private static ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> ownershipPut(String stream, int partition) {
+        var epoch = Epoch.epoch(7, 3);
+
+        return new ValuePut<>(new KVCommand.Put<>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                                  StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                                                              epoch,
+                                                                                                              epoch.localCounter(),
+                                                                                                              HlcTimestamp.ZERO)),
+                              Option.none());
+    }
+
+    // --- operator warnings (#1574) ---------------------------------------------------------------
+
+    private static OperatorWarning fsyncFailed(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.REPLICA_FSYNC_FAILED,
+                                               subject,
+                                               "durability sync failed for " + subject);
+    }
+
+    /// A warning is a per-node fact, so a NON-OWNER still publishes it. The event carries the code
+    /// catalogue's severity, the logged message as its summary, and the filterable details.
+    @Test
+    void onOperatorWarning_notOwner_emitsEventCarryingCodeAndSubject() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.CORE_ABSENCE_FENCE,
+                                                                         "core",
+                                                                         "CORE ABSENCE fence firing"));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getFirst().type()).isEqualTo("OPERATOR_WARNING");
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(events.getFirst().summary()).isEqualTo("CORE ABSENCE fence firing");
+        assertThat(events.getFirst().details()).containsAllEntriesOf(Map.of("code", "core-absence-fence",
+                                                                            "subsystem", "worker-isolation",
+                                                                            "subject", "core",
+                                                                            "nodeId", SELF.id(),
+                                                                            "suppressedSince", "0"))
+                                                .as("#1653: stamped like every other event")
+                                                .containsKey(ClusterEventIdentity.EVENT_ID)
+                                                .hasSize(6);
+    }
+
+    /// The flood test. A thousand raises of one `(code, subject)` inside a window publish ONE event, a
+    /// different subject is not starved by the flood, and the first event after the window closes
+    /// reports how many were held back.
+    @Test
+    void onOperatorWarning_flood_emitsOncePerWindow_andReportsTheSuppressedCount() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 1_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        }
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[4]"));
+
+        assertThat(h.events()).hasSize(2);
+
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        var events = h.events();
+        assertThat(events).hasSize(3);
+        assertThat(events.stream().map(event -> event.details().get("subject")).toList())
+            .containsExactly("orders[3]", "orders[4]", "orders[3]");
+        assertThat(events.getLast().details()).containsEntry("suppressedSince", "999");
+        assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
+    }
+
+    /// One millisecond short of the window is still inside it.
+    @Test
+    void onOperatorWarning_justInsideTheWindow_isStillSuppressed() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(59_999L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        assertThat(h.events()).hasSize(1);
+    }
+
+    /// #1617 R3: throttle keys are evicted once idle for twice the window, so an open key space (peers,
+    /// `stream[partition]` subjects) cannot grow without bound. 100k keys, then an idle interval past the
+    /// eviction age: the map is empty again.
+    @Test
+    void evictIdleThrottleWindows_afterTwiceTheWindowIdle_emptiesTheOperatorWarningThrottle() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 100_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[" + i + "]"));
+        }
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).isEqualTo(100_000);
+
+        // The HLC's logical counter carries into its physical component under 100k reads in one millisecond,
+        // so the keys' last-seen times spread over a few ms. The margins below are far wider than that.
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("not yet idle for twice the window")
+                                                                .isEqualTo(100_000);
+
+        physicalMillis.addAndGet(70_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("idle for twice the window").isZero();
+    }
+
+    /// #1617 R3: a key that is still being raised is not evicted, however old its window is.
+    @Test
+    void evictIdleThrottleWindows_keyRaisedRecently_isKept() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(119_000L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(1_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).isEqualTo(1);
+    }
+
+    /// #1617 R4: a window is consumed only by an event that is published. The first occurrence is not
+    /// published (replay in progress); a second occurrence inside the same window is then admitted, and
+    /// reports the one that was lost.
+    @Test
+    void onOperatorWarning_firstPublishFails_retryInTheSameWindowIsAdmitted() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               replaying::get,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.events()).as("control: the first occurrence was not published").isEmpty();
+
+        replaying.set(false);
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        var events = h.events();
+        assertThat(events).as("the retry inside the same window is admitted").hasSize(1);
+        assertThat(events.getFirst().details()).containsEntry("suppressedSince", "1");
+    }
+
+    /// #1617 R4 (v1562): while publishing keeps failing, a key is attempted at most once per retry window, not once
+    /// per occurrence. 1,000 raises spread over one 60 s window, every publish failing, make at most
+    /// ceil(60 s / 5 s) = 12 attempts. Releasing the window outright made 1,000.
+    /// #1617 with #1653: a publish that fails transiently is HELD and re-sent by redelivery, so it is not a loss and
+    /// does not shorten the window. A second occurrence inside the window stays suppressed while the first is being
+    /// delivered, and the first lands once the publisher is back: one event for the window, not two.
+    @Test
+    void onOperatorWarning_transientPublishFailure_isRedelivered_andDoesNotReopenTheWindow() throws InterruptedException {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the failed publish is held, not dropped").isEqualTo(1);
+
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.aggregator().redeliveryCounters()).as("the second occurrence was suppressed, not admitted")
+                                                       .containsEntry("accepted", 1L);
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).as("the held event lands; the second occurrence stayed suppressed").hasSize(1);
+    }
+
+    /// #1617 with #1653: an event redelivery finally DROPS is a loss, so its key reopens the short retry window. Here
+    /// the drop is an overflow: with the publisher unbound, one more distinct key than the redelivery capacity pushes
+    /// the first key's event out.
+    @Test
+    void onOperatorWarning_eventRedeliveryGivesUpOn_reopensTheShortWindow() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.publisher().set(null);
+        for (int i = 0; i <= ClusterEventRedelivery.CAPACITY; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[" + i + "]"));
+        }
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the first key's event was dropped by overflow")
+                                                      .containsEntry("overflow", 1L);
+
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[0]"));
+        assertThat(h.aggregator().redeliveryCounters()).as("the lost key is admitted again after the short window")
+                                                       .containsEntry("accepted", (long) ClusterEventRedelivery.CAPACITY + 2);
+
+        // orders[5] is still held by redelivery (only orders[0] and then orders[1] were pushed out), so its full window
+        // stands and the occurrence is suppressed.
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[5]"));
+        assertThat(h.aggregator().redeliveryCounters()).as("a key whose event is still held is not admitted")
+                                                       .containsEntry("accepted", (long) ClusterEventRedelivery.CAPACITY + 2);
+    }
+
+    @Test
+    void onOperatorWarning_publishAlwaysFails_attemptsAreBoundedByTheRetryWindow() {
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> attempts.incrementAndGet() > 0,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 1_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+            physicalMillis.addAndGet(60);
+        }
+
+        var bound = (int) Math.ceil(60_000.0 / ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+
+        // v1617-r3 nit: the exact bound, not a range, so a retry window other than OPERATOR_WARNING_RETRY_MS fails here too.
+        assertThat(attempts.get()).as("publish attempts for 1,000 raises in one window, all failing")
+                                  .isEqualTo(bound);
+        assertThat(h.events()).as("control: nothing was published").isEmpty();
+    }
+
+    /// After failed attempts, the first success restores the full window.
+    @Test
+    void onOperatorWarning_afterAFailedPublish_successRestoresTheFullWindow() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               replaying::get,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        replaying.set(false);
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.events()).as("control: the retry after the short window landed").hasSize(1);
+
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        assertThat(h.events()).as("a success restores the 60 s window: 5 s later is still suppressed").hasSize(1);
+    }
+
+    /// #1617 R5: the stream-memory throttle's own window edge. One millisecond short of the window is still
+    /// suppressed, and the window's end admits.
+    @Test
+    void onStreamMemoryExceeded_windowEdge_suppressesJustInside_admitsAtTheEdge() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+        physicalMillis.addAndGet(59_999L);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+
+        assertThat(h.events()).as("59,999 ms: still inside the window").hasSize(1);
+
+        physicalMillis.addAndGet(1L);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+
+        assertThat(h.events()).as("60,000 ms: the window has ended").hasSize(2);
     }
 
     // --- production retention -------------------------------------------------------------------

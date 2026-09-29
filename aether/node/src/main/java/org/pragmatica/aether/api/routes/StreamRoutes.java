@@ -158,6 +158,7 @@ public final class StreamRoutes implements RouteSource {
                                           view.servedByOwner(),
                                           view.ownerHeadOffset(),
                                           view.earliestRetainedOffset(),
+                                          view.ownerActivationBlock().or(""),
                                           view.replicas().stream().map(StreamRoutes::toReplicaStateDetail).toList());
     }
 

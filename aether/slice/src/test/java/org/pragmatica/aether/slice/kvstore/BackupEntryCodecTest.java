@@ -31,12 +31,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupDocument;
@@ -113,6 +115,37 @@ class BackupEntryCodecTest {
 
             assertThat(failures).as("fixtures that did not round-trip alone")
                                 .isEmpty();
+        }
+
+        /// #1573: the rollback record — count, last rollback and the failed versions — survives a
+        /// backup/restore, or a restored cluster would reset its rollback budget and could roll back onto
+        /// a version it already recorded as failed. Carried over from the deleted KVStoreSerializerTest.
+        @Test
+        void encode_thenDecode_previousVersionRollbackRecord_preservesEveryField() {
+            var base = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            var v1 = Version.version("1.0.0").unwrap();
+            var v2 = Version.version("2.0.0").unwrap();
+            var v3 = Version.version("3.0.0").unwrap();
+
+            assertRoundTrips(PreviousVersionKey.previousVersionKey(base),
+                             new PreviousVersionValue(base, v2, v1, 1000L, 2, 900L, List.of(v2, v3)));
+        }
+
+        @Test
+        void encode_thenDecode_previousVersionWithoutFailedVersions_preservesTheEmptyList() {
+            var base = ArtifactBase.artifactBase("com.example:svc").unwrap();
+
+            assertRoundTrips(PreviousVersionKey.previousVersionKey(base),
+                             PreviousVersionValue.previousVersionValue(base,
+                                                                       Version.version("1.0.0").unwrap(),
+                                                                       Version.version("2.0.0").unwrap()));
+        }
+
+        private void assertRoundTrips(AetherKey key, AetherValue value) {
+            CODEC.encode(REVISION, Map.of(key, value))
+                 .flatMap(CODEC::decode)
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(document -> assertThat(document.entries()).containsExactlyEntriesOf(Map.of(key, value)));
         }
 
         /// Byte-exact: the restored state renders to the identical document.
@@ -295,6 +328,25 @@ class BackupEntryCodecTest {
 
             assertThat(failures(CODEC.encode(REVISION, entries))).hasSize(2)
                                                                .allMatch(BackupError.ValueTypeRefused.class::isInstance);
+        }
+
+        /// #1573 N3: a malformed rollback record — its codec bytes cut short inside the new fields — is a typed
+        /// ValueDecodingFailed naming the line, never a thrown exception (the deleted KVStoreSerializer threw
+        /// NumberFormatException on `rollbackCount = "x"`).
+        @Test
+        void decode_malformedPreviousVersionValue_isATypedFailure() {
+            var base = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            var v1 = Version.version("1.0.0").unwrap();
+            var v2 = Version.version("2.0.0").unwrap();
+            var bytes = BackupFixtures.codec()
+                                      .canonical()
+                                      .encode(new PreviousVersionValue(base, v2, v1, 1000L, 2, 900L, List.of(v2)));
+            var truncated = Arrays.copyOf(bytes, bytes.length - 4);
+            var entry = Base64.getEncoder().encodeToString(truncated) + " "
+                        + BackupEntryCodec.escape(PreviousVersionKey.previousVersionKey(base).asString());
+
+            assertThat(failures(CODEC.decode(sealedDocument(entry)))).singleElement()
+                                                                    .isInstanceOf(BackupError.ValueDecodingFailed.class);
         }
 
         @Test

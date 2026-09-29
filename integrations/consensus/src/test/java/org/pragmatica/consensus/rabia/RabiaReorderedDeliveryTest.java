@@ -171,11 +171,13 @@ class RabiaReorderedDeliveryTest {
     ///
     /// A replica reaches epoch 1 one of two ways: it applies R itself (its status then reports R+1 as
     /// the effective slot), or a decision past a gap sends it to sync and it adopts a snapshot at or
-    /// after R+1 (no effective slot of its own). The late replica must take the first way in at least
-    /// one schedule, so the late-apply path is exercised rather than always bypassed.
+    /// after R+1 (no effective slot of its own). Which way a randomized release takes depends on how the
+    /// engines' executors interleave with the pump, so it is not a function of the seed (#1669). Even
+    /// seeds therefore release the late replica's held traffic in emission order: a decider broadcasts
+    /// R's Decision before it opens R+1, so the late replica meets R before any slot past it and must
+    /// apply R itself. Odd seeds release it randomly, where either way is correct.
     @Test
     void agreedChangeGovernsFromTheNextSlotOnEveryReplicaIncludingALateOne() {
-        var lateReplicaAppliedR = 0;
         for (int seed = 0; seed < 8; seed++) {
             var cluster = new ScheduledCluster(4, seed, 3);
             clusters.add(cluster);
@@ -198,7 +200,12 @@ class RabiaReorderedDeliveryTest {
             cluster.pumpUntil(() -> List.of(0, 3).stream()
                                          .allMatch(index -> cluster.machines.get(index).getProcessedCommands().size() == 2));
             assertThat(cluster.engines.get(1).voterConfiguration().unwrap().epoch()).as("v1 is still late").isZero();
-            cluster.held = _ -> false;
+            var releasedInOrder = seed % 2 == 0;
+            if (releasedInOrder) {
+                cluster.releaseHeldInOrder();
+            } else {
+                cluster.held = _ -> false;
+            }
             cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 2));
             cluster.pumpUntil(() -> cluster.engines.stream().allMatch(engine -> engine.voterConfiguration().unwrap().epoch() == 1));
 
@@ -209,8 +216,9 @@ class RabiaReorderedDeliveryTest {
                     .as("seed %s", seed).isTrue();
             }
             assertThat(cluster.engines.getFirst().voterReconfigurationStatus().effectiveSlot().unwrap()).isEqualTo(effective);
-            if (cluster.engines.get(1).voterReconfigurationStatus().effectiveSlot().isPresent()) {
-                lateReplicaAppliedR++;
+            if (releasedInOrder) {
+                assertThat(cluster.engines.get(1).voterReconfigurationStatus().effectiveSlot())
+                    .as("seed %s: the late replica applied R itself", seed).isEqualTo(Option.some(effective));
             }
             assertThat(cluster.engines.get(2).isActive()).as("the removed voter no longer votes").isFalse();
             assertThat(cluster.engines.get(2).isObserving()).isTrue();
@@ -224,7 +232,6 @@ class RabiaReorderedDeliveryTest {
             }
             cluster.stop();
         }
-        assertThat(lateReplicaAppliedR).as("the late replica applied R itself in at least one schedule").isPositive();
     }
 
     /// #1526 genesis view agreement on real engines: a late core holds everyone (its absence keeps the
@@ -339,6 +346,118 @@ class RabiaReorderedDeliveryTest {
             cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == total));
             cluster.stop();
         }
+    }
+
+    /// #1683 path 1 — a replica that missed every message of slot P (it never proposes, votes or learns
+    /// the decision) is repaired by the NEXT decision anywhere: Decision(P+1) is past a gap, so it is
+    /// buffered and the replica resyncs. Mutation that reddens it: delete `triggerResync()` in the
+    /// `comparison > 0` branch of `handleDecision` — the replica stays at P and the schedule stalls.
+    @Test
+    void replicaThatMissedASlotCatchesUpFromTheNextDecision() {
+        for (int seed = 0; seed < 6; seed++) {
+            var cluster = new ScheduledCluster(3, seed);
+            clusters.add(cluster);
+            cluster.start();
+            var slot = cluster.engines.getFirst().currentPhaseForTesting();
+            cluster.held = delivery -> delivery.target() == 2 && isSlotBallot(delivery.message(), slot);
+            commitOnFirstTwo(cluster, "first", 1);
+            assertThat(cluster.engines.get(2).currentPhaseForTesting()).as("seed %s: the replica missed slot %s", seed, slot).isEqualTo(slot);
+            assertThat(cluster.parked).as("seed %s: control — slot traffic to the replica really is withheld", seed)
+                                      .anyMatch(delivery -> delivery.target() == 2 && delivery.message() instanceof Decision<?>);
+            commitOnFirstTwo(cluster, "second", 2);
+            cluster.pumpUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 2
+                                    && cluster.engines.get(2).isActive());
+            assertThat(cluster.machines.get(2).getProcessedCommands()).as("seed %s", seed)
+                                                                       .containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
+            assertThat(cluster.engines.get(2).currentPhaseForTesting().compareTo(slot.successor())).as("seed %s", seed).isPositive();
+            cluster.stop();
+        }
+    }
+
+    /// #1683 quiet gap — the narrower defect the investigation found. A replica misses a whole slot and
+    /// the cluster then goes QUIET: no later decision exists, the replica is Idle (no stall detector), and
+    /// nobody sends it anything, so it stayed stale indefinitely while `isPendingCatchUp()` reported
+    /// false. The idle slot probe asks the voters about its slot every `syncRetryInterval`, and a peer past
+    /// it replays the decision. Mutation that reddens it: make `probeQuietSlot` return immediately (or do
+    /// not arm it).
+    @Test
+    void quietClusterRepairsAReplicaThatMissedAWholeSlot() {
+        for (int seed = 0; seed < 4; seed++) {
+            var cluster = new ScheduledCluster(3, seed, 3, timeSpan(100).millis());
+            clusters.add(cluster);
+            cluster.start();
+            var slot = cluster.engines.getFirst().currentPhaseForTesting();
+            cluster.blocked = delivery -> delivery.target() == 2 && isSlotBallot(delivery.message(), slot);
+            commitOnFirstTwo(cluster, "only", 1);
+            var lagging = cluster.engines.get(2);
+            assertThat(lagging.currentPhaseForTesting()).as("seed %s: the replica missed slot %s", seed, slot).isEqualTo(slot);
+            assertThat(lagging.isPendingCatchUp()).as("seed %s: the gap the ticket found — stale, yet it reports caught up", seed).isFalse();
+            cluster.blocked = _ -> false;
+            cluster.pumpWithTimersUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 1
+                                              && lagging.currentPhaseForTesting().equals(cluster.engines.getFirst().currentPhaseForTesting()),
+                                        5_000);
+            assertThat(cluster.machines.get(2).getProcessedCommands()).as("seed %s", seed)
+                                                                       .containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
+            assertThat(lagging.isPendingCatchUp()).as("seed %s", seed).isFalse();
+            cluster.stop();
+        }
+    }
+
+    /// #1683 — a replica several slots behind in a quiet cluster. Answering its probe for P with P alone
+    /// repairs one slot per request, and when P is already cleaned the SyncResponse fallback is ignored by
+    /// an ACTIVE requester. A peer past P therefore also replays its own frontier decision, which the
+    /// requester applies or resyncs from. The probe timer is inert here (60 s), so the one request below
+    /// is the only repair traffic. Mutation that reddens it: drop `replayFrontierDecision` from
+    /// `replayCompletedSlot` — only Decision(P) is replayed and the replica stops at P+1.
+    @Test
+    void pastSlotRepairAlsoReplaysTheFrontierDecision() {
+        for (int seed = 0; seed < 4; seed++) {
+            var cluster = new ScheduledCluster(3, seed);
+            clusters.add(cluster);
+            cluster.start();
+            var slot = cluster.engines.getFirst().currentPhaseForTesting();
+            var frontier = Phase.phase(slot.value() + 2);
+            cluster.blocked = delivery -> delivery.target() == 2
+                                          && isSlotBallot(delivery.message(), null)
+                                          && phaseOf(delivery.message()).compareTo(frontier) <= 0;
+            commitOnFirstTwo(cluster, "one", 1);
+            commitOnFirstTwo(cluster, "two", 2);
+            commitOnFirstTwo(cluster, "three", 3);
+            cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty() && cluster.parked.isEmpty());
+            assertThat(cluster.engines.get(2).currentPhaseForTesting()).as("seed %s", seed).isEqualTo(slot);
+            cluster.blocked = _ -> false;
+
+            var lagging = cluster.members.get(2);
+            cluster.engines.getFirst().handleRoundRequest(new RoundRequest(lagging, 0, slot, 0));
+            cluster.settle();
+            cluster.collectEmitted();
+            assertThat(cluster.parked.stream()
+                                     .filter(delivery -> delivery.source() == 0 && delivery.target() == 2)
+                                     .map(Delivery::message)
+                                     .filter(Decision.class::isInstance)
+                                     .map(message -> ((Decision<?>) message).phase())
+                                     .toList())
+                .as("seed %s: the repair replays the requested slot AND the peer's frontier", seed)
+                .containsExactlyInAnyOrder(slot, frontier);
+            cluster.pumpUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 3 && cluster.engines.get(2).isActive());
+            assertThat(cluster.machines.get(2).getProcessedCommands()).as("seed %s", seed)
+                                                                       .containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
+            cluster.stop();
+        }
+    }
+
+    /// Submits one command to the first two voters only and pumps until both applied it.
+    private static void commitOnFirstTwo(ScheduledCluster cluster, String value, int expected) {
+        var batch = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand(value)));
+        cluster.engines.subList(0, 2).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), batch)));
+        cluster.pumpUntil(() -> cluster.machines.subList(0, 2).stream().allMatch(machine -> machine.getProcessedCommands().size() == expected));
+    }
+
+    /// A Propose, ballot or Decision — for `slot` when it is given, for any slot otherwise.
+    private static boolean isSlotBallot(ProtocolMessage message, Phase slot) {
+        var ballot = message instanceof Propose<?> || message instanceof VoteRound1 || message instanceof VoteRound2
+                     || message instanceof Decision<?>;
+        return ballot && (slot == null || phaseOf(message).equals(slot));
     }
 
     private static long epochOf(ProtocolMessage message) {
@@ -483,34 +602,82 @@ class RabiaReorderedDeliveryTest {
 
         void pumpUntil(BooleanSupplier completed) {
             for (int step = 0; step < 30_000; step++) {
-                settle();
-                verifyPrefixes();
-                for (var delivery = emitted.poll(); delivery != null; delivery = emitted.poll()) {
-                    if (!dead.contains(delivery.source()) && !dead.contains(delivery.target()) && !blocked.test(delivery)) {
-                        parked.add(delivery);
-                    }
-                }
-                for (var iterator = parked.iterator(); iterator.hasNext(); ) {
-                    var delivery = iterator.next();
-                    if (!held.test(delivery)) {
-                        pending.add(delivery);
-                        iterator.remove();
-                    }
-                }
-                if (completed.getAsBoolean()) {
+                if (pumpStep(completed)) {
                     return;
-                }
-                if (pending.isEmpty()) {
-                    continue;
-                }
-                var delivery = pending.remove(random.nextInt(pending.size()));
-                deliver(delivery);
-                if (random.nextInt(8) == 0) {
-                    deliver(delivery);
                 }
             }
             settle();
             assertThat(completed.getAsBoolean()).as("schedule must make progress; pending=%s", pending.size()).isTrue();
+        }
+
+        /// Pumps against a wall-clock budget instead of a step count, for schedules whose progress comes
+        /// from an engine TIMER (a quiet cluster emits nothing until one fires), which a step budget can
+        /// exhaust in less time than one timer period.
+        void pumpWithTimersUntil(BooleanSupplier completed, long budgetMillis) {
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(budgetMillis);
+            while (System.nanoTime() < deadline) {
+                if (pumpStep(completed)) {
+                    return;
+                }
+            }
+            settle();
+            assertThat(completed.getAsBoolean()).as("schedule must make progress within %sms; pending=%s", budgetMillis, pending.size()).isTrue();
+        }
+
+        /// One settle-collect-deliver step; true once `completed` holds.
+        private boolean pumpStep(BooleanSupplier completed) {
+            settle();
+            verifyPrefixes();
+            collectEmitted();
+            for (var iterator = parked.iterator(); iterator.hasNext(); ) {
+                var delivery = iterator.next();
+                if (!held.test(delivery)) {
+                    pending.add(delivery);
+                    iterator.remove();
+                }
+            }
+            if (completed.getAsBoolean()) {
+                return true;
+            }
+            if (pending.isEmpty()) {
+                return false;
+            }
+            var delivery = pending.remove(random.nextInt(pending.size()));
+            deliver(delivery);
+            if (random.nextInt(8) == 0) {
+                deliver(delivery);
+            }
+            return false;
+        }
+
+        void collectEmitted() {
+            for (var delivery = emitted.poll(); delivery != null; delivery = emitted.poll()) {
+                if (!dead.contains(delivery.source()) && !dead.contains(delivery.target()) && !blocked.test(delivery)) {
+                    parked.add(delivery);
+                }
+            }
+        }
+
+        /// Stops holding and delivers everything held so far, once each and in emission order, settling
+        /// after every delivery. Traffic the release provokes joins the ordinary randomized schedule.
+        void releaseHeldInOrder() {
+            var releasing = held;
+            held = _ -> false;
+            settle();
+            collectEmitted();
+            var released = new ArrayList<Delivery>();
+            for (var iterator = parked.iterator(); iterator.hasNext(); ) {
+                var delivery = iterator.next();
+                if (releasing.test(delivery)) {
+                    released.add(delivery);
+                    iterator.remove();
+                }
+            }
+            for (var delivery : released) {
+                deliver(delivery);
+                settle();
+                verifyPrefixes();
+            }
         }
 
         /// Runs `rounds` genesis rounds on the given engines, delivering all traffic between rounds.

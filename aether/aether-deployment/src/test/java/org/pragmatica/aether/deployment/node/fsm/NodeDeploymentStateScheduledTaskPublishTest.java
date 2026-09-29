@@ -10,6 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -111,6 +112,28 @@ class NodeDeploymentStateScheduledTaskPublishTest {
         execution_mode = "SINGLE"
         """;
 
+    /// The documented shapes (#1438): `aether/docs/slice-developers/resource-reference.md` shows each kind with
+    /// only its own key, not all three.
+    private static final String INTERVAL_ONLY_TOML = """
+        [scheduling.sweep-holds]
+        interval = "5m"
+        execution_mode = "single"
+        """;
+
+    private static final String CRON_ONLY_TOML = """
+        [scheduling.sweep-holds]
+        cron = "0 0 * * *"
+        execution_mode = "single"
+        """;
+
+    private static final String NO_SCHEDULE_TOML = """
+        [scheduling.sweep-holds]
+        execution_mode = "single"
+        """;
+
+    /// The section this test's slice composite serves; a test sets it before dispatching.
+    private String resourcesToml = RESOURCES_TOML;
+
     private RecordingClusterNode cluster;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> harness;
     private Option<ScheduledTaskManager> manager = Option.none();
@@ -178,6 +201,64 @@ class NodeDeploymentStateScheduledTaskPublishTest {
                   .isEqualTo(1);
     }
 
+    /// #1438: an interval-only section, as documented, binds and publishes its task. Before `ScheduleConfig`
+    /// had a `DEFAULT`, the absent `cron` failed the bind ("Config section not found: ScheduleConfig.cron"), one
+    /// WARN was logged, and the slice reached ACTIVE with no task published.
+    @Test
+    void intervalOnlySection_documentedShape_publishesTheIntervalTask() {
+        resourcesToml = INTERVAL_ONLY_TOML;
+
+        assertThat(publishedTaskAfterActive()).isEqualTo(ScheduledTaskValue.intervalTask(SELF, "5m", ExecutionMode.SINGLE));
+    }
+
+    /// #1438: the cron-only shape, whose absent `interval` failed the bind the same way.
+    @Test
+    void cronOnlySection_documentedShape_publishesTheCronTask() {
+        resourcesToml = CRON_ONLY_TOML;
+
+        assertThat(publishedTaskAfterActive()).isEqualTo(ScheduledTaskValue.cronTask(SELF, "0 0 * * *", ExecutionMode.SINGLE));
+    }
+
+    /// #1438: the `DEFAULT` that lets a key be absent must not let BOTH be absent silently. A section with
+    /// neither `interval` nor `cron` now binds, and activation refuses it: the slice reports FAILED, never
+    /// ACTIVE, and no task is published.
+    @Test
+    void sectionWithNeitherIntervalNorCron_failsActivation_neverActiveWithNoTask() {
+        resourcesToml = NO_SCHEDULE_TOML;
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+        await().atMost(5, TimeUnit.SECONDS)
+             .untilAsserted(() -> assertThat(stateTransitions(SliceState.FAILED)).as("activation refused the empty schedule")
+                                            .isNotEmpty());
+
+        assertThat(stateTransitions(SliceState.ACTIVE)).isEmpty();
+        assertThat(scheduledTaskPuts()).isEmpty();
+    }
+
+    private List<KVCommand<AetherKey>> stateTransitions(SliceState state) {
+        return cluster.commands()
+                      .stream()
+                      .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                         && put.key() instanceof NodeArtifactKey
+                                         && put.value() instanceof NodeArtifactValue value
+                                         && value.state() == state)
+                      .toList();
+    }
+
+    private ScheduledTaskValue publishedTaskAfterActive() {
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+        await().atMost(5, TimeUnit.SECONDS)
+             .untilAsserted(() -> assertThat(activeTransitions()).as("the slice reached ACTIVE")
+                                            .isNotEmpty());
+        var puts = scheduledTaskPuts();
+
+        assertThat(puts).as("#1438: the documented section shape must publish its one task, not bind-fail silently")
+                  .hasSize(1);
+
+        return puts.getFirst().value();
+    }
+
     @SuppressWarnings("unchecked")
     private List<KVCommand.Put<AetherKey, ScheduledTaskValue>> scheduledTaskPuts() {
         return cluster.commands()
@@ -228,7 +309,7 @@ class NodeDeploymentStateScheduledTaskPublishTest {
         var context = new NodeDeploymentContext(fsm,
                                                 SELF,
                                                 new NodeAddress("localhost", 9000),
-                                                new ScheduledSliceStore(),
+                                                new ScheduledSliceStore(() -> resourcesToml),
                                                 SliceActionConfig.sliceActionConfig(),
                                                 SliceCodec.sliceCodec(List.of()),
                                                 cluster,
@@ -272,6 +353,11 @@ class NodeDeploymentStateScheduledTaskPublishTest {
     /// the one a real jar ships, not a hand-built map.
     private static final class ScheduledSliceStore implements SliceStore {
         private final List<LoadedSlice> loadedSlices = new CopyOnWriteArrayList<>();
+        private final Supplier<String> resourcesToml;
+
+        private ScheduledSliceStore(Supplier<String> resourcesToml) {
+            this.resourcesToml = resourcesToml;
+        }
 
         private static LoadedSlice loadedSlice(Artifact artifact) {
             Slice slice = new SweepSlice();
@@ -320,7 +406,7 @@ class NodeDeploymentStateScheduledTaskPublishTest {
 
         @Override
         public Option<ConfigurationProvider> sliceComposite(Artifact artifact) {
-            return SliceStore.sliceIntrinsicLayer(artifact, Option.some(RESOURCES_TOML));
+            return SliceStore.sliceIntrinsicLayer(artifact, Option.some(resourcesToml.get()));
         }
     }
 
@@ -481,10 +567,6 @@ class NodeDeploymentStateScheduledTaskPublishTest {
             return 0;
         }
 
-        @Override
-        public Unit setFailureListener(SliceInvoker.SliceFailureListener listener) {
-            return Unit.unit();
-        }
 
         @Override
         public Unit registerAffinityResolver(Artifact artifact,

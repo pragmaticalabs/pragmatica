@@ -97,6 +97,13 @@ public final class ReplicaSetController implements AutoCloseable {
     /// single-arg `Consumer<List<PartitionKey>>` and `Executor` functional interfaces.
     private static final Consumer<List<PartitionKey>> NO_OP_PASS_SEAM = _ -> {};
 
+    /// #1555 sticky ownership: the COMMITTED owner of `(stream, partition)` — the ownership record in this node's
+    /// applied state — or [Option#none] when no record exists yet.
+    @FunctionalInterface
+    public interface CommittedOwnerLookup {
+        Option<NodeId> committedOwner(String stream, int partition);
+    }
+
     /// Self-role for a single `(stream, partition)` under the current placement.
     public enum Role {
         OWNER,
@@ -114,6 +121,9 @@ public final class ReplicaSetController implements AutoCloseable {
     private final Executor executor;
     private final boolean ownsExecutor;
     private final AtomicBoolean passive = new AtomicBoolean(false);
+    /// #1555 sticky ownership source. Default: no records, so every placement is pure HRW (Forge/unit/legacy
+    /// controllers). `AetherNode` binds the committed `StreamPartitionOwnershipValue`.
+    private volatile CommittedOwnerLookup committedOwners = (_, _) -> none();
     /// Membership snapshot captured by the LAST completed reconcile. `roleFor` / `isOwner` (the B3
     /// emit-gate) compute placement from THIS snapshot — the same generation the registry was
     /// reconciled against — so emit-ownership and replica-ownership never read the live topology at
@@ -252,6 +262,41 @@ public final class ReplicaSetController implements AutoCloseable {
                                         false);
     }
 
+    /// Late-bind the committed ownership source (#1555 sticky ownership). Set once at wiring.
+    @Contract
+    public void committedOwnerSource(CommittedOwnerLookup lookup) {
+        this.committedOwners = lookup;
+    }
+
+    /// #1555 sticky ownership, the placement EVERY node routes by: with a committed ownership record its owner leads,
+    /// unconditionally — liveness is judged only by the leader's writer ([#desiredOwner]) — and the other replicas
+    /// are the HRW-top of the rest; with no record yet, pure HRW. Every node agrees on the owner by construction,
+    /// because the record is consensus state, not a local membership verdict.
+    private Option<Placement> effectivePlacement(String streamName, int partition, List<NodeId> members, int rf) {
+        return committedOwners.committedOwner(streamName, partition)
+                              .fold(() -> ReplicaPlacement.place(streamName, partition, members, rf),
+                                    owner -> Option.some(ReplicaPlacement.placeWithOwner(streamName,
+                                                                                         partition,
+                                                                                         owner,
+                                                                                         members,
+                                                                                         rf)));
+    }
+
+    /// The owner the LEADER's ownership writer should commit (#1555 sticky ownership): the committed owner while it
+    /// is in this node's live member set, else the HRW rank-0 of that set. Ownership therefore moves only when the
+    /// committed owner leaves the leader's live set — never because a higher-ranked node joined.
+    public Option<NodeId> desiredOwner(String streamName, int partition) {
+        var members = currentMembers();
+
+        return committedOwners.committedOwner(streamName, partition)
+                              .filter(members::contains)
+                              .orElse(() -> ReplicaPlacement.place(streamName,
+                                                                   partition,
+                                                                   members,
+                                                                   rfFor(streamName,
+                                                                         classify(streamName))).map(Placement::owner));
+    }
+
     /// Membership-tail hook: any {@link MembershipDecision} variant triggers a reconcile. Wire via
     /// `wireMembershipDecisionTail` in AetherNode.
     @Contract
@@ -326,14 +371,10 @@ public final class ReplicaSetController implements AutoCloseable {
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
 
-            ReplicaPlacement.place(spec.name(),
-                                   partition,
-                                   members,
-                                   rf)
-                            .onPresent(placement -> reconcilePlacement(spec.name(),
-                                                                       p,
-                                                                       placement,
-                                                                       reconciled));
+            effectivePlacement(spec.name(), partition, members, rf).onPresent(placement -> reconcilePlacement(spec.name(),
+                                                                                                              p,
+                                                                                                              placement,
+                                                                                                              reconciled));
         }
     }
 
@@ -389,9 +430,8 @@ public final class ReplicaSetController implements AutoCloseable {
         var streamClass = classify(streamName);
         var rf = rfFor(streamName, streamClass);
 
-        return ReplicaPlacement.place(streamName, partition, members, rf)
-                               .map(placement -> roleFrom(placement))
-                               .or(Role.NONE);
+        return effectivePlacement(streamName, partition, members, rf).map(placement -> roleFrom(placement))
+                                 .or(Role.NONE);
     }
 
     /// Members of the last-reconciled snapshot, or a fresh supplier read before the first reconcile.
@@ -436,7 +476,7 @@ public final class ReplicaSetController implements AutoCloseable {
         var members = currentMembers();
         var rf = rfFor(streamName, classify(streamName));
 
-        return ReplicaPlacement.place(streamName, partition, members, rf).map(Placement::owner);
+        return effectivePlacement(streamName, partition, members, rf).map(Placement::owner);
     }
 
     /// The membership snapshot this controller last reconciled from — the SINGLE placement view (#445).

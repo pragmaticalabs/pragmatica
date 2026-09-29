@@ -8,6 +8,7 @@ import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.ThresholdBreached;
 import org.pragmatica.aether.api.ClusterEvent.ThresholdCleared;
+import org.pragmatica.aether.api.ClusterEvent.OperatorWarning;
 import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
 import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
@@ -35,6 +36,7 @@ import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.SelfDrainInitiated;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
+import org.pragmatica.aether.api.ClusterEvent.AutoRollback;
 import org.pragmatica.aether.api.ClusterEvent.StreamDeleted;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.api.ClusterEvent.StreamRegistered;
@@ -335,6 +337,7 @@ class ClusterEventCodecTest {
                        new ScaleUp(ts, sev, "ScaleUp", d),
                        new ScaleDown(ts, sev, "ScaleDown", d),
                        new SliceFailure(ts, sev, "SliceFailure", d),
+                       new AutoRollback(ts, sev, "AutoRollback", d),
                        new ConnectionEstablished(ts, sev, "ConnectionEstablished", d),
                        new ConnectionFailed(ts, sev, "ConnectionFailed", d),
                        new CommunityScaleRequest(ts, sev, "CommunityScaleRequest", d),
@@ -355,7 +358,8 @@ class ClusterEventCodecTest {
                        new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d),
                        new ScaleCapped(ts, sev, "ScaleCapped", d),
                        new ThresholdBreached(ts, sev, "ThresholdBreached", d),
-                       new ThresholdCleared(ts, sev, "ThresholdCleared", d));
+                       new ThresholdCleared(ts, sev, "ThresholdCleared", d),
+                       new OperatorWarning(ts, sev, "OperatorWarning", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.
