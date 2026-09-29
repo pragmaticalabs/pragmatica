@@ -348,6 +348,40 @@ class AppHttpServerRouteSecurityPolicyTest {
         assertThat(response.body()).contains("served-locally");
     }
 
+    /// #1678 (v1670 P6), at a NON-hosting ingress: one remote slice publishes two sibling routes under the base
+    /// `/orders/` -- `GET /orders/{id}` PUBLIC and `GET /orders/{id}/admin` `role:admin`. Keyed by base alone, the
+    /// sibling put LAST overwrote the other, so one declaration order authorized the admin sibling as PUBLIC. The
+    /// ingress now picks the sibling by SHAPE, through the router's own rule: 401 without a credential, in both
+    /// orders, while the public sibling stays admitted.
+    @Test
+    void remoteSiblingRoutes_theAdminSiblingIsEnforced_inEitherPublishOrder() throws Exception {
+        for (var adminFirst : List.of(false, true)) {
+            var registry = HttpRouteRegistry.httpRouteRegistry();
+            registry.onNodeRoutesPut(siblingRoutes(adminFirst));
+
+            startServer("/local/", SecurityPolicy.unspecified(), registry);
+
+            assertThat(get("/orders/5/admin").statusCode()).as("admin sibling, admin first: %s", adminFirst).isEqualTo(401);
+            var publicSibling = get("/orders/5");
+            assertThat(publicSibling.statusCode()).as("public sibling admitted (503 = forwarded, no forwarder): %s",
+                                                      publicSibling.body())
+                                                  .isEqualTo(503);
+            server.stop().await();
+            server = null;
+        }
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> siblingRoutes(boolean adminFirst) {
+        var publicOrder = RouteEntry.activeRoute("GET", "/orders/", "getOrder", "PUBLIC", "PUBLIC", 1, List.of());
+        var adminOrder = RouteEntry.activeRoute("GET", "/orders/", "adminOrder", "ROLE:admin", "ROLE:admin", 2, List.of("admin"));
+        var routes = adminFirst
+                     ? List.of(adminOrder, publicOrder)
+                     : List.of(publicOrder, adminOrder);
+        var value = NodeRoutesValue.nodeRoutesValue(routes, Epoch.ZERO);
+
+        return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, TEST_ARTIFACT), value), Option.none());
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRouteOf(Artifact artifact, String prefix, String security) {
         var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, artifact);
         var route = RouteEntry.activeRoute("GET", prefix, "handle", security, security);

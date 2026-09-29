@@ -1239,7 +1239,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              .equalsIgnoreCase(method))
                                        .filter(route -> pathMatchesPrefix(normalizedPath,
                                                                           route.pathPrefix()))
-                                       .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length())));
+                                       .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length())))
+                     .map(route -> route.servingShape(normalizedPath));
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {
@@ -1432,8 +1433,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         httpForwarder.unwrap()
                      .forward(httpCtx,
-                              route.httpMethod(),
-                              route.pathPrefix(),
+                              route,
                               requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> sendProblem(response,

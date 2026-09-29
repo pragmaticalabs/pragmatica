@@ -58,6 +58,15 @@ public interface HttpForwarder {
                                       String pathPrefix,
                                       String requestId);
 
+    /// #1678: forward to the nodes serving exactly `route` -- a route already narrowed to the sibling shape the
+    /// request is served by, so a request for one sibling never lands on a node serving only another that shares its
+    /// base path. The default forwards by the route's base path, as a forwarder without shape knowledge does.
+    default Promise<HttpResponseData> forward(HttpRequestContext requestContext,
+                                              HttpRouteRegistry.RouteInfo route,
+                                              String requestId) {
+        return forward(requestContext, route.httpMethod(), route.pathPrefix(), requestId);
+    }
+
     Promise<HttpResponseData> forwardToAnyNode(HttpRequestContext requestContext, String requestId);
 
     /// Entry for a CLIENT-originated management request: by definition there is no previous hop.
@@ -364,10 +373,36 @@ public interface HttpForwarder {
                                                      String httpMethod,
                                                      String pathPrefix,
                                                      String requestId) {
+                return forwardAmong(requestContext,
+                                    httpMethod,
+                                    pathPrefix,
+                                    routeRegistry.findRoute(httpMethod, pathPrefix)
+                                                 .map(HttpRouteRegistry.RouteInfo::nodes)
+                                                 .or(Set.of()),
+                                    "",
+                                    requestId);
+            }
+
+            @Override
+            public Promise<HttpResponseData> forward(HttpRequestContext requestContext,
+                                                     HttpRouteRegistry.RouteInfo route,
+                                                     String requestId) {
+                return forwardAmong(requestContext,
+                                    route.httpMethod(),
+                                    route.pathPrefix(),
+                                    route.nodes(),
+                                    route.shapeKey(),
+                                    requestId);
+            }
+
+            private Promise<HttpResponseData> forwardAmong(HttpRequestContext requestContext,
+                                                           String httpMethod,
+                                                           String pathPrefix,
+                                                           Set<NodeId> serving,
+                                                           String shapeKey,
+                                                           String requestId) {
                 var resultPromise = Promise.<HttpResponseData> promise();
-                var connectedNodes = filterConnectedNodes(routeRegistry.findRoute(httpMethod, pathPrefix)
-                                                                       .map(HttpRouteRegistry.RouteInfo::nodes)
-                                                                       .or(Set.of()));
+                var connectedNodes = filterConnectedNodes(serving);
 
                 if (connectedNodes.isEmpty()) {
                     log.warn("No connected nodes available for route {} {} [{}]", httpMethod, pathPrefix, requestId);
@@ -376,7 +411,8 @@ public interface HttpForwarder {
                     return resultPromise;
                 }
 
-                var routeIdentity = httpMethod + ":" + pathPrefix;
+                // #1678: the identity names the sibling SHAPE too, so a retry re-reads candidates for that sibling only.
+                var routeIdentity = httpMethod + ":" + pathPrefix + shapeKey;
 
                 forwardWithRetry(requestContext,
                                  resultPromise,
@@ -894,9 +930,16 @@ public interface HttpForwarder {
                 }
 
                 var method = routeIdentity.substring(0, colonIdx);
-                var prefix = routeIdentity.substring(colonIdx + 1);
+                var shapeIdx = routeIdentity.indexOf(HttpRouteRegistry.RouteInfo.SHAPE_MARK, colonIdx);
+                var prefix = shapeIdx == -1
+                             ? routeIdentity.substring(colonIdx + 1)
+                             : routeIdentity.substring(colonIdx + 1, shapeIdx);
+                var shapeKey = shapeIdx == -1
+                               ? ""
+                               : routeIdentity.substring(shapeIdx);
 
                 return routeRegistry.findRoute(method, prefix)
+                                    .map(r -> r.withShapeKey(shapeKey))
                                     .map(r -> filterConnectedNodes(r.nodes()))
                                     .or(List.of());
             }

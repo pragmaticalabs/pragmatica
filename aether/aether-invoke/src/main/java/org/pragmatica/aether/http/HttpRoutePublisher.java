@@ -493,7 +493,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                       effective.pathPrefix(),
                                       effective.sliceMethod(),
                                       effective.security().asString(),
-                                      declared.security().asString());
+                                      declared.security().asString(),
+                                      effective.pathArity(),
+                                      effective.spacers());
     }
 
     @Override

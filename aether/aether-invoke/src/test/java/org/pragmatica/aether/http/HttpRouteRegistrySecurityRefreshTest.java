@@ -192,6 +192,45 @@ class HttpRouteRegistrySecurityRefreshTest {
         assertThat(registry.allRoutes()).isEmpty();
     }
 
+    /// #1678: sibling shapes under one base keep separate entries, and a route narrowed to the sibling serving a
+    /// path carries that sibling's policy AND only the nodes serving it -- a forward for the admin sibling never lands
+    /// on a node serving only the public one. Both put orders.
+    @Test
+    void siblingShapes_narrowToTheServingSibling_policyAndNodes_inEitherPutOrder() {
+        for (var adminFirst : List.of(false, true)) {
+            var registry = HttpRouteRegistry.httpRouteRegistry();
+            var publicPut = shaped(NODE_A, ECHO, "PUBLIC", 1, List.of());
+            var adminPut = shaped(NODE_B, ECHO_V2, "ROLE:admin", 2, List.of("admin"));
+
+            registry.onNodeRoutesPut(adminFirst ? adminPut : publicPut);
+            registry.onNodeRoutesPut(adminFirst ? publicPut : adminPut);
+
+            var route = registry.allRoutes().getFirst();
+            var admin = route.servingShape("/echo/5/admin");
+            var pub = route.servingShape("/echo/5");
+
+            assertThat(admin.security()).as("admin first: %s", adminFirst).isEqualTo("ROLE:admin");
+            assertThat(admin.nodes()).as("admin first: %s", adminFirst).containsExactly(NODE_B);
+            assertThat(pub.security()).as("admin first: %s", adminFirst).isEqualTo("PUBLIC");
+            assertThat(pub.nodes()).as("admin first: %s", adminFirst).containsExactly(NODE_A);
+            assertThat(route.servingShape("/echo/5/unknown").security()).as("no sibling matches: the strongest governs")
+                                                                          .isEqualTo("ROLE:admin");
+            assertThat(route.withShapeKey(admin.shapeKey()).nodes()).as("a retry re-reads the same sibling's nodes")
+                                                                     .containsExactly(NODE_B);
+        }
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> shaped(NodeId node,
+                                                                   Artifact artifact,
+                                                                   String security,
+                                                                   int arity,
+                                                                   List<String> spacers) {
+        var route = RouteEntry.activeRoute("GET", "/echo/", "echo", security, security, arity, spacers);
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.ZERO);
+
+        return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, artifact), value), Option.none());
+    }
+
     private static String security(HttpRouteRegistry registry) {
         return registry.allRoutes()
                        .getFirst()

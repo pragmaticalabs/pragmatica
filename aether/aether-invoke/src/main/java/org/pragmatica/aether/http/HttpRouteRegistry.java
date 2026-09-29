@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.http.routing.RouteShape;
+import org.pragmatica.http.routing.RouteShapeSelector;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
@@ -57,11 +59,33 @@ public interface HttpRouteRegistry {
     /// Who published a route entry: a node, for one artifact it serves (#1659, v1670 F3). One node can serve the
     /// same route from two artifacts (two versions during a rollout); keyed by node alone, the later put overwrote
     /// the other and removing either artifact's key dropped the node from every route it still served.
-    record RouteSource(NodeId nodeId, String artifact) {
+    ///
+    /// #1678: and for one route SHAPE (`pathArity`, `spacers`) under the base path -- sibling routes of one slice share
+    /// the base, so an entry is keyed by the sibling it describes, not only by who published it.
+    record RouteSource(NodeId nodeId, String artifact, int pathArity, List<String> spacers) {
+        public RouteSource {
+            spacers = List.copyOf(spacers);
+        }
+
         public static RouteSource routeSource(NodeId nodeId, String artifact) {
-            return new RouteSource(nodeId, artifact);
+            return new RouteSource(nodeId, artifact, 0, List.of());
+        }
+
+        public static RouteSource routeSource(NodeId nodeId, String artifact, int pathArity, List<String> spacers) {
+            return new RouteSource(nodeId, artifact, pathArity, spacers);
+        }
+
+        boolean publishedBy(NodeId node, String artifactCoord) {
+            return nodeId.equals(node) && artifact.equals(artifactCoord);
+        }
+
+        ShapeView shape(String pathPrefix) {
+            return new ShapeView(pathPrefix, pathArity, spacers);
         }
     }
+
+    /// One sibling's shape under a base path, as [RouteShapeSelector] reads it.
+    record ShapeView(String path, int pathParamCount, List<String> spacers) implements RouteShape {}
 
     /// A route and the policies EACH source serving it published (#1659). Before, the route kept whichever policy
     /// was registered FIRST for as long as any node stayed registered, so an override republished afterwards never
@@ -108,12 +132,80 @@ public interface HttpRouteRegistry {
             return new RouteInfo(httpMethod, pathPrefix, updated);
         }
 
+        /// Every entry that node published for that artifact, whatever sibling shape it describes.
         RouteInfo withoutSource(RouteSource source) {
             var updated = new HashMap<>(securityBySource);
 
-            updated.remove(source);
+            updated.keySet()
+                   .removeIf(entry -> entry.publishedBy(source.nodeId(), source.artifact()));
 
             return new RouteInfo(httpMethod, pathPrefix, updated);
+        }
+
+        /// #1678: this route narrowed to the sibling that serves `path` -- picked by [RouteShapeSelector], the rule
+        /// the hosting slice's router dispatches by, over this base's shapes in a fixed order. Its policy and its
+        /// nodes are then that sibling's alone. When no shape matches (the host would answer 404) the whole base is
+        /// returned, whose policy is the strongest across every sibling: an ambiguity fails closed.
+        public RouteInfo servingShape(String path) {
+            var shapes = securityBySource.keySet()
+                                         .stream()
+                                         .map(source -> source.shape(pathPrefix))
+                                         .distinct()
+                                         .sorted(Comparator.comparingInt(ShapeView::pathParamCount)
+                                                           .thenComparing(shape -> String.join("/",
+                                                                                               shape.spacers())))
+                                         .toList();
+
+            return RouteShapeSelector.select(shapes, path)
+                                     .map(this::narrowedTo)
+                                     .or(this);
+        }
+
+        /// Separates a route identity's base from its sibling shape (`GET:/orders/#2:admin`) -- a character a
+        /// normalized path prefix cannot contain.
+        public static final String SHAPE_MARK = "#";
+
+        /// The sibling shape this route is narrowed to, as `#<arity>:<spacer/spacer>`; empty when it spans several.
+        public String shapeKey() {
+            var shapes = securityBySource.keySet()
+                                         .stream()
+                                         .map(source -> source.shape(pathPrefix))
+                                         .distinct()
+                                         .toList();
+
+            return shapes.size() == 1
+                   ? keyOf(shapes.getFirst())
+                   : "";
+        }
+
+        /// This route narrowed to the sibling named by `shapeKey` (see [#shapeKey]); the whole route when it is empty.
+        public RouteInfo withShapeKey(String shapeKey) {
+            return shapeKey.isEmpty()
+                   ? this
+                   : new RouteInfo(httpMethod,
+                                   pathPrefix,
+                                   securityBySource.entrySet()
+                                                   .stream()
+                                                   .filter(entry -> keyOf(entry.getKey()
+                                                                               .shape(pathPrefix)).equals(shapeKey))
+                                                   .collect(Collectors.toMap(Map.Entry::getKey,
+                                                                             Map.Entry::getValue)));
+        }
+
+        private static String keyOf(ShapeView shape) {
+            return SHAPE_MARK + shape.pathParamCount() + ":" + String.join("/", shape.spacers());
+        }
+
+        private RouteInfo narrowedTo(ShapeView shape) {
+            return new RouteInfo(httpMethod,
+                                 pathPrefix,
+                                 securityBySource.entrySet()
+                                                 .stream()
+                                                 .filter(entry -> entry.getKey()
+                                                                       .shape(pathPrefix)
+                                                                       .equals(shape))
+                                                 .collect(Collectors.toMap(Map.Entry::getKey,
+                                                                           Map.Entry::getValue)));
         }
 
         RouteInfo withoutNode(NodeId nodeId) {
@@ -191,7 +283,9 @@ public interface HttpRouteRegistry {
                     var prefix = route.pathPrefix();
                     var security = NodeRouteSecurity.nodeRouteSecurity(route.security(), route.declaredSecurity());
                     var source = RouteSource.routeSource(nodeId,
-                                                         key.artifact().asString());
+                                                         key.artifact().asString(),
+                                                         route.pathArity(),
+                                                         route.spacers());
                     var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
 
                     ref.updateAndGet(current -> addSourceToRoute(current, method, prefix, source, security));
