@@ -86,6 +86,72 @@ class PublishClosureTest(unittest.TestCase):
             })
             self.assertEqual(found, [])
 
+    def test_empty_relative_path_means_no_local_parent(self):
+        # #1707 review: <relativePath/> tells Maven to resolve the parent from the repository, so the unpublished
+        # pom sitting at ".." is not this module's parent and must not be reported as one.
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, found = self.reactor(directory, {
+                ".": pom("root", modules=("tool",), skip=True),
+                "tool": pom("tool", parent="root", skip=False).replace("<version>1</version></parent>",
+                                                                        "<version>1</version><relativePath/></parent>"),
+            })
+            self.assertEqual(found, [])
+
+    def test_local_candidate_with_another_artifact_id_is_not_the_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, found = self.reactor(directory, {
+                ".": pom("root", modules=("tool",), skip=True),
+                "tool": pom("tool", parent="external-parent", skip=False),
+            })
+            self.assertEqual(found, [])
+
+    def test_absent_relative_path_still_finds_the_parent_one_level_up(self):
+        # Control for the two above: the same reactor with the real parent declared IS reported.
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, found = self.reactor(directory, {
+                ".": pom("root", modules=("tool",), skip=True),
+                "tool": pom("tool", parent="root", skip=False),
+            })
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("its parent root", found[0])
+
+    def test_scope_omitted_takes_the_managed_scope_from_the_parent_chain(self):
+        # #1707 review: the five jbct modules' test-logging dependency carries no <scope>; the root manages it as test.
+        managed = ('<dependencyManagement><dependencies><dependency><groupId>org.pragmatica-lite</groupId>'
+                   '<artifactId>kit</artifactId><version>1</version><scope>test</scope></dependency>'
+                   '</dependencies></dependencyManagement>')
+        with tempfile.TemporaryDirectory() as directory:
+            _, edges, found = self.reactor(directory, {
+                ".": pom("root", modules=("kit", "node")).replace("</project>", managed + "</project>"),
+                "kit": pom("kit", parent="root", skip=True),
+                "node": pom("node", parent="root", deps=(("kit", None, False),)),
+            })
+            self.assertEqual((edges, found), (0, []))
+
+    def test_declared_scope_overrides_the_managed_one(self):
+        managed = ('<dependencyManagement><dependencies><dependency><groupId>org.pragmatica-lite</groupId>'
+                   '<artifactId>kit</artifactId><version>1</version><scope>test</scope></dependency>'
+                   '</dependencies></dependencyManagement>')
+        with tempfile.TemporaryDirectory() as directory:
+            _, edges, found = self.reactor(directory, {
+                ".": pom("root", modules=("kit", "node")).replace("</project>", managed + "</project>"),
+                "kit": pom("kit", parent="root", skip=True),
+                "node": pom("node", parent="root", deps=(("kit", "compile", False),)),
+            })
+            self.assertEqual(edges, 1)
+            self.assertEqual(len(found), 1, found)
+
+    def test_reactor_module_outside_the_group_prefix_is_still_checked(self):
+        # #1707 review: membership is decided by the reactor coordinates, not by a groupId prefix.
+        with tempfile.TemporaryDirectory() as directory:
+            _, edges, found = self.reactor(directory, {
+                ".": pom("root", modules=("kit", "node"), group="io.example"),
+                "kit": pom("kit", parent="root", skip=True, group="io.example"),
+                "node": pom("node", parent="root", deps=(("kit", None, False),), group="io.example"),
+            })
+            self.assertEqual(edges, 1)
+            self.assertTrue(any("node (compile) depends on kit" in line for line in found), found)
+
     def test_the_repository_itself_is_closed(self):
         count, edges, found = closure.violations(Path(__file__).resolve().parent.parent / "pom.xml")
         self.assertGreater(count, 50, "control: the real reactor was walked")

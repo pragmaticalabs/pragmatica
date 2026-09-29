@@ -313,6 +313,62 @@ class AnnotationProcessorE2ETest {
             assertThat(result.diagnostics()).doesNotContain("is not used");
         }
 
+        /// #1707 review: a `$n` inside a string literal is not a placeholder, so a parameterless query containing one
+        /// compiles.
+        @Test
+        void positionalLookalikeInsideALiteral_isNotCountedAsAPlaceholder() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface LiteralRepo {
+
+                    @Query("UPDATE users SET name = 'costs $2' WHERE id = 1")
+                    Promise<Unit> renameFirst();
+                }
+                """;
+            var result = compileWithProcessor(source, "test/LiteralRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+        }
+
+        /// #1707 review: a query mixing `:name` and `$n` binds by an order neither check sees, so it is refused.
+        @Test
+        void mixedNamedAndPositionalPlaceholders_failsCompilation() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface MixedRepo {
+
+                    @Query("UPDATE users SET name = :name WHERE id = $2")
+                    Promise<Unit> rename(String name, long id);
+                }
+                """;
+            var result = compileWithProcessor(source, "test/MixedRepo.java");
+
+            assertThat(result.success()).as("Compilation must fail: " + result.diagnostics()).isFalse();
+            assertThat(result.diagnostics()).contains("mixes named");
+        }
+
+        @Test
+        void sqlCodeOnly_blanksLiteralsIdentifiersDollarQuotesAndComments() {
+            var sql = "SELECT '$1''x', \"$2\", $$ $3 $$, $t$ $4 $t$ /* $5 */ FROM t -- $6\nWHERE a = $7";
+            var code = QueryAnnotationProcessor.sqlCodeOnly(sql);
+
+            assertThat(code).hasSize(sql.length()).contains("$7").doesNotContain("$1", "$2", "$3", "$4", "$5", "$6");
+        }
+
         /// #1139 row 3: a positional query whose highest `$n` disagrees with the parameter count is a generation error.
         @Test
         void positionalQuery_countMismatch_failsCompilation() throws Exception {

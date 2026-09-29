@@ -9,14 +9,20 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.function.IntFunction;
+import java.util.function.ToIntFunction;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.fail;
+
 
 /// Port blocks for Ember cluster tests (#939, #1189, #1667).
 ///
@@ -33,45 +39,85 @@ final class EmberTestPorts {
     static final int SWIM_PORT_OFFSET = 100;
     static final int START_ATTEMPTS = 5;
 
-    record Block(int first, int last, int step, int slots, int mgmtOffset, int appOffset) {}
+    /// `reservedOffsets`: further ports (TCP and UDP) the test uses at `base + offset`, e.g. a dead seed's address.
+    record Block(int first,
+                 int last,
+                 int step,
+                 int slots,
+                 int mgmtOffset,
+                 int appOffset,
+                 List<Integer> reservedOffsets) {
+        Block(int first, int last, int step, int slots, int mgmtOffset, int appOffset) {
+            this(first, last, step, slots, mgmtOffset, appOffset, List.of());
+        }
+    }
 
     private EmberTestPorts() {}
 
     /// The first block in range whose every port is free right now.
     static int freeBase(Block block) {
+        return freeBase(block, Set.of());
+    }
+
+    /// As [#freeBase(Block)], skipping `excluded` bases (#1707 review: a base that lost a bind is not retried, even if
+    /// the port that collided has since been released).
+    static int freeBase(Block block, Set<Integer> excluded) {
         for (int base = block.first(); base <= block.last(); base += block.step()) {
-            if (isFree(block, base)) {
+            if (!excluded.contains(base) && isFree(block, base)) {
                 return base;
             }
         }
+
         return fail("no free port block between " + block.first() + " and " + block.last());
     }
 
     /// A started cluster on a free block. `clusterAt` builds the (unstarted) cluster for a base port.
     static EmberCluster startedCluster(Block block, IntFunction<EmberCluster> clusterAt, TimeSpan startBound) {
+        return startedCluster(clusterAt, startBound, attempted -> freeBase(block, attempted));
+    }
+
+    /// As above, with the base choice given the bases already attempted (a seam for EmberTestPortsTest).
+    static EmberCluster startedCluster(IntFunction<EmberCluster> clusterAt,
+                                       TimeSpan startBound,
+                                       ToIntFunction<Set<Integer>> chooseBase) {
         var lastCollision = "";
+        var attempted = new HashSet<Integer>();
 
         for (int attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
-            var base = freeBase(block);
+            var base = chooseBase.applyAsInt(Set.copyOf(attempted));
+
+            attempted.add(base);
             var cluster = clusterAt.apply(base);
-            var outcome = cluster.start()
-                                 .await(startBound)
-                                 .fold(Cause::message, _ -> "started");
+            var outcome = cluster.start().await(startBound).fold(Cause::message, _ -> "started");
 
             if ("started".equals(outcome)) {
                 return cluster;
             }
-            cluster.stop()
-                   .await(startBound);
+
+            var stopped = cluster.stop().await(startBound).fold(Cause::message, _ -> "stopped");
+
+            if (!"stopped".equals(stopped)) {
+                // A cluster that did not stop may still hold sockets; starting another beside it proves nothing.
+                return fail("cluster start on base " + base
+                           + " failed (" + outcome
+                           + ") and its cleanup failed too: " + stopped);
+            }
+
             if (!isBindCollision(outcome)) {
                 return fail("cluster start on base " + base + " failed: " + outcome);
             }
+
             lastCollision = outcome;
             log.warn("Ember test cluster on base {} lost a port between probe and bind (attempt {}/{}); retrying on a "
-                     + "fresh block: {}", base, attempt, START_ATTEMPTS, outcome);
+                    + "fresh block: {}",
+                     base,
+                     attempt,
+                     START_ATTEMPTS,
+                     outcome);
         }
-        return fail("every one of " + START_ATTEMPTS + " cluster starts lost a port between probe and bind; last: "
-                    + lastCollision);
+
+        return fail("every one of " + START_ATTEMPTS
+                   + " cluster starts lost a port between probe and bind; last: " + lastCollision);
     }
 
     static boolean isBindCollision(String startFailure) {
@@ -84,21 +130,28 @@ final class EmberTestPorts {
                 return false;
             }
         }
-        return true;
+
+        return block.reservedOffsets()
+                    .stream()
+                    .allMatch(offset -> tcpFree(base + offset) && udpFree(base + offset));
     }
 
     /// One node's ports in the block: QUIC (TCP and UDP), SWIM UDP, management and app HTTP.
     static boolean slotFree(Block block, int base, int slot) {
         var quic = base + slot;
 
-        return tcpFree(quic) && udpFree(quic) && udpFree(quic + SWIM_PORT_OFFSET)
-               && tcpFree(base + block.mgmtOffset() + slot) && tcpFree(base + block.appOffset() + slot);
+        return tcpFree(quic)
+               && udpFree(quic)
+               && udpFree(quic + SWIM_PORT_OFFSET)
+               && tcpFree(base + block.mgmtOffset() + slot)
+               && tcpFree(base + block.appOffset() + slot);
     }
 
     private static boolean tcpFree(int port) {
         try (var socket = new ServerSocket()) {
             socket.setReuseAddress(false);
             socket.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;
@@ -109,6 +162,7 @@ final class EmberTestPorts {
         try (var socket = new DatagramSocket(null)) {
             socket.setReuseAddress(false);
             socket.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;

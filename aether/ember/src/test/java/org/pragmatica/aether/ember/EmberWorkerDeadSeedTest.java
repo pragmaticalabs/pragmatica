@@ -49,7 +49,8 @@ class EmberWorkerDeadSeedTest {
                                                                                 CANDIDATE_STEP,
                                                                                 SLOTS,
                                                                                 MGMT_OFFSET,
-                                                                                APP_OFFSET);
+                                                                                APP_OFFSET,
+                                                                                java.util.List.of(DEAD_OFFSET));
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long READY_BOUND_MS = 120_000L;

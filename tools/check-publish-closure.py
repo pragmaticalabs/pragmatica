@@ -4,8 +4,8 @@
 Walks the reactor from the root pom's <modules> (default build, no profiles), and for every module that PUBLISHES
 (the Central publishing plugin's `skipPublishing` is not true, set in the module's <build><plugins> or inherited through
 its parent chain) requires that:
-  - every `org.pragmatica-lite*` dependency that is itself a reactor module, at compile or runtime scope and not
-    optional, also publishes;
+  - every dependency that is itself a reactor module, at compile or runtime scope (the declared scope, else the
+    managed one) and not optional, also publishes;
   - its reactor parent pom also publishes (a consumer resolves the parent to read the child).
 A published module that depends on an unpublished one is unusable from Central: its consumers get a hard
 resolution failure, while every local build resolves the dependency from a populated local repository and passes.
@@ -20,13 +20,16 @@ import sys
 import xml.etree.ElementTree as ET
 
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
-GROUP_PREFIX = "org.pragmatica-lite"
 PUBLISHING_PLUGIN = "central-publishing-maven-plugin"
 
 
 def text(element, path):
     found = element.find(path, NS)
     return found.text.strip() if found is not None and found.text else None
+
+
+def declared_artifact(pom):
+    return text(ET.parse(pom).getroot(), "m:artifactId")
 
 
 class Module:
@@ -36,11 +39,15 @@ class Module:
         self.parent_pom = None
         parent = self.root.find("m:parent", NS)
         if parent is not None:
-            relative = text(parent, "m:relativePath")
-            candidate = (pom.parent / (relative if relative is not None else "..")).resolve()
-            candidate = candidate / "pom.xml" if candidate.is_dir() else candidate
-            if relative != "" and candidate.is_file():
-                self.parent_pom = candidate
+            # An EMPTY <relativePath/> disables the local lookup (Maven resolves the parent from the repository);
+            # an absent one means "..". A local candidate counts only if it IS the declared parent (#1707 review).
+            relative_element = parent.find("m:relativePath", NS)
+            if relative_element is None or (relative_element.text or "").strip():
+                relative = relative_element.text.strip() if relative_element is not None else ".."
+                candidate = (pom.parent / relative).resolve()
+                candidate = candidate / "pom.xml" if candidate.is_dir() else candidate
+                if candidate.is_file() and declared_artifact(candidate) == text(parent, "m:artifactId"):
+                    self.parent_pom = candidate
         self.artifact_id = text(self.root, "m:artifactId")
         self.own_group = text(self.root, "m:groupId")
         self.parent_group = text(self.root, "m:parent/m:groupId")
@@ -62,12 +69,21 @@ class Module:
         return None
 
     def dependencies(self):
+        """(group, artifact, declared scope or None, declared optional or None) for each <dependencies> entry."""
         for dependency in self.root.findall("m:dependencies/m:dependency", NS):
-            group = text(dependency, "m:groupId") or ""
-            group = group.replace("${project.groupId}", self.group_id or "")
-            scope = text(dependency, "m:scope") or "compile"
-            optional = text(dependency, "m:optional") == "true"
-            yield group, text(dependency, "m:artifactId"), scope, optional
+            yield (self.resolve(text(dependency, "m:groupId") or ""), text(dependency, "m:artifactId"),
+                   text(dependency, "m:scope"), text(dependency, "m:optional"))
+
+    def managed(self):
+        """(group, artifact) -> (scope, optional) from this pom's own <dependencyManagement>."""
+        entries = {}
+        for dependency in self.root.findall("m:dependencyManagement/m:dependencies/m:dependency", NS):
+            key = (self.resolve(text(dependency, "m:groupId") or ""), text(dependency, "m:artifactId"))
+            entries[key] = (text(dependency, "m:scope"), text(dependency, "m:optional"))
+        return entries
+
+    def resolve(self, value):
+        return value.replace("${project.groupId}", self.group_id or "")
 
 
 def reactor(root_pom):
@@ -96,6 +112,18 @@ def publishes(module, modules):
     return True
 
 
+def managed_entry(module, modules, key):
+    """The nearest <dependencyManagement> entry for `key`, walking up the parent chain (#1707 review: an omitted
+    scope takes the managed one, e.g. `test`)."""
+    current = module
+    while current is not None:
+        entry = current.managed().get(key)
+        if entry is not None:
+            return entry
+        current = modules.get(current.parent_pom) if current.parent_pom else None
+    return None, None
+
+
 def violations(root_pom):
     modules = reactor(root_pom)
     by_coordinate = {module.coordinate(): module for module in modules.values()}
@@ -106,11 +134,15 @@ def violations(root_pom):
         parent = modules.get(module.parent_pom) if module.parent_pom else None
         if parent is not None and parent.pom not in published:
             found.append(f"{module.artifact_id}: its parent {parent.artifact_id} ({parent.pom}) is not published")
-        for group, artifact, scope, optional in module.dependencies():
-            if not group.startswith(GROUP_PREFIX) or optional or scope not in ("compile", "runtime"):
-                continue
+        for group, artifact, declared_scope, declared_optional in module.dependencies():
+            # Every reactor module counts, whatever its group (#1707 review); the coordinate lookup decides membership.
             target = by_coordinate.get((group, artifact))
             if target is None:
+                continue
+            managed_scope, managed_optional = managed_entry(module, modules, (group, artifact))
+            scope = declared_scope or managed_scope or "compile"
+            optional = (declared_optional or managed_optional) == "true"
+            if optional or scope not in ("compile", "runtime"):
                 continue
             edges += 1
             if target.pom not in published:

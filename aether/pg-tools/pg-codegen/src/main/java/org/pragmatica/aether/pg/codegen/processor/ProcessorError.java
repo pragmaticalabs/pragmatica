@@ -25,6 +25,10 @@ public final class ProcessorError {
         return PREFIX + "Method parameter '" + param + "' is not used in the query";
     }
 
+    public static String mixedPlaceholderStyles() {
+        return PREFIX + "The query mixes named (:name) and positional ($n) placeholders; use one style";
+    }
+
     public static String positionalParameterCountMismatch(int highestPlaceholder, int parameterCount) {
         return PREFIX
              + "Positional placeholders go up to $" + highestPlaceholder
