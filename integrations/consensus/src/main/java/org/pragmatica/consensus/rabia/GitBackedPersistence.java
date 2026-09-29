@@ -128,10 +128,10 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     public Result<Unit> save(StateMachine<C> machine,
                              Phase nextSlot,
                              Collection<Batch<C>> pending,
-                             VoterAuthority<C> authority) {
+                             VoterConfiguration configuration) {
         return machine.makeSnapshot()
                       .flatMap(snapshotToToml::apply)
-                      .map(toml -> VoterAuthoritySnapshotCodec.encode(authority) + addPhaseHeader(toml, nextSlot))
+                      .map(toml -> VoterConfigurationHeader.encode(configuration) + addPhaseHeader(toml, nextSlot))
                       .flatMap(this::writeTomlFile)
                       .flatMap(_ -> ensureGitInitialized())
                       .flatMap(_ -> gitAdd())
@@ -168,10 +168,10 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         var phase = extractPhase(tomlText);
 
         return tomlToSnapshot.apply(tomlText)
-                             .flatMap(snapshot -> VoterAuthoritySnapshotCodec.<C> decode(tomlText).map(authority -> new SavedState<>(snapshot,
-                                                                                                                                     phase,
-                                                                                                                                     List.of(),
-                                                                                                                                     authority)));
+                             .flatMap(snapshot -> VoterConfigurationHeader.decode(tomlText).map(configuration -> new SavedState<>(snapshot,
+                                                                                                                                  phase,
+                                                                                                                                  List.of(),
+                                                                                                                                  configuration)));
     }
 
     private Phase extractPhase(String tomlText) {

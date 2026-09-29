@@ -68,11 +68,11 @@ sealed interface Round2Outcome<C extends Command> {
 final class PhaseData<C extends Command> {
     private final Phase phase;
     private final long epoch;
-    private final Map<NodeId, ClusterConfig> configurations = new ConcurrentHashMap<>();
+    private final Map<NodeId, ReconfigurationCommand> configurations = new ConcurrentHashMap<>();
 
-    private record ProposalIdentity(Batch.Id batch, Option<ClusterConfig> configuration) {}
+    private record ProposalIdentity(Batch.Id batch, Option<ReconfigurationCommand> configuration) {}
 
-    private record ProposalValue<C extends Command>(Batch<C> batch, Option<ClusterConfig> configuration) {
+    private record ProposalValue<C extends Command>(Batch<C> batch, Option<ReconfigurationCommand> configuration) {
         ProposalIdentity identity() {
             return new ProposalIdentity(batch.id(), configuration);
         }
@@ -153,7 +153,9 @@ final class PhaseData<C extends Command> {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    org.pragmatica.lang.Unit registerProposal(NodeId node, Batch<C> batch, Option<ClusterConfig> configuration) {
+    org.pragmatica.lang.Unit registerProposal(NodeId node,
+                                              Batch<C> batch,
+                                              Option<ReconfigurationCommand> configuration) {
         if (!proposals.containsKey(node)) {
             configuration.onPresent(value -> configurations.put(node, value));
             proposals.put(node, batch);
@@ -162,7 +164,7 @@ final class PhaseData<C extends Command> {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    Option<ClusterConfig> configuration(NodeId node) {
+    Option<ReconfigurationCommand> configuration(NodeId node) {
         return Option.option(configurations.get(node));
     }
 
@@ -300,7 +302,7 @@ final class PhaseData<C extends Command> {
                                          .findFirst());
     }
 
-    Option<ClusterConfig> agreedConfiguration(int quorumSize) {
+    Option<ReconfigurationCommand> agreedConfiguration(int quorumSize) {
         return agreedValue(quorumSize).flatMap(ProposalValue::configuration);
     }
 
@@ -390,8 +392,13 @@ final class PhaseData<C extends Command> {
     /// Gets a deterministic coin flip value for a phase.
     /// Must be deterministic across all nodes for consensus correctness.
     /// Uses bit-based check to avoid Math.abs(Long.MIN_VALUE) returning negative.
+    ///
+    /// Rabia §4: after a reconfiguration the seed is reset by a deterministic rule — the slot index plus
+    /// the configuration index (epoch). Every replica deciding this slot holds the same epoch, because
+    /// the epoch is a function of the applied log prefix, so the coin stays common. At epoch 0 the seed
+    /// is unchanged from the pre-reconfiguration rule.
     StateValue coinFlip() {
-        long seed = phase.value() * 0x9E3779B97F4A7C15L + round;
+        long seed = (phase.value() + epoch) * 0x9E3779B97F4A7C15L + round;
 
         return (seed & 1) == 0
                ? StateValue.V0
