@@ -123,16 +123,16 @@ public interface SecurityOverrideSynchronizer {
     /// Sorting every entry strongest-first would break a legitimate declaration WITHIN one blueprint:
     /// `GET /x/*` = `role:admin` followed by `GET /x/public` = `public` is a deliberate exception, and
     /// a global strength sort would move the wildcard in front of it and shadow it. Each blueprint's
-    /// own entries therefore keep their declared order, which is the author's expressed intent;
-    /// strength decides only between DIFFERENT blueprints claiming the SAME pattern.
+    /// own entries therefore keep their declared order; strength decides only between DIFFERENT
+    /// blueprints claiming the SAME pattern. (Since #1659 that exception governs by specificity --
+    /// `SecurityOverrides.findMatch` picks the most specific match -- so its position no longer decides it.)
     ///
     /// ## Residual, stated rather than left to be discovered
     ///
     /// Two patterns that OVERLAP without being equal -- `GET /x/*` in one blueprint and `GET /x/admin`
-    /// in another -- are not detected as a conflict here, and are still resolved by position. Deciding
-    /// those needs pattern-subsumption analysis and a rule for whose intent wins, which is a larger
-    /// change than this fix. Declaring the wildcard and its exceptions in the SAME blueprint keeps
-    /// them governed by declared order, which is well-defined.
+    /// in another -- are not detected as a conflict here. Since #1659 they no longer resolve by
+    /// position either: `SecurityOverrides.findMatch` picks the MOST SPECIFIC matching pattern, so the
+    /// narrower one governs its subtree wherever it is declared, and list order breaks only an exact tie.
     private static List<SecurityOverrides.Entry> resolveEntries(List<Contribution> contributors) {
         var winners = new LinkedHashMap<String, Claim>();
 

@@ -804,12 +804,15 @@ public sealed interface ManagementApiResponses {
     /// complete view; when false, `hrwOwner` names the node to re-query. `ownerHeadOffset` is the
     /// answering node's local next-expected offset (head + 1) — on the owner it is the true tail used
     /// to spot a CAUGHT_UP replica whose `confirmedOffset` lags it (#333 write-idle residual).
+    /// `ownerActivationBlock` is why the answering node's owner promotion of the partition waits for an
+    /// operator (#1555: a divergent peer, or members unreachable past the alarm window), `""` when it does not.
     record StreamReplicasResponse(String stream,
                                   int partition,
                                   String hrwOwner,
                                   boolean servedByOwner,
                                   long ownerHeadOffset,
                                   long earliestRetainedOffset,
+                                  String ownerActivationBlock,
                                   List<ReplicaStateDetail> replicas) {}
 
     /// Per-replica state row: `state` is the `ReplicationState` name (`SYNCING` / `CAUGHT_UP` /

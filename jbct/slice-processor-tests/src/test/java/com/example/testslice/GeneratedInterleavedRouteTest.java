@@ -60,8 +60,7 @@ class GeneratedInterleavedRouteTest {
         void getItem_lambdaBindsOnlyTheTwoRealParams_spacerDiscarded() {
             // 3 withPath elements => 3-arity lambda; the spacer slot is `_`; constructor binds 2 reals.
             assertThat(generated).contains(
-                ".to((orderId, _, itemId) -> delegate.getItem("
-                + "new com.example.testslice.GetItemRequest(orderId, itemId)))");
+                ".to((orderId, _, itemId) -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.testslice.GetItemRequest(orderId, itemId)).async().flatMap(__constructed -> delegate.getItem(__constructed)))");
         }
 
         @Test
@@ -87,8 +86,7 @@ class GeneratedInterleavedRouteTest {
         @Test
         void getItemImage_lambdaBindsOnlyTheRealParam_spacerDiscarded() {
             assertThat(generated).contains(
-                ".to((id, _) -> delegate.getItemImage("
-                + "new com.example.testslice.ItemImageRequest(id)))");
+                ".to((id, _) -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.testslice.ItemImageRequest(id)).async().flatMap(__constructed -> delegate.getItemImage(__constructed)))");
         }
 
         @Test
@@ -115,8 +113,7 @@ class GeneratedInterleavedRouteTest {
         void getOrders_lambdaInterleavesSpacerSlot_constructorBindsRealsOnly() {
             // 2 withPath elements (1 real + 1 spacer) + 2 query => 4-arity lambda; spacer slot `_`.
             assertThat(generated).contains(
-                ".to((userId, _, status, limit) -> delegate.getOrders("
-                + "new com.example.testslice.GetOrdersRequest(userId, status, limit)))");
+                ".to((userId, _, status, limit) -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.testslice.GetOrdersRequest(userId, status, limit)).async().flatMap(__constructed -> delegate.getOrders(__constructed)))");
         }
     }
 
@@ -133,8 +130,7 @@ class GeneratedInterleavedRouteTest {
         @Test
         void getById_unchanged_singleParamNoSpacer() {
             assertThat(generated).contains(".named(\"getById\")");
-            assertThat(generated).contains(".to(id -> delegate.getById("
-                                           + "new com.example.testslice.GetByIdRequest(id)))");
+            assertThat(generated).contains(".to(id -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.testslice.GetByIdRequest(id)).async().flatMap(__constructed -> delegate.getById(__constructed)))");
         }
     }
 }

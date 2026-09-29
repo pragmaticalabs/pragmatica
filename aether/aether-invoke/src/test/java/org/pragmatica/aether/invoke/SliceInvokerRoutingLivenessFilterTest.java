@@ -184,15 +184,14 @@ class SliceInvokerRoutingLivenessFilterTest {
     /// Same exhaustion on the retry path. The failover arm reported this as `AllInstancesFailedError` with
     /// an empty attempt list — an operator surface saying the instances failed for a call that never left
     /// this node, and a non-transient cause for a situation a replacement node resolves. It must be the
-    /// transient `NoEndpointsError`, and no `AllInstancesFailed` event may be published.
+    /// transient `NoEndpointsError`. (#1573: the invoker publishes no failure event at all any more — the
+    /// all-instances-failed verdict is the leader-side detector's.)
     @Test
-    void weightedRouting_everyHostInaccessible_retryReportsNoEndpointsAndPublishesNoFailureEvent() {
+    void weightedRouting_everyHostInaccessible_retryReportsNoEndpoints() {
         registerEndpoint(OLD, 0, DEAD);
         registerEndpoint(NEW, 0, DEAD);
         startInvoker(routing("1:1"), rejecting(DEAD));
 
-        var events = new CopyOnWriteArrayList<SliceFailureEvent>();
-        var _ = invoker.setFailureListener(events::add);
         var failure = new AtomicReference<Cause>();
         var _ = invoker.invokeWithRetry(OLD, METHOD, "request", new TypeToken<String>() {}, 3)
                        .await()
@@ -202,8 +201,6 @@ class SliceInvokerRoutingLivenessFilterTest {
                   .isInstanceOf(SliceInvokerError.NoEndpointsError.class);
         assertThat(failure.get().isTransient()).as("#275: every host being unreachable is transient — a replacement is coming")
                   .isTrue();
-        assertThat(events).as("#275: no AllInstancesFailed event for a call that never left this node")
-                  .isEmpty();
         assertThat(network.targets()).as("#275: nothing may be sent when every candidate is filtered out")
                   .isEmpty();
     }
