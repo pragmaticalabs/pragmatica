@@ -6,6 +6,7 @@ package org.pragmatica.aether.http;
 
 import java.util.List;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy;
@@ -48,6 +49,21 @@ public interface SecurityOverrideApplier {
         }
 
         return applyOverrideToRoute(route, overrides, Announce.QUIET);
+    }
+
+    /// #1659, remote-route form: the policy the overrides assign to a route this node knows only by method, prefix
+    /// and DECLARED policy (a route another node serves). Empty when no override matches -- the caller then keeps
+    /// the replicated policy. Same rule through the same route form, so the ingress and the hosting node cannot
+    /// judge one route differently; quiet, because it runs per request.
+    static Option<SecurityPolicy> overriddenPolicy(String httpMethod,
+                                                   String pathPrefix,
+                                                   SecurityPolicy declared,
+                                                   SecurityOverrides overrides) {
+        var route = HttpRouteDefinition.httpRouteDefinition(httpMethod, pathPrefix, "", "", declared);
+
+        return overrides.findMatch(route.httpMethod(),
+                                   route.pathPrefix())
+                        .map(_ -> applyOverrideToRoute(route, overrides, Announce.QUIET).security());
     }
 
     /// Whether an override decision narrates itself. Publication announces; per-request resolution

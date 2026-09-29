@@ -72,7 +72,9 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `kv_operation` | `30s` | Timeout for KV-Store operations during rolling updates |
 | `terminal_retention` | `1h` | How long completed/failed rolling update records are retained |
 | `cleanup_grace_period` | `5m` | Grace period before cleaning up old version artifacts |
-| `rollback_cooldown` | `5m` | Minimum time between automatic rollback attempts |
+
+The automatic-rollback cooldown is not a node timeout: it is cluster-wide policy, set in the committed
+cluster TOML under `[rollback] cooldown` (see the deploy guide).
 
 ### `[timeouts.cluster]`
 
@@ -305,7 +307,6 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 | `kv_operation` (30s) | KV-Store reads/writes during update orchestration |
 | `cleanup_grace_period` (5m) | Old version artifact cleanup after successful update |
 | `terminal_retention` (1h) | How long completed update records stay visible in API |
-| `rollback_cooldown` (5m) | Prevents rollback thrashing |
 
 ## Scaling and Control
 
@@ -461,7 +462,6 @@ max_lifecycle_retries = 120
 kv_operation = "60s"
 terminal_retention = "6h"
 cleanup_grace_period = "15m"
-rollback_cooldown = "10m"
 
 [timeouts.cluster]
 hello = "10s"
@@ -507,7 +507,6 @@ Certain timeouts have ordering constraints. Violating these constraints may caus
 | `scaling.warmup_period` > `scaling.evaluation_interval` | Multiple evaluations should occur during warmup |
 | `scaling.community_cooldown` >= `scaling.slice_cooldown` | Community-level decisions should be less frequent |
 | `election.base_delay` > `election.retry_delay` | Initial election should take longer than retries |
-| `rolling_update.rollback_cooldown` >= `rolling_update.cleanup_grace_period` | Prevent cleaning up artifacts that might be needed for rollback |
 
 ---
 

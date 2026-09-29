@@ -164,6 +164,18 @@ class StreamReadRouterReplicaSnapshotTest {
         assertThat(self.confirmedOffset()).isEqualTo(-1L);
     }
 
+    /// #1555: a node that is the owner but has not passed the owner promotion gate does not claim
+    /// `servedByOwner` — the snapshot, not only the gate, must say so (pins StreamReadRouter's gate term).
+    @Test
+    void replicaSnapshot_servedByOwnerFalse_whenSelfIsOwnerButNotActivated() {
+        partitionManager.ownerServeGate((stream, partition) -> new StreamError.OwnerNotActivated(stream, partition).result());
+
+        var view = router(SELF).replicaSnapshot(STREAM, PARTITION);
+
+        assertThat(view.ownerNodeId()).isEqualTo(Option.some(SELF.id()));
+        assertThat(view.servedByOwner()).isFalse();
+    }
+
     @Test
     void replicaSnapshot_servedByOwnerFalseAndNamesOwner_whenSelfIsNotHrwOwner() {
         replicaRegistry.registerReplica(STREAM, PARTITION, SELF);

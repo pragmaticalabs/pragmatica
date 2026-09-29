@@ -7,6 +7,7 @@ package org.pragmatica.aether.http;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.ServiceLoader;
@@ -24,9 +25,11 @@ import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceDefect;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -40,6 +43,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.http.routing.Handler;
+import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
@@ -48,8 +52,10 @@ import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
@@ -75,6 +81,13 @@ public interface HttpRoutePublisher {
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
 
+    /// #1659: the policy this node's committed security overrides assign to a route served elsewhere; empty when
+    /// no committed override matches it. The default holds no overrides, as a publisher without an override set
+    /// does; the production publisher answers from its committed overrides.
+    default Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
+        return Option.none();
+    }
+
     Unit updateSecurityOverrides(SecurityOverrides overrides);
 
     /// Install the #198 §11.1 versioning metrics sink. The management server owns the metrics backend
@@ -84,6 +97,29 @@ public interface HttpRoutePublisher {
     /// @param sink the versioning metrics sink
     /// @return unit
     Unit setVersioningMetricsSink(VersioningMetricsSink sink);
+
+    /// #1573 B1: install the sink for HTTP route execution outcomes. See [RouteOutcomeRecorder]. The default
+    /// is for publishers that build no slice routers (test doubles), which have no executions to record.
+    default Unit setRouteOutcomeRecorder(RouteOutcomeRecorder recorder) {
+        return Unit.unit();
+    }
+
+    /// #1573 B1: receives one [ExecutionOutcome] per finished HTTP route execution, into the SAME per-node
+    /// counters the slice bridge feeds (`InvocationHandler.recordExecution`), so the leader's
+    /// all-instances-failed detector sees HTTP traffic.
+    ///
+    /// Two recording points, not one: every other ingress (inter-slice, topic, scheduled) reaches a slice
+    /// through its byte-level `SliceBridge`, where `AdmittedSliceBridge` records; an HTTP route calls the
+    /// TYPED slice instance directly (`SliceRouterFactory.create(sliceInstance, …)`), so the only call site
+    /// the two share is the slice object itself. Proxying the slice interface would be the single point,
+    /// at the cost of wrapping every generated slice type — the two recorders feed one collector and apply
+    /// the classification in [ExecutionOutcome] instead. A route built by the legacy
+    /// `HttpRequestHandlerFactory` invokes through the invoker, so the bridge already counts it.
+    @FunctionalInterface
+    interface RouteOutcomeRecorder {
+        RouteOutcomeRecorder NONE = (_, _, _) -> Unit.unit();
+        Unit record(Artifact artifact, String method, ExecutionOutcome outcome);
+    }
 
     /// Bind the write-side observability cell registrar (#277 increment 2) so each published route's
     /// handler is wrapped once with a per-injection-point cell that a KV config put can swap. Late-bound
@@ -168,6 +204,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final AtomicReference<VersioningMetricsSink> versioningMetricsSink = new AtomicReference<>(VersioningMetricsSink.noop());
 
     private final VersioningMetricsSink forwardingSink = VersioningMetricsSink.forwarding(versioningMetricsSink::get);
+
+    private final AtomicReference<RouteOutcomeRecorder> routeOutcomeRecorder = new AtomicReference<>(RouteOutcomeRecorder.NONE);
 
     HttpRoutePublisherImpl(NodeId selfNodeId,
                            ClusterNode<KVCommand<AetherKey>> cluster,
@@ -423,7 +461,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         var effectiveRoutes = SecurityOverrideApplier.applyOverrides(routes, activeOverrides.get());
 
         log.debug("Publishing {} HTTP routes for slice {}", effectiveRoutes.size(), artifact);
-        var routeEntries = effectiveRoutes.stream().map(HttpRoutePublisherImpl::toRouteEntry).toList();
+        var routeEntries = IntStream.range(0,
+                                           routes.size())
+                                    .mapToObj(index -> toRouteEntry(effectiveRoutes.get(index),
+                                                                    routes.get(index)))
+                                    .toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
         var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
         var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
@@ -435,11 +477,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                                                             stampedEpoch));
     }
 
-    private static RouteEntry toRouteEntry(HttpRouteDefinition route) {
-        return RouteEntry.activeRoute(route.httpMethod(),
-                                      route.pathPrefix(),
-                                      route.sliceMethod(),
-                                      route.security().asString());
+    /// #1659: the entry carries both the policy this node enforces and the declared one it was derived from, so
+    /// an ingress that does not host the route can re-apply its own committed overrides to the declared policy.
+    /// `applyOverrides` maps the list element-wise, so `effective` and `declared` are the same route.
+    private static RouteEntry toRouteEntry(HttpRouteDefinition effective, HttpRouteDefinition declared) {
+        return RouteEntry.activeRoute(effective.httpMethod(),
+                                      effective.pathPrefix(),
+                                      effective.sliceMethod(),
+                                      effective.security().asString(),
+                                      declared.security().asString());
     }
 
     @Override
@@ -510,6 +556,13 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     @Override
+    public Unit setRouteOutcomeRecorder(RouteOutcomeRecorder recorder) {
+        routeOutcomeRecorder.set(recorder);
+
+        return Unit.unit();
+    }
+
+    @Override
     public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
         cellRegistrar.set(registrar);
 
@@ -526,7 +579,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         cellRegistrar.get().register(cell);
         collected.add(cell);
 
-        return wrapHandler(cell, route);
+        return wrapHandler(cell, route, artifact, routeCellKey(route));
     }
 
     private static String routeCellKey(Route<?> route) {
@@ -545,9 +598,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                : path;
     }
 
-    private static <T> Route<T> wrapHandler(ObservabilityStrategyCell cell, Route<T> route) {
+    private <T> Route<T> wrapHandler(ObservabilityStrategyCell cell, Route<T> route, Artifact artifact, String method) {
         var original = route.handler();
-        Handler<T> wrapped = ctx -> cell.around(() -> original.handle(ctx));
+        Handler<T> wrapped = ctx -> cell.around(() -> recordedHandle(original, ctx, artifact, method));
 
         return Route.route(route.method(),
                            route.path(),
@@ -558,6 +611,45 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                            route.security(),
                            route.version(),
                            route.pathParamCount());
+    }
+
+    /// #1573 B1: runs the route and records its outcome ([ExecutionOutcome] has the classification).
+    /// A handler that throws on the calling thread is the HTTP twin of the bridge's MethodThrew: it is
+    /// lifted into a [SliceDefect.MethodThrew] failure, recorded as a defect, and answered as before by
+    /// the router's error mapping instead of escaping the promise chain.
+    private <T> Promise<T> recordedHandle(Handler<T> handler, RequestContext ctx, Artifact artifact, String method) {
+        return Promise.lift(HttpRoutePublisherImpl::handlerThrew,
+                            () -> handler.handle(ctx))
+                      .flatMap(promise -> promise)
+                      .withResult(result -> recordRouteOutcome(artifact, method, result));
+    }
+
+    private static Cause handlerThrew(Throwable throwable) {
+        return SliceDefect.MethodThrew.FACTORY.apply(Causes.fromThrowable(throwable));
+    }
+
+    @Contract
+    private void recordRouteOutcome(Artifact artifact, String method, Result<?> result) {
+        routeOutcome(result).onPresent(outcome -> routeOutcomeRecorder.get()
+                                                                      .record(artifact, method, outcome));
+    }
+
+    private static Option<ExecutionOutcome> routeOutcome(Result<?> result) {
+        return result.fold(HttpRoutePublisherImpl::failedRouteOutcome, HttpRoutePublisherImpl::succeededRouteOutcome);
+    }
+
+    private static Option<ExecutionOutcome> failedRouteOutcome(Cause cause) {
+        return cause instanceof SliceDefect
+               ? Option.some(ExecutionOutcome.DEFECT)
+               : Option.none();
+    }
+
+    /// A handler may complete successfully with a `Result.Failure` value — a failure the method
+    /// RETURNED, which the router answers with its mapped status. Not counted, as on the bridge.
+    private static Option<ExecutionOutcome> succeededRouteOutcome(Object value) {
+        return value instanceof Result<?> returned && returned.isFailure()
+               ? Option.none()
+               : Option.some(ExecutionOutcome.SUCCESS);
     }
 
     private void deregisterRouteCells(Artifact artifact) {
@@ -635,6 +727,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         return selectRoute(route -> route.httpMethod()
                                          .equalsIgnoreCase(httpMethod) && route.pathPrefix()
                                                                                .equals(pathPrefix)).flatMap(entry -> Option.option(sliceRouters.get(entry.getKey())));
+    }
+
+    /// #1659: the policy THIS node's committed overrides assign to a route it does not host, known by its method,
+    /// prefix and declared policy. Empty when no committed override matches the route. Read from the same
+    /// `activeOverrides` and the same rule as [#findLocalRoute], so an ingress judges a remote route exactly as the
+    /// hosting node would once it has republished -- and a relaxed override relaxes here immediately.
+    @Override
+    public Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
+        return SecurityOverrideApplier.overriddenPolicy(httpMethod, pathPrefix, declared, activeOverrides.get());
     }
 
     /// #887: the matched route's security policy is resolved against the CURRENT overrides here,

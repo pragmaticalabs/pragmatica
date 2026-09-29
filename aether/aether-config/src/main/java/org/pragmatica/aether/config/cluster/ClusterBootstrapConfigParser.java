@@ -68,10 +68,14 @@ public final class ClusterBootstrapConfigParser {
                          .flatMap(ClusterBootstrapConfigParser::fromDocument);
     }
 
+    /// #1573: the `[rollback]` policy is validated here, typed, so a bad value refuses the apply; the runtime
+    /// reads it back through [RollbackPolicyParser#fromClusterToml].
     public static Result<ClusterBootstrapConfig> fromDocument(TomlDocument doc) {
-        return parseConfigVersion(doc).flatMap(version -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc,
-                                                                                                                   version,
-                                                                                                                   cluster)));
+        return RollbackPolicyParser.parse(doc)
+                                   .flatMap(_ -> parseConfigVersion(doc))
+                                   .flatMap(version -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc,
+                                                                                                                version,
+                                                                                                                cluster)));
     }
 
     private static Result<ClusterBootstrapConfig> buildConfig(TomlDocument doc,

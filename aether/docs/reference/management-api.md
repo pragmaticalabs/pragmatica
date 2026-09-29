@@ -417,7 +417,8 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `DEPLOYMENT_FAILED` -- an artifact deployment failed on a node (`details` carries `reason`). Severity WARNING.
 - `SCALE_UP` -- an artifact was scaled up to more instances. Severity INFO.
 - `SCALE_DOWN` -- an artifact was scaled down to fewer instances. Severity INFO.
-- `SLICE_FAILURE` -- all instances of a slice method failed. Severity CRITICAL.
+- `SLICE_FAILURE` -- every live instance of a slice version reported only bridge-level defects within the detection window (leader-detected, #1573). Severity CRITICAL.
+- `AUTO_ROLLBACK` -- the leader committed an automatic rollback. `details`: `artifact`, `from`, `to`, `rollbackNumber`, `windowMs`, `requestId`, and `defects.<nodeId>` per hosting node. Severity CRITICAL.
 - `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
 - `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
 - `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
@@ -443,6 +444,8 @@ actually keeps is `(leaderTerm, tenure-tick)` — the tick advances once per pin
 event per advance would be a 1 Hz stream with no information beyond "the leader is still the leader". Leader
 changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on demand from
 `GET /api/v1/cluster/generation`.
+
+**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
@@ -5128,6 +5131,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
   "servedByOwner": true,
   "ownerHeadOffset": 256,
   "earliestRetainedOffset": 0,
+  "ownerActivationBlock": "",
   "replicas": [
     {"nodeId": "core-1", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": true},
     {"nodeId": "core-3", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": false},
@@ -5144,6 +5148,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
 | `servedByOwner` | Whether the answering node is itself the HRW owner — i.e. whether `replicas` is the complete authoritative view |
 | `ownerHeadOffset` | The answering node's local next-expected offset (head + 1); on the owner this is the true tail used to spot a lagging `CAUGHT_UP` replica (#333) |
 | `earliestRetainedOffset` | Earliest offset still retained locally (`-1` when the partition is absent/empty) |
+| `ownerActivationBlock` | Why the answering node's owner promotion of the partition waits for an operator (#1555), `""` when it does not. Two causes: a live peer disagrees with the local log where both hold records (a divergent tail — neither lineage is served; pick the source with #1569's surface), or live members have not answered the promotion probe for longer than the alarm window (the partition waits for them or for an operator). A non-empty value is also raised once as a CRITICAL operator warning |
 | `replicas[]` | Every registered replica for the partition, sorted by node id |
 | `replicas[].state` | Replication state: `SYNCING` / `CAUGHT_UP` / `LAGGING` |
 | `replicas[].confirmedOffset` | The replica's acked confirmed watermark |
