@@ -10,6 +10,10 @@
   - the cluster secret from this machine's bootstrap state (else `AETHER_CLUSTER_SECRET`);
   - the live core peers from `GET /api/v1/nodes/live`.
   Either missing refuses the provision with a message naming it, instead of creating a node that cannot join.
+- **A wave rollout that fails part-way names every cloud VM it created, as RUNNING AND BILLED, with removal steps.**
+  This covers VMs from an earlier completed step of the same rollout as well as the failing step's own, because the
+  rollout records none of them: a retry mints new ids and `--rollback` does not see them. They are reported, not
+  destroyed, since each carries joinable user-data and may already be a member.
 - **A zoneless source no longer asks for a location literally named `default`.** The zone is passed as an optional
   placement and is omitted when the source names none.
 - [mechanism: `WaveExecutor.provisionCloudNodes` builds each spec through `WaveNodeProvisioning.cloudProvisionSpec`.

@@ -187,6 +187,10 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
    ping -c 10 node2
    ```
 
+### Issue: `cluster apply` Failed Part-Way
+
+The error lists each cloud VM the apply created as RUNNING AND BILLED, with its removal steps; keep the ones that joined (`aether nodes`) and remove the rest as printed (see `aether cluster apply` in `reference/cli.md`).
+
 ### Issue: Split Brain
 
 **Symptoms:** Different nodes report different cluster states

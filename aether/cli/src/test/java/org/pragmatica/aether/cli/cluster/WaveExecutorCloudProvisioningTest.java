@@ -160,25 +160,56 @@ class WaveExecutorCloudProvisioningTest {
                            .containsExactly(nodeId);
     }
 
-    /// CodeRabbit on #1716: a wave that fails part-way must not lose the nodes it already created. Those VMs are
-    /// running and billing, and their minted ids are not addressable by the rolling paths, so the failure names them
-    /// (node id and server id) for the operator to find.
+    /// CodeRabbit on #1716 (CTO ruling: report, not destroy): a wave that fails part-way names every VM it already
+    /// created, in the text the CLI prints (`Error: <message>`). Each line carries node id, provider, server id and IP,
+    /// says it is RUNNING AND BILLED, and gives the exact removal steps.
     @Test
-    void provisionCloudNodes_failurePartWay_namesTheNodesAlreadyCreated() {
+    void provisionCloudNodes_failurePartWay_printsEveryCreatedVmWithItsRemoval() {
         var provider = new CapturingProvider();
         var desired = parse(ZONED);
 
-        provider.failOnCall = 2;
+        provider.failOnCall = 3;
 
         var result = WaveExecutor.provisionCloudNodes(provider, desired, source(desired), NodeRole.CORE, 3, INPUTS);
-        var createdId = provider.specs.getFirst().context().nodeId().unwrap();
+        var first = nodeIdOf(provider, 0);
+        var second = nodeIdOf(provider, 1);
 
-        assertThat(provider.specs).as("the wave stops at the failure").hasSize(2);
+        assertThat(provider.specs).as("the wave stops at the failure").hasSize(3);
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).as("the created, still-running node is named")
-                                                             .contains(createdId)
-                                                             .contains("vm-1")
-                                                             .contains("capacity exhausted (test cause)"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("apply failed part-way: capacity exhausted (test cause)")
+                                                             .contains("2 cloud VM(s) created by this apply are RUNNING AND BILLED")
+                                                             .contains("- node " + first + "  provider hetzner  server vm-1  ip 10.0.1.1")
+                                                             .contains("remove: aether cluster drain " + first
+                                                                       + " --wait --yes (if it joined), then hcloud server delete vm-1")
+                                                             .contains("- node " + second + "  provider hetzner  server vm-2  ip 10.0.1.2")
+                                                             .contains("hcloud server delete vm-2"));
+    }
+
+    /// Condition 2 of the ruling: VMs from an EARLIER, completed step of the same apply are not recorded by the apply
+    /// either, so a later failure names them too, together with the failing step's own.
+    @Test
+    void partiallyProvisioned_laterFailure_namesEarlierStepsVmsToo() {
+        var earlier = new WaveNodeProvisioning.CreatedNode(org.pragmatica.aether.environment.ProvisionedNode.provisionedNode("n-early",
+                                                                                                                             "vm-10",
+                                                                                                                             "10.0.9.1"),
+                                                           "hetzner");
+        var failing = new WaveNodeProvisioning.CreatedNode(org.pragmatica.aether.environment.ProvisionedNode.provisionedNode("n-late",
+                                                                                                                             "vm-11",
+                                                                                                                             "10.0.9.2"),
+                                                           "hetzner");
+        var inner = WaveNodeProvisioning.PartiallyProvisioned.partiallyProvisioned(List.of(failing),
+                                                                                    org.pragmatica.lang.utils.Causes.cause("capacity exhausted (test cause)"));
+
+        var message = WaveNodeProvisioning.PartiallyProvisioned.partiallyProvisioned(List.of(earlier), inner).message();
+
+        assertThat(message).contains("2 cloud VM(s) created by this apply")
+                           .contains("- node n-early  provider hetzner  server vm-10")
+                           .contains("- node n-late  provider hetzner  server vm-11")
+                           .contains("apply failed part-way: capacity exhausted (test cause)");
+    }
+
+    private static String nodeIdOf(CapturingProvider provider, int index) {
+        return provider.specs.get(index).context().nodeId().unwrap();
     }
 
     /// The peers a wave node dials are the LIVE CORE members from `GET /api/v1/nodes/live`: a worker, a dead core

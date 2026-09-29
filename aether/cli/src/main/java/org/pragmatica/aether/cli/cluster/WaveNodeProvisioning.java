@@ -91,7 +91,8 @@ sealed interface WaveNodeProvisioning {
                                                                                                                                           spec).await());
 
             if (provisioned.isFailure()) {
-                return provisioned.mapError(cause -> failedAfter(nodes, cause))
+                return provisioned.mapError(cause -> PartiallyProvisioned.partiallyProvisioned(created(nodes, source),
+                                                                                               cause))
                                   .map(_ -> List.<ProvisionedNode> of());
             }
 
@@ -229,25 +230,85 @@ sealed interface WaveNodeProvisioning {
         return List.copyOf(peers);
     }
 
-    /// A failure part-way through a wave keeps the nodes already created in its cause. They are running and billing,
-    /// and their minted ids are not addressable by the rolling paths, so the operator must be told which they are.
-    private static Cause failedAfter(List<ProvisionedNode> created, Cause cause) {
-        return created.isEmpty()
-               ? cause
-               : new PartiallyProvisioned(List.copyOf(created), cause);
+    /// A node this apply created, with the provider that holds its VM.
+    record CreatedNode(ProvisionedNode node, String provider) {
+        /// The exact steps to remove the node: drain it if it joined, then delete the VM with the provider's own
+        /// tool (the CLI has no per-node VM delete).
+        String removal() {
+            return "aether cluster drain " + node.nodeId() + " --wait --yes (if it joined), then " + providerDelete();
+        }
+
+        private String providerDelete() {
+            return switch (provider) {
+                case "hetzner" -> "hcloud server delete " + node.serverId();
+                case "docker" -> "docker rm -f " + node.serverId();
+                default -> "delete instance " + node.serverId() + " in the " + provider + " console";
+            };
+        }
     }
 
-    record PartiallyProvisioned(List<ProvisionedNode> created, Cause cause) implements Cause {
+    static List<CreatedNode> created(List<ProvisionedNode> nodes, SourceProfile source) {
+        var provider = providerName(source);
+
+        return nodes.stream()
+                    .map(node -> new CreatedNode(node, provider))
+                    .toList();
+    }
+
+    static String providerName(SourceProfile source) {
+        return source.provider()
+                     .map(provider -> provider.value())
+                     .or(source.type().value());
+    }
+
+    /// An apply that fails after creating VMs. It names every VM the apply created, because each is RUNNING AND BILLED
+    /// and none is recorded by the apply: a retry mints new ids and never reuses them, and `--rollback` does not see
+    /// them. They are reported, not destroyed. Each carries joinable user-data and may already be a cluster member, so
+    /// whether to keep or remove it is the operator's call.
+    record PartiallyProvisioned(List<CreatedNode> created, Cause cause) implements Cause {
+        static Cause partiallyProvisioned(List<CreatedNode> created, Cause cause) {
+            return switch (cause) {
+                case PartiallyProvisioned inner -> created.isEmpty()
+                                                   ? inner
+                                                   : new PartiallyProvisioned(merge(created, inner.created()),
+                                                                              inner.cause());
+                default -> created.isEmpty()
+                           ? cause
+                           : new PartiallyProvisioned(List.copyOf(created), cause);
+            };
+        }
+
+        private static List<CreatedNode> merge(List<CreatedNode> earlier, List<CreatedNode> later) {
+            var all = new ArrayList<CreatedNode>(earlier);
+
+            later.stream().filter(node -> !all.contains(node)).forEach(all::add);
+
+            return List.copyOf(all);
+        }
+
         @Override
         public String message() {
-            var names = created.stream()
-                               .map(node -> node.nodeId() + " (server " + node.serverId() + ", " + node.publicIp() + ")")
-                               .toList();
+            var sb = new StringBuilder();
 
-            return "Provisioning failed after creating " + created.size()
-                 + " node(s) that are still running and billing: " + String.join(", ", names)
-                 + ". Cause: " + cause.message()
-                 + ". Remove them or let them join; a retried apply mints new ids and will not reuse them.";
+            sb.append("apply failed part-way: ").append(cause.message()).append('\n');
+            sb.append("  ")
+              .append(created.size())
+              .append(" cloud VM(s) created by this apply are RUNNING AND BILLED and are not recorded by the apply")
+              .append(" (a retry mints new ids and will not reuse them; --rollback does not see them).\n");
+            sb.append("  Each may already have joined the cluster (check 'aether nodes'). Keep it, or remove it:\n");
+            created.forEach(node -> sb.append("    - node ")
+                                      .append(node.node().nodeId())
+                                      .append("  provider ")
+                                      .append(node.provider())
+                                      .append("  server ")
+                                      .append(node.node().serverId())
+                                      .append("  ip ")
+                                      .append(node.node().publicIp())
+                                      .append("\n      remove: ")
+                                      .append(node.removal())
+                                      .append('\n'));
+
+            return sb.toString();
         }
     }
 
