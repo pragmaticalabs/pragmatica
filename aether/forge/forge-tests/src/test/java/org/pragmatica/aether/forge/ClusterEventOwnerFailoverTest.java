@@ -70,7 +70,8 @@ class ClusterEventOwnerFailoverTest {
     /// horizon, and no event is read twice. Since #1555 a dead owner is re-placed, so held events then land; the
     /// end-to-end delivery property is [#eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped].
     /// (The two assertions that described a release WITHOUT #1555, "no new owner" and "held > 0", were a tripwire and
-    /// are deleted now that #1555 has landed.)
+    /// are deleted now that #1555 has landed.) Its retry count pins that held events are re-sent, by the 1 s tick OR
+    /// the new owner's drain; it does not isolate the tick, which the Ember NO-TICK mutation arm pins on its own.
     @Test
     void eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost() {
         startSettledCluster();
@@ -106,9 +107,10 @@ class ClusterEventOwnerFailoverTest {
         // but is not in the log. That is the stream's acknowledgement contract, not a redelivery loss, so the log
         // may hold fewer than were delivered, never more.
         assertThat((long) landed.size()).as("the log holds no more than was delivered").isLessThanOrEqualTo(delivered);
-        // #1653 round 2, the retry DRIVER. With no new owner, nothing but AetherNode's 1 s tick can re-send a held
-        // event, so a retry count above zero pins that wiring.
-        assertThat(sum(producers, "retried")).as("AetherNode's 1 s redelivery tick re-sent held events").isPositive();
+        // #1653, the retry drivers. Since #1555 re-places the dead owner, a retry count above zero pins "held events
+        // are re-sent, by AetherNode's 1 s tick OR the new owner's ownership-put drain", not the tick alone. The tick
+        // and the drain are pinned separately by the Ember mutation arms (NO-TICK, NO-DRAIN-ROUTE).
+        assertThat(sum(producers, "retried")).as("held events were re-sent, by the 1 s tick or the new owner's drain").isPositive();
         assertOwnershipPutDrainsAtOnce(producers.iterator()
                                                 .next());
     }
