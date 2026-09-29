@@ -176,6 +176,8 @@ import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.stream.OwnerActivation;
+import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.projection.PartitionBounds;
 import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
@@ -1324,13 +1326,35 @@ public interface AetherNode extends ManageableNode {
     /// `observer().coreNodes()` read. This removes the live-vs-reconciled split that let a node the owner
     /// registers as a replica self-classify NONE — never materializing its ring, bouncing every apply
     /// `PARTITION_NOT_LOCAL`, leaving RF≥2 structurally unreachable. Before the controller is bound / its
-    /// first reconcile it falls back to the live topology observer, the SAME pre-reconcile fallback
-    /// `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
-    private static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
-                                                       ClusterTopologyManager topologyManager) {
+    /// first reconcile it falls back to the live placement projection ([#livePlacementMembers]), the SAME
+    /// pre-reconcile fallback `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
+    static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
+                                               Supplier<List<NodeId>> placementMembers) {
         return Option.option(controllerRef.get())
                      .map(ReplicaSetController::reconciledMembers)
-                     .or(() -> List.copyOf(topologyManager.observer().coreNodes()));
+                     .or(placementMembers::get);
+    }
+
+    /// #1550 SINGLE SOURCE of the stream placement member set. Built once per node and handed to the
+    /// stream `ReplicaSetController` and the backfill orchestrator; every other placement consumer
+    /// (ownership writer, entity-ownership reconciler, consumer-group ownership, cluster-events owner gate,
+    /// placement-role supplier) reads it through that controller. `LivePlacementMembersWiringTest` fails if
+    /// any consumer reads the voter set directly again.
+    static Supplier<List<NodeId>> livePlacementMembers(Supplier<Set<NodeId>> voters, MembershipFsm membershipFsm) {
+        return () -> livePlacementMembers(voters.get(), membershipFsm);
+    }
+
+    /// #1550: the HRW stream-placement member set — the installed voters narrowed to the FSM's counted
+    /// core projection (MEMBER + SUSPECT). Since #1390, `TopologyObserver.coreNodes()` returns the
+    /// installed voter configuration, which is consensus identity and deliberately health-independent: a
+    /// killed voter stays in it. Placing over that set kept a dead owner as the HRW winner forever, so no
+    /// survivor was ever promoted. Before #1390 the same read returned the live membership projection;
+    /// this restores liveness for placement without changing what consensus reads. Voters are kept as the
+    /// outer bound: a fresh-identity core enters placement once the membership add installs it as a voter.
+    static List<NodeId> livePlacementMembers(Set<NodeId> voters, MembershipFsm membershipFsm) {
+        return voters.stream()
+                     .filter(membershipFsm.coreCountedMembers()::contains)
+                     .toList();
     }
 
     /// #265 increment 5: the live replica catch-up view for the release gate + slot completion, read from the
@@ -1585,24 +1609,58 @@ public interface AetherNode extends ManageableNode {
                                                     NodeId target,
                                                     String streamName,
                                                     int partition) {
-        return pagePeerWatermark(forwardClient, target, streamName, partition, 0L);
+        return pagePeerWatermark(forwardClient::readRemote, target, streamName, partition, 0L);
     }
 
-    private static Promise<Long> pagePeerWatermark(StreamForwardClient forwardClient,
+    /// #1555: the owner promotion gate's probe, over the catch-up read class the gate's catch-up then pulls
+    /// with, starting at the peer's oldest available offset ([OwnerPeerReads#appendedWatermark]).
+    private static Promise<Long> probePeerAppendedWatermark(StreamForwardClient forwardClient,
+                                                            NodeId target,
+                                                            String streamName,
+                                                            int partition) {
+        return OwnerPeerReads.appendedWatermark(forwardClient::readRemoteCatchup,
+                                                target,
+                                                streamName,
+                                                partition,
+                                                STREAM_CATCHUP_BATCH_SIZE);
+    }
+
+    /// #1555 item 8: how long a promotion may stay blocked on unreachable members before it is reported — two
+    /// SWIM suspect windows, so a member that is merely slow to be declared FAULTY does not raise it.
+    private static TimeSpan ownerPromotionAlarmWindow(TimeSpan suspectTimeout) {
+        return suspectTimeout.plus(suspectTimeout);
+    }
+
+    /// #1555: a partition whose owner promotion waits for an operator (a divergent peer, or members unreachable
+    /// past the alarm window). The gate raises each distinct block once.
+    private static Unit raiseOwnerPromotionBlock(OwnerActivation.ActivationBlock block) {
+        // TODO(#1574): raise as a CRITICAL OperatorWarning once #1574 merges. Until then the operator-visible
+        // surfaces are this WARN and the partition status read (`ownerActivationBlock` on STREAM_REPLICAS).
+        LOG.warn("CRITICAL: {}", block.message());
+
+        return Unit.unit();
+    }
+
+    /// One page of a peer's partition read, over whichever forward-read class the probe uses.
+    @FunctionalInterface
+    interface PeerPageRead {
+        Promise<StreamForwardClient.ReadForwardResult> read(NodeId target,
+                                                            String streamName,
+                                                            int partition,
+                                                            long fromOffset,
+                                                            int maxEvents);
+    }
+
+    private static Promise<Long> pagePeerWatermark(PeerPageRead pageRead,
                                                    NodeId target,
                                                    String streamName,
                                                    int partition,
                                                    long cursor) {
-        return forwardClient.readRemote(target, streamName, partition, cursor, STREAM_CATCHUP_BATCH_SIZE)
-                            .flatMap(result -> continuePeerWatermark(forwardClient,
-                                                                     target,
-                                                                     streamName,
-                                                                     partition,
-                                                                     cursor,
-                                                                     result));
+        return pageRead.read(target, streamName, partition, cursor, STREAM_CATCHUP_BATCH_SIZE)
+                       .flatMap(result -> continuePeerWatermark(pageRead, target, streamName, partition, cursor, result));
     }
 
-    private static Promise<Long> continuePeerWatermark(StreamForwardClient forwardClient,
+    private static Promise<Long> continuePeerWatermark(PeerPageRead pageRead,
                                                        NodeId target,
                                                        String streamName,
                                                        int partition,
@@ -1617,7 +1675,7 @@ public interface AetherNode extends ManageableNode {
         var lastOffset = events.getLast().offset();
 
         return events.size() >= STREAM_CATCHUP_BATCH_SIZE
-               ? pagePeerWatermark(forwardClient, target, streamName, partition, lastOffset + 1)
+               ? pagePeerWatermark(pageRead, target, streamName, partition, lastOffset + 1)
                : Promise.success(lastOffset);
     }
 
@@ -4942,6 +5000,7 @@ public interface AetherNode extends ManageableNode {
         var streamOwnershipViews = StreamOwnershipViews.streamOwnershipViews(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore),
                                                                              membershipFsm);
         var streamCommittedOwnerSource = streamOwnershipViews.routing();
+        var placementMembers = livePlacementMembers(clusterTopologyManager.observer()::coreNodes, membershipFsm);
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamAlignedRecovery,
                                                                           streamCatchupTransport,
@@ -4951,15 +5010,16 @@ public interface AetherNode extends ManageableNode {
                                                                           config.self(),
                                                                           streamingConfig.backfillSourceWaitBound(),
                                                                           () -> streamPlacementMembers(clusterEventsControllerRef,
-                                                                                                       clusterTopologyManager),
+                                                                                                       placementMembers),
                                                                           streamCommittedOwnerSource,
                                                                           streamPartitionManager::syncReplicated,
                                                                           streamPartitionManager.quarantineView());
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
-        // against the HRW-derived desired replica set on every membership change. Members + cluster
-        // size come from the consensus topology observer; the stream catalog (name/partitions/
+        // against the HRW-derived desired replica set on every membership change. Members are the single
+        // live placement source (#1550, placementMembers); cluster size comes from the consensus topology
+        // observer; the stream catalog (name/partitions/
         // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
         // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
         //
@@ -4968,8 +5028,9 @@ public interface AetherNode extends ManageableNode {
         //   - isLeaderSupplier / rabiaTermSupplier / hlcClock are the same suppliers the DHT writer uses,
         //   - CommittedOwnership reads the committed StreamPartitionOwnershipValue exactly as
         //     KvStreamOwnerEpochSource does (getTyped on the StreamPartitionOwnershipKey),
-        //   - HrwOwner late-binds to streamReplicaSetController::ownerFor through clusterEventsControllerRef
-        //     (set to the same controller below, before the first reconcile fires the driver).
+        //   - HrwOwner late-binds to streamReplicaSetController::desiredOwner through clusterEventsControllerRef
+        //     (set to the same controller below, before the first reconcile fires the driver) — #1555 sticky
+        //     ownership: keep the committed owner while it is in the leader's live set, else HRW rank-0.
         // The writer self-limits: writeOwnershipChange returns none() on a follower (its isLeaderSupplier
         // gate short-circuits BEFORE any KV read) and none() for an unchanged owner, so the driver only
         // emits a consensus Put on the leader and only for genuinely-moved partitions. #265 increment 6:
@@ -4983,12 +5044,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                   (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                   partition),
                                                                                                                                           StreamPartitionOwnershipValue.class),
-                                                                                                  (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.ownerFor(stream,
-                                                                                                                                                                                                                                     partition)));
+                                                                                                  (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
+                                                                                                                                                                                                                                         partition)));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
-                                                                                   () -> List.copyOf(clusterTopologyManager.observer()
-                                                                                                                           .coreNodes()),
+                                                                                   placementMembers,
                                                                                    clusterTopologyManager.observer()::clusterSize,
                                                                                    streamPartitionManager.replicaCatalog(),
                                                                                    (streamName, partition) -> streamBackfillExecutor.execute(() -> materializeThenBackfill(streamPartitionManager,
@@ -5003,6 +5063,14 @@ public interface AetherNode extends ManageableNode {
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
+        // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
+        // exists); the leader's writer alone judges liveness (ReplicaSetController#desiredOwner). Backfill sources
+        // from, and self-elects against, the same owner.
+        streamReplicaSetController.committedOwnerSource((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                        partition),
+                                                                                                StreamPartitionOwnershipValue.class)
+                                                                                      .map(StreamPartitionOwnershipValue::owner));
+        streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);
         // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
         // is the same construction-order inversion the streamPartitionManagerRef seam resolves above —
@@ -5048,6 +5116,40 @@ public interface AetherNode extends ManageableNode {
         // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
         // window, where the fence is inert and HRW routing alone picks the writer).
         streamPartitionManager.ownerWriteAdmission(streamOwnershipViews.writeAdmission(config.self()));
+        // #1555 owner promotion gate: this node acts as a partition's owner (appends, servedByOwner, owner reads)
+        // only after a no-op consensus round has refreshed its committed ownership view, the record still names
+        // it, and it has caught up to every live placement member's watermark. The round is ALWAYS ordered here,
+        // independent of the read-linearization knob, because the gate's correctness depends on it. The probe
+        // uses the catch-up read class, so a peer's own promotion state never blocks it.
+        var ownerActivation = OwnerActivation.ownerActivation(config.self(),
+                                                              (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                              partition),
+                                                                                                      StreamPartitionOwnershipValue.class),
+                                                              (stream, partition) -> streamReplicaSetController.roleFor(stream,
+                                                                                                                        partition) == ReplicaSetController.Role.OWNER,
+                                                              Option.some(LinearizableBarrier.noOpRound(clusterCommandApplier,
+                                                                                                        streamingConfig.readForwardTimeout())),
+                                                              placementMembers,
+                                                              (target, stream, partition) -> probePeerAppendedWatermark(streamForwardClient,
+                                                                                                                        target,
+                                                                                                                        stream,
+                                                                                                                        partition),
+                                                              streamSelfWatermark,
+                                                              streamPartitionBackfill::catchUpOwnerFrom,
+                                                              clusterNode::isActive,
+                                                              OwnerPeerReads.ownerRange(config.self(),
+                                                                                        streamPartitionManager,
+                                                                                        streamTieredReader,
+                                                                                        streamForwardClient::readRemoteCatchup,
+                                                                                        STREAM_CATCHUP_BATCH_SIZE),
+                                                              AetherNode::raiseOwnerPromotionBlock,
+                                                              ownerPromotionAlarmWindow(config.timeouts()
+                                                                                              .swim()
+                                                                                              .suspectTimeout()));
+
+        streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);
+        allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
@@ -5125,10 +5227,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 Option.some(committedStreamOwnerSource),
                                                                                                                 Option.some(ownershipEpochHighWater),
                                                                                                                 linearizableBarrier,
-                                                                                                                (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readLocal(stream,
-                                                                                                                                                                                               partition,
-                                                                                                                                                                                               fromOffset,
-                                                                                                                                                                                               maxEvents)
+                                                                                                                (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readServing(stream,
+                                                                                                                                                                                                 partition,
+                                                                                                                                                                                                 fromOffset,
+                                                                                                                                                                                                 maxEvents)
                                                                                                                                                                                     .async());
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,

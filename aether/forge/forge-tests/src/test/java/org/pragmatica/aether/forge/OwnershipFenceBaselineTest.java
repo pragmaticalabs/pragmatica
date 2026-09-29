@@ -204,6 +204,8 @@ class OwnershipFenceBaselineTest {
         materialize(ownerNode, THROUGHPUT_STREAM);
 
         var spm = ownerNode.streamPartitionManager();
+        // #1555: the owner appends only once its promotion completes; the first check starts it.
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> spm.mayServeAsOwner(THROUGHPUT_STREAM, PARTITION));
         var payload = new byte[THROUGHPUT_PAYLOAD_BYTES];
         var successes = new int[]{0};
 
