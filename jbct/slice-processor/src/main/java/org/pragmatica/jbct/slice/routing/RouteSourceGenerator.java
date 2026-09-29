@@ -1106,16 +1106,25 @@ public class RouteSourceGenerator {
 
     /// Emit the delegate call for a route that builds the request record from path/query arguments.
     /// With a validating factory the record is parsed, a failure becomes a typed 400 and the delegate
-    /// runs only on the validated value; without one the canonical constructor is used unchanged.
-    /// `delegateCallFor` maps the constructed-record expression to the full delegate call.
+    /// runs only on the validated value. Without one the canonical constructor is used, lifted: a
+    /// constructor that throws on client input is also a typed 400, and the delegate runs only on the
+    /// constructed value. `delegateCallFor` maps the constructed-record expression to the full delegate call.
+    ///
+    /// #1573 (v1608 R2-2): before the lift a throwing constructor escaped the handler, and the runtime
+    /// counted it as the slice METHOD throwing — a defect toward automatic rollback caused by a bad path
+    /// or query. Only the slice method's own throw is a defect; building the request is client input.
     private String constructAndDelegate(String parameterType, String args, Function<String, String> delegateCallFor) {
         return validatingFactory(parameterType).map(factory -> validatedChain(parameterType,
                                                                              factory.name(),
                                                                              args,
                                                                              delegateCallFor))
-                                               .or(() -> delegateCallFor.apply("new " + parameterType
-                                                                              + "(" + args
-                                                                              + ")"));
+                                               .or(() -> constructedChain(parameterType, args, delegateCallFor));
+    }
+
+    private static String constructedChain(String parameterType, String args, Function<String, String> delegateCallFor) {
+        return "org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new "
+              + parameterType + "(" + args
+              + ")).async().flatMap(__constructed -> " + delegateCallFor.apply("__constructed") + ")";
     }
 
     /// Emit the delegate call for a pure-body route. Jackson has already built the record, so a
