@@ -12,3 +12,8 @@
   At activation it is now the CRITICAL OperatorWarning `replication-factor-below-three`; CF == RF and CF == 1 stay
   `replication-policy-warning` (WARNING).
   [mechanism: pinned by `StreamSectionBindingTest`, `PublisherFactoryTest`, `DurableEntityFactoryTest`]
+- **The recovery claim "replace the lost core; placement refills the replica set" is refuted on Ember**: a replacement
+  that joins under a fresh identity is not placed into an existing partition's replica set, so a CF == RF stream stays
+  write-refused after one core loss (#1732). `guarantees.md` §4/§4a now say so; the Forge acceptance for the recovery half
+  is an enabled tripwire beside the disabled real assertion.
+  [refuted on Ember: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamConfirmationEqualsFactorAvailabilityTest.java`]
