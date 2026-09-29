@@ -639,6 +639,73 @@ class ClusterEventAggregatorTest {
         assertThat(h.aggregator().redeliveryCounters()).as("handed to redelivery").containsEntry("accepted", 1L);
     }
 
+    /// #1653, the handover limit (CTO ruling on item 8): the owner gate is each node's own view of ownership, so
+    /// across a handover the old and the new owner can both raise one fact. The guarantee pinned here is
+    /// AT-LEAST-ONCE: the old owner's raise, whose publish failed during the handover, is still delivered, and so
+    /// is the new owner's. How many copies a read shows is deliberately not asserted.
+    @Test
+    void emit_ownerHandover_bothOwnersRaiseOneFact_eachRaiseIsDeliveredAtLeastOnce() throws InterruptedException {
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+        var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
+                                               1,
+                                               Harness.defaultRetention(),
+                                               "earliest",
+                                               64L * 1024,
+                                               ConsistencyMode.EVENTUAL,
+                                               1);
+        var publisher = SystemStreamFactories.<ClusterEvent>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS, manager, CODEC, config)
+                                             .unwrap();
+        var consumer = SystemStreamFactories.<ClusterEvent>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS, manager, CODEC, CODEC, config)
+                                            .unwrap();
+        var oldOwnerPublisher = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(null);
+        var oldOwner = handoverSide("old-owner", oldOwnerPublisher, consumer);
+        var newOwner = handoverSide("new-owner", new AtomicReference<>(publisher), consumer);
+
+        oldOwner.aggregator().emit(deploymentStarted(oldOwner.hlc()));
+        newOwner.aggregator().emit(deploymentStarted(newOwner.hlc()));
+        assertThat(oldOwner.aggregator().redeliveryWaiting()).as("control: the old owner's publish failed and is held").isEqualTo(1);
+
+        oldOwnerPublisher.set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        oldOwner.aggregator().redeliverDue();
+
+        var raisedBy = newOwner.aggregator()
+                               .events()
+                               .await()
+                               .unwrap()
+                               .stream()
+                               .filter(event -> event instanceof ClusterEvent.DeploymentStarted)
+                               .map(event -> event.at().nodeId().id())
+                               .toList();
+
+        assertThat(raisedBy).as("the old owner's raise is delivered").contains("old-owner");
+        assertThat(raisedBy).as("the new owner's raise is delivered").contains("new-owner");
+    }
+
+    private record HandoverSide(ClusterEventAggregator aggregator, HlcClock hlc) {}
+
+    private static HandoverSide handoverSide(String node,
+                                             AtomicReference<FrameworkStreamPublisher<ClusterEvent>> publisher,
+                                             FrameworkStreamConsumer<ClusterEvent> consumer) {
+        var hlc = HlcClock.hlcClock(new NodeId(node));
+        var aggregator = ClusterEventAggregator.clusterEventAggregator(publisher::get,
+                                                                       () -> consumer,
+                                                                       OWNER,
+                                                                       new NodeId(node),
+                                                                       hlc,
+                                                                       () -> 3,
+                                                                       () -> false,
+                                                                       LEADER);
+        return new HandoverSide(aggregator, hlc);
+    }
+
+    private static ClusterEvent deploymentStarted(HlcClock hlc) {
+        return new ClusterEvent.DeploymentStarted(hlc.now(),
+                                                  ClusterEvent.Severity.INFO,
+                                                  "Deploying x to n1",
+                                                  Map.of("artifact", "x", "nodeId", "n1"));
+    }
+
     private static void landThenFailFirst(FrameworkStreamPublisher<ClusterEvent> real,
                                           ClusterEvent event,
                                           java.util.concurrent.atomic.AtomicInteger calls) {

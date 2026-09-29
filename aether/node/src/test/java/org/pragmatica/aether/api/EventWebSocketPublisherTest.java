@@ -174,6 +174,30 @@ class EventWebSocketPublisherTest {
                                    .containsExactlyInAnyOrderElementsOf(expected(40, 25));
     }
 
+    /// v1640 P2d, a node that applies the ownership change LATE (a worker learns it from its scoped metadata
+    /// projection, polled once a second): until then no signal fires and the reused offsets below the cursor are not
+    /// read, but the change, once applied, re-reads the log, so those events are sent late, never lost.
+    @Test
+    void publish_ownershipChangeAppliedLate_eventsBelowTheCursorAreSentOnceItIsApplied() {
+        var publisher = publisher();
+
+        appendEvents("old", 40);
+        publisher.publish();
+        failOver(20);
+        appendEvents("new", 25);
+        publisher.publish();
+        publisher.publish();
+        assertThat(sentSummaries()).as("control: before the change is applied, new0..new3 are not read")
+                                   .doesNotContain("new0", "new1", "new2", "new3");
+
+        ownershipChanges.incrementAndGet();
+        publisher.publish();
+        publisher.publish();
+
+        assertThat(sentSummaries()).as("every event sent exactly once")
+                                   .containsExactlyInAnyOrderElementsOf(expected(40, 25));
+    }
+
     /// Control, the 2-offset reuse the Ember run measured: it stays inside the overlap and needs no re-anchor.
     @Test
     void publish_reuseWithinTheOverlap_everyNewEventIsSentOnce() {
