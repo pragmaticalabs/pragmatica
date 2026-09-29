@@ -198,6 +198,15 @@ public sealed interface ClusterInitError extends Cause {
         }
     }
 
+    /// #1199 — the config `init` generated fails the parser or validator `aether cluster bootstrap`
+    /// runs, so writing it would hand the operator a file bootstrap then refuses. Nothing is written.
+    record GeneratedConfigInvalid(String detail) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "Generated config would be rejected by 'aether cluster bootstrap', so it was not written: " + detail;
+        }
+    }
+
     record InvalidValue(String field, String got, String expected) implements ClusterInitError {
         @Override
         public String message() {
