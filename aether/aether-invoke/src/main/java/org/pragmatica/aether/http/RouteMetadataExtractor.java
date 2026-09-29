@@ -37,7 +37,9 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                                    extractPathPrefix(route.path()),
                                    artifactCoord,
                                    deriveSliceMethod(route),
-                                   security);
+                                   security,
+                                   route.pathParamCount(),
+                                   route.spacers());
     }
 
     private static SecurityPolicy resolveSecurityPolicy(Route<?> route) {
