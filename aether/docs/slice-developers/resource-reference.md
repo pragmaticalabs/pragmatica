@@ -1174,8 +1174,8 @@ ephemeral delivery.
 **Replication policy (#1564).** Durable topics, streams and durable entities share one policy with the
 same two keys (see `guarantees.md` §4a). The factors resolve once, when the topic's config is committed;
 a later change of the cluster `[replication]` default affects only topics declared afterwards, and
-redeclaring a live topic with different factors is refused (`ChangedOnLiveResource` — declare a new
-topic instead). A declaration the policy refuses fails the blueprint publish and slice activation with
+redeclaring a live topic with different factors is refused at slice activation (`ChangedOnLiveResource` —
+declare a new topic instead; the blueprint publish does not check it). A declaration the policy refuses fails the blueprint publish and slice activation with
 its typed cause. The warnings — `replication-factor-below-three` (an explicit RF below 3; LOUD),
 `confirmation-equals-replication-factor` (losing any one replica refuses publishes) and
 `confirmation-factor-owner-only` (the owner's death loses events it acknowledged but had not

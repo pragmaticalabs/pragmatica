@@ -159,6 +159,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final PlacementRoleSupplier ALWAYS_OWNER = (_, _) -> ReplicaSetController.Role.OWNER;
 
     private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
+    /// #1564 (R8): the config of every `StreamConfigKey` Put this node has APPLIED, by stream name — the committed
+    /// value exactly as KV holds it, independent of whether (or with which factors) a local entry exists. A local
+    /// entry can lag or differ: a native-OOM hydrate leaves none, and [#adoptIfMoreDurable] keeps a stronger local
+    /// config over a weaker committed one.
+    private final ConcurrentHashMap<String, StreamConfig> appliedConfigs = new ConcurrentHashMap<>();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     private final long maxTotalBytes;
     private final EvictionListener evictionListener;
@@ -847,18 +852,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)
     /// or a durable entity's log — whose factors its caller resolved from the declaration through
     /// [org.pragmatica.aether.slice.ReplicationDeclaration]. Identical to [#createStream(StreamConfig)], except that
-    /// a stream already COMMITTED here with different factors is refused
-    /// ([ReplicationFactorsError.ChangedOnLiveResource], R8): a live resource's replication policy is not
-    /// changed in place, and keeping the old one silently would leave the operator believing the new one holds.
+    /// a stream whose committed factors differ is refused ([ReplicationFactorsError.ChangedOnLiveResource], R8): a
+    /// live resource's replication policy is not changed in place, and keeping the old one silently would leave
+    /// the operator believing the new one holds. "Committed" is the value this node has APPLIED from KV
+    /// ([#appliedConfigs]), else a locally committed entry — so a node that never materialized the stream, or holds
+    /// it uncommitted, refuses rather than publishing its own factors over the committed ones; equal factors
+    /// proceed and re-publish the identical value. Not covered: two nodes declaring different factors for a stream
+    /// neither has yet seen committed — the later `Put` wins in KV (no compare-and-set exists for non-leader
+    /// writers). Both declarations come from one blueprint, so this needs two blueprint versions activating at once.
     /// The management and system create paths keep [#createStream(StreamConfig)]: they carry no declaration.
     public Result<Unit> createDeclaredStream(StreamConfig config) {
-        return option(streams.get(config.name())).filter(StreamEntry::isCommitted)
-                     .map(existing -> config.replication()
-                                            .sameAsCommitted("stream '" + config.name() + "'",
-                                                             existing.config().replication())
-                                            .map(_ -> unit()))
-                     .or(success(unit()))
-                     .flatMap(_ -> createStream(config, CommitMode.SYNC));
+        return committedReplication(config.name()).map(committed -> config.replication()
+                                                                          .sameAsCommitted("stream '" + config.name()
+                                                                                          + "'",
+                                                                                           committed)
+                                                                          .map(_ -> unit()))
+                                   .or(success(unit()))
+                                   .flatMap(_ -> createStream(config, CommitMode.SYNC));
+    }
+
+    private Option<ReplicationFactors> committedReplication(String streamName) {
+        return option(appliedConfigs.get(streamName)).orElse(() -> option(streams.get(streamName)).filter(StreamEntry::isCommitted)
+                                                                         .map(StreamEntry::config))
+                     .map(StreamConfig::replication);
     }
 
     private Result<Unit> createStream(StreamConfig config, CommitMode commitMode) {
@@ -1226,6 +1242,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var streamName = put.cause().key().streamName();
         var config = put.cause().value().config();
 
+        appliedConfigs.put(streamName, config);
         streams.compute(streamName, (_, existing) -> reconcileCommittedConfig(config, existing));
     }
 
@@ -1277,6 +1294,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> remove) {
         var streamName = remove.cause().key().streamName();
 
+        appliedConfigs.remove(streamName);
         removeAndReleaseIfPresent(streamName);
     }
 

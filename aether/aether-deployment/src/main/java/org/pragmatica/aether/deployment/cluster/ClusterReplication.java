@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.cluster.ReplicationDefaultsParser;
 import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -20,6 +21,11 @@ import org.pragmatica.lang.Result;
 /// The one conversion both deploy validation and the node's resource provisioning use, so a declaration resolves
 /// the same way at deploy and at activation. No committed config yet means the built-in defaults and no core count.
 public sealed interface ClusterReplication {
+    /// The `system:cluster-events` factors with no committed cluster config: the built-in RF 3 and the built-in
+    /// `[replication.cluster_events]` CF.
+    ReplicationFactors CLUSTER_EVENTS_BUILT_IN = new ReplicationFactors(ReplicationFactors.BUILT_IN.replicationFactor(),
+                                                                        ReplicationDefaultsConfig.BUILT_IN.clusterEventsConfirmationFactor());
+
     static Result<ReplicationContext> context(Option<ClusterConfigValue> committed) {
         return committed.fold(() -> Result.success(ReplicationContext.BUILT_IN), ClusterReplication::contextOf);
     }
@@ -34,12 +40,38 @@ public sealed interface ClusterReplication {
     /// anyway ([org.pragmatica.aether.stream.replication.ReplicaPlacement]), so recording it lets the engine check
     /// `CF <= RF` meaningfully. Without a committed core count RF is the built-in 3.
     static Result<ReplicationFactors> clusterEventsFactors(Option<ClusterConfigValue> committed) {
+        return defaults(committed).flatMap(defaults -> clusterEventsFactors(committed, defaults));
+    }
+
+    /// #1564 (B1): a cluster config is admissible only if the `system:cluster-events` factors it implies resolve —
+    /// `[replication.cluster_events] confirmation_factor` at most the DESIRED core count, which is that stream's RF
+    /// ([#clusterEventsFactors]). Checked by both writers of the desired core count, the config apply and a core
+    /// scale, BEFORE the commit: a committed config the registrar cannot satisfy would leave cluster-events
+    /// uncommitted with nothing to retry into success.
+    static Result<ClusterConfigValue> admissible(ClusterConfigValue value) {
+        var committed = Option.some(value);
+
+        return defaults(committed).flatMap(defaults -> clusterEventsFactors(committed, defaults).mapError(cause -> new ClusterEventsFactorsRefused(value.coreCount(),
+                                                                                                                                                   cause)))
+                       .map(_ -> value);
+    }
+
+    /// The typed refusal of an inadmissible cluster config (see [#admissible]).
+    record ClusterEventsFactorsRefused(int desiredCoreCount, Cause cause) implements Cause {
+        @Override
+        public String message() {
+            return "[replication.cluster_events] confirmation_factor must not exceed the desired core count (" + desiredCoreCount
+                 + "), which is system:cluster-events' replication_factor: " + cause.message();
+        }
+    }
+
+    private static Result<ReplicationFactors> clusterEventsFactors(Option<ClusterConfigValue> committed,
+                                                                   ReplicationDefaultsConfig defaults) {
         var cores = committed.map(ClusterConfigValue::coreCount)
                              .filter(count -> count > 0)
                              .or(ReplicationFactors.BUILT_IN.replicationFactor());
 
-        return defaults(committed).flatMap(defaults -> ReplicationFactors.replicationFactors(cores,
-                                                                                             defaults.clusterEventsConfirmationFactor()));
+        return ReplicationFactors.replicationFactors(cores, defaults.clusterEventsConfirmationFactor());
     }
 
     private static Result<ReplicationContext> contextOf(ClusterConfigValue value) {

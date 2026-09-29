@@ -290,7 +290,7 @@ TOML, or a document without this section, gets the built-in defaults below.
 |---|---|---|---|
 | `replication_factor` | int | `3` | RF: copies of each partition, the owner included. At least 3 — a lower RF is declared on the resource itself (with a LOUD warning), never taken from a default. |
 | `confirmation_factor` | int | `2` | CF: copies, the owner included, that hold a write before it is acknowledged. `1 <= confirmation_factor <= replication_factor`. |
-| `[replication.cluster_events] confirmation_factor` | int | `1` | CF of the `system:cluster-events` stream (its RF is the cluster size). At CF 1 an event is acknowledged on the owner's append, so events acknowledged after the last peer-acked offset are lost when the owner dies. |
+| `[replication.cluster_events] confirmation_factor` | int | `1` | CF of the `system:cluster-events` stream (its RF is the desired core count, so the CF may not exceed it). At CF 1 an event is acknowledged on the owner's append, so events acknowledged after the last peer-acked offset are lost when the owner dies. |
 
 ```toml
 [replication]
@@ -304,13 +304,16 @@ confirmation_factor = 1
 **How a resource resolves:** an undeclared RF takes `replication_factor`; an undeclared CF takes
 `min(confirmation_factor, RF)`. Resolution happens once, when the resource's config is committed, so a
 change applied here affects only resources declared afterwards; a live resource keeps the factors it
-resolved (redeclaring it with different factors is refused, `ChangedOnLiveResource`). Whether a factor fits
+resolved (redeclaring it with different factors is refused at slice activation, `ChangedOnLiveResource`; the
+blueprint itself still publishes). Whether a factor fits
 is checked per resource at deploy and activation: an RF above the cluster's desired core count is refused,
 so a cluster with fewer than three desired cores cannot use the built-in default and its resources declare
 their own factors.
 
 Every key is typed and validated when the TOML is applied; a mistyped value, an RF below 3, a CF outside
-`1..RF`, a `cluster_events` CF below 1 or an unknown key refuses the apply, naming the key.
+`1..RF`, a `cluster_events` CF below 1 or above the desired core count, or an unknown key refuses the apply,
+naming the key. A core scale that would drop the desired core count below the `cluster_events` CF is refused
+the same way (`ClusterEventsFactorsRefused`).
 
 ### `[runtime.<name>]`
 

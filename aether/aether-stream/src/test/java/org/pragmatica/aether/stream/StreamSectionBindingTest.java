@@ -16,6 +16,8 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
@@ -513,6 +515,51 @@ class StreamSectionBindingTest {
                     """);
 
             assertThat(config.partitions()).isEqualTo(2);
+        }
+    }
+
+    /// #1564 at ACTIVATION (v1680 V1/V5): the node-side bind applies the same core-count check and raises the same
+    /// warnings deploy validation does, whatever deploy saw — the committed cluster config may have changed since.
+    @Nested
+    class ActivationReplicationChecks {
+        private static final ProvisioningContext THREE_CORES = ProvisioningContext.provisioningContext()
+                                                                                  .withExtension(ReplicationContext.Source.class,
+                                                                                                 ReplicationContext.Source.fixed(ReplicationContext.replicationContext(ReplicationFactors.BUILT_IN,
+                                                                                                                                                                       3)));
+
+        /// V1: a declared replication_factor above the DESIRED core count is refused at activation, typed.
+        @Test
+        void bind_factorAboveTheDesiredCoreCount_isRefused() {
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf("""
+                                                                                    [streams.orders]
+                                                                                    replication_factor = 5
+                                                                                    """), SECTION, THREE_CORES)
+                                                                   .onSuccess(config -> fail("RF 5 on 3 cores must be refused, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicationRefused(ALIAS,
+                                                                                                                                                                 new ReplicationFactorsError.ExceedsCoreCount(5,
+                                                                                                                                                                                                              3)))));
+        }
+
+        /// V5: the declaration's warnings are LOGGED at activation — the LOUD RF-below-3 warning among them.
+        @Test
+        void bind_declaredFactorBelowThree_logsTheLoudWarning() {
+            var warnings = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var detach = LogCapture.warningsOf(StreamSectionBinding.class, warnings);
+
+            try {
+                bindWith(new StreamPublisherFactory(), """
+                        [streams.orders]
+                        replication_factor = 1
+                        """);
+            } finally {
+                detach.run();
+            }
+
+            assertThat(warnings).anySatisfy(line -> assertThat(line).startsWith("LOUD: ")
+                                                                    .contains(ReplicationWarning.FACTOR_BELOW_THREE.code())
+                                                                    .contains("stream 'orders'"));
         }
     }
 

@@ -59,6 +59,31 @@ class ClusterReplicationTest {
         assertThat(ClusterReplication.clusterEventsFactors(Option.some(committed)).unwrap()).isEqualTo(new ReplicationFactors(5, 2));
     }
 
+    /// B1: `system:cluster-events` takes RF = the desired core count, so a cluster-events CF above it can never
+    /// resolve; the config carrying it is refused before it is committed, naming the key.
+    @Test
+    void admissible_clusterEventsConfirmationAboveCoreCount_isRefused() {
+        var refused = ClusterReplication.admissible(committed("""
+                                                               [replication.cluster_events]
+                                                               confirmation_factor = 5
+                                                               """, 3));
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterReplication.ClusterEventsFactorsRefused.class))
+               .onFailure(cause -> assertThat(cause.message()).contains("[replication.cluster_events] confirmation_factor",
+                                                                        "(3)"));
+    }
+
+    @Test
+    void admissible_clusterEventsConfirmationEqualToCoreCount_isAdmitted() {
+        var config = committed("""
+                               [replication.cluster_events]
+                               confirmation_factor = 3
+                               """, 3);
+
+        assertThat(ClusterReplication.admissible(config).unwrap()).isSameAs(config);
+    }
+
     private static ClusterConfigValue committed(String toml, int cores) {
         return ClusterConfigValue.clusterConfigValue(toml,
                                                      "c1",

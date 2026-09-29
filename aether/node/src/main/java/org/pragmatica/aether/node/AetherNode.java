@@ -1074,6 +1074,8 @@ public interface AetherNode extends ManageableNode {
     /// the metrics-threshold alert path only runs while a dashboard client is connected. Five minutes
     /// matches the RetentionEnforcer cadence — the only mover that can newly violate between checks.
     TimeSpan RETENTION_INVARIANT_CHECK_INTERVAL = TimeSpan.timeSpan(5).minutes();
+    /// #1564 B1: the operator alert raised when the replication policy refuses `system:cluster-events`.
+    String SYSTEM_STREAM_REFUSED_ALERT = "system-stream-registration-refused";
 
     /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
     /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
@@ -4816,13 +4818,21 @@ public interface AetherNode extends ManageableNode {
         // bytes (off-heap hard cap), and age, mode ANY — see ClusterEventsLimits, checked at boot (#1549). The publisher/consumer refs the aggregator was
         // constructed with are bound here; until then emits fall back to log-only (bootstrap window).
         var clusterEventsRetention = clusterEventsLimits.retention();
+        // #1564 (N2): the local partition the publisher/consumer wiring below creates at construction carries the
+        // SAME factors the SystemStreamRegistrar commits — those of the committed `[replication.cluster_events]`
+        // as this node sees it now — never a separate hardcoded CF. With no committed config (a fresh node) that is
+        // the built-in; an unresolvable committed value (refused at apply since B1) also falls back to the built-in
+        // here, and the registrar reports that refusal.
+        var clusterEventsFactors = ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                            AetherValue.ClusterConfigValue.class)).or(ClusterReplication.CLUSTER_EVENTS_BUILT_IN);
         var clusterEventsStreamConfig = org.pragmatica.aether.slice.StreamConfig.streamConfig(clusterEventsStreamName,
                                                                                               1,
                                                                                               clusterEventsRetention,
                                                                                               "earliest",
                                                                                               clusterEventsLimits.maxEventSizeBytes(),
                                                                                               org.pragmatica.aether.slice.ConsistencyMode.EVENTUAL,
-                                                                                              1);
+                                                                                              clusterEventsFactors.confirmationFactor())
+                                                                                .withReplication(clusterEventsFactors);
         // Fix #3 / #1230: the forward-capable cluster-events CONSUMER and PUBLISHER are wired further below,
         // after streamForwardClient + streamReadForwardMetrics are constructed, so a non-replica node
         // read-forwards observability reads to a caught-up replica instead of reading its own empty local
@@ -5405,10 +5415,18 @@ public interface AetherNode extends ManageableNode {
         // desired core count), read when the leader commits it.
         var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
                                                                                                                                                AetherValue.ClusterConfigValue.class)).flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
-                                                                                streamNamespacesService::bootstrap);
+                                                                                streamNamespacesService::bootstrap,
+                                                                                cause -> raiseSystemStreamRefusal(alertManager,
+                                                                                                                  cause));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  systemStreamRegistrar::onLeaderChange));
+        // #1564 B1: a committed cluster config re-arms a registration the replication policy refused.
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.ClusterConfigKey.class,
+                                                     _ -> systemStreamRegistrar.onClusterConfigChanged())
+                                              .build()
+                                              .asRouteEntries());
         // #290: cluster-formation bootstrap admin API key. On first leadership, if no admin key is yet
         // present in the KV store, register one cluster-wide and print the plaintext once. Self-healing
         // and idempotent (mirrors SystemStreamRegistrar); the leg uses the same clusterNode.apply
@@ -5994,6 +6012,19 @@ public interface AetherNode extends ManageableNode {
                   projector.announcedCoreMembers(),
                   membershipFsm.coreMembers(),
                   presenceSampler.currentMembers());
+    }
+
+    /// #1564 B1: the operator-visible half of a refused system-stream registration — a CRITICAL alert on
+    /// `/api/alerts/active` beside the registrar's ERROR log, since `system:cluster-events` itself is what failed.
+    @Contract
+    private static void raiseSystemStreamRefusal(AlertManager alertManager, Cause cause) {
+        alertManager.inject(SYSTEM_STREAM_REFUSED_ALERT,
+                            "CRITICAL",
+                            "system:cluster-events was not registered: " + cause.message(),
+                            Option.none(),
+                            Option.none())
+                    .onFailure(failure -> LOG.warn("System-stream refusal alert injection failed: {}",
+                                                   failure.message()));
     }
 
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —

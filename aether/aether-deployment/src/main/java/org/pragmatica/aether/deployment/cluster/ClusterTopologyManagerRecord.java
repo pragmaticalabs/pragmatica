@@ -332,6 +332,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                if (count < 0 || role.equals(NodeRole.CORE.value()) && (updated.coreCount() < MINIMUM_CLUSTER_SIZE || updated.coreCount() > ConsensusTierBounds.MAXIMUM_CORE_NODES || updated.coreCount() % 2 == 0)) {
                                return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11; source counts cannot be negative").promise();
                            }
+                               // #1564 (B1): a core scale changes the desired core count, which bounds the
+                               // cluster-events confirmation factor; an inadmissible result is refused, typed.
+                               var admissible = ClusterReplication.admissible(updated);
+
+                               if (admissible.isFailure()) {
+                               return admissible.async()
+                                                .mapToUnit();
+                           }
 
                                return writer.put(ClusterConfigKey.CURRENT,
                                                  Option.some(current),

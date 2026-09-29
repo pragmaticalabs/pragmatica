@@ -75,6 +75,20 @@ class DurableTopicSubstrateTest {
                  .onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.aether.slice.ReplicationFactorsError.ChangedOnLiveResource.class));
     }
 
+    /// #1564 R8 pin for the DEAD-LETTER stream on its own (v1680 V2): the topic stream is fresh, so its check passes;
+    /// only the DLQ is committed with different factors. It must be refused through the DLQ's own declared create,
+    /// not tolerated as already-existing.
+    @Test
+    void activateTopic_deadLetterStreamCommittedWithDifferentFactors_isRefused() {
+        manager.createStream(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, specWith(1, 3, 3, "7d")))
+               .onFailure(cause -> fail(cause.message()));
+
+        substrate.activateTopic(ADDRESS, specWith(1, 3, 2, "7d"))
+                 .onSuccess(_ -> fail("a changed dead-letter replication policy must be refused"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.aether.slice.ReplicationFactorsError.ChangedOnLiveResource.class))
+                 .onFailure(cause -> assertThat(cause.message()).contains(".dlq"));
+    }
+
     private static DurableTopicSpec specWith(int partitions, int factor, int confirmation, String retention) {
         return DurableTopicSpec.durableTopicSpec(partitions,
                                                  new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(factor,
