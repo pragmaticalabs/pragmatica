@@ -5,6 +5,7 @@
 package org.pragmatica.aether.http;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -1226,6 +1227,10 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                   selfNodeId));
     }
 
+    /// #1659 (v1670): the LONGEST matching remote prefix wins, the rule the hosting node applies to its local routes
+    /// (`HttpRoutePublisher.findLocalRoute`, #884). The forwarded request is served by that longest route and is not
+    /// re-authorized there, so authorizing it here by a shorter, broader route -- which `findFirst` over the
+    /// ascending registry picked -- let a PUBLIC parent admit requests its protected child would refuse.
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                                                         String method,
                                                                         String normalizedPath) {
@@ -1234,7 +1239,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              .equalsIgnoreCase(method))
                                        .filter(route -> pathMatchesPrefix(normalizedPath,
                                                                           route.pathPrefix()))
-                                       .findFirst());
+                                       .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length())));
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {

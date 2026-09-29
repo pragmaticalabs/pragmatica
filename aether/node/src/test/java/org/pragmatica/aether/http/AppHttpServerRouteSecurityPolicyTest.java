@@ -234,6 +234,79 @@ class AppHttpServerRouteSecurityPolicyTest {
         assertThat(response.statusCode()).as("strictest node governs: %s", response.body()).isEqualTo(403);
     }
 
+    /// #1659 (v1670 P4): two REMOTE routes with nested prefixes, the outer PUBLIC and the inner `ROLE:admin`. The
+    /// hosting node serves `/api/admin/secret` by its LONGEST prefix and does not re-authorize a forwarded request,
+    /// so the ingress must judge it by the inner route too: 401 without a credential. Before, `findFirst` over the
+    /// ascending registry picked the outer PUBLIC route and forwarded it -- the "HTTP forwarding not available" 503.
+    @Test
+    void remoteRoute_nestedPrefixes_theInnerRouteGovernsItsSubtree() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRouteOf(REMOTE_ARTIFACT, "/api/", "PUBLIC"));
+        registry.onNodeRoutesPut(remoteRouteOf(TEST_ARTIFACT, "/api/admin/", "ROLE:admin"));
+
+        assertThat(registry.allRoutes()).as("CONTROL: both nested remote routes are registered").hasSize(2);
+
+        startServer("/local/", SecurityPolicy.unspecified(), registry);
+
+        var response = get("/api/admin/secret");
+
+        assertThat(response.statusCode()).as("the inner route's policy, not the outer PUBLIC one: %s", response.body())
+                                         .isEqualTo(401);
+    }
+
+    /// #1659 (v1670 P4b): the inner route is UNDECLARED and this ingress's COMMITTED override locks it to
+    /// `role:admin`; a broader PUBLIC remote route also matches. A valid key without the role gets 403.
+    @Test
+    void remoteRoute_nestedPrefixes_committedOverrideOnTheInnerRoute_isEnforced() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRouteOf(REMOTE_ARTIFACT, "/api/", "PUBLIC"));
+        registry.onNodeRoutesPut(remoteRouteOf(TEST_ARTIFACT, "/api/admin/", "UNSPECIFIED"));
+
+        startServer("/local/", SecurityPolicy.unspecified(), registry, adminOverrideOn("GET /api/admin/*"));
+
+        var response = getWithApiKey("/api/admin/secret", VALID_API_KEY);
+
+        assertThat(response.statusCode()).as("a valid key without the admin role: %s", response.body()).isEqualTo(403);
+        assertThat(response.body()).contains("role 'admin' required");
+    }
+
+    /// CONTROL for the two above: with only the inner route registered it is enforced, so their outcome is decided
+    /// by which of the nested routes governs, not by the inner route's policy failing on its own.
+    @Test
+    void remoteRoute_innerRouteAlone_isEnforced() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRouteOf(TEST_ARTIFACT, "/api/admin/", "ROLE:admin"));
+
+        startServer("/local/", SecurityPolicy.unspecified(), registry);
+
+        assertThat(get("/api/admin/secret").statusCode()).isEqualTo(401);
+    }
+
+    /// CONTROL, the other side: a request under the outer prefix only is still judged by the outer PUBLIC route and
+    /// passes authorization (503: admitted, then no forwarder in this fixture) -- the inner route governs its own
+    /// subtree and nothing more.
+    @Test
+    void remoteRoute_nestedPrefixes_theOuterRouteStillGovernsTheRestOfItsSubtree() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRouteOf(REMOTE_ARTIFACT, "/api/", "PUBLIC"));
+        registry.onNodeRoutesPut(remoteRouteOf(TEST_ARTIFACT, "/api/admin/", "ROLE:admin"));
+
+        startServer("/local/", SecurityPolicy.unspecified(), registry);
+
+        var response = get("/api/public-thing");
+
+        assertThat(response.statusCode()).as("admitted by the outer PUBLIC route: %s", response.body()).isEqualTo(503);
+        assertThat(response.body()).contains("HTTP forwarding not available");
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRouteOf(Artifact artifact, String prefix, String security) {
+        var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, artifact);
+        var route = RouteEntry.activeRoute("GET", prefix, "handle", security, security);
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.ZERO);
+
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
     private static SecurityOverrides adminOverrideOn(String pattern) {
         return SecurityOverrides.securityOverrides(List.of(SecurityOverrides.Entry.entry(pattern, "role:admin")),
                                                    SecurityOverridePolicy.STRENGTHEN_ONLY);
