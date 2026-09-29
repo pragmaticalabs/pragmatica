@@ -362,11 +362,26 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StreamSetupRequest streams) {
-        var results = pendingSetups(configs, nodeId, dhtClient, keyring, StorageConfig.storageConfig());
+        var results = pendingSetups(withoutStreamsSection(configs),
+                                    nodeId,
+                                    dhtClient,
+                                    keyring,
+                                    StorageConfig.storageConfig());
 
         results.add(armStreamStorage(streams));
 
         return admit(results);
+    }
+
+    /// `streams` is built by its own arm from the [StreamSetupRequest]. A `[storage.streams]` section only carries
+    /// `wal_path` (read by `AetherNode`), so it is not a second instance: building it as one produced two setups
+    /// named `streams`, and collecting them threw `IllegalStateException: Duplicate key streams`, so any node
+    /// configured with the documented `wal_path` key failed to boot with a raw exception.
+    private static Map<String, StorageConfig> withoutStreamsSection(Map<String, StorageConfig> configs) {
+        return configs.entrySet()
+                      .stream()
+                      .filter(entry -> !STREAMS_NAME.equals(entry.getKey()))
+                      .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> configs,
