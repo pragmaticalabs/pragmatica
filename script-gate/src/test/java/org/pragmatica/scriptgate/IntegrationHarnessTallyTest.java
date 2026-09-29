@@ -22,7 +22,7 @@ class IntegrationHarnessTallyTest {
     @Test
     void failLoggedInABackgroundWorkerOrOutsideATest_countsAgainstTheSuite() {
         var execution = bash("""
-            source lib/common.sh >/dev/null 2>&1
+            source lib/common.sh >/dev/null || { echo "common.sh failed to source"; exit 3; }
             t_ok() { log_pass "fine"; }
             t_worker() { ( log_fail "publisher worker: no endpoint" ) & wait; return 0; }
             run_test ok t_ok
@@ -60,7 +60,7 @@ class IntegrationHarnessTallyTest {
 
     private static String checkpointScenario(String collected, String waitForOverride) {
         return """
-            source lib/common.sh >/dev/null 2>&1
+            source lib/common.sh >/dev/null || { echo "common.sh failed to source"; exit 3; }
             eval "$(sed -n '/^test_checkpoint_driver_is_alive()/,/^}/p' %s)"
             type test_checkpoint_driver_is_alive >/dev/null || { echo "extraction found nothing"; exit 3; }
             collect_checkpoints() { %s; }
@@ -70,8 +70,10 @@ class IntegrationHarnessTallyTest {
     }
 
     private static ScriptRunner.Execution bash(String script) {
+        // lib/common.sh refuses to source without TARGET_HOST (`: "${TARGET_HOST:?...}"`). Setting it here keeps the
+        // test independent of the caller's environment: it passed only on hosts that export TARGET_HOST.
         return executed(ScriptRunner.run(ScriptRunner.repoRoot().resolve(INTEGRATION),
-                                         Map.of(),
+                                         Map.of("TARGET_HOST", "127.0.0.1"),
                                          List.of("bash", "-c", "set -uo pipefail\n" + script)));
     }
 }

@@ -1,6 +1,8 @@
 """Regression checks for absent classes and misleading partial/empty Forge reports."""
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -60,6 +62,24 @@ class HierarchySelectionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "empty expected set"):
                 selection.verify_complete(Path(directory), ["HierarchyAuthorityAcceptanceTest"])
+
+    def run_cli(self, selector):
+        # #1451: the workflow invokes the CLI, not verify_complete(); pin the entry point it actually runs.
+        script = Path(__file__).with_name("check-hierarchy-selection.py")
+        return subprocess.run([sys.executable, "-B", str(script), selector], capture_output=True, text=True)
+
+    def test_cli_refuses_a_partial_selection_of_the_real_tree(self):
+        result = self.run_cli("HierarchyAuthorityAcceptanceTest")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Partial selection", result.stderr)
+
+    def test_cli_accepts_the_complete_on_disk_selection(self):
+        root = Path(__file__).resolve().parent.parent
+        complete = ",".join(selection.required_classes(root))
+        self.assertGreater(len(complete.split(",")), 10, "control: the real required set was found")
+        result = self.run_cli(complete)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("all", result.stdout)
 
     def verify(self, body, names):
         with tempfile.TemporaryDirectory() as directory:

@@ -83,6 +83,7 @@ jobs:
         if: always()
         with:
           name: hierarchy-runtime-evidence
+          if-no-files-found: error
           path: |
             target/hierarchy-evidence/**
             aether/forge/forge-tests/target/failsafe-reports/**

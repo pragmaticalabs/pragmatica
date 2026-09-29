@@ -17,20 +17,19 @@ import static org.assertj.core.api.Assertions.fail;
 /// none. `actions/upload-artifact` defaults `if-no-files-found` to `warn`, so a run that produced ZERO failsafe
 /// reports (a reactor that halted before the tests ran) leaves the same empty artifact list as a green run.
 ///
-/// The subject is the REAL workflow files. Every `upload-artifact` step whose path names `failsafe-reports` must set
-/// `if-no-files-found: error`.
+/// The subject is the REAL workflow files: every `.github/workflows/*.yml`, discovered, not listed. Every
+/// `upload-artifact` step whose path names `failsafe-reports` must set `if-no-files-found: error`.
 class WorkflowGateTest {
-    private static final List<String> WORKFLOWS = List.of("ci.yml", "heavy-forge.yml", "release.yml");
-
     @Test
     void failsafeReportUploads_failWhenNoReportWasProduced() {
+        var workflows = workflowFiles();
         var steps = new ArrayList<String>();
 
-        WORKFLOWS.forEach(workflow -> steps.addAll(uploadSteps(workflow)));
+        workflows.forEach(workflow -> steps.addAll(uploadSteps(workflow)));
         var failsafeUploads = steps.stream().filter(step -> step.contains("failsafe-reports")).toList();
         // The count is the evidence: a pass that examined no upload step would prove nothing.
-        assertThat(failsafeUploads).as("control: failsafe-report upload steps found in %s", WORKFLOWS)
-                  .hasSizeGreaterThanOrEqualTo(3);
+        assertThat(failsafeUploads).as("control: failsafe-report upload steps found in %s", workflows)
+                  .hasSizeGreaterThanOrEqualTo(5);
         assertThat(failsafeUploads).allSatisfy(step -> assertThat(step).as("upload step:%n%s", step)
                                                                  .contains("if-no-files-found: error"));
     }
@@ -42,7 +41,9 @@ class WorkflowGateTest {
         var ci = String.join("\n",
                              read(ScriptRunner.repoRoot().resolve(Path.of(".github", "workflows", "ci.yml"))));
 
-        assertThat(ci).contains("poms=(aether/tests/blueprints/*/pom.xml ")
+        assertThat(ci).contains("shopt -s nullglob")
+                  .contains("blueprints=(aether/tests/blueprints/*/pom.xml)")
+                  .contains("(( ${#blueprints[@]} > 0 ))")
                   .contains("mvn -B jbct:check -f \"$pom\"")
                   .contains("refusing to continue");
     }
@@ -71,6 +72,21 @@ class WorkflowGateTest {
                                                                                                                         + "/pom.xml")).as("example '%s' is neither an examples/pom.xml module nor JBCT-checked standalone in ci.yml",
                                                                                                                                           dir)
                                                      .isTrue());
+    }
+
+    private static List<String> workflowFiles() {
+        var directory = ScriptRunner.repoRoot().resolve(Path.of(".github", "workflows"));
+
+        return Result.lift(() -> {
+            try (var stream = Files.list(directory)) {
+                return stream.map(path -> path.getFileName()
+                                              .toString())
+                             .filter(name -> name.endsWith(".yml"))
+                             .sorted()
+                             .toList();
+            }
+        }).fold(cause -> fail("Cannot list " + directory + ": " + cause.message()),
+                list -> list);
     }
 
     /// Each `actions/upload-artifact` step of `workflow`, as its text: from the step's `- ` line to the next step at
