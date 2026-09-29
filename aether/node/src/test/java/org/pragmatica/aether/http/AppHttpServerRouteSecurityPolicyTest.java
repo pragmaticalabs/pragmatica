@@ -12,6 +12,7 @@ import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.http.HttpRoutePublisher.LocalResolution;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
@@ -100,10 +101,45 @@ class AppHttpServerRouteSecurityPolicyTest {
                              SecurityPolicy routePolicy,
                              HttpRouteRegistry registry,
                              SecurityOverrides committed) {
+        startServer(StubRoutePublisher.hosting("GET", pathPrefix, routePolicy, committed), registry);
+    }
+
+    /// As [#startServer(StubRoutePublisher, HttpRouteRegistry)], with an active rollout of the local artifact: ALL_NEW
+    /// from `1.0.0` (the local version, so it is the OLD one) to `2.0.0` -- every request is a strategy-forward candidate.
+    private void startServerWithRollout(StubRoutePublisher publisher, HttpRouteRegistry registry) {
+        httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+
+        var routing = new org.pragmatica.aether.update.DeploymentManager.ActiveRouting(org.pragmatica.aether.update.VersionRouting.ALL_NEW,
+                                                                                       org.pragmatica.aether.artifact.Version.version("1.0.0")
+                                                                                                                             .unwrap(),
+                                                                                       org.pragmatica.aether.artifact.Version.version("2.0.0")
+                                                                                                                             .unwrap());
+        var manager = (org.pragmatica.aether.update.DeploymentManager) java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                                                                                                                new Class<?>[] {org.pragmatica.aether.update.DeploymentManager.class},
+                                                                                                                (proxy, method, args) -> "activeRouting".equals(method.getName())
+                                                                                                                                         ? Option.some(routing)
+                                                                                                                                         : null);
+
+        server = AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY)),
+                                             ForwardingTimeouts.forwardingTimeouts(),
+                                             SELF_NODE,
+                                             registry,
+                                             Option.some(publisher),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.some(manager));
+        server.start().await();
+    }
+
+    private void startServer(StubRoutePublisher publisher, HttpRouteRegistry registry) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
         var config = AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY));
-        var publisher = StubRoutePublisher.hosting("GET", pathPrefix, routePolicy, committed);
 
         server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
@@ -348,6 +384,122 @@ class AppHttpServerRouteSecurityPolicyTest {
         assertThat(response.body()).contains("served-locally");
     }
 
+    /// #1678 (v1670 P6), at a NON-hosting ingress: one remote slice publishes two sibling routes under the base
+    /// `/orders/` -- `GET /orders/{id}` PUBLIC and `GET /orders/{id}/admin` `role:admin`. Keyed by base alone, the
+    /// sibling put LAST overwrote the other, so one declaration order authorized the admin sibling as PUBLIC. The
+    /// ingress now picks the sibling by SHAPE, through the router's own rule: 401 without a credential, in both
+    /// orders, while the public sibling stays admitted.
+    @Test
+    void remoteSiblingRoutes_theAdminSiblingIsEnforced_inEitherPublishOrder() throws Exception {
+        for (var adminFirst : List.of(false, true)) {
+            var registry = HttpRouteRegistry.httpRouteRegistry();
+            registry.onNodeRoutesPut(siblingRoutes(adminFirst));
+
+            startServer("/local/", SecurityPolicy.unspecified(), registry);
+
+            assertThat(get("/orders/5/admin").statusCode()).as("admin sibling, admin first: %s", adminFirst).isEqualTo(401);
+            var publicSibling = get("/orders/5");
+            assertThat(publicSibling.statusCode()).as("public sibling admitted (503 = forwarded, no forwarder): %s",
+                                                      publicSibling.body())
+                                                  .isEqualTo(503);
+            server.stop().await();
+            server = null;
+        }
+    }
+
+    /// #1678 (CodeRabbit C1): THIS node serves only the PUBLIC sibling `GET /orders/{id}`; the admin sibling
+    /// `GET /orders/{id}/admin` lives only on another node. The request for the admin sibling must not be answered
+    /// by the local public sibling (a 404 there); it resolves to the REMOTE admin sibling and is authorized by it --
+    /// 401 without a credential, 403 for a key without the role -- while `/orders/5` is still served locally.
+    @Test
+    void siblingServedOnlyElsewhere_isAuthorizedByTheRemoteSibling_notAnsweredByTheLocalOne() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        var localPublic = RouteEntry.activeRoute("GET", "/orders/", "getOrder", "PUBLIC", "PUBLIC", 1, List.of());
+        var remoteAdmin = RouteEntry.activeRoute("GET", "/orders/", "adminOrder", "ROLE:admin", "ROLE:admin", 2, List.of("admin"));
+
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(SELF_NODE, TEST_ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(localPublic), Epoch.ZERO)),
+                                                Option.none()));
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, REMOTE_ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(remoteAdmin), Epoch.ZERO)),
+                                                Option.none()));
+        startServer(new StubRoutePublisher("GET",
+                                           "/orders/",
+                                           SecurityPolicy.publicRoute(),
+                                           new StubSliceRouter(),
+                                           SecurityOverrides.EMPTY,
+                                           SecurityPolicy.publicRoute(),
+                                           path -> !path.contains("/admin"),
+                                           Option.some(Set.of(HttpRouteRegistry.RouteInfo.shapeKeyOf(1, List.of())))),
+                    registry);
+
+        assertThat(get("/orders/5/admin").statusCode()).as("no credential, remote admin sibling").isEqualTo(401);
+        var withKey = getWithApiKey("/orders/5/admin", VALID_API_KEY);
+        assertThat(withKey.statusCode()).as("a key without the admin role: %s", withKey.body()).isEqualTo(403);
+        assertThat(withKey.body()).contains("role 'admin' required");
+        var publicSibling = get("/orders/5");
+        assertThat(publicSibling.statusCode()).as("CONTROL: the local public sibling is still served: %s", publicSibling.body())
+                                              .isEqualTo(200);
+    }
+
+    /// #1678 (C1), the deployment-strategy half: under a rollout, a request the local PUBLIC sibling serves is a
+    /// strategy-forward candidate. Now that a base this node serves keeps its OTHER siblings in the remote view, a
+    /// strategy forward must require the SAME shape remotely -- here only the admin sibling is remote, so
+    /// `/orders/5` stays local (200) rather than being forwarded to the admin sibling's nodes.
+    @Test
+    void strategyForward_requiresTheSameShapeRemotely_otherwiseTheLocalSiblingServes() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        var remoteAdmin = RouteEntry.activeRoute("GET", "/orders/", "adminOrder", "ROLE:admin", "ROLE:admin", 2, List.of("admin"));
+
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, REMOTE_ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(remoteAdmin), Epoch.ZERO)),
+                                                Option.none()));
+        startServerWithRollout(new StubRoutePublisher("GET",
+                                                      "/orders/",
+                                                      SecurityPolicy.publicRoute(),
+                                                      new StubSliceRouter(),
+                                                      SecurityOverrides.EMPTY,
+                                                      SecurityPolicy.publicRoute(),
+                                                      path -> !path.contains("/admin"),
+                                                      Option.some(Set.of(HttpRouteRegistry.RouteInfo.shapeKeyOf(1, List.of())))),
+                               registry);
+
+        var response = get("/orders/5");
+
+        assertThat(response.statusCode()).as("served by the local sibling, not forwarded: %s", response.body()).isEqualTo(200);
+        assertThat(response.body()).contains("served-locally");
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> siblingRoutes(boolean adminFirst) {
+        var publicOrder = RouteEntry.activeRoute("GET", "/orders/", "getOrder", "PUBLIC", "PUBLIC", 1, List.of());
+        var adminOrder = RouteEntry.activeRoute("GET", "/orders/", "adminOrder", "ROLE:admin", "ROLE:admin", 2, List.of("admin"));
+        var routes = adminFirst
+                     ? List.of(adminOrder, publicOrder)
+                     : List.of(publicOrder, adminOrder);
+        var value = NodeRoutesValue.nodeRoutesValue(routes, Epoch.ZERO);
+
+        return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, TEST_ARTIFACT), value), Option.none());
+    }
+
+    /// #1678 (v1670 R2-N4), at the ingress: a request's policy and its dispatch come from ONE local resolution. The
+    /// stub's separate `findLocalRoute` answers a stale PUBLIC policy -- what a second lookup could read after an
+    /// undeploy between the two -- while its single `resolveLocal` answers `role:admin`. Authorizing from a second
+    /// lookup would serve the request without a credential; the single resolution refuses it.
+    @Test
+    void localRoute_isAuthorizedByTheSameResolutionThatDispatchesIt() throws Exception {
+        startServer(new StubRoutePublisher("GET",
+                                           "/local/",
+                                           SecurityPolicy.roleRequired("admin"),
+                                           new StubSliceRouter(),
+                                           SecurityOverrides.EMPTY,
+                                           SecurityPolicy.publicRoute(),
+                                           _ -> true,
+                                           Option.none()),
+                    HttpRouteRegistry.httpRouteRegistry());
+
+        assertThat(get("/local/thing").statusCode()).isEqualTo(401);
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRouteOf(Artifact artifact, String prefix, String security) {
         var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, artifact);
         var route = RouteEntry.activeRoute("GET", prefix, "handle", security, security);
@@ -406,17 +558,44 @@ class AppHttpServerRouteSecurityPolicyTest {
     /// Minimal HttpRoutePublisher stub hosting exactly one local route carrying a caller-supplied
     /// SecurityPolicy — mirrors AppHttpServerLocalDispatchTest's StubRoutePublisher, parameterized
     /// by policy instead of hard-coding SecurityPolicy.publicRoute().
+    /// `security` is what the single `resolveLocal` resolution answers; `separateLookupSecurity` is what the separate
+    /// `findLocalRoute` answers -- equal unless a test models a stale second lookup (#1678, v1670 R2-N4).
     private record StubRoutePublisher(String httpMethod,
                                       String pathPrefix,
                                       SecurityPolicy security,
                                       SliceRouter router,
-                                      SecurityOverrides committed)
+                                      SecurityOverrides committed,
+                                      SecurityPolicy separateLookupSecurity,
+                                      java.util.function.Predicate<String> servesPath,
+                                      Option<Set<String>> shapeKeys)
         implements HttpRoutePublisher {
         static StubRoutePublisher hosting(String httpMethod,
                                           String pathPrefix,
                                           SecurityPolicy security,
                                           SecurityOverrides committed) {
-            return new StubRoutePublisher(httpMethod, pathPrefix, security, new StubSliceRouter(), committed);
+            return new StubRoutePublisher(httpMethod,
+                                          pathPrefix,
+                                          security,
+                                          new StubSliceRouter(),
+                                          committed,
+                                          security,
+                                          _ -> true,
+                                          Option.none());
+        }
+
+        @Override
+        public Option<Set<String>> localShapeKeys(String method, String prefix) {
+            return shapeKeys;
+        }
+
+        @Override
+        public Option<LocalResolution> resolveLocal(String method, String path) {
+            return findLocalRoute(method, path).map(route -> new LocalResolution(new LocalRouteInfo(route.httpMethod(),
+                                                                                                    route.pathPrefix(),
+                                                                                                    route.artifactCoord(),
+                                                                                                    route.sliceMethod(),
+                                                                                                    security),
+                                                                                 Option.some(router)));
         }
 
         /// The real rule over this stub's committed overrides, as the production publisher answers.
@@ -443,8 +622,8 @@ class AppHttpServerRouteSecurityPolicyTest {
 
         @Override
         public Option<LocalRouteInfo> findLocalRoute(String method, String path) {
-            return matches(method, path)
-                   ? Option.some(new LocalRouteInfo(httpMethod, pathPrefix, TEST_ARTIFACT.asString(), "create", security))
+            return matches(method, path) && servesPath.test(path)
+                   ? Option.some(new LocalRouteInfo(httpMethod, pathPrefix, TEST_ARTIFACT.asString(), "create", separateLookupSecurity))
                    : Option.none();
         }
 

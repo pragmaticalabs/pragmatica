@@ -107,6 +107,7 @@ jobs:
         if: always()
         with:
           name: heavy-forge-test-results
+          if-no-files-found: error
           path: |
             aether/forge/forge-tests/target/failsafe-reports/*.xml
             aether/forge/forge-tests/target/failsafe-reports/*.txt

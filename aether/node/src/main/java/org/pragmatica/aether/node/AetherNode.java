@@ -366,6 +366,7 @@ import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -374,12 +375,16 @@ import org.slf4j.LoggerFactory;
 
 public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
+    /// How often a node evicts idle operator-warning throttle keys (#1617 R3): once per throttle window.
+    TimeSpan OPERATOR_WARNING_EVICTION_INTERVAL = TimeSpan.timeSpan(60).seconds();
     /// Read-window upper bound for `events()` on the `system:cluster-events:1.0.0` stream
     /// (B5b — replicated partition transport). The stream's actual retention `maxCount` is now
     /// config-overridable (see [ClusterEventsLimits]); this constant is the read window the
     /// aggregator requests and must stay >= that maxCount so a single fetch covers the full retained
     /// window (the B5a/#239 fix). The default retention maxCount equals this value.
     long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
+    /// How often a node re-sends cluster events whose publish has not landed yet (#1640).
+    TimeSpan CLUSTER_EVENT_REDELIVERY_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// #336 — system property carrying the absolute path of the config file this node loaded
     /// (published by [org.pragmatica.aether.Main] where it resolves `--config=`). The CTM
     /// placeholder-resolution path reads it via [#parseOwnResolvedConfig] to source the leader's own
@@ -3172,6 +3177,19 @@ public interface AetherNode extends ManageableNode {
                                                                             // suppressed. This supplier is what lets the aggregator tell
                                                                             // that hole apart from ordinary non-ownership.
                                                                            );
+        // #1574 / #1617: ONE operator-warning sink per node, bound to THIS node's aggregator (never another
+        // Ember node's). It hands each warning off to a bounded queue, so a raise from SWIM, replication or the
+        // core-absence fence never waits on the event log. Idle throttle keys are evicted once per minute.
+        var operatorWarningSink = OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
+                                                                      OPERATOR_WARNING_EVICTION_INTERVAL,
+                                                                      OPERATOR_WARNING_EVICTION_INTERVAL));
+        // #1640: a cluster event whose publish did not land (the partition's owner died with it) waits in the
+        // aggregator and is re-sent once a second until it lands or its horizon passes.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,
+                                                                      CLUSTER_EVENT_REDELIVERY_INTERVAL,
+                                                                      CLUSTER_EVENT_REDELIVERY_INTERVAL));
         var placementReconciler = org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler.communityPlacementReconciler(config.self(),
                                                                                                                                      kvStore,
                                                                                                                                      clusterCommandApplier,
@@ -3782,6 +3800,8 @@ public interface AetherNode extends ManageableNode {
         var bootTokens = BootTokens.bootTokens(bootToken);
 
         swimHealthDetector.setBootTokens(bootTokens);
+        // #1574: SWIM's operator warnings reach THIS node's event log, never another Ember node's.
+        swimHealthDetector.setOperatorWarningSink(operatorWarningSink);
         clusterNode.network().setBootTokens(bootTokens);
         bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, identityRefusedExit));
         // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
@@ -4354,6 +4374,7 @@ public interface AetherNode extends ManageableNode {
                                                                       nodeReportedStateHolder,
                                                                       DrainReason.CORE_ABSENCE));
         coreAbsenceDetector.setFenceSuppressor(() -> !configuredWorker(config));
+        coreAbsenceDetector.setOperatorWarningSink(operatorWarningSink);
         metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
         coreAbsenceDetector.start();
         // Assigned workers use challenge-bound governor evidence. Report expiry blocks new
@@ -5493,7 +5514,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
                                                                                                                                                                                                    partition)),
                                                                                                   streamPartitionManager::syncReplicated,
-                                                                                                  streamOwnershipViews.writeAuthority());
+                                                                                                  streamOwnershipViews.writeAuthority(),
+                                                                                                  operatorWarningSink);
 
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));
@@ -7985,6 +8007,9 @@ public interface AetherNode extends ManageableNode {
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);
+        // #1640: a new cluster-events owner re-sends every event waiting for redelivery at once.
+        kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                              eventAggregator::onStreamPartitionOwnershipPut);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));

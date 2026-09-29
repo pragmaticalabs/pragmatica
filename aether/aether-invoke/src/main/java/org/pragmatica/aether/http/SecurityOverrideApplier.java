@@ -194,11 +194,7 @@ public interface SecurityOverrideApplier {
                      newPolicy.asString());
         }
 
-        return HttpRouteDefinition.httpRouteDefinition(route.httpMethod(),
-                                                       route.pathPrefix(),
-                                                       route.artifactCoord(),
-                                                       route.sliceMethod(),
-                                                       newPolicy);
+        return route.withSecurity(newPolicy);
     }
 
     private static HttpRouteDefinition rejectOverride(HttpRouteDefinition route,

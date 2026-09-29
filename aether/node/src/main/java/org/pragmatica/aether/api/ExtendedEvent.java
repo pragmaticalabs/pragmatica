@@ -21,4 +21,11 @@ package org.pragmatica.aether.api;
 /// no-op when extensions are not of interest.
 public non-sealed interface ExtendedEvent extends ClusterEvent {
     String discriminator();
+
+    /// An extension event carries no identity unless its type provides one: it is returned unchanged, and the
+    /// aggregator de-duplicates it by `at` (#1653).
+    @Override
+    default ClusterEvent withDetail(String key, String value) {
+        return this;
+    }
 }
