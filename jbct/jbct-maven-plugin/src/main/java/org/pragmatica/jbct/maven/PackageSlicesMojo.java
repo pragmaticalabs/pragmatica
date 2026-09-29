@@ -35,7 +35,9 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.slice.SliceManifest;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import org.apache.maven.archiver.MavenArchiveConfiguration;
 import org.apache.maven.archiver.MavenArchiver;
@@ -130,6 +132,10 @@ public class PackageSlicesMojo extends AbstractMojo {
         // Classify dependencies
         var classification = classifyDependencies(manifest);
 
+        if (!classification.unreadable().isEmpty()) {
+            failBuild(String.join("; ", classification.unreadable()));
+        }
+
         if (!classification.unpackaged().isEmpty()) {
             failBuild(refusalMessage(manifest, classification.unpackaged()));
         }
@@ -145,6 +151,7 @@ public class PackageSlicesMojo extends AbstractMojo {
         var sliceDeps = new ArrayList<ArtifactInfo>();
         var externalDeps = new ArrayList<Artifact>();
         var providedInterfaces = new HashSet<String>();
+        var unreadable = new ArrayList<String>();
         // Collect direct dependency keys for filtering transitives
         var directDependencyKeys = collectDirectDependencyKeys();
 
@@ -158,15 +165,21 @@ public class PackageSlicesMojo extends AbstractMojo {
             // Skip transitives of provided dependencies (only include direct deps in dependencies file)
             var key = artifact.getGroupId() + ":" + artifact.getArtifactId();
             var isDirectDependency = directDependencyKeys.contains(key);
+            // Only a direct dependency can be a slice dependency, so only its jar is scanned, once.
+            var sliceManifests = isDirectDependency
+                                 ? sliceManifestsOf(artifact).onFailure(cause -> unreadable.add(cause.message()))
+                                                             .or(List.of())
+                                 : List.<Properties>of();
 
             if (artifactId.startsWith("infra-") && isDirectDependency) {
                 // Infrastructure dependencies (direct only)
                 infraDeps.add(toArtifactInfo(artifact));
-            } else if (isSliceDependency(artifact) && isDirectDependency) {
+            } else if (!sliceManifests.isEmpty()) {
                 // Slice dependencies (direct only)
                 // Read actual artifact names from manifest (not Maven artifact ID)
-                sliceDeps.add(toSliceArtifactInfo(artifact));
-                providedInterfaces.addAll(sliceInterfacesOf(artifact));
+                sliceDeps.add(toSliceArtifactInfo(artifact, sliceManifests.getFirst()));
+                sliceManifests.forEach(props -> Option.option(props.getProperty("slice.interface"))
+                                                      .onPresent(providedInterfaces::add));
             } else if ("provided".equals(scope) && isDirectDependency) {
                 // Shared dependencies (provided scope, non-infra, direct only)
                 sharedDeps.add(toArtifactInfo(artifact));
@@ -182,7 +195,8 @@ public class PackageSlicesMojo extends AbstractMojo {
                                             infraDeps,
                                             sliceDeps,
                                             externalDeps,
-                                            unpackagedSliceDependencies(manifest, providedInterfaces));
+                                            unpackagedSliceDependencies(manifest, providedInterfaces),
+                                            unreadable);
     }
 
     /// #1408: every slice dependency the manifest declares must reach the `[slices]` section, either as a
@@ -217,38 +231,6 @@ public class PackageSlicesMojo extends AbstractMojo {
     /// `SliceManifest` reads an absent coordinate as "", never null.
     private boolean isLocalSliceCoordinate(String coordinate) {
         return coordinate.startsWith(project.getGroupId() + ":" + project.getArtifactId() + "-");
-    }
-
-    /// The `slice.interface` of every slice manifest in `artifact`'s jar.
-    private Set<String> sliceInterfacesOf(Artifact artifact) {
-        var file = artifact.getFile();
-        var interfaces = new HashSet<String>();
-
-        if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
-            return interfaces;
-        }
-
-        try (var jar = new JarFile(file)) {
-            var entries = jar.entries();
-
-            while (entries.hasMoreElements()) {
-                var entry = entries.nextElement();
-
-                if (entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest")) {
-                    var props = new Properties();
-
-                    try (var stream = jar.getInputStream(entry)) {
-                        props.load(stream);
-                    }
-
-                    Option.option(props.getProperty("slice.interface")).onPresent(interfaces::add);
-                }
-            }
-        } catch (IOException e) {
-            getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
-        }
-
-        return interfaces;
     }
 
     private void addLocalSliceDependencies(SliceManifest manifest, List<ArtifactInfo> sliceDeps) {
@@ -295,61 +277,63 @@ public class PackageSlicesMojo extends AbstractMojo {
         return "org.pragmatica-lite".equals(groupId) && artifactId.equals("slice-processor");
     }
 
-    private boolean isSliceDependency(Artifact artifact) {
+    /// Every slice manifest in `artifact`'s jar, read in ONE scan (#1700 review: three copies of this scan
+    /// existed, each swallowing an IOException at DEBUG). An artifact with no jar file has none. A jar that
+    /// cannot be read is a [SliceJarUnreadable] failure, never "no manifests": that silence turned an
+    /// unreadable provider into a refusal telling the user to add a dependency they already declare.
+    private static Result<List<Properties>> sliceManifestsOf(Artifact artifact) {
         var file = artifact.getFile();
 
         if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
-            return false;
+            return Result.success(List.of());
         }
 
-        try (var jar = new JarFile(file)) {
-            var entries = jar.entries();
+        var coordinate = artifact.getGroupId() + ":" + artifact.getArtifactId();
 
-            while (entries.hasMoreElements()) {
-                var entry = entries.nextElement();
+        return Result.lift(thrown -> unreadable(coordinate, file.toString(), thrown),
+                           () -> readSliceManifests(coordinate, new JarFile(file)))
+                     .flatMap(results -> Result.allOf(results));
+    }
 
-                if (entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest")) {
-                    return true;
-                }
-            }
-
-            return false;
-        } catch (IOException e) {
-            getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
-
-            return false;
+    /// Closes `jar` once its manifests are read; each manifest's own read failure names that entry.
+    private static List<Result<Properties>> readSliceManifests(String coordinate, JarFile jar) {
+        try (jar) {
+            return jar.stream()
+                      .filter(PackageSlicesMojo::isSliceManifestEntry)
+                      .map(entry -> Result.lift(thrown -> unreadable(coordinate, entry.getName(), thrown),
+                                                () -> loadProperties(jar, entry)))
+                      .toList();
+        } catch (IOException closeFailure) {
+            return List.of(Result.failure(unreadable(coordinate, jar.getName(), closeFailure)));
         }
     }
 
-    private Option<Properties> readFirstSliceManifest(Artifact artifact) {
-        var file = artifact.getFile();
+    private static boolean isSliceManifestEntry(JarEntry entry) {
+        return entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest");
+    }
 
-        if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
-            return Option.none();
+    private static Properties loadProperties(JarFile jar, JarEntry entry) throws IOException {
+        var props = new Properties();
+
+        try (var stream = jar.getInputStream(entry)) {
+            props.load(stream);
         }
 
-        try (var jar = new JarFile(file)) {
-            var entries = jar.entries();
+        return props;
+    }
 
-            while (entries.hasMoreElements()) {
-                var entry = entries.nextElement();
+    private static SliceJarUnreadable unreadable(String coordinate, String location, Throwable thrown) {
+        return new SliceJarUnreadable(coordinate, location, thrown.getMessage());
+    }
 
-                if (entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest")) {
-                    var props = new Properties();
-
-                    try (var stream = jar.getInputStream(entry)) {
-                        props.load(stream);
-                    }
-
-                    return Option.some(props);
-                }
-            }
-
-            return Option.none();
-        } catch (IOException e) {
-            getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
-
-            return Option.none();
+    /// A direct dependency's jar could not be read while looking for its slice manifests, so whether it
+    /// provides a slice this one depends on cannot be decided. `jbct:package-slices` refuses rather than
+    /// guess (#1408, #1700 review).
+    record SliceJarUnreadable(String artifact, String file, String detail) implements Cause {
+        @Override
+        public String message() {
+            return "Cannot read " + artifact + " (" + file + ") to find its slice manifests: " + detail
+                   + ". Whether it provides a slice dependency cannot be decided; re-resolve or rebuild that artifact.";
         }
     }
 
@@ -357,11 +341,9 @@ public class PackageSlicesMojo extends AbstractMojo {
         return new ArtifactInfo(artifact.getGroupId(), artifact.getArtifactId(), toSemverRange(artifact.getVersion()));
     }
 
-    private ArtifactInfo toSliceArtifactInfo(Artifact artifact) {
+    private ArtifactInfo toSliceArtifactInfo(Artifact artifact, Properties firstManifest) {
         // Read slice artifact from manifest (has correct naming: groupId:artifactId-sliceName)
-        return readFirstSliceManifest(artifact).flatMap(props -> extractSliceArtifactInfo(props,
-                                                                                          artifact.getVersion()))
-                                     .or(() -> toArtifactInfo(artifact));
+        return extractSliceArtifactInfo(firstManifest, artifact.getVersion()).or(() -> toArtifactInfo(artifact));
     }
 
     private Option<ArtifactInfo> extractSliceArtifactInfo(Properties props, String version) {
@@ -964,18 +946,21 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private record ArtifactInfo(String groupId, String artifactId, String version) {}
 
-    /// `unpackaged` lists every declared slice dependency that would reach no `[slices]` entry (#1408).
+    /// `unpackaged` lists every declared slice dependency that would reach no `[slices]` entry (#1408);
+    /// `unreadable` names every direct dependency whose jar could not be scanned for slice manifests.
     private record DependencyClassification(List<ArtifactInfo> sharedDeps,
                                             List<ArtifactInfo> infraDeps,
                                             List<ArtifactInfo> sliceDeps,
                                             List<Artifact> externalDeps,
-                                            List<String> unpackaged) {
+                                            List<String> unpackaged,
+                                            List<String> unreadable) {
         DependencyClassification {
             sharedDeps = List.copyOf(sharedDeps);
             infraDeps = List.copyOf(infraDeps);
             sliceDeps = List.copyOf(sliceDeps);
             externalDeps = List.copyOf(externalDeps);
             unpackaged = List.copyOf(unpackaged);
+            unreadable = List.copyOf(unreadable);
         }
     }
 }

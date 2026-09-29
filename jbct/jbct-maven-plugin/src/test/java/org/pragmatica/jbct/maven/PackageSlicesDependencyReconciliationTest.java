@@ -52,6 +52,26 @@ class PackageSlicesDependencyReconciliationTest {
         assertTrue(cause.getMessage().contains("-Aslice.groupId=org.example -Aslice.artifactId=shop"), cause.getMessage());
     }
 
+    /// #1700 review: a direct dependency whose jar cannot be read must refuse on THAT, naming the jar. The
+    /// scan used to log the IOException at DEBUG and read the jar as "no slice manifests", so the refusal
+    /// said the dependency would reach no [slices] entry and told the user to add what they already have.
+    @Test
+    void processManifest_unreadableDirectDependencyJar_refusesNamingTheJar_notAMissingDependency() throws Exception {
+        var corrupt = tempDir.resolve("inventory-1.0.0.jar");
+
+        Files.writeString(corrupt, "this is not a zip archive");
+        var mojo = mojoFor(project(List.of(sliceArtifact(corrupt))));
+        var manifestFile = tempDir.resolve("Checkout.manifest");
+
+        Files.writeString(manifestFile, manifestText(PROVIDER, "org.example.shop:inventory"));
+        var thrown = assertThrows(InvocationTargetException.class, () -> processManifest(mojo, manifestFile));
+        var cause = assertInstanceOf(MojoExecutionException.class, thrown.getCause());
+
+        assertTrue(cause.getMessage().contains("Cannot read org.example:inventory"), cause.getMessage());
+        assertTrue(cause.getMessage().contains(corrupt.toString()), cause.getMessage());
+        assertTrue(!cause.getMessage().contains("would reach no [slices] entry"), cause.getMessage());
+    }
+
     @Test
     void classifyDependencies_moduleKeyedSiblingCoordinate_isPackaged() throws Exception {
         // Control: the coordinate the processor emits WITH the two options is accepted.
