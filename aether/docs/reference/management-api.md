@@ -6091,14 +6091,16 @@ Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 R
 
 The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
 
-### Voter handoff diagnostics
+### Voter reconfiguration diagnostics
 
-The node status response includes `voterReconfiguration`: installed epoch and voters, target voters,
-optional barrier slot, stage, persisted checkpoint/installation certificate witness counts, and a
-failure description. Stages distinguish unavailable, stable, requested, checkpoint collection,
-installation pending and complete. Counts describe certified evidence, not transient network acknowledgements.
-A state-transfer admission failure remains visible while the stage is stalled; it is not reported
-as a successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
+The node status response includes `voterReconfiguration`: `stage`, `installedEpoch`,
+`installedVoters`, `targetVoters` (the requested roster, empty when none), `effectiveSlot` (the first
+slot the installed epoch governs, R+1 for a Rabia §4 change agreed at slot R; absent for genesis and
+when this node adopted the epoch from a snapshot), `awaitingCatchUp` (members the last applied change
+added that this node has not yet seen voting past R) and `failure`. Stages: `UNAVAILABLE`,
+`GENESIS_PENDING` (the complete genesis roster is still being discovered), `STABLE`, `REQUESTED` and
+`CATCHING_UP`. A state-transfer refusal remains visible in `failure`; it is not reported as a
+successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
 
 Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
 `completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.

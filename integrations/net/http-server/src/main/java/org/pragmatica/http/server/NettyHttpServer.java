@@ -29,6 +29,7 @@ import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.TlsContextFactory;
 import org.pragmatica.utility.IdGenerator;
@@ -47,7 +48,8 @@ import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Promise.resolved;
 
 
 /// Netty-based HTTP server implementation.
@@ -77,68 +79,93 @@ final class NettyHttpServer implements HttpServer {
         return port;
     }
 
+    /// #1612: every step is a DEPENDENT continuation of the one before it. The server channel close is
+    /// bounded; the owned groups are then shut down with no quiet period (see [ServerShutdown]) and awaited,
+    /// bounded. The returned promise resolves only when both have settled, with the first failure among them
+    /// (a timed-out close or termination), typed. Shared groups belong to their owner and are left running.
+    ///
+    /// Before #1612 this already waited for termination (the listener sat on the future `shutdownGracefully()`
+    /// returns, which is the termination future), but nothing was bounded, so a wedged loop hung `stop()`
+    /// forever; the default 2 s quiet period delayed every stop; and a failed termination still reported
+    /// success.
     @Override
     public Promise<Unit> stop() {
-        return Promise.promise(promise -> {
-            log.info("Stopping HTTP server on port {}", port);
-            if (serverChannel.isEmpty()) {
-                cleanupAndComplete(promise);
-            } else {
-                serverChannel.onPresent(channel -> channel.close()
-                                                          .addListener(_ -> cleanupAndComplete(promise)));
-            }
-        });
+        log.info("Stopping HTTP server on port {}", port);
+
+        return serverChannel.map(ServerShutdown::closed)
+                            .or(Promise.unitPromise())
+                            .fold(this::shutdownGroupsThen);
     }
 
-    private void cleanupAndComplete(Promise<Unit> promise) {
-        if (!ownsGroups) {
-            promise.succeed(unit());
+    /// Package-private for the #1612 stop tests: the owned groups, to wedge a loop or confirm termination.
+    Option<EventLoopGroup> bossGroup() {
+        return bossGroup;
+    }
 
-            return;
-        }
+    Option<EventLoopGroup> workerGroup() {
+        return workerGroup;
+    }
 
-        var workerFuture = workerGroup.map(EventLoopGroup::shutdownGracefully);
-        var bossFuture = bossGroup.map(EventLoopGroup::shutdownGracefully);
+    Option<Channel> serverChannel() {
+        return serverChannel;
+    }
 
-        if (workerFuture.isPresent() && bossFuture.isPresent()) {
-            workerFuture.onPresent(wf -> bossFuture.onPresent(bf -> wf.addListener(_ -> bf.addListener(_ -> promise.succeed(unit())))));
-        } else if (workerFuture.isPresent()) {
-            workerFuture.onPresent(wf -> wf.addListener(_ -> promise.succeed(unit())));
-        } else if (bossFuture.isPresent()) {
-            bossFuture.onPresent(bf -> bf.addListener(_ -> promise.succeed(unit())));
-        } else {
-            promise.succeed(unit());
-        }
+    private Promise<Unit> shutdownGroupsThen(Result<Unit> closeOutcome) {
+        return shutdownOwnedGroups().fold(groupsOutcome -> resolved(closeOutcome.flatMap(_ -> groupsOutcome)))
+                                  .onSuccessRun(() -> log.info("HTTP server on port {} stopped", port))
+                                  .onFailure(cause -> log.warn("HTTP server on port {} did not stop cleanly: {}",
+                                                               port,
+                                                               cause.message()));
+    }
+
+    private Promise<Unit> shutdownOwnedGroups() {
+        return ownsGroups
+               ? shutdownGroups(bossGroup, workerGroup)
+               : Promise.unitPromise();
+    }
+
+    /// Both shutdowns are requested before either is awaited; the outcome is the first failure.
+    private static Promise<Unit> shutdownGroups(Option<EventLoopGroup> bossGroup, Option<EventLoopGroup> workerGroup) {
+        var bossTerminated = terminatedIfPresent(bossGroup);
+        var workerTerminated = terminatedIfPresent(workerGroup);
+
+        return bossTerminated.fold(bossOutcome -> ServerShutdown.firstFailureOf(bossOutcome, workerTerminated));
+    }
+
+    private static Promise<Unit> terminatedIfPresent(Option<EventLoopGroup> group) {
+        return group.map(ServerShutdown::terminated)
+                    .or(Promise.unitPromise());
     }
 
     static Promise<HttpServer> create(HttpServerConfig config, BiConsumer<HttpRequest, ResponseWriter> handler) {
-        // Handle TLS
-        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
-        var bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        var workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
-        var socketOptions = config.socketOptions();
-        var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
-                                             .channel(NioServerSocketChannel.class)
-                                             .childHandler(new HttpServerInitializer(config, handler, sslContext))
-                                             .option(ChannelOption.SO_BACKLOG,
-                                                     socketOptions.soBacklog())
-                                             .childOption(ChannelOption.SO_KEEPALIVE,
-                                                          socketOptions.soKeepalive());
-
-        return Promise.promise(promise -> bootstrap.bind(config.port())
-                                                   .addListener((ChannelFuture future) -> onBind(config,
-                                                                                                 promise,
-                                                                                                 future,
-                                                                                                 sslContext,
-                                                                                                 bossGroup,
-                                                                                                 workerGroup,
-                                                                                                 true)));
+        return createOwning(config,
+                            handler,
+                            new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()),
+                            new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory()));
     }
 
     static Promise<HttpServer> createShared(HttpServerConfig config,
                                             BiConsumer<HttpRequest, ResponseWriter> handler,
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup) {
+        return bind(config, handler, bossGroup, workerGroup, false);
+    }
+
+    /// A server that OWNS `bossGroup` and `workerGroup`: its stop, or a failed bind, terminates them.
+    /// Package-private so the #1612 tests can hold the groups and check termination at the moment a failed
+    /// create reports.
+    static Promise<HttpServer> createOwning(HttpServerConfig config,
+                                            BiConsumer<HttpRequest, ResponseWriter> handler,
+                                            EventLoopGroup bossGroup,
+                                            EventLoopGroup workerGroup) {
+        return bind(config, handler, bossGroup, workerGroup, true);
+    }
+
+    private static Promise<HttpServer> bind(HttpServerConfig config,
+                                            BiConsumer<HttpRequest, ResponseWriter> handler,
+                                            EventLoopGroup bossGroup,
+                                            EventLoopGroup workerGroup,
+                                            boolean ownsGroups) {
         var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
         var socketOptions = config.socketOptions();
         var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
@@ -156,7 +183,7 @@ final class NettyHttpServer implements HttpServer {
                                                                                                  sslContext,
                                                                                                  bossGroup,
                                                                                                  workerGroup,
-                                                                                                 false)));
+                                                                                                 ownsGroups)));
     }
 
     private static void onBind(HttpServerConfig config,
@@ -176,13 +203,22 @@ final class NettyHttpServer implements HttpServer {
                                                 Option.option(future.channel()),
                                                 ownsGroups));
         } else {
-            if (ownsGroups) {
-                bossGroup.shutdownGracefully();
-                workerGroup.shutdownGracefully();
-            }
+            // #1612: the groups this create made are terminated (bounded) BEFORE the failure is reported, so a
+            // caller that retries sees no event-loop threads left over from this attempt. The bind failure is
+            // what the create reports; a termination failure is only logged.
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
 
-            promise.fail(new HttpServerError.BindFailed(config.port(), future.cause()));
+            releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).onResultRun(() -> promise.fail(bindFailed));
         }
+    }
+
+    private static Promise<Unit> releaseGroupsOnBindFailure(boolean ownsGroups,
+                                                            EventLoopGroup bossGroup,
+                                                            EventLoopGroup workerGroup) {
+        return ownsGroups
+               ? shutdownGroups(some(bossGroup), some(workerGroup)).onFailure(cause -> log.warn("HTTP server event loops did not terminate after a failed bind: {}",
+                                                                                                cause.message()))
+               : Promise.unitPromise();
     }
 
     private static class HttpServerInitializer extends ChannelInitializer<SocketChannel> {

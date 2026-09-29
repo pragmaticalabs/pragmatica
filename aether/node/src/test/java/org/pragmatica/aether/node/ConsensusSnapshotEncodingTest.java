@@ -14,7 +14,6 @@ import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.rabia.ClusterConfig;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
-import org.pragmatica.consensus.rabia.VoterAuthority;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -44,11 +43,11 @@ class ConsensusSnapshotEncodingTest {
         assertThat(AetherNode.base64ToSnapshot("# Voter: 0|x\nnot base64!").isFailure()).isTrue();
     }
 
-    /// The authority-carrying save (the only save the engine issues once voters are installed) writes
-    /// `# Voter…:` header lines BEFORE `# Phase:`. A `[backup]` node must read its own snapshot back
+    /// The configuration-carrying save (the only save the engine issues once voters are installed) writes
+    /// a `# Voter:` header line BEFORE `# Phase:`. A `[backup]` node must read its own snapshot back
     /// through the real git-backed round trip, or every restore from backup fails to decode.
     @Test
-    void authorityHeaderedSnapshot_roundTripsThroughGitBackedBackup() {
+    void voterHeaderedSnapshot_roundTripsThroughGitBackedBackup() {
         var persistence = RabiaPersistence.<KVCommand<AetherKey>>gitBacked(backupDir,
                                                                            Option.none(),
                                                                            AetherNode::snapshotToBase64,
@@ -57,15 +56,15 @@ class ConsensusSnapshotEncodingTest {
                                                                          new NodeId("node-2"),
                                                                          new NodeId("node-3"))));
 
-        assertThat(persistence.save(new FixedSnapshot(), Phase.phase(7), List.of(), new VoterAuthority<>(voters, Option.none()))
+        assertThat(persistence.save(new FixedSnapshot(), Phase.phase(7), List.of(), voters)
                               .isSuccess()).isTrue();
 
         var loaded = persistence.load();
 
-        assertThat(loaded.isPresent()).as("the authority-headered snapshot must decode").isTrue();
+        assertThat(loaded.isPresent()).as("the voter-headered snapshot must decode").isTrue();
         assertThat(loaded.unwrap().snapshot()).containsExactly(SNAPSHOT);
         assertThat(loaded.unwrap().lastCommittedPhase()).isEqualTo(Phase.phase(7));
-        assertThat(loaded.unwrap().authority().map(VoterAuthority::configuration)).isEqualTo(Option.some(voters));
+        assertThat(loaded.unwrap().configuration()).isEqualTo(Option.some(voters));
     }
 
     private static final class FixedSnapshot implements StateMachine<KVCommand<AetherKey>> {
