@@ -375,6 +375,14 @@ public final class StorageFactory {
                                                             Option<EncryptionKeyring> keyring,
                                                             StorageConfig defaults) {
         var results = new ArrayList<Result<PendingSetup>>();
+        var effective = effectiveConfigs(configs, defaults, keyring.isPresent());
+        var overlap = StoragePathsOverlap.find(effective);
+        // #856: refused BEFORE any instance is built, so a refused boot opens no tier and stamps nothing.
+        if (overlap.isPresent()) {
+            results.add(overlap.unwrap().result());
+
+            return results;
+        }
 
         configs.forEach((name, config) -> results.add(createOne(name, config, nodeId, dhtClient, keyring)));
         // Every node carries an `artifacts` storage instance — operators expect it without
@@ -413,6 +421,68 @@ public final class StorageFactory {
         }
 
         return results;
+    }
+
+    /// Every instance `pendingSetups` will build, with the configuration it will build it from: the explicit
+    /// sections plus the synthesized `artifacts` and `content` defaults when absent.
+    private static Map<String, StorageConfig> effectiveConfigs(Map<String, StorageConfig> configs,
+                                                               StorageConfig defaults,
+                                                               boolean encrypted) {
+        var effective = new java.util.LinkedHashMap<>(configs);
+
+        effective.putIfAbsent(ARTIFACTS_NAME, defaultArtifactsConfig(defaults, encrypted));
+        effective.putIfAbsent(CONTENT_NAME, defaultContentConfig(configs, defaults, encrypted));
+
+        return effective;
+    }
+
+    /// #856 — two storage instances whose directories coincide, or where one lies inside the other, would
+    /// each count the other's bytes against their own `disk_max_bytes` (`LocalDiskTier` walks its whole
+    /// base path) and would share metadata snapshots. Every instance that omits `disk_path` or
+    /// `snapshot_path` resolves the same `/data/aether/...` default, so an explicit `[storage.vault]`
+    /// without paths beside the synthesized `artifacts` did exactly this. The boot is refused, naming both
+    /// instances and the paths; the recovery is to give each instance its own `disk_path` and
+    /// `snapshot_path`. Paths of ONE instance may nest (its snapshots under its own disk directory).
+    public record StoragePathsOverlap(String first, String firstPath, String second, String secondPath) implements Cause {
+        private record Claim(String instance, String kind, Path path) {}
+
+        static Option<StoragePathsOverlap> find(Map<String, StorageConfig> configs) {
+            var claims = configs.entrySet()
+                                .stream()
+                                .flatMap(entry -> java.util.stream.Stream.of(claim(entry.getKey(), "disk_path", entry.getValue().diskPath()),
+                                                                             claim(entry.getKey(),
+                                                                                   "snapshot_path",
+                                                                                   entry.getValue().snapshotPath())))
+                                .sorted(java.util.Comparator.comparing(Claim::instance).thenComparing(Claim::kind))
+                                .toList();
+
+            return Option.from(claims.stream()
+                                     .flatMap(a -> claims.stream()
+                                                         .filter(b -> a.instance().compareTo(b.instance()) < 0)
+                                                         .filter(b -> overlaps(a.path(), b.path()))
+                                                         .map(b -> new StoragePathsOverlap(a.instance(),
+                                                                                           a.kind() + " " + a.path(),
+                                                                                           b.instance(),
+                                                                                           b.kind() + " " + b.path())))
+                                     .findFirst());
+        }
+
+        private static Claim claim(String instance, String kind, String path) {
+            return new Claim(instance, kind, Path.of(path).toAbsolutePath().normalize());
+        }
+
+        private static boolean overlaps(Path a, Path b) {
+            return a.startsWith(b) || b.startsWith(a);
+        }
+
+        @Override
+        public String message() {
+            return "storage instances '" + first + "' (" + firstPath + ") and '" + second + "' (" + secondPath
+                 + ") share a directory -- refusing to boot: each would count the other's bytes against its own "
+                 + "disk_max_bytes and they would share metadata snapshots. Give every [storage.<name>] section its "
+                 + "own disk_path and snapshot_path (an instance that omits them resolves the shared "
+                 + "/data/aether/... default)";
+        }
     }
 
     /// #852: two phases. Every arm above was built with its disk marker still pending (a pure guard
