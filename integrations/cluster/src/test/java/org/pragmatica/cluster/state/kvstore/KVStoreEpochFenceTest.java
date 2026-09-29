@@ -160,6 +160,21 @@ class KVStoreEpochFenceTest {
                 .isEmpty();
         }
 
+        /// A refused write emits no notification, and the caller's apply still succeeds, so without this count
+        /// a writer whose epoch source lags would refuse itself on every retry in silence (#1529, v1640).
+        @Test
+        void rejectedWrite_isCounted_acceptedWriteIsNot() {
+            apply(KEY, new OwnedValue("current", new StubEpoch(5, 0)));
+            apply(KEY, new OwnedValue("newer", new StubEpoch(6, 0)));
+
+            assertThat(store.staleEpochRefusals()).as("accepted writes are not refusals").isZero();
+
+            apply(KEY, new OwnedValue("stale", new StubEpoch(5, 9)));
+            apply(KEY, new OwnedValue("stale-again", new StubEpoch(4, 0)));
+
+            assertThat(store.staleEpochRefusals()).isEqualTo(2L);
+        }
+
         @Test
         void acceptedWrite_emitsNotification() {
             apply(KEY, new OwnedValue("a", new StubEpoch(1, 0)));

@@ -116,6 +116,52 @@ class HttpRouteRegistryEpochFenceTest {
         }
     }
 
+    /// #1529: the fence orders incarnation first, as `Epoch.compareTo` does (v1640).
+    @Nested
+    class IncarnationOrdering {
+        /// A publisher whose incarnation mirror lagged stamps the previous run's incarnation. However high its
+        /// term, that value must never be projected as current.
+        @Test
+        void olderIncarnation_refusedWhateverItsTerm() {
+            snapshotSource.setIncarnation(2L);
+            snapshotSource.setTerm(5L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(1L, 100L, 0L)));
+
+            assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
+            assertThat(registry.findRoute("GET", "/users/").isPresent())
+                    .as("an older incarnation must NOT be projected")
+                    .isFalse();
+        }
+
+        /// The case the fence must never refuse: after a cold restart the new run's term starts over, so its
+        /// routes carry a LOW term against the old run's high one while this node's view still lags.
+        @Test
+        void newerIncarnation_acceptedDespiteALowerTerm() {
+            snapshotSource.setIncarnation(1L);
+            snapshotSource.setTerm(50L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(2L, 1L, 0L)));
+
+            assertThat(registry.staleFenceObservationCount()).isZero();
+            assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
+        }
+
+        @Test
+        void sameIncarnation_staleTerm_stillRefused() {
+            snapshotSource.setIncarnation(2L);
+            snapshotSource.setTerm(20L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(2L, 5L, 0L)));
+
+            assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
+            assertThat(registry.findRoute("GET", "/users/").isPresent()).isFalse();
+        }
+    }
+
     @Nested
     class BackwardCompatibility {
         @Test
@@ -139,6 +185,7 @@ class HttpRouteRegistryEpochFenceTest {
 
     private static final class FixedTermSource implements GenerationSnapshotSource {
         private volatile long term;
+        private volatile long incarnation;
 
         FixedTermSource(long initialTerm) {
             this.term = initialTerm;
@@ -146,6 +193,14 @@ class HttpRouteRegistryEpochFenceTest {
 
         void setTerm(long newTerm) {
             this.term = newTerm;
+        }
+
+        void setIncarnation(long newIncarnation) {
+            this.incarnation = newIncarnation;
+        }
+
+        @Override public long observedEpochIncarnation() {
+            return incarnation;
         }
 
         @Override public Option<MembershipView> currentMembershipView() {

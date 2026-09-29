@@ -349,11 +349,32 @@ public interface HttpRouteRegistry {
                 return staleFenceCounter.get();
             }
 
-            /// Term arithmetic is meaningful only within one cluster incarnation (#1529): a cold restart
-            /// restarts the Rabia term, so a value stamped in another incarnation is never fenced by it.
+            /// Incarnation first, as `Epoch.compareTo` orders (#1529). A cold restart restarts the Rabia term, so
+            /// term arithmetic means nothing ACROSS incarnations:
+            /// - a NEWER incarnation supersedes whatever its term. This is why the fence cannot compare terms
+            ///   blindly: the new run's routes carry a low term against the old run's high one, and a term-only
+            ///   fence would refuse exactly the routes that should win.
+            /// - an OLDER incarnation is refused whatever its term. A publisher whose incarnation mirror lagged
+            ///   stamps the previous run's incarnation, and such a value must never be taken as current (v1640).
+            /// - within one incarnation the term threshold below applies, as before #1529.
             private boolean isStaleFence(NodeId nodeId, String artifact, NodeRoutesValue value) {
-                if (value.observedCoreEpoch().incarnation() != snapshotSource.observedEpochIncarnation()) {
+                var valueIncarnation = value.observedCoreEpoch()
+                                            .incarnation();
+                var observedIncarnation = snapshotSource.observedEpochIncarnation();
+
+                if (valueIncarnation > observedIncarnation) {
                     return false;
+                }
+
+                if (valueIncarnation < observedIncarnation) {
+                    staleFenceCounter.incrementAndGet();
+                    log.warn("Stale route update for {}/{}: value.incarnation={} observed.incarnation={} — REJECTED (older incarnation)",
+                             nodeId,
+                             artifact,
+                             valueIncarnation,
+                             observedIncarnation);
+
+                    return true;
                 }
 
                 var valueTerm = value.observedCoreEpoch().rabiaTerm();
