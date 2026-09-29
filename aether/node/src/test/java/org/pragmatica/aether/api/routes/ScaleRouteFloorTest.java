@@ -96,6 +96,11 @@ class ScaleRouteFloorTest {
         }
 
         @Override
+        public byte[] body() {
+            return unsupported("body");
+        }
+
+        @Override
         public Route<?> route() {
             return unsupported("route");
         }
