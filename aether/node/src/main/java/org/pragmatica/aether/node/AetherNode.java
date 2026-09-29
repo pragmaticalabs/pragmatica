@@ -4671,7 +4671,7 @@ public interface AetherNode extends ManageableNode {
 
         attachQuicConnectivityReporter(clusterNode.network(),
                                        peerObservationStore,
-                                       leaderEpochSupplier,
+                                       transportEpochSupplier(kvStore, leaderTerm, generationCounter, allEntries),
                                        nttConnectTap,
                                        nttDisconnectTap);
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, metricsScheduler::onLinkEstablished);
@@ -6859,6 +6859,27 @@ public interface AetherNode extends ManageableNode {
     /// P3 (membership unification): the former leader-side `ReachabilityAggregator`
     /// `ingestSelfTransition` fast-path is removed — SWIM (fed by these QUIC hints) is now the
     /// single liveness signal, so the separate reachability fold is gone.
+    /// The epoch the transport reads when it reports a peer connecting or leaving (#1529): the connectivity
+    /// reporter below and its `ObservedEpochSupplier` adapter. An inbound attach calls both synchronously on
+    /// the QUIC event loop (`QuicClusterServer` Hello handler -> `QuicClusterNetwork.onPeerConnected` ->
+    /// `processViewChange(ADD)` -> `reportPeerConnection`), so nothing here may take the `KVStore` monitor:
+    /// the incarnation comes from an [ObservedIncarnation] fed by the committed key's notifications, never
+    /// from [ClusterIncarnation#current], whose `getTyped` waits out a whole snapshot restore.
+    static Supplier<Epoch> transportEpochSupplier(KVStore<AetherKey, AetherValue> kvStore,
+                                                  LeaderTerm leaderTerm,
+                                                  AtomicLong generationCounter,
+                                                  List<MessageRouter.Entry<?>> routes) {
+        var incarnation = ObservedIncarnation.observedIncarnation(ClusterIncarnation.current(kvStore));
+
+        routes.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                          .onPut(AetherKey.ClusterIncarnationKey.class, incarnation::onPut)
+                                          .onRemove(AetherKey.ClusterIncarnationKey.class, incarnation::onRemove)
+                                          .build()
+                                          .asRouteEntries());
+
+        return () -> Epoch.epoch(incarnation.current(), leaderTerm.current(), generationCounter.get());
+    }
+
     private static void attachQuicConnectivityReporter(ClusterNetwork network,
                                                        PeerObservationBuffer buffer,
                                                        Supplier<Epoch> epochSupplier,
@@ -6868,7 +6889,8 @@ public interface AetherNode extends ManageableNode {
             return;
         }
         // #1529 (v1635 N3), known tear, metrics only: the transport hands over `term`/`counter` from the epoch it
-        // captured, while `incarnation` is read here from `epochSupplier` at report time. An observation straddling
+        // captured, while `incarnation` is read here from `epochSupplier` at report time (lock-free, see
+        // [#transportEpochSupplier]). An observation straddling
         // an incarnation change can therefore mix two epochs. Nothing fences on these observations (they feed
         // connectivity telemetry), so it is recorded rather than fixed.
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {

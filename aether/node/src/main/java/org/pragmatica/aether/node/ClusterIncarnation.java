@@ -26,6 +26,9 @@ import org.pragmatica.lang.Option;
 /// - [#restoreCommands] — what a restore (#1533) commits: the restored lineage, above every incarnation
 ///   the backup has recorded for it.
 /// - [#superseding]/[#supersedeCommands] — what `aether backup declare-genesis` commits (#1532).
+///
+/// [ObservedIncarnation] mirrors [#current] from the key's notifications for threads that must not take the
+/// `KVStore` monitor (the QUIC event loop); it is fed from here, never written independently.
 public sealed interface ClusterIncarnation {
     /// The value [#current] answers before genesis.
     long NONE = 0L;
