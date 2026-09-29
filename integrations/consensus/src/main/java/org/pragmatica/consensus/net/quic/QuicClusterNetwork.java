@@ -82,6 +82,7 @@ import static org.pragmatica.consensus.net.NetworkServiceMessage.ConnectNode;
 import static org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import static org.pragmatica.consensus.net.quic.QuicClusterNetwork.ViewChangeOperation.*;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.consensus.net.quic.QuicTransportError.General.NETWORK_STOPPED;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -136,6 +137,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final long DROP_WARN_INTERVAL_NANOS = 30_000_000_000L;
 
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    /// #1461: set by the first `stop()`, whether or not the network had started, and never cleared. A stop that
+    /// arrived before `startOnPort` used to be a silent no-op (its CAS on `isRunning` failed), and the later start
+    /// then armed a server, reconciler and keepalive nothing could stop. `isRunning` still says whether the
+    /// transport is up; `closed` says the network must never come up again. Cert rotation is not a stop and does
+    /// not touch it.
+    private final AtomicBoolean closed = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
     /// Transport-ready callbacks (registered via [#whenReady(Runnable)]) and the latch that
     /// gates them. `transportReady` is distinct from `isRunning`: `isRunning` flips true at the
@@ -630,6 +637,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Package-private to allow tests to bind to port 0 (OS-assigned).
     @SuppressWarnings("JBCT-PAT-01")  // Lifecycle: server start then client creation
     Promise<Unit> startOnPort(int port) {
+        if (closed.get()) {
+            return NETWORK_STOPPED.promise();
+        }
+
         if (!isRunning.compareAndSet(false, true)) {
             return Promise.unitPromise();
         }
@@ -655,14 +666,37 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      Option.empty(),
                                                      this::onMessageReceived,
                                                      bootTokens);
+        // #1461: a stop() that overtook this start (after the check above) may have read `server`/`client`
+        // before they were assigned and released nothing. Re-checked after the assignment, this start then
+        // releases what it just created itself.
+        if (closed.get()) {
+            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit>promise());
+        }
 
-        return server.start(port)
-                     .map(this::captureLoopbackLoop)
-                     .onSuccess(_ -> startMissingPeerReconciler())
-                     .onSuccess(_ -> startKeepalive())
-                     .onSuccess(_ -> fireReadyHooks())
-                     .onFailure(this::onStartFailed)
-                     .mapToUnit();
+        var serverRef = server;
+
+        return serverRef.start(port)
+                        .map(unit -> captureLoopbackLoop(serverRef, unit))
+                        .onSuccess(_ -> armPeriodicTasks())
+                        .onSuccess(_ -> fireReadyHooks())
+                        .onFailure(this::onStartFailed)
+                        .mapToUnit();
+    }
+
+    /// #1461: the reconciler and keepalive are armed only while the network is not closed, and cancelled again
+    /// if a stop landed while they were being armed; `stop()` sets `closed` before it cancels them, so one of
+    /// the two sides always sees the other.
+    private void armPeriodicTasks() {
+        if (closed.get()) {
+            return;
+        }
+
+        startMissingPeerReconciler();
+        startKeepalive();
+        if (closed.get()) {
+            reconcilerTask.cancel();
+            keepaliveTask.cancel();
+        }
     }
 
     @Override
@@ -688,14 +722,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// the start promise the caller awaits resolves, otherwise a send-to-self racing start-completion
     /// finds no pinned loop and drops. Re-run after each (re)start: cert rotation ([#rebuildAndStart])
     /// rebuilds the server and its event loop group, invalidating the previously pinned loop.
-    private Unit captureLoopbackLoop(Unit unit) {
-        loopbackLoop = server.loopbackEventLoop();
+    /// Reads the server started by the caller, not the field: a stop racing the start nulls `server` (#1366's
+    /// shape, one step later).
+    private Unit captureLoopbackLoop(QuicClusterServer startedServer, Unit unit) {
+        loopbackLoop = startedServer.loopbackEventLoop();
 
         return unit;
     }
 
     @Override
     public Promise<Unit> stop() {
+        closed.set(true);
         if (!isRunning.compareAndSet(true, false)) {
             return Promise.unitPromise();
         }
@@ -1094,8 +1131,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      this::onMessageReceived,
                                                      bootTokens);
 
-        return server.start(port)
-                     .map(this::captureLoopbackLoop)
+        var serverRef = server;
+
+        return serverRef.start(port)
+                     .map(unit -> captureLoopbackLoop(serverRef, unit))
                      .onSuccess(_ -> log.info("QUIC server restarted on port {} with renewed certificate", port))
                      .onFailure(cause -> log.error("Failed to restart QUIC server after certificate rotation: {}",
                                                    cause.message()))
@@ -2958,6 +2997,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Package-private test seam — the #1578 abandon an attach performs, invoked directly, so a test can aim it at
     /// an attempt in a chosen stage (e.g. past its QUIC handshake, Hello unanswered).
+    /// Package-private test seam (#1461) — whether the reconciler or the keepalive is scheduled.
+    boolean periodicTasksScheduledForTests() {
+        return reconcilerTask.isScheduled() || keepaliveTask.isScheduled();
+    }
+
     /// Package-private test seam — the resolve-success continuation, so a test can run it after stop() (#1366).
     void dialResolvedForTests(NodeInfo peer, InetAddress inetAddress, int port) {
         dialResolved(peer, inetAddress, port);

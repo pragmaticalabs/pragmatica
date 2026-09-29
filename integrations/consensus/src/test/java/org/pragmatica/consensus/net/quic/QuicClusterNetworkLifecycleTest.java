@@ -47,6 +47,10 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// #1366 — `stop()` nulls `client`, and the dial path dereferenced the field twice: at the resolve step and in
 /// the resolve-success continuation, which a stop can overtake. After a stop both paths threw an NPE (surfaced
 /// by #1311's escape guard). Each is now a clean no-op that leaves no CONNECTING peer behind.
+///
+/// #1461 — `stop()` before `start()` was a silent no-op (its CAS on `isRunning` failed and nothing was recorded),
+/// so the later start armed a server, a reconciler and a keepalive that nothing could stop. A stop is now
+/// recorded and a stopped network stays stopped: the late start refuses with `NETWORK_STOPPED`.
 @Timeout(60)
 class QuicClusterNetworkLifecycleTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(20).seconds();
@@ -96,6 +100,44 @@ class QuicClusterNetworkLifecycleTest {
 
         assertThat(network.peerPhaseForTests(PEER)).as("control: a running network dials")
                                                    .isEqualTo(Option.some(PeerState.Phase.CONNECTING));
+    }
+
+    /// #1461. Mutation that reddens it: drop the `closed` check at the top of `startOnPort`.
+    @Test
+    void stopBeforeStart_theLateStartRefuses_andArmsNothing() {
+        var network = network();
+        var ready = new java.util.concurrent.atomic.AtomicBoolean();
+
+        network.whenReady(() -> ready.set(true));
+        network.stop().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
+
+        var start = network.startOnPort(0).await(AWAIT);
+
+        assertThat(start.isFailure()).as("#1461: a start after stop must refuse: %s", start).isTrue();
+        start.onFailure(cause -> assertThat(cause).isEqualTo(QuicTransportError.General.NETWORK_STOPPED));
+        assertThat(network.boundPort()).as("no server was bound").isEqualTo(Option.empty());
+        assertThat(network.periodicTasksScheduledForTests()).as("no reconciler or keepalive was armed").isFalse();
+        assertThat(ready.get()).as("the transport never reported ready").isFalse();
+    }
+
+    /// The same holds for a network that ran and was stopped: stopped stays stopped.
+    @Test
+    void stopAfterStart_thenStartAgain_refuses() {
+        var network = started();
+
+        network.stop().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
+
+        assertThat(network.startOnPort(0).await(AWAIT).isFailure()).isTrue();
+        assertThat(network.periodicTasksScheduledForTests()).isFalse();
+    }
+
+    /// CONTROL — a start with no prior stop binds and arms its periodic tasks, so the negatives above are real.
+    @Test
+    void startWithoutStop_bindsAndArmsItsPeriodicTasks() {
+        var network = started();
+
+        assertThat(network.boundPort().isPresent()).isTrue();
+        assertThat(network.periodicTasksScheduledForTests()).isTrue();
     }
 
     private QuicClusterNetwork started() {

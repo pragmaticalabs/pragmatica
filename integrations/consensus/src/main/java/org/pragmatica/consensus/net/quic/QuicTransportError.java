@@ -48,6 +48,14 @@ public sealed interface QuicTransportError extends Cause {
                 return true;
             }
         },
+        /// #1461: `stop()` ran before (or while) `startOnPort` ran. A stopped network stays stopped, so the late
+        /// start refuses instead of arming a server, reconciler and keepalive that nothing will stop. Terminal.
+        NETWORK_STOPPED("QUIC cluster network was stopped before its start could complete") {
+            @Override
+            public boolean isTerminal() {
+                return true;
+            }
+        },
         NO_TLS_CONFIGURATION("No TLS configuration provided. Set AETHER_INSECURE_DEV_MODE=true for development without TLS verification");
         private final String message;
         General(String message) {
