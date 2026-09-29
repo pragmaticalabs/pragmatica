@@ -2023,12 +2023,15 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // Check if we already have enough responses from previous attempt
-        if (adoptIfThresholdMet()) {
-            // Processed immediately instead of clearing
+        var adopted = adoptIfThresholdMet();
+        // #1447: a round is stuck by its OUTCOME, not by whether adoption ran. An adoption that did not
+        // activate (a restore that failed, an activation that was refused) retries and counts like any
+        // other round; at clusterSize 1 adoption runs on every round, so this is the only way it counts.
+        if (engineState.get().isActive()) {
             return;
         }
 
-        warnIfSyncStuck();
+        warnIfSyncStuck(adopted);
         // Only clear and restart if we don't have enough responses
         syncResponses.clear();
         var request = new SyncRequest(self);
@@ -2051,12 +2054,26 @@ public class RabiaEngine<C extends Command> {
     /// from "threshold can never be met".
     ///
     /// Periodic rather than per-round: at the default 5s `syncRetryInterval` this is roughly every 30s.
-    /// The counter resets whenever a sync round starts fresh or the engine activates, so the round number
-    /// in the line is the length of the CURRENT stall, not a process-lifetime total.
-    private void warnIfSyncStuck() {
+    /// The counter resets whenever a sync episode starts ([#doClusterConnected]) or the engine activates,
+    /// so the round number in the line is the length of the CURRENT stall, not a process-lifetime total.
+    /// Adoption does NOT reset it (#1447): a node whose adoption keeps failing is exactly the stall this
+    /// line exists to report.
+    private void warnIfSyncStuck(boolean adopted) {
         var round = syncRounds.incrementAndGet();
 
         if (round % WARN_EVERY_N_SYNC_ROUNDS != 0) {
+            return;
+        }
+
+        if (adopted) {
+            log.warn("Node {} still SYNCING after {} rounds: the adoption threshold is met, but the node did not "
+                    + "activate on the adopted state (restore or activation refused: {}). This node has no leader "
+                    + "and runs no reconciler while this persists.",
+                     self,
+                     round,
+                     authorityFailure.map(Cause::message)
+                                     .or("see the preceding ERROR"));
+
             return;
         }
 
@@ -2127,7 +2144,6 @@ public class RabiaEngine<C extends Command> {
                                   .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
                                   .toList();
 
-        syncRounds.set(0);
         if (responses.isEmpty()) {
             // Only reachable at clusterSize 1, where the requirement is zero responses: self is the
             // whole majority and there is no peer to adopt from.
@@ -2361,12 +2377,9 @@ public class RabiaEngine<C extends Command> {
     /// the cause.
     ///
     /// A `restoreSnapshot` that fails skips `activate()`, so the engine stays `Syncing` and the retry
-    /// tick re-enters the same branch. The periodic stuck-in-`Syncing` WARN does NOT cover this:
-    /// [#doSynchronize] calls [#warnIfSyncStuck] only after `adoptIfThresholdMet()` returns false, and
-    /// [#adoptCollectedState] resets `syncRounds` on every entry, so a loop that keeps re-entering
-    /// adoption never reaches [#WARN_EVERY_N_SYNC_ROUNDS] — and at `clusterSize` 1 the call is
-    /// unreachable outright (#1447). This line is therefore the whole operator surface for the state,
-    /// which is why it spells out that the node is NOT active rather than logging a bare cause.
+    /// tick re-enters the same branch. This is the per-attempt line; the periodic stuck-in-`Syncing`
+    /// WARN ([#warnIfSyncStuck]) also counts these rounds since #1447, so the stall is reported by its
+    /// length too. It spells out that the node is NOT active rather than logging a bare cause.
     ///
     /// It covers every failed restore that reaches [#restoreState]: a responder's snapshot, or the
     /// own-restore arm of [#activateWithoutAdoption] (fail-closed per #1468).
