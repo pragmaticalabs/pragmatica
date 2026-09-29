@@ -42,6 +42,7 @@ ENUM org.pragmatica.consensus.rabia.StateValue V0=0,V1=1,VQUESTION=2,UNKNOWN=3
 ENUM org.pragmatica.swim.SwimMember$MemberState ALIVE=0,SUSPECT=1,FAULTY=2,OBSERVED=3,UNKNOWN=4
 SHAPE org.pragmatica.aether.api.ClusterEvent$AccessDenied (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$AlertInjected (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$AutoRollback (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$BackupCreated (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$BackupRestored (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$BlueprintDeleted (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -204,9 +205,9 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$LogLevelValue (loggerName:
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue (state:org.pragmatica.aether.slice.SliceState,failureReason:org.pragmatica.lang.Option<java.lang.String>,fatal:boolean,instanceNumber:int,methods:java.util.List<java.lang.String>,transitionedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue (sourceName:java.lang.String,observedZone:org.pragmatica.lang.Option<java.lang.String>,providerInstanceId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue (routes:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry>,observedCoreEpoch:org.pragmatica.aether.slice.generation.Epoch)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry (httpMethod:java.lang.String,pathPrefix:java.lang.String,sliceMethod:java.lang.String,state:java.lang.String,weight:int,registeredAt:long,security:java.lang.String)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry (httpMethod:java.lang.String,pathPrefix:java.lang.String,sliceMethod:java.lang.String,state:java.lang.String,weight:int,registeredAt:long,security:java.lang.String,declaredSecurity:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ObservabilityConfigValue (artifactBase:java.lang.String,methodName:java.lang.String,logging:boolean,metrics:boolean,spans:boolean,tracing:boolean,depth:int,updatedAt:long)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PreviousVersionValue (artifactBase:org.pragmatica.aether.artifact.ArtifactBase,previousVersion:org.pragmatica.aether.artifact.Version,currentVersion:org.pragmatica.aether.artifact.Version,updatedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PreviousVersionValue (artifactBase:org.pragmatica.aether.artifact.ArtifactBase,previousVersion:org.pragmatica.aether.artifact.Version,currentVersion:org.pragmatica.aether.artifact.Version,updatedAt:long,rollbackCount:int,lastRollbackAt:long,failedVersions:java.util.List<org.pragmatica.aether.artifact.Version>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSlotValue (spawnedAtMs:long,assignedNodeId:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>,occupantEpoch:long,supersededNodeId:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskPauseValue (pausedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue (lastExecutionAt:long,nextFireAt:long,consecutiveFailures:int,totalExecutions:int,lastFailureMessage:java.lang.String,updatedAt:long,skippedOverlaps:int)
@@ -358,6 +359,7 @@ TAG  java.util.Map 20
 TAG  java.util.Set 9
 TAG  org.pragmatica.aether.api.ClusterEvent$AccessDenied 256
 TAG  org.pragmatica.aether.api.ClusterEvent$AlertInjected 257
+TAG  org.pragmatica.aether.api.ClusterEvent$AutoRollback 293
 TAG  org.pragmatica.aether.api.ClusterEvent$BackupCreated 258
 TAG  org.pragmatica.aether.api.ClusterEvent$BackupRestored 259
 TAG  org.pragmatica.aether.api.ClusterEvent$BlueprintDeleted 260

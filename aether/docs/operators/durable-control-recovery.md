@@ -15,6 +15,11 @@ protocol instance by `SwimBootTokenTest`, not yet exercised on a multi-node clus
 A process that stays alive through a network partition keeps its token and heals as before
 (higher SWIM incarnation, same token).
 
+A refused process is told so (an explicit refusal answers its handshake and announcements), logs
+`FATAL: this node's identity <id> was refused by the cluster`, and **exits with code 78**
+(`EX_CONFIG`) — distinct from a completed drain's exit code 2, so orchestration can tell the two apart
+by exit status alone.
+
 **Recovery action:** replace a dead node with a new node under a fresh NodeId. Restarting a
 container or VM under the old NodeId produces a process the running cluster refuses. A
 whole-cluster restart is the exception, because no running peer remembers the old tokens.

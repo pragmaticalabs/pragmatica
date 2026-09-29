@@ -18,6 +18,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.http.ListenerStops;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -375,6 +376,7 @@ class ManagementServerImpl implements ManagementServer {
         apiKeyRoutesRef.set(apiKeyRoutes);
         routeSources.add(apiKeyRoutes);
         routeSources.add(GossipKeyRoutes.gossipKeyRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.BackupRoutes.backupRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
@@ -625,12 +627,29 @@ class ManagementServerImpl implements ManagementServer {
         return Option.some(new TlsConfig.Server(identity, Option.<TlsConfig.Trust> none()));
     }
 
+    private static long activeSliceCount(ManageableNode node) {
+        return node.deploymentMap()
+                   .byNode(node.self())
+                   .values()
+                   .stream()
+                   .filter(SliceState.ACTIVE::equals)
+                   .count();
+    }
+
     private void onServerStarted(HttpServer server) {
         metricsPublisher.start();
         statusWsPublisher.start();
         eventWsPublisher.start();
         observability.registerTransportMetrics(() -> nodeSupplier.get()
                                                                  .transportMetrics());
+        // #1573: both gauges were declared and never registered, so the soak dashboards' queries for
+        // them read nothing. Cluster size is the membership FSM's counted set (MEMBER + SUSPECT, all roles);
+        // active slices are this node's ACTIVE instances.
+        observability.registerNodeCount(() -> nodeSupplier.get()
+                                                          .membershipFsm()
+                                                          .countedMembers()
+                                                          .size());
+        observability.registerSliceCount(() -> activeSliceCount(nodeSupplier.get()));
         // #674: consensus-load counters on the Prometheus surface, same key vocabulary as the
         // comprehensive response's consensus block (RabiaMetrics.counterMap()).
         observability.registerConsensusMetrics(() -> nodeSupplier.get()

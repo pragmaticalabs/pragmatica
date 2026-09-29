@@ -275,7 +275,7 @@ public class StreamCommand implements Runnable {
     }
 
     /// Per-replica rows are drawn from the `replicas` array; the partition-level fields (`hrwOwner`,
-    /// `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`) live at the response root and are
+    /// `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`, `ownerActivationBlock`) live at the response root and are
     /// visible in `--format json`. NODE marks the resolved HRW owner via `isHrwOwner`; compare a
     /// `CAUGHT_UP` replica's CONFIRMED against the root `ownerHeadOffset` to spot the #333 lag.
     private static final TableSpec REPLICAS_TABLE_SPEC = new TableSpec("Stream Partition Replicas",

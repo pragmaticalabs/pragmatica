@@ -171,11 +171,13 @@ class RabiaReorderedDeliveryTest {
     ///
     /// A replica reaches epoch 1 one of two ways: it applies R itself (its status then reports R+1 as
     /// the effective slot), or a decision past a gap sends it to sync and it adopts a snapshot at or
-    /// after R+1 (no effective slot of its own). The late replica must take the first way in at least
-    /// one schedule, so the late-apply path is exercised rather than always bypassed.
+    /// after R+1 (no effective slot of its own). Which way a randomized release takes depends on how the
+    /// engines' executors interleave with the pump, so it is not a function of the seed (#1669). Even
+    /// seeds therefore release the late replica's held traffic in emission order: a decider broadcasts
+    /// R's Decision before it opens R+1, so the late replica meets R before any slot past it and must
+    /// apply R itself. Odd seeds release it randomly, where either way is correct.
     @Test
     void agreedChangeGovernsFromTheNextSlotOnEveryReplicaIncludingALateOne() {
-        var lateReplicaAppliedR = 0;
         for (int seed = 0; seed < 8; seed++) {
             var cluster = new ScheduledCluster(4, seed, 3);
             clusters.add(cluster);
@@ -198,7 +200,12 @@ class RabiaReorderedDeliveryTest {
             cluster.pumpUntil(() -> List.of(0, 3).stream()
                                          .allMatch(index -> cluster.machines.get(index).getProcessedCommands().size() == 2));
             assertThat(cluster.engines.get(1).voterConfiguration().unwrap().epoch()).as("v1 is still late").isZero();
-            cluster.held = _ -> false;
+            var releasedInOrder = seed % 2 == 0;
+            if (releasedInOrder) {
+                cluster.releaseHeldInOrder();
+            } else {
+                cluster.held = _ -> false;
+            }
             cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 2));
             cluster.pumpUntil(() -> cluster.engines.stream().allMatch(engine -> engine.voterConfiguration().unwrap().epoch() == 1));
 
@@ -209,8 +216,9 @@ class RabiaReorderedDeliveryTest {
                     .as("seed %s", seed).isTrue();
             }
             assertThat(cluster.engines.getFirst().voterReconfigurationStatus().effectiveSlot().unwrap()).isEqualTo(effective);
-            if (cluster.engines.get(1).voterReconfigurationStatus().effectiveSlot().isPresent()) {
-                lateReplicaAppliedR++;
+            if (releasedInOrder) {
+                assertThat(cluster.engines.get(1).voterReconfigurationStatus().effectiveSlot())
+                    .as("seed %s: the late replica applied R itself", seed).isEqualTo(Option.some(effective));
             }
             assertThat(cluster.engines.get(2).isActive()).as("the removed voter no longer votes").isFalse();
             assertThat(cluster.engines.get(2).isObserving()).isTrue();
@@ -224,7 +232,6 @@ class RabiaReorderedDeliveryTest {
             }
             cluster.stop();
         }
-        assertThat(lateReplicaAppliedR).as("the late replica applied R itself in at least one schedule").isPositive();
     }
 
     /// #1526 genesis view agreement on real engines: a late core holds everyone (its absence keeps the
@@ -485,11 +492,7 @@ class RabiaReorderedDeliveryTest {
             for (int step = 0; step < 30_000; step++) {
                 settle();
                 verifyPrefixes();
-                for (var delivery = emitted.poll(); delivery != null; delivery = emitted.poll()) {
-                    if (!dead.contains(delivery.source()) && !dead.contains(delivery.target()) && !blocked.test(delivery)) {
-                        parked.add(delivery);
-                    }
-                }
+                collectEmitted();
                 for (var iterator = parked.iterator(); iterator.hasNext(); ) {
                     var delivery = iterator.next();
                     if (!held.test(delivery)) {
@@ -511,6 +514,36 @@ class RabiaReorderedDeliveryTest {
             }
             settle();
             assertThat(completed.getAsBoolean()).as("schedule must make progress; pending=%s", pending.size()).isTrue();
+        }
+
+        void collectEmitted() {
+            for (var delivery = emitted.poll(); delivery != null; delivery = emitted.poll()) {
+                if (!dead.contains(delivery.source()) && !dead.contains(delivery.target()) && !blocked.test(delivery)) {
+                    parked.add(delivery);
+                }
+            }
+        }
+
+        /// Stops holding and delivers everything held so far, once each and in emission order, settling
+        /// after every delivery. Traffic the release provokes joins the ordinary randomized schedule.
+        void releaseHeldInOrder() {
+            var releasing = held;
+            held = _ -> false;
+            settle();
+            collectEmitted();
+            var released = new ArrayList<Delivery>();
+            for (var iterator = parked.iterator(); iterator.hasNext(); ) {
+                var delivery = iterator.next();
+                if (releasing.test(delivery)) {
+                    released.add(delivery);
+                    iterator.remove();
+                }
+            }
+            for (var delivery : released) {
+                deliver(delivery);
+                settle();
+                verifyPrefixes();
+            }
         }
 
         /// Runs `rounds` genesis rounds on the given engines, delivering all traffic between rounds.
