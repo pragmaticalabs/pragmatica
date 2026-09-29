@@ -3,4 +3,5 @@
   stream retained events no read of `system:cluster-events:1.0.0` could return.
 - Such a value now refuses the boot with `InvalidLimit`, naming the variable, its value and
   `CLUSTER_EVENTS_MAX_RETAINED`. A count at the window is still accepted.
-  `[mechanism: AetherNode.createNode builds the node only through ClusterEventsLimits.clusterEventsLimits(), whose refusal ClusterEventsLimitsTest pins at the unit level; no boot test exercises it]`
+  The refusal comes before anything is built: the node's cluster port is still free afterwards.
+  `[verified: aether/node/src/test/java/org/pragmatica/aether/node/AetherNodeClusterEventsWindowRefusalBootTest.java]`

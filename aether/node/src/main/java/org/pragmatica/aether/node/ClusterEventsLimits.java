@@ -16,7 +16,6 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
-import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -55,11 +54,6 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
                           limit(environment, MAX_AGE_MS_VARIABLE, DEFAULT_MAX_AGE_MS, Long.MAX_VALUE),
                           limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, Long.MAX_VALUE))
                      .map(ClusterEventsLimits::new);
-    }
-
-    /// Read from the process environment.
-    public static Result<ClusterEventsLimits> clusterEventsLimits() {
-        return clusterEventsLimits(variable -> option(System.getenv(variable)));
     }
 
     /// Bounded on count, bytes (off-heap hard cap) and age, mode ANY.

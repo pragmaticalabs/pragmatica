@@ -526,8 +526,30 @@ public interface AetherNode extends ManageableNode {
                                          SliceCodec nodeCodec,
                                          Runnable jvmExit,
                                          Runnable identityRefusedExit) {
+        return aetherNode(config,
+                          delegateRouter,
+                          nodeCodec,
+                          jvmExit,
+                          identityRefusedExit,
+                          variable -> Option.option(System.getenv(variable)));
+    }
+
+    /// The same boot with the process environment supplied as a function. Production passes `System.getenv`
+    /// (the overload above); a boot test passes a map, so an environment-driven refusal such as
+    /// `CLUSTER_EVENTS_MAX_COUNT` (#1571) can be exercised in-process without mutating the JVM's environment.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit,
+                                         Runnable identityRefusedExit,
+                                         Fn1<Option<String>, String> environment) {
         return config.validate()
-                     .flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit, identityRefusedExit));
+                     .flatMap(_ -> createNode(config,
+                                              delegateRouter,
+                                              nodeCodec,
+                                              jvmExit,
+                                              identityRefusedExit,
+                                              environment));
     }
 
     /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
@@ -536,14 +558,15 @@ public interface AetherNode extends ManageableNode {
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
                                                  Runnable jvmExit,
-                                                 Runnable identityRefusedExit) {
-        return ClusterEventsLimits.clusterEventsLimits().flatMap(limits -> createNodeWithBootToken(config,
-                                                                                                   delegateRouter,
-                                                                                                   nodeCodec,
-                                                                                                   jvmExit,
-                                                                                                   identityRefusedExit,
-                                                                                                   BootToken.bootToken(),
-                                                                                                   limits));
+                                                 Runnable identityRefusedExit,
+                                                 Fn1<Option<String>, String> environment) {
+        return ClusterEventsLimits.clusterEventsLimits(environment).flatMap(limits -> createNodeWithBootToken(config,
+                                                                                                              delegateRouter,
+                                                                                                              nodeCodec,
+                                                                                                              jvmExit,
+                                                                                                              identityRefusedExit,
+                                                                                                              BootToken.bootToken(),
+                                                                                                              limits));
     }
 
     private static Result<AetherNode> createNodeWithBootToken(AetherNodeConfig config,
