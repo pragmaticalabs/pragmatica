@@ -502,6 +502,8 @@ class ClusterEventAggregatorTest {
 
         h.aggregator().emit(selfDrainInitiated(h));
         assertThat(h.aggregator().redeliveryWaiting()).as("control: the failed publish is held").isEqualTo(1);
+        assertThat(h.aggregator().redeliveryFailuresByCause()).as("the unbound publisher is counted by its typed name")
+                                                              .containsEntry("PUBLISHER_NOT_BOUND", 1L);
 
         owner.set(false);
         h.publisher().set(publisher);

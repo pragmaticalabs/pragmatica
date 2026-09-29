@@ -188,7 +188,18 @@ public final class ClusterEventAggregator {
     private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
     private volatile int lastReadDuplicates;
 
-    private static final Cause PUBLISHER_NOT_BOUND = Causes.cause("cluster-events publisher not yet bound");
+    /// Typed so [ClusterEventRedelivery#failuresByCause] counts it by name (#1653).
+    private enum PublishError implements Cause {
+        PUBLISHER_NOT_BOUND("cluster-events publisher not yet bound");
+        private final String message;
+        PublishError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 
     private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                    Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
@@ -563,7 +574,7 @@ public final class ClusterEventAggregator {
         LOG.info("ClusterEventAggregator publisher not yet bound — event {} held for redelivery (bootstrap window)",
                  event.type());
 
-        return PUBLISHER_NOT_BOUND.promise();
+        return PublishError.PUBLISHER_NOT_BOUND.promise();
     }
 
     /// #1640: re-sends the cluster events whose publish has not landed yet and are due. `AetherNode` calls it
