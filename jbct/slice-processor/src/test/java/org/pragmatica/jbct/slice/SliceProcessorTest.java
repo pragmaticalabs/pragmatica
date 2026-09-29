@@ -9,17 +9,22 @@ import com.google.testing.compile.Compilation;
 import com.google.testing.compile.CompilationSubject;
 import com.google.testing.compile.JavaFileObjects;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.junit.jupiter.api.io.TempDir;
 
 import javax.tools.JavaFileObject;
 import javax.tools.StandardLocation;
 import java.io.IOException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -4524,8 +4529,159 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.ProxyServiceFactory")
                                         .get().getCharContent(false).toString();
         assertThat(factoryContent).contains("ctx.config().requireString(\"app.proxy\", \"host\")");
-        assertThat(factoryContent).contains("Result.success(ctx.config().getString(\"app.proxy\", \"fallback_url\").map(s -> ProxyUrl.proxyUrl(s).expect(\"optional ProxyUrl value validated at config load time\")))");
+        // #1429: a present but invalid value must fail the Result chain with the factory's cause, never throw.
+        assertThat(factoryContent).contains("ctx.config().getString(\"app.proxy\", \"fallback_url\").fold(() -> Result.<org.pragmatica.lang.Option<ProxyUrl>>success(org.pragmatica.lang.Option.none()), s -> ProxyUrl.proxyUrl(s).map(org.pragmatica.lang.Option::some))");
+        assertThat(factoryContent).doesNotContain("ProxyUrl.proxyUrl(s).expect(");
+        assertThat(factoryContent).doesNotContain("validated at config load time");
         assertThat(factoryContent).contains("ProxyConfig::proxyConfig");
+    }
+
+    /// #1429, run rather than read: the generated factory is loaded and called. A present but invalid optional
+    /// value object must FAIL the factory's result with the value object's own cause. Before the fix the
+    /// factory unwrapped it with `.expect(...)`, so the call threw out of the factory instead.
+    @Test
+    void should_fail_the_factory_result_not_throw_for_an_invalid_optional_value_object() throws Exception {
+        var compilation = compileOptionalProxyUrlSlice();
+        assertCompilation(compilation).succeeded();
+        var loader = classLoaderOf(compilation);
+
+        var invalid = createProxyService(loader, Option.some("not-a-url")).await();
+        assertThat(invalid.isFailure()).isTrue();
+        String failure = invalid.fold(cause -> cause.message(), _ -> "(success)");
+        assertThat(failure).contains("invalid proxy url: not-a-url");
+
+        // Controls: the same compiled factory still succeeds for a valid value and for an absent one.
+        assertThat(proxiedFallback(loader, createProxyService(loader, Option.some("https://fallback")))).isEqualTo("Some(https://fallback)");
+        assertThat(proxiedFallback(loader, createProxyService(loader, Option.none()))).isEqualTo("None()");
+    }
+
+    private Compilation compileOptionalProxyUrlSlice() {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.proxy")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var proxyUrl = JavaFileObjects.forSourceString("test.config.ProxyUrl",
+                                                        """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            import org.pragmatica.lang.utils.Causes;
+            public record ProxyUrl(String value) {
+                public static Result<ProxyUrl> proxyUrl(String raw) {
+                    return raw.startsWith("https://")
+                           ? Result.success(new ProxyUrl(raw))
+                           : Causes.cause("invalid proxy url: " + raw).result();
+                }
+            }
+            """);
+        var proxyConfig = JavaFileObjects.forSourceString("test.config.ProxyConfig",
+                                                           """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ProxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                public static Result<ProxyConfig> proxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                    return Result.success(new ProxyConfig(host, fallbackUrl));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ProxyService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ProxyConfig;
+            @Slice
+            public interface ProxyService {
+                Promise<String> proxy(String request);
+                static ProxyService proxyService(@AppConfig ProxyConfig config) {
+                    return request -> Promise.success(config.fallbackUrl().map(url -> url.value()).toString());
+                }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(proxyUrl);
+        sources.add(proxyConfig);
+        sources.add(source);
+
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
+    }
+
+    /// Calls the generated `ProxyServiceFactory.proxyService(ctx)` with a config whose `fallback_url` is `fallback`.
+    @SuppressWarnings("unchecked")
+    private static Promise<Object> createProxyService(ClassLoader loader, Option<String> fallback) throws Exception {
+        var contextType = loader.loadClass("org.pragmatica.aether.slice.SliceCreationContext");
+        var facadeType = loader.loadClass("org.pragmatica.aether.slice.ConfigFacade");
+        var facade = Proxy.newProxyInstance(loader, new Class<?>[] {facadeType}, (_, method, _) -> switch (method.getName()) {
+            case "requireString" -> Result.success("proxy.example");
+            case "getString" -> fallback;
+            default -> throw new UnsupportedOperationException(method.getName());
+        });
+        var context = Proxy.newProxyInstance(loader, new Class<?>[] {contextType}, (_, method, _) -> "config".equals(method.getName())
+                                                                                                    ? facade
+                                                                                                    : null);
+
+        return (Promise<Object>) loader.loadClass("test.ProxyServiceFactory")
+                                  .getMethod("proxyService", contextType)
+                                  .invoke(null, context);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String proxiedFallback(ClassLoader loader, Promise<Object> created) throws Exception {
+        var service = created.await().fold(cause -> { throw new AssertionError(cause.message()); }, value -> value);
+        var answer = (Promise<Object>) loader.loadClass("test.ProxyService").getMethod("proxy", String.class).invoke(service, "request");
+
+        String proxied = answer.await().fold(cause -> cause.message(), String::valueOf);
+
+        return proxied;
+    }
+
+    /// Child-first over the compilation's class output, so the factory links against the stubs it was compiled
+    /// with. `org.pragmatica.lang` always comes from the test classpath: the factory's Result, Option and Promise
+    /// must be the ones this test reads.
+    private static ClassLoader classLoaderOf(Compilation compilation) throws IOException {
+        var classes = new HashMap<String, byte[]>();
+
+        for (var file : compilation.generatedFiles()) {
+            if (file.getKind() == JavaFileObject.Kind.CLASS) {
+                var path = file.toUri().getPath();
+                var binaryName = path.substring(path.indexOf("CLASS_OUTPUT/") + "CLASS_OUTPUT/".length(),
+                                                path.length() - ".class".length())
+                                     .replace('/', '.');
+                try (var in = file.openInputStream()) {
+                    classes.put(binaryName, in.readAllBytes());
+                }
+            }
+        }
+
+        return new ClassLoader(SliceProcessorTest.class.getClassLoader()) {
+            @Override
+            protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+                synchronized (getClassLoadingLock(name)) {
+                    var loaded = findLoadedClass(name);
+                    var bytes = classes.get(name);
+
+                    if (loaded == null && bytes != null && !name.startsWith("org.pragmatica.lang.")) {
+                        loaded = defineClass(name, bytes, 0, bytes.length);
+                    }
+                    if (loaded == null) {
+                        return super.loadClass(name, resolve);
+                    }
+                    if (resolve) {
+                        resolveClass(loaded);
+                    }
+                    return loaded;
+                }
+            }
+        };
     }
 
     // ========== Transitive Method-Level Annotation Tests ==========
