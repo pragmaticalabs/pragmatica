@@ -580,15 +580,18 @@ collect_checkpoints() {
 test_checkpoint_driver_is_alive() {
     # Bounded wait rather than a single sample: ENTITY_CHECKPOINT_INTERVAL is 30s,
     # so sampling once can land before the first tick and fail on a tick boundary
-    # instead of on a defect. `wait_for` evals its predicate in the CURRENT shell,
-    # so the collected globals survive it.
-    if wait_for "a successful checkpoint write somewhere in the cluster" \
-        'collect_checkpoints; [ "$CHECKPOINT_HOSTING" -gt 0 ] && [ "$CHECKPOINT_WRITES" -gt 0 ]' 120; then
+    # instead of on a defect. `wait_for` evaluates its predicate in a FORK
+    # (_fork_bounded), so the globals collect_checkpoints sets there never reach this
+    # shell (#1512: the PASS line read "across 0 node(s)"). Collect again here and
+    # assert on what THIS shell holds, so the verdict and its message come from one read.
+    wait_for "a successful checkpoint write somewhere in the cluster" \
+        'collect_checkpoints; [ "$CHECKPOINT_HOSTING" -gt 0 ] && [ "$CHECKPOINT_WRITES" -gt 0 ]' 120 || true
+    collect_checkpoints
+    if [ "$CHECKPOINT_HOSTING" -gt 0 ] && [ "$CHECKPOINT_WRITES" -gt 0 ]; then
         log_pass "checkpoint driver alive across ${CHECKPOINT_HOSTING} node(s): ${CHECKPOINT_DETAIL}"
         return 0
     fi
 
-    collect_checkpoints
     if [ "$CHECKPOINT_HOSTING" -eq 0 ]; then
         log_fail "no node reported an entity keyspace while the entity slice is deployed"
         return 1

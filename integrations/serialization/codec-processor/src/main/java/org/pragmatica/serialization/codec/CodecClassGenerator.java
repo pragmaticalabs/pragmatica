@@ -302,6 +302,11 @@ public class CodecClassGenerator {
         if ("java.lang.String".equals(qualifiedName)) {
             return new ClassifiedField(component, FieldKind.STRING, null);
         }
+        // #1633: a @Codec sealed interface has no codec of its own, only its permitted subtypes do, so a
+        // field of that type is written with its runtime subtype's tag and read back by that tag.
+        if (element.getKind() == javax.lang.model.element.ElementKind.INTERFACE) {
+            return new ClassifiedField(component, FieldKind.DISPATCHED, null);
+        }
         // Check for @Codec annotation (same compilation round)
         if (hasCodecAnnotation(element)) {
             var codecFqn = computeCodecFqn(element);

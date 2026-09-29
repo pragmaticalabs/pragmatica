@@ -18,12 +18,15 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.utility.warning.OperatorWarningCode.REPLICA_FSYNC_FAILED;
 
 
 /// Replica-side receive/apply for the A6 replication path.
@@ -141,6 +144,7 @@ public final class ReplicationReceiveHandler {
     private final BiConsumer<String, Integer> onGap;
     private final ReplicaDurability durability;
     private final CommittedStreamOwnerSource committedOwners;
+    private final OperatorWarningSink operatorWarnings;
 
     private ReplicationReceiveHandler(NodeId self,
                                       RecoveredAppender appender,
@@ -148,7 +152,8 @@ public final class ReplicationReceiveHandler {
                                       ReplicationTransport transport,
                                       BiConsumer<String, Integer> onGap,
                                       ReplicaDurability durability,
-                                      CommittedStreamOwnerSource committedOwners) {
+                                      CommittedStreamOwnerSource committedOwners,
+                                      OperatorWarningSink operatorWarnings) {
         this.self = self;
         this.appender = appender;
         this.localHead = localHead;
@@ -156,6 +161,7 @@ public final class ReplicationReceiveHandler {
         this.onGap = onGap;
         this.durability = durability;
         this.committedOwners = committedOwners;
+        this.operatorWarnings = operatorWarnings;
     }
 
     /// Backward-compatible factory with no local-head verification: the incoming `fromOffset` is
@@ -170,7 +176,8 @@ public final class ReplicationReceiveHandler {
                                              transport,
                                              (_, _) -> {},
                                              NO_DURABILITY_BARRIER,
-                                             CommittedStreamOwnerSource.none());
+                                             CommittedStreamOwnerSource.none(),
+                                             OperatorWarningSink.logOnly());
     }
 
     /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
@@ -185,7 +192,8 @@ public final class ReplicationReceiveHandler {
                                              transport,
                                              onGap,
                                              NO_DURABILITY_BARRIER,
-                                             CommittedStreamOwnerSource.none());
+                                             CommittedStreamOwnerSource.none(),
+                                             OperatorWarningSink.logOnly());
     }
 
     /// Verifying factory (S1 / #260): `localHead` reports the replica's next-expected offset so an
@@ -201,7 +209,8 @@ public final class ReplicationReceiveHandler {
                                              transport,
                                              onGap,
                                              NO_DURABILITY_BARRIER,
-                                             CommittedStreamOwnerSource.none());
+                                             CommittedStreamOwnerSource.none(),
+                                             OperatorWarningSink.logOnly());
     }
 
     /// Verifying factory WITH the replica durability barrier (#634 item 1). No sender validation.
@@ -217,11 +226,12 @@ public final class ReplicationReceiveHandler {
                                              transport,
                                              onGap,
                                              durability,
-                                             CommittedStreamOwnerSource.none());
+                                             CommittedStreamOwnerSource.none(),
+                                             OperatorWarningSink.logOnly());
     }
 
     /// Verifying factory WITH the replica durability barrier (#634 item 1) AND sender validation against
-    /// the committed partition owner (#1230) — the production wiring.
+    /// the committed partition owner (#1230). Operator warnings are logged only.
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       LocalHead localHead,
@@ -229,7 +239,35 @@ public final class ReplicationReceiveHandler {
                                                                       BiConsumer<String, Integer> onGap,
                                                                       ReplicaDurability durability,
                                                                       CommittedStreamOwnerSource committedOwners) {
-        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, durability, committedOwners);
+        return replicationReceiveHandler(self,
+                                         appender,
+                                         localHead,
+                                         transport,
+                                         onGap,
+                                         durability,
+                                         committedOwners,
+                                         OperatorWarningSink.logOnly());
+    }
+
+    /// Full factory: the durability barrier, sender validation, and the operator-warning sink that
+    /// carries a withheld-ack fsync failure to the cluster event log (#1574). This is the production
+    /// wiring.
+    public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
+                                                                      RecoveredAppender appender,
+                                                                      LocalHead localHead,
+                                                                      ReplicationTransport transport,
+                                                                      BiConsumer<String, Integer> onGap,
+                                                                      ReplicaDurability durability,
+                                                                      CommittedStreamOwnerSource committedOwners,
+                                                                      OperatorWarningSink operatorWarnings) {
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             localHead,
+                                             transport,
+                                             onGap,
+                                             durability,
+                                             committedOwners,
+                                             operatorWarnings);
     }
 
     @Contract
@@ -346,12 +384,20 @@ public final class ReplicationReceiveHandler {
         durability.sync(streamName, partition)
                   .onSuccess(_ -> transport.send(message.governorId(),
                                                  replicateAck(self, streamName, partition, highestHeld)))
-                  .onFailure(cause -> log.warn("ReplicationReceiveHandler: durability sync failed for {}[{}] "
-                                              + "up to {} — WITHHOLDING ack (applied but not fsynced): {}",
-                                               streamName,
-                                               partition,
-                                               highestHeld,
-                                               cause.message()));
+                  .onFailure(cause -> reportWithheldAck(streamName, partition, highestHeld, cause));
+    }
+
+    private Unit reportWithheldAck(String streamName, int partition, long highestHeld, Cause cause) {
+        return OperatorWarnings.raise(log,
+                                      operatorWarnings,
+                                      REPLICA_FSYNC_FAILED,
+                                      streamName + "[" + partition + "]",
+                                      "ReplicationReceiveHandler: durability sync failed for {}[{}] "
+                                     + "up to {} — WITHHOLDING ack (applied but not fsynced): {}",
+                                      streamName,
+                                      partition,
+                                      highestHeld,
+                                      cause.message());
     }
 
     /// The batch stopped at `refusedAt`, and `onGap` fires for every stop. After an append failure, or a gap opened

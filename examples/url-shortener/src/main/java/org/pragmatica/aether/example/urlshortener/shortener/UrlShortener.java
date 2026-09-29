@@ -1,5 +1,9 @@
 package org.pragmatica.aether.example.urlshortener.shortener;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.example.urlshortener.shortener.UrlPersistence.UrlRow;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.annotation.Slice;
@@ -8,10 +12,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
-
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.regex.Pattern;
 
 
 /// URL shortener slice, artifact version 1.0.0 -- the baseline half of the rolling-update pair.
@@ -23,38 +23,37 @@ import java.util.regex.Pattern;
 /// Does NOT demonstrate: the `version` field in responses -- that is exactly what url-shortener-v2
 /// adds, and deploying the two side by side is the point of the pair. No auth, no rate limiting, no
 /// short-code expiry.
-@Slice public interface UrlShortener {
+@Slice
+public interface UrlShortener {
     String BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
     record ShortenRequest(String url) {
         private static final Pattern URL_PATTERN = Pattern.compile("^https?://[^\\s/$.?#].[^\\s]*$");
-
         private static final Cause EMPTY_URL = UrlError.invalidUrl("URL cannot be empty");
-
         private static final Cause INVALID_URL_FORMAT = UrlError.invalidUrl("Invalid URL format");
 
         public static Result<ShortenRequest> shortenRequest(String url) {
-            return Verify.ensure(url, Verify.Is::notNull, EMPTY_URL).filter(u -> EMPTY_URL, Verify.Is::notBlank)
-                                .map(String::trim)
-                                .filter(u -> INVALID_URL_FORMAT,
-                                        URL_PATTERN.asMatchPredicate())
-                                .map(ShortenRequest::new);
+            return Verify.ensure(url, Verify.Is::notNull, EMPTY_URL)
+                         .filter(u -> EMPTY_URL, Verify.Is::notBlank)
+                         .map(String::trim)
+                         .filter(u -> INVALID_URL_FORMAT,
+                                 URL_PATTERN.asMatchPredicate())
+                         .map(ShortenRequest::new);
         }
     }
 
     record ResolveRequest(String shortCode) {
         private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Za-z0-9]{6,8}$");
-
         private static final Cause EMPTY_CODE = UrlError.invalidCode("Short code cannot be empty");
-
         private static final Cause INVALID_CODE_FORMAT = UrlError.invalidCode("Invalid short code format");
 
         public static Result<ResolveRequest> resolveRequest(String shortCode) {
-            return Verify.ensure(shortCode, Verify.Is::notNull, EMPTY_CODE).filter(c -> EMPTY_CODE, Verify.Is::notBlank)
-                                .map(String::trim)
-                                .filter(c -> INVALID_CODE_FORMAT,
-                                        CODE_PATTERN.asMatchPredicate())
-                                .map(ResolveRequest::new);
+            return Verify.ensure(shortCode, Verify.Is::notNull, EMPTY_CODE)
+                         .filter(c -> EMPTY_CODE, Verify.Is::notBlank)
+                         .map(String::trim)
+                         .filter(c -> INVALID_CODE_FORMAT,
+                                 CODE_PATTERN.asMatchPredicate())
+                         .map(ResolveRequest::new);
         }
     }
 
@@ -70,30 +69,34 @@ import java.util.regex.Pattern;
         }
     }
 
-    record ClickEvent(String shortCode){}
+    record ClickEvent(String shortCode) {}
 
     sealed interface UrlError extends Cause {
         record InvalidUrl(String reason) implements UrlError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid URL: " + reason;
             }
         }
 
         record InvalidCode(String reason) implements UrlError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid short code: " + reason;
             }
         }
 
         enum NotFound implements UrlError {
             INSTANCE;
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Short URL not found";
             }
         }
 
         record StorageError(String operation, Throwable cause) implements UrlError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Storage error during " + operation + ": " + cause.getMessage();
             }
         }
@@ -113,33 +116,39 @@ import java.util.regex.Pattern;
     static UrlShortener urlShortener(UrlPersistence persistence,
                                      @ClickEventPublisher Publisher<ClickEvent> clickPublisher) {
         record urlShortener(UrlPersistence persistence, Publisher<ClickEvent> clickPublisher) implements UrlShortener {
-            @Override public Promise<ShortenResponse> shorten(ShortenRequest request) {
+            @Override
+            public Promise<ShortenResponse> shorten(ShortenRequest request) {
                 var url = request.url();
+
                 return persistence.findByOriginalUrl(url)
-                                                    .flatMap(existing -> existing.map(row -> Promise.success(ShortenResponse.shortenResponse(row.shortCode(),
-                                                                                                                                             url)))
-                .or(() -> createNewShortUrl(url)));
+                                  .flatMap(existing -> existing.map(row -> Promise.success(ShortenResponse.shortenResponse(row.shortCode(),
+                                                                                                                           url)))
+                                                               .or(() -> createNewShortUrl(url)));
             }
 
-            @Override public Promise<ResolveResponse> resolve(ResolveRequest request) {
+            @Override
+            public Promise<ResolveResponse> resolve(ResolveRequest request) {
                 var shortCode = request.shortCode();
+
                 return persistence.findByShortCode(shortCode)
-                                                  .flatMap(maybeUrl -> maybeUrl.map(row -> publishClickAndRespond(shortCode,
-                                                                                                                  row.originalUrl()))
-                .or(UrlError.NotFound.INSTANCE::promise));
+                                  .flatMap(maybeUrl -> maybeUrl.map(row -> publishClickAndRespond(shortCode,
+                                                                                                  row.originalUrl()))
+                                                               .or(UrlError.NotFound.INSTANCE::promise));
             }
 
             private Promise<ResolveResponse> publishClickAndRespond(String shortCode, String url) {
                 return clickPublisher.publish(new ClickEvent(shortCode))
-                                             .map(_ -> ResolveResponse.resolveResponse(shortCode, url));
+                                     .map(_ -> ResolveResponse.resolveResponse(shortCode, url));
             }
 
             private Promise<ShortenResponse> createNewShortUrl(String url) {
-                return computeShortCode(url).async().flatMap(shortCode -> insertNewUrl(url, shortCode));
+                return computeShortCode(url).async()
+                                       .flatMap(shortCode -> insertNewUrl(url, shortCode));
             }
 
             private Promise<ShortenResponse> insertNewUrl(String url, String shortCode) {
-                return persistence.insertUrl(shortCode, url).map(_ -> ShortenResponse.shortenResponse(shortCode, url));
+                return persistence.insertUrl(shortCode, url)
+                                  .map(_ -> ShortenResponse.shortenResponse(shortCode, url));
             }
 
             private static Result<String> computeShortCode(String url) {
@@ -158,21 +167,31 @@ import java.util.regex.Pattern;
 
             private static String formatHashBytes(byte[] hashBytes) {
                 var sb = new StringBuilder();
-                for (int i = 0;i <8;i++) {sb.append(String.format("%02x", hashBytes[i]));}
+
+                for (int i = 0; i < 8; i++) {
+                    sb.append(String.format("%02x", hashBytes[i]));
+                }
+
                 return sb.toString();
             }
 
             private static String toBase62(String hexHash, int length) {
                 var value = Long.parseUnsignedLong(hexHash.substring(0, 12), 16);
                 var sb = new StringBuilder();
-                while (value > 0 && sb.length() <length) {
+
+                while (value > 0 && sb.length() < length) {
                     sb.insert(0, BASE62_CHARS.charAt((int)(value % 62)));
                     value /= 62;
                 }
-                while (sb.length() <length) {sb.insert(0, '0');}
+
+                while (sb.length() < length) {
+                    sb.insert(0, '0');
+                }
+
                 return sb.toString();
             }
         }
+
         return new urlShortener(persistence, clickPublisher);
     }
 
