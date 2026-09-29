@@ -44,7 +44,7 @@ import static org.pragmatica.lang.Option.some;
 /// On {@link #reconcile()} it snapshots the current core members and cluster size, then for each
 /// stream from the {@link StreamCatalog}:
 ///   1. classifies it APP vs SYSTEM ({@code system:*} namespace ⇒ {@link StreamClass#SYSTEM}),
-///   2. computes the effective replication factor (APP ⇒ the configured `replicas` knob — total
+///   2. computes the effective replication factor (APP ⇒ the configured `replication_factor` — total
 ///      copies including the owner — clamped to cluster size;
 ///      SYSTEM ⇒ {@link ReplicaPlacement#systemReplicationFactor(int)}),
 ///   3. for each partition computes {@link ReplicaPlacement#place} and diffs the desired replica

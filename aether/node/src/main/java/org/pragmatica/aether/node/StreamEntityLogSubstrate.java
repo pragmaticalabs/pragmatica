@@ -250,7 +250,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// caller believe it had lost a write it actually has. [EntityLogError.ReplicationBarrierUnmet] says
     /// exactly which of the two happened.
     ///
-    /// `minSyncReplicas <= 1` skips the barrier entirely rather than awaiting zero acks — the declared
+    /// `confirmationFactor <= 1` skips the barrier entirely rather than awaiting zero acks — the declared
     /// single-replica mode, where the honest guarantee is restart-durability and nothing more.
     @Override
     public Promise<Long> append(String keyspace, int partition, byte[] record) {

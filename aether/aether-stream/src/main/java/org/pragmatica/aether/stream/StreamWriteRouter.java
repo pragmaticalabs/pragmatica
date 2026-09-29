@@ -26,13 +26,13 @@ import org.pragmatica.lang.Promise;
 /// the management/API publish directly, the slice {@link DefaultStreamPublisher} and
 /// `StreamAccess.publish` ({@link PartitionedStreamAccess}) after encoding the event and picking its
 /// partition — so owner routing, the STRONG refusal (#1262), write-forwarding with the bounded retry
-/// ({@link StreamForwardRetry}), the committed-owner redirect (#1230) and the min-sync barrier are decided
+/// ({@link StreamForwardRetry}), the committed-owner redirect (#1230) and the confirmation barrier are decided
 /// once and cannot drift between paths. It is also the publish-side mirror of {@link StreamReadRouter}:
 /// when this node is the partition's owner it appends locally and awaits the barrier; otherwise it
 /// write-forwards to the HRW owner via {@link StreamForwardClient} — the SAME deterministic owner the read
 /// router routes to.
 ///
-/// The min-sync barrier is the stream's committed `min-sync-replicas`, read live on every publish, never a
+/// The confirmation barrier is the stream's committed `confirmation_factor`, read live on every publish, never a
 /// value frozen into an entry point at construction. An unknown self never forwards: with no identity to
 /// compare against, "the owner is someone else" cannot be established, so the write lands locally and the
 /// committed-owner admission decides.
@@ -46,7 +46,7 @@ import org.pragmatica.lang.Promise;
 /// owner-local by construction and builds an EVENTUAL config itself, so neither the owner routing nor the
 /// #1262 consistency guard applies to it. The owner side of a forwarded publish
 /// ({@code StreamForwardHandler}) is the router's counterpart on the receiving node. It reads
-/// {@code min-sync-replicas} TWICE (once for the pre-append floor, once for the barrier) where this router
+/// {@code confirmation_factor} TWICE (once for the pre-append floor, once for the barrier) where this router
 /// reads it ONCE and feeds both from that value ({@link #publishLocal}) — and that asymmetry is
 /// DELIBERATE, not drift: on the handler's lazy-materialization arm the first read is {@code 0} (the stream
 /// is not yet in the owner's map; {@link StreamPartitionManager#publishForwarded} materializes it from the
@@ -103,7 +103,7 @@ public final class StreamWriteRouter {
 
     /// Publish `payload` to `(streamName, partition)`, resolving to the assigned offset. Routes by
     /// AUTHORITY, never by ring presence (#1230) — a replica holds the same materialized ring the owner
-    /// does: a remote HRW owner is write-forwarded; a self owner appends locally (local append + min-sync
+    /// does: a remote HRW owner is write-forwarded; a self owner appends locally (local append + confirmation
     /// barrier — the one path every entry point gets since #1263). Falls back to a
     /// local append only when the owner is unknown or no forward client is wired (bootstrap / minimal
     /// runtime), matching the read router's soft-fail-to-local posture. The local append is admitted only
@@ -117,7 +117,7 @@ public final class StreamWriteRouter {
                                .flatMap(_ -> routePublish(streamName, partition, payload, timestamp));
     }
 
-    /// Batch uses the same authority routing and live min-sync configuration as a single write.
+    /// Batch uses the same authority routing and live confirmation factor as a single write.
     /// Every local run event is attempted before its cumulative replication barrier; if that barrier
     /// fails all its outcomes are unknown. Remote/fallback runs stop after the first failed event.
     public Promise<List<PublishOutcome>> publishBatch(String streamName,
@@ -237,7 +237,7 @@ public final class StreamWriteRouter {
                          .or(false);
     }
 
-    /// `min-sync-replicas` is read ONCE here and feeds both the pre-append floor and the post-append barrier,
+    /// `confirmation_factor` is read ONCE here and feeds both the pre-append floor and the post-append barrier,
     /// so a config raised while a publish is in flight moves the NEXT publish's barrier, never this one's
     /// (#1361 M12; pinned by `StreamWritePathContractTest`).
     private Promise<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {

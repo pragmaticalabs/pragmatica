@@ -147,11 +147,11 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.tieredReader = tieredReader;
     }
 
-    /// #1236: the replica floor (`min-sync - 1` peers) is checked BEFORE the owner appends, so a forwarded
+    /// #1236: the replica floor (`CF - 1` peers) is checked BEFORE the owner appends, so a forwarded
     /// publish refused with `NOT_ENOUGH_REPLICAS` is genuinely not in the log — and AFTER the #1230 owner
     /// admission, so a forward that lands on a non-owner is answered retryable ([StreamError.NotOwnerAppend])
     /// rather than with a floor verdict this node does not own. A stream this owner has not yet materialized
-    /// reports `min-sync` 0 here; [StreamPartitionManager#publishForwarded] then materializes it from the
+    /// reports a confirmation factor of 0 here; [StreamPartitionManager#publishForwarded] then materializes it from the
     /// committed config and checks THAT config's floor before appending (#1290 review M1), so the refusal
     /// is clean on that path too.
     @Contract
@@ -169,11 +169,11 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                         .onFailure(cause -> sendPublishFailure(request, cause));
     }
 
-    /// The min-sync barrier belongs HERE, on the owner, because this is where the ack for a forwarded
+    /// The confirmation barrier belongs HERE, on the owner, because this is where the ack for a forwarded
     /// publish is produced. The sender's write path ([org.pragmatica.aether.stream.StreamWriteRouter], which
     /// every entry point delegates to since #1263) awaits replication only on its local-append arm — so before
     /// this, every publish that was forwarded to the owner acked on the owner's local fsync ALONE, silently
-    /// dropping `min-sync-replicas` to 1. Measured 2026-08-16 (02y-stream-crash, remote cluster B): 80/80 events ACKED, then a SIGKILL of
+    /// dropping `confirmation_factor` to 1. Measured 2026-08-16 (02y-stream-crash, remote cluster B): 80/80 events ACKED, then a SIGKILL of
     /// the node owning partitions 0 and 2 lost BOTH partitions whole — 41 acked events gone, with the
     /// designated replica still `SYNCING` and never having acked a single one. Gating here fixes both
     /// writer paths at once and makes a forwarded ack mean exactly what a local ack means.

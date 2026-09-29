@@ -165,7 +165,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final AtomicLong appendListenerFailures = new AtomicLong();
     /// #1235: the three positions of a partition are the header head (APPENDED), this (DURABLE — the
     /// owner's WAL fsync, or a replica's own WAL write) and [#visibleOffset] (VISIBLE — durable AND
-    /// acknowledged by the stream's min-sync peers). Both only move forward, and nothing on them takes a lock.
+    /// acknowledged by the stream's confirmation peers). Both only move forward, and nothing on them takes a lock.
     private final AtomicLong durableOffset = new AtomicLong(NO_OFFSET);
     /// The highest offset a consumer may see: [#read] and [#readSlice] are bounded by it, and the append
     /// listeners are notified when it advances. A plain [#append]/[#appendBatch] advances it at once (a
@@ -397,7 +397,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///
     /// The event is NOT made visible and no listener is notified for it here (#1235): the caller advances
     /// [#markDurable] and [#advanceVisible] once the event is durable and, on an owner, acknowledged by its
-    /// min-sync peers. Listeners then learn the new visible high-water on this ring's serial notifier,
+    /// confirmation peers. Listeners then learn the new visible high-water on this ring's serial notifier,
     /// never under the section.
     public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {

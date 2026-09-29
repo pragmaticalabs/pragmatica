@@ -1571,7 +1571,7 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
-    /// consensus (e.g. `replicas=2 / min-sync=2` at slice activation), place its replica set NOW instead
+    /// consensus (e.g. `replication_factor=2 / confirmation_factor=2` at slice activation), place its replica set NOW instead
     /// of waiting for an unrelated membership/quorum edge that may never fire in a membership-stable
     /// cluster. Registered as the SECOND `StreamConfigKey` put-handler, so it runs AFTER
     /// [StreamPartitionManager#onStreamConfigPut] has hydrated the stream into `replicaCatalog()`
@@ -5022,7 +5022,7 @@ public interface AetherNode extends ManageableNode {
         // against the HRW-derived desired replica set on every membership change. Members are the single
         // live placement source (#1550, placementMembers); cluster size comes from the consensus topology
         // observer; the stream catalog (name/partitions/
-        // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
+        // confirmationFactor + partition-has-data) is adapted from the partition manager. The A4
         // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
         //
         // 1d-iii / #265: the leader-only StreamPartitionOwnershipWriter, fired by the controller's
@@ -5295,7 +5295,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                    () -> switchableCluster.current() instanceof ForwardingClusterNode),
                                                                                              projectionRegistry);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
-        // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
+        // group-attributed and appended to the topic's `.dlq` stream through the same confirmation
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
         // dispatch node that does not own the DLQ partition forwards instead of stalling). All
         // other streams keep the in-memory default; its durability question is a separate ticket's

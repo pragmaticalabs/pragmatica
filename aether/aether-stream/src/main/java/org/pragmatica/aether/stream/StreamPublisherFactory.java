@@ -52,7 +52,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     /// section name. Without this the publish path created `repl-failover-events` while every
     /// management route addressed `ns:repl-failover-events:1.0.0`, so `streamConfigKey(qualified)`
     /// could not find the config this side had committed and the catalog minted a second ring from
-    /// management defaults — one declaration, two live rings, and a declared `min-sync-replicas = 2`
+    /// management defaults — one declaration, two live rings, and a declared `confirmation_factor = 2`
     /// durability contract silently void for everything written through the catalog.
     @Override
     public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
@@ -80,7 +80,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     }
 
     /// Shared publisher assembly — the ONE place the stream-publish collaborator set (partition
-    /// routing, forward client, HRW owner resolver, self-guard, min-sync barrier) is folded from a
+    /// routing, forward client, HRW owner resolver, self-guard, confirmation barrier) is folded from a
     /// [ProvisioningContext] into a [DefaultStreamPublisher]. Public because the durable-topic
     /// publisher ([org.pragmatica.aether.stream.topic.DurableTopicSubstrate]) rides the identical
     /// path over its `topic:<address>` stream; a second hand-rolled assembly would drift from this

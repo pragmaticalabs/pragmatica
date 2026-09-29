@@ -750,7 +750,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// Owner-routed publish to an explicit `partition` (#524: default 0 — unchanged from the earlier
     /// hardwired behavior — when the request omits it). When this node is metadata-only (#265) the
     /// write is forwarded to the partition owner via [StreamWriteRouter] instead of failing
-    /// PARTITION_NOT_LOCAL on a local append; an owner node appends locally (and awaits the min-sync
+    /// PARTITION_NOT_LOCAL on a local append; an owner node appends locally (and awaits the confirmation
     /// barrier).
     ///
     /// Engine key via [StreamManager#engineKey], not `addr.asString()`: a `system`-namespace address
