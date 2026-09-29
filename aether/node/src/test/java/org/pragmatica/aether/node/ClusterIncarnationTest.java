@@ -238,6 +238,30 @@ class ClusterIncarnationTest {
             assertThat(registrar.isComplete()).isTrue();
         }
 
+        /// #1635/#1663: the incarnation id identifies the cluster instance for fork detection, so a leader
+        /// change is NOT a mint point — only genesis, restore and declare-genesis are. A successor leader
+        /// whose registrar would mint a different id leaves the committed one untouched.
+        @Test
+        void leaderChange_afterGenesis_keepsTheCommittedIncarnationId() {
+            var first = registrar(this::applyToStore);
+
+            first.onLeaderChange(leaderChange(true));
+            var minted = ClusterIncarnation.committed(kvStore)
+                                           .unwrap();
+            first.onLeaderChange(leaderChange(false));
+
+            var successor = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
+                                                                                                                           this::applyToStore,
+                                                                                                                           () -> "lineage-successor",
+                                                                                                                           () -> "id-successor"),
+                                                                                    this::capture);
+            successor.onLeaderChange(leaderChange(true));
+
+            assertThat(successor.isComplete()).isTrue();
+            assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(minted));
+            assertThat(ClusterIncarnation.currentId(kvStore)).isEqualTo(Option.some("id-minted"));
+        }
+
         /// A commit that fails (not yet quorate) is retried on the next pass rather than given up.
         @Test
         void transientCommitFailure_isRetried() {
