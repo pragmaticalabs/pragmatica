@@ -339,6 +339,44 @@ public class PromiseTest {
         assertEquals(Result.success(1), lastPromise.await(timeSpan(1).seconds()));
     }
 
+    /// #1188 — `withResult` is a DEPENDENT step: its action runs BEFORE the returned promise resolves. This
+    /// is the guarantee (and the reason a latch released by the action cannot imply `isResolved()`); it is
+    /// read deterministically from inside the action. Mutation that reddens it: implement `withResult` as
+    /// the independent `onResult` (the returned promise is then the already-resolved source).
+    @Test
+    void withResult_runsTheActionBeforeTheReturnedPromiseResolves() {
+        var source = Promise.<Integer>promise();
+        var derived = new AtomicReference<Promise<Integer>>();
+        var resolvedWhenActionRan = new AtomicReference<Boolean>();
+
+        derived.set(source.withResult(_ -> resolvedWhenActionRan.set(derived.get().isResolved())));
+        source.succeed(1);
+
+        assertEquals(Result.success(1), derived.get().await(timeSpan(1).seconds()));
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+        while (resolvedWhenActionRan.get() == null && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertNotNull(resolvedWhenActionRan.get(), "control: the action ran");
+        assertEquals(Boolean.FALSE, resolvedWhenActionRan.get(), "the action runs before the returned promise resolves");
+    }
+
+    /// #1188 — the consequence callers rely on: a step chained on `withResult`'s promise always observes the
+    /// action's effect. Under the `onResult` mutation the action runs on another thread and the chained step
+    /// reads the value before it is set.
+    @Test
+    void withResult_chainedStepAlwaysObservesTheActionsEffect() {
+        for (int i = 0; i < 2_000; i++) {
+            var source = Promise.<Integer>promise();
+            var effect = new AtomicInteger();
+            var observed = source.withResult(result -> result.onSuccess(effect::set))
+                                 .map(_ -> effect.get());
+
+            source.succeed(i + 1);
+            assertEquals(Result.success(i + 1), observed.await(timeSpan(1).seconds()), "iteration " + i);
+        }
+    }
+
     @Test
     void resultActionsAreExecutedWhenPromiseIsResolvedToFailure() throws InterruptedException {
         var latch = new CountDownLatch(3);

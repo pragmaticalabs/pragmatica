@@ -289,9 +289,10 @@ public interface SystemTags {
         // so the clear edge must be its own event.
         pin(table, 290, "org.pragmatica.aether.api.ClusterEvent.ThresholdBreached");
         pin(table, 291, "org.pragmatica.aether.api.ClusterEvent.ThresholdCleared");
+        // #1574: generic operator warning; the condition is a `details.code`, not a wire type.
+        pin(table, 292, "org.pragmatica.aether.api.ClusterEvent.OperatorWarning");
         // #1573: appended, like 290/291 — the committed automatic rollback, CRITICAL, with its evidence.
-        // 293, not 292: open PR branch feat/1574-operator-warning pins 292 (OperatorWarning); skipping it
-        // keeps the two appends from colliding whichever merges first.
+        // 293, not 292: 292 was reserved for #1574's OperatorWarning, which merged after it.
         pin(table, 293, "org.pragmatica.aether.api.ClusterEvent.AutoRollback");
         // HTTP handling and forwarding  [base 512]
         pin(table, 512, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest");

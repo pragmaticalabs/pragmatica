@@ -1,13 +1,13 @@
 package org.pragmatica.aether.example.composition.shared;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
-
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 
 
 /// Monetary amount value object wrapping BigDecimal.
@@ -18,16 +18,17 @@ import java.math.RoundingMode;
 /// is guaranteed to hold a valid, non-negative amount.
 public record Money(BigDecimal value) {
     private static final Fn1<Cause, String> INVALID_AMOUNT = Causes.forOneValue("Invalid amount: %s");
-    private static final Fn1<Cause, BigDecimal> NEGATIVE_AMOUNT =
-        amount -> new OrderError.InvalidAmount("Amount cannot be negative: " + amount);
+
+    private static final Fn1<Cause, BigDecimal> NEGATIVE_AMOUNT = amount -> new OrderError.InvalidAmount("Amount cannot be negative: " + amount);
 
     public static Result<Money> money(String raw) {
-        return parseAmount(raw)
-            .flatMap(Money::fromDecimal);
+        return parseAmount(raw).flatMap(Money::fromDecimal);
     }
 
     public static Result<Money> fromDecimal(BigDecimal amount) {
-        return Verify.ensure(amount, a -> a.compareTo(BigDecimal.ZERO) >= 0, NEGATIVE_AMOUNT)
+        return Verify.ensure(amount,
+                             a -> a.compareTo(BigDecimal.ZERO) >= 0,
+                             NEGATIVE_AMOUNT)
                      .map(a -> a.setScale(2, RoundingMode.HALF_UP))
                      .map(Money::new);
     }
