@@ -20,3 +20,7 @@
 - **One local resolution per request (v1670 R2-N4).** The ingress's policy check and dispatch, and the host's
   re-authorization of a forwarded request and its dispatch, each read ONE `resolveLocal` answer: (route, router).
   Two lookups could straddle an undeploy and pair a parent's policy with a child's router.
+- **Also fixed: a forwarded request runs under the host's validated caller (v1670 R2-N6).** The host re-authorized a
+  forwarded request and then discarded the SecurityContext it had validated, so a slice saw no principal on a forwarded
+  call and the caller on a local one. The context is now bound for the forwarded dispatch as it is locally. The host's
+  `security_mode = "none"` guard, the only refusal of an auth-requiring forward in that mode, now has a pin (R2-N5).

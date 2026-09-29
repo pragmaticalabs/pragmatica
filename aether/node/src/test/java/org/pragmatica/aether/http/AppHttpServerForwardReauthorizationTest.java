@@ -141,6 +141,116 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(router.handleCount()).isZero();
     }
 
+    // ---- v1670 "cred path": the PRODUCTION node codec carries the credential, and the host validates it with the
+    // same validator the ingress uses. Real keys with roles, so an admin key and a service key are told apart.
+    private static final String ADMIN_KEY = "cred-path-admin-key-13579";
+    private static final String SERVICE_KEY = "cred-path-service-key-24680";
+
+    private AppHttpServer roleKeyedHost(org.pragmatica.serialization.Deserializer deserializer) {
+        var keys = Map.of(ADMIN_KEY,
+                          org.pragmatica.aether.config.ApiKeyEntry.apiKeyEntry("admin-caller", Set.of("admin")),
+                          SERVICE_KEY,
+                          org.pragmatica.aether.config.ApiKeyEntry.apiKeyEntry("service-caller", Set.of("service")));
+        var config = AppHttpConfig.appHttpConfig(true,
+                                                 TEST_PORT,
+                                                 keys,
+                                                 AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                                 org.pragmatica.aether.config.SecurityMode.API_KEY,
+                                                 Option.empty(),
+                                                 org.pragmatica.aether.config.HttpProtocol.H1)
+                                  .unwrap();
+        var adminRoute = SecurityPolicy.roleRequired("admin");
+
+        return AppHttpServer.appHttpServer(config,
+                                           ForwardingTimeouts.forwardingTimeouts(),
+                                           SELF_NODE,
+                                           HttpRouteRegistry.httpRouteRegistry(),
+                                           Option.some(new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, adminRoute, adminRoute)),
+                                           Option.some(network),
+                                           Option.some(serializer),
+                                           Option.some(deserializer),
+                                           Option.none(),
+                                           Option.none(),
+                                           Option.none(),
+                                           Option.none(),
+                                           Option.<org.pragmatica.aether.update.DeploymentManager>none());
+    }
+
+    private static org.pragmatica.serialization.SliceCodec productionCodec() {
+        return org.pragmatica.aether.node.NodeCodecs.nodeCodecs(org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs());
+    }
+
+    private static HttpForwardRequest encodedForward(byte[] bytes) {
+        return new HttpForwardRequest(SENDER_NODE,
+                                      "corr-cred",
+                                      "req-cred",
+                                      bytes,
+                                      org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline.APP,
+                                      Deadline.NO_BUDGET);
+    }
+
+    private static HttpRequestContext keyed(String key) {
+        return HttpRequestContext.httpRequestContext("/api/admin/secret", "GET", Map.of(), Map.of("X-API-Key", List.of(key)), "req-cred");
+    }
+
+    @Test
+    void productionCodec_carriesTheApiKeyHeader() {
+        var codec = productionCodec();
+        HttpRequestContext decoded = codec.decode(codec.encode(keyed(ADMIN_KEY)));
+
+        assertThat(decoded.headers()).containsEntry("X-API-Key", List.of(ADMIN_KEY));
+    }
+
+    /// An admin key, forwarded through the production codec to a ROLE:admin host: served, and -- v1670 R2-N6 -- the
+    /// slice runs under the host's validated SecurityContext, as a local request does.
+    @Test
+    void adminKeyForward_throughTheProductionCodec_isServed_underTheCallersPrincipal() {
+        var codec = productionCodec();
+
+        roleKeyedHost(codec).onHttpForwardRequest(encodedForward(codec.encode(keyed(ADMIN_KEY))));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).as("authorized admin forward: %s", body(relayed)).isEqualTo(200);
+        assertThat(router.handleCount()).isEqualTo(1);
+        assertThat(router.principalSeen()).as("the slice sees the forwarded caller's principal").isEqualTo("api-key:admin-caller");
+    }
+
+    @Test
+    void serviceKeyForward_throughTheProductionCodec_isRefused403() {
+        var codec = productionCodec();
+
+        roleKeyedHost(codec).onHttpForwardRequest(encodedForward(codec.encode(keyed(SERVICE_KEY))));
+
+        assertThat(relayedResponse().statusCode()).isEqualTo(403);
+        assertThat(router.handleCount()).isZero();
+    }
+
+    /// v1670 R2-N5: under `security_mode = "none"` the validator permits every caller (with admin), so the host's own
+    /// NONE-mode guard is the ONLY refusal of a forwarded request for an auth-requiring route.
+    @Test
+    void noneModeHost_refusesAForwardForAnAuthRequiringRoute_withoutCallingTheSlice() {
+        var adminRoute = SecurityPolicy.roleRequired("admin");
+        var host = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+                                               ForwardingTimeouts.forwardingTimeouts(),
+                                               SELF_NODE,
+                                               HttpRouteRegistry.httpRouteRegistry(),
+                                               Option.some(new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, adminRoute, adminRoute)),
+                                               Option.some(network),
+                                               Option.some(serializer),
+                                               Option.some(new StubDeserializer(withoutCredential("/api/admin/secret"))),
+                                               Option.none(),
+                                               Option.none(),
+                                               Option.none(),
+                                               Option.none(),
+                                               Option.<org.pragmatica.aether.update.DeploymentManager>none());
+
+        host.onHttpForwardRequest(forwardRequest("corr-none-mode"));
+
+        assertThat(relayedResponse().statusCode()).isEqualTo(401);
+        assertThat(router.handleCount()).isZero();
+    }
+
     /// CONTROL: a forwarded request the host's own policy admits is served exactly as before.
     @Test
     void forwardedRequest_admittedByTheHostsPolicy_isServed() {
@@ -195,9 +305,19 @@ class AppHttpServerForwardReauthorizationTest {
             return handleCount.get();
         }
 
+        private final java.util.concurrent.atomic.AtomicReference<String> principalSeen = new java.util.concurrent.atomic.AtomicReference<>("");
+
+        String principalSeen() {
+            return principalSeen.get();
+        }
+
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
             handleCount.incrementAndGet();
+            principalSeen.set(org.pragmatica.aether.http.handler.security.SecurityContextHolder.currentContext()
+                                                                                              .map(context -> context.principal()
+                                                                                                                     .value())
+                                                                                              .or(""));
 
             return Promise.success(HttpResponseData.httpResponseData(200, "served"));
         }

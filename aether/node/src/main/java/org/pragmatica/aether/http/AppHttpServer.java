@@ -1520,13 +1520,42 @@ class AppHttpServerAdapter implements AppHttpServer {
             return;
         }
 
-        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath, local).onPresent(_ -> serveForwarded(httpCtx,
-                                                                                                                          request,
-                                                                                                                          network,
-                                                                                                                          ser,
-                                                                                                                          routerOpt.unwrap(),
-                                                                                                                          method,
-                                                                                                                          normalizedPath));
+        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath, local).onPresent(securityContext -> serveAuthenticatedForwarded(securityContext,
+                                                                                                                                                     httpCtx,
+                                                                                                                                                     request,
+                                                                                                                                                     network,
+                                                                                                                                                     ser,
+                                                                                                                                                     routerOpt.unwrap(),
+                                                                                                                                                     method,
+                                                                                                                                                     normalizedPath));
+    }
+
+    /// #1678 (v1670 R2-N6): a forwarded request runs its slice under the SecurityContext this host just validated,
+    /// bound exactly as the local path binds it (`dispatchAuthenticated`), so slice code reading the principal or its
+    /// roles sees the caller whether the request arrived locally or was forwarded.
+    @Contract
+    private void serveAuthenticatedForwarded(SecurityContext securityContext,
+                                             HttpRequestContext httpCtx,
+                                             HttpForwardRequest request,
+                                             ClusterNetwork network,
+                                             Serializer ser,
+                                             SliceRouter router,
+                                             String method,
+                                             String normalizedPath) {
+        ScopedValue.where(SecurityContextHolder.scopedValue(),
+                          securityContext)
+                   .run(() -> InvocationContext.runWithContext(request.requestId(),
+                                                               securityContext.principal().value(),
+                                                               request.sender().id(),
+                                                               0,
+                                                               true,
+                                                               () -> serveForwarded(httpCtx,
+                                                                                    request,
+                                                                                    network,
+                                                                                    ser,
+                                                                                    router,
+                                                                                    method,
+                                                                                    normalizedPath)));
     }
 
     /// #1659 (v1670): the host RE-AUTHORIZES every forwarded request against the route it will actually serve it by
@@ -1537,13 +1566,13 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// is served only when BOTH policies admit it, so a propagation window in either direction fails closed. The
     /// forwarded context carries the client's headers, so the credential is the one the ingress saw. A refusal goes
     /// back as the same 401/403 problem response the ingress would send, so the client sees the status.
-    private Option<Unit> reauthorizeForwarded(HttpRequestContext httpCtx,
-                                              HttpForwardRequest request,
-                                              ClusterNetwork network,
-                                              Serializer ser,
-                                              String method,
-                                              String normalizedPath,
-                                              Option<LocalResolution> local) {
+    private Option<SecurityContext> reauthorizeForwarded(HttpRequestContext httpCtx,
+                                                         HttpForwardRequest request,
+                                                         ClusterNetwork network,
+                                                         Serializer ser,
+                                                         String method,
+                                                         String normalizedPath,
+                                                         Option<LocalResolution> local) {
         var policy = resolveEffectivePolicy(method, normalizedPath, context.currentRoutes(), local);
 
         if (requiresAuthentication(policy) && config.securityMode() == SecurityMode.NONE) {
@@ -1555,8 +1584,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         return securityValidator.validate(httpCtx, policy)
                                 .flatMap(ctx -> enforceRoleIfRequired(ctx, policy))
                                 .onFailure(cause -> refuseForwarded(cause, httpCtx, request, network, ser, method))
-                                .option()
-                                .map(_ -> Unit.unit());
+                                .option();
     }
 
     @Contract
