@@ -88,14 +88,14 @@ class ClusterEventsLimitsTest {
     }
 
     /// #1571 — a count one past the read window refuses the boot, and the refusal names the variable, its
-    /// value, and the window it exceeds.
+    /// value, and the window it exceeds. The message is asserted, not the cause type: `Result.all` reports
+    /// every limit's refusal inside one composite cause, as the other refusals in this class rely on.
     @Test
     void clusterEventsLimits_countPastTheReadWindow_refusesTheBoot_namingBoth() {
         var value = String.valueOf(AetherNode.CLUSTER_EVENTS_MAX_RETAINED + 1);
 
         limitsFrom(Map.of(ClusterEventsLimits.MAX_COUNT_VARIABLE, value))
                 .onSuccess(limits -> fail("expected " + ClusterEventsLimits.MAX_COUNT_VARIABLE + "='" + value + "' to be refused, bound " + limits))
-                .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterEventsLimits.InvalidLimit.class))
                 .onFailure(cause -> assertThat(cause.message()).contains(ClusterEventsLimits.MAX_COUNT_VARIABLE + "='" + value + "'",
                                                                          "CLUSTER_EVENTS_MAX_RETAINED=" + AetherNode.CLUSTER_EVENTS_MAX_RETAINED));
     }
