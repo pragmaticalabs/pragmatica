@@ -439,6 +439,31 @@ class DockerComputeProviderTest {
             assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
         }
 
+        /// #1650 F3 (v1650 MF): the same claim against a provisioning host that DOES export its own source and
+        /// zone, injected rather than read from the build machine's env -- so the host-env filter is exercised
+        /// wherever the test runs. The allow-listed cluster secret still arrives from the host (positive control:
+        /// the injected env is really consulted).
+        @Test
+        void buildRunCommand_hostExportsItsOwnSourceAndZone_nodeGetsNeither() {
+            var hostEnv = Map.of("AETHER_SOURCE", "leader-source",
+                                 "AETHER_ZONE", "leader-zone",
+                                 "AETHER_CLUSTER_SECRET", "host-secret");
+            var hostileProvider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, hostEnv::get).unwrap();
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "worker", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
+
+            hostileProvider.provision(spec).await()
+                           .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            assertThat(command).as("CONTROL: the injected host env is consulted").contains("AETHER_CLUSTER_SECRET=host-secret");
+            assertThat(command.stream().filter(arg -> arg.startsWith("AETHER_SOURCE=")).toList()).containsExactly("AETHER_SOURCE=eu-west");
+            assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
+        }
+
         @Test
         void buildRunCommand_emptyCluster_noLongerYieldsDefault() {
             // ctx with an empty cluster name + bootstrap origin (passes preflight). The old

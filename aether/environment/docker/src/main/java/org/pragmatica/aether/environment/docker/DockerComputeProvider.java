@@ -29,6 +29,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
@@ -38,11 +39,22 @@ import static org.pragmatica.lang.Result.success;
 
 
 @Contract
-public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig config) implements ComputeProvider {
+/// `hostEnv` is the provisioning host's environment, the one the identity and Docker-infra allow-lists are
+/// forwarded from. It is injected so the rule that a node's OWN variables never come from it (#1650) is testable
+/// against a host that HAS them, not only against a CI box that happens not to.
+public record DockerComputeProvider(DockerCommandRunner runner,
+                                    DockerConfig config,
+                                    Fn1<String, String> hostEnv) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(DockerComputeProvider.class);
 
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner, DockerConfig config) {
-        return success(new DockerComputeProvider(runner, config));
+        return dockerComputeProvider(runner, config, System::getenv);
+    }
+
+    public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner,
+                                                                      DockerConfig config,
+                                                                      Fn1<String, String> hostEnv) {
+        return success(new DockerComputeProvider(runner, config, hostEnv));
     }
 
     @Override
@@ -383,12 +395,12 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return List.copyOf(command);
     }
 
-    private static void propagateEnvVar(ArrayList<String> command, String name) {
+    private void propagateEnvVar(ArrayList<String> command, String name) {
         if (alreadyEmitted(command, name)) {
             return;
         }
 
-        var value = System.getenv(name);
+        var value = hostEnv.apply(name);
 
         if (value != null && !value.isEmpty()) {
             command.add("-e");
