@@ -290,6 +290,7 @@ jobs:
         if: always()
         with:
           name: e2e-test-results
+          if-no-files-found: error
           path: |
             aether/e2e-tests/target/failsafe-reports/*.xml
             aether/forge/forge-tests/target/failsafe-reports/*.xml

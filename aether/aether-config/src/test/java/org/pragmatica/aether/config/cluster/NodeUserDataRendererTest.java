@@ -4,7 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+
+import org.pragmatica.aether.environment.SourceName;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 
 import org.pragmatica.config.toml.TomlDocument;
 
@@ -12,6 +18,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
@@ -82,6 +90,137 @@ class NodeUserDataRendererTest {
                             + "java token, before -jar, so an exhausted heap kills the node instead of leaving it "
                             + "answering SWIM pings from a dead process. See "
                             + "aether/docs/operators/deployment-recovery.md §4.5. Got:\n" + script);
+        }
+    }
+
+    /// #1650: a node's `AETHER_SOURCE` and `AETHER_ZONE` are ITS OWN -- the source it is rendered from -- never
+    /// the rendering host's. Workers are rendered on the leader, and a node learns its source only from this
+    /// variable (`Main` → the SWIM `source` label → its community); inherited, every core-provisioned worker
+    /// came up as the leader's source, or as `default`, and a multi-source cluster collapsed into one community.
+    @Nested
+    class NodeOwnSourceAndZone {
+        private static final String TWO_SOURCES = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "prod-cluster"
+                version = "1.0.0"
+
+                [runtime.bare-metal]
+                type = "jvm"
+
+                [runtime.containers]
+                type = "container"
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+                zone = "nbg1"
+
+                [source.eu-1.core]
+                count = 3
+                runtime = "bare-metal"
+
+                [source.eu-2]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+                zone = "fsn1"
+
+                [source.eu-2.worker]
+                count = 2
+                runtime = "%s"
+
+                [source.eu-3]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+                zones = ["hel1", "fsn1"]
+
+                [source.eu-3.worker]
+                count = 2
+                runtime = "bare-metal"
+                """;
+
+        /// The host env names ANOTHER source and zone (a leader's own). The emitted values are the node's.
+        @Test
+        void emitIdentityEnv_hostEnvCarriesAnotherSource_emitsTheNodesOwnSourceAndZone() {
+            var emitted = emitWith(Map.of("AETHER_SOURCE", "leader-source", "AETHER_ZONE", "leader-zone"),
+                                   Option.some("fsn1"));
+
+            assertEquals("eu-2", emitted.get("AETHER_SOURCE"), () -> "AETHER_SOURCE must be the node's source: " + emitted);
+            assertEquals("fsn1", emitted.get("AETHER_ZONE"), () -> "AETHER_ZONE must be the node's zone: " + emitted);
+        }
+
+        /// A node whose landing zone is not known must NOT inherit the host's zone -- it is left absent.
+        @Test
+        void emitIdentityEnv_zoneNotKnown_leavesZoneAbsent_evenWhenTheHostHasOne() {
+            var emitted = emitWith(Map.of("AETHER_ZONE", "leader-zone"), Option.none());
+
+            assertFalse(emitted.containsKey("AETHER_ZONE"), () -> "no inherited zone: " + emitted);
+            assertEquals("eu-2", emitted.get("AETHER_SOURCE"));
+        }
+
+        @Test
+        void render_jvmWorker_stampsItsSourceAndSingleZone_inTheEnvFile() {
+            var script = renderWorker("eu-2", "bare-metal");
+
+            assertTrue(script.contains("\nAETHER_SOURCE=eu-2\n"), () -> "JVM env file must carry the node's source. Got:\n" + script);
+            assertTrue(script.contains("\nAETHER_ZONE=fsn1\n"), () -> "JVM env file must carry the node's zone. Got:\n" + script);
+        }
+
+        @Test
+        void render_containerWorker_stampsItsSourceAndSingleZone_onTheDockerRun() {
+            var script = renderWorker("eu-2", "containers");
+
+            assertTrue(script.contains("-e AETHER_SOURCE=\"eu-2\""), () -> "docker run must carry the node's source. Got:\n" + script);
+            assertTrue(script.contains("-e AETHER_ZONE=\"fsn1\""), () -> "docker run must carry the node's zone. Got:\n" + script);
+        }
+
+        /// A multi-zone source is rotated through AFTER rendering, so the zone is unknown: stamped source, no zone.
+        @Test
+        void render_multiZoneSource_stampsSource_andLeavesZoneAbsent() {
+            var script = renderWorker("eu-3", "bare-metal");
+
+            assertTrue(script.contains("\nAETHER_SOURCE=eu-3\n"), () -> "source is always stamped. Got:\n" + script);
+            assertFalse(script.contains("AETHER_ZONE="), () -> "an unknown landing zone must stay absent. Got:\n" + script);
+        }
+
+        private Map<String, String> emitWith(Map<String, String> hostEnv, Option<String> zone) {
+            var emitted = new LinkedHashMap<String, String>();
+
+            NodeUserDataRenderer.emitIdentityEnv((name, value) -> record(emitted, name, value),
+                                                 clusterName("prod-cluster").unwrap(),
+                                                 NodeRole.WORKER,
+                                                 SourceName.sourceName("eu-2").unwrap(),
+                                                 zone,
+                                                 Option.none(),
+                                                 hostEnv::get);
+
+            return emitted;
+        }
+
+        private static Unit record(Map<String, String> emitted, String name, String value) {
+            assertFalse(emitted.containsKey(name), () -> name + " emitted twice");
+            emitted.put(name, value);
+
+            return Unit.unit();
+        }
+
+        private String renderWorker(String source, String runtime) {
+            var config = ClusterBootstrapConfigParser.parse(TWO_SOURCES.formatted(runtime)).unwrap();
+
+            return NodeUserDataRenderer.render(config,
+                                               config.sources().get(source),
+                                               NodeRole.WORKER,
+                                               source + "-worker-0",
+                                               0,
+                                               "test-secret",
+                                               clusterName("prod-cluster").unwrap(),
+                                               TomlDocument.EMPTY,
+                                               List.of(),
+                                               List.of());
         }
     }
 

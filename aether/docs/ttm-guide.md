@@ -103,7 +103,7 @@ confidence_threshold = 0.7
 
 ```bash
 # Start the node
-java -jar target/aether-node.jar
+java -XX:+ExitOnOutOfMemoryError -jar target/aether-node.jar
 
 # Check TTM status
 curl -s http://localhost:8080/api/ttm/status | jq .
