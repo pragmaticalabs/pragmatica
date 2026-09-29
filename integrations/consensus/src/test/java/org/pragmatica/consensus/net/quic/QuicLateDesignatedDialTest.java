@@ -109,22 +109,24 @@ class QuicLateDesignatedDialTest {
             waitUpTo(() -> lowNet.quicMetrics().dialAbandonedCount() == 1, ARMING_WAIT_MS);
             gate.open();
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
+
+            // Asserted while the gate is still open: a link that went through it (only if a dial was NOT abandoned)
+            // must be judged by these, not killed by the gate's close first.
+            assertThat(causes(lowJournal)).as("the late dial never supersedes the live lane at the lower id")
+                                          .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
+            assertThat(causes(highJournal)).as("... nor at the peer")
+                                           .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
+            assertThat(lowNet.quicMetrics().handshakeTotalCount()).as("one connection attached at the lower id").isEqualTo(1);
+            assertThat(highNet.quicMetrics().handshakeTotalCount()).as("... and at the peer").isEqualTo(1);
+            assertThat(lowNet.quicMetrics().dialAbandonedCount())
+                .as("arming: the lower id's own dial was still pending when the peer's link attached, and was abandoned")
+                .isEqualTo(1);
+
+            Arrays.stream(StreamType.values())
+                  .forEach(lane -> sendProbes(lane, lowNet, low, highNet, high));
+            awaitTrue(() -> missing(toHigh, "low-to-high-").isEmpty(), "low -> high on every lane: missing " + missing(toHigh, "low-to-high-"));
+            awaitTrue(() -> missing(toLow, "high-to-low-").isEmpty(), "high -> low on every lane: missing " + missing(toLow, "high-to-low-"));
         }
-
-        Arrays.stream(StreamType.values())
-              .forEach(lane -> sendProbes(lane, lowNet, low, highNet, high));
-        awaitTrue(() -> missing(toHigh, "low-to-high-").isEmpty(), "low -> high on every lane: missing " + missing(toHigh, "low-to-high-"));
-        awaitTrue(() -> missing(toLow, "high-to-low-").isEmpty(), "high -> low on every lane: missing " + missing(toLow, "high-to-low-"));
-
-        assertThat(causes(lowJournal)).as("the late dial never supersedes the live lane at the lower id")
-                                      .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
-        assertThat(causes(highJournal)).as("... nor at the peer")
-                                       .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
-        assertThat(lowNet.quicMetrics().handshakeTotalCount()).as("one connection attached at the lower id").isEqualTo(1);
-        assertThat(highNet.quicMetrics().handshakeTotalCount()).as("... and at the peer").isEqualTo(1);
-        assertThat(lowNet.quicMetrics().dialAbandonedCount())
-            .as("arming: the lower id's own dial was still pending when the peer's link attached, and was abandoned")
-            .isEqualTo(1);
     }
 
     private static void waitUpTo(BooleanSupplier condition, long millis) {
