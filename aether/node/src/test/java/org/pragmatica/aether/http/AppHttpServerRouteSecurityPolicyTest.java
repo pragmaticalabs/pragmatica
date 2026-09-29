@@ -104,6 +104,38 @@ class AppHttpServerRouteSecurityPolicyTest {
         startServer(StubRoutePublisher.hosting("GET", pathPrefix, routePolicy, committed), registry);
     }
 
+    /// As [#startServer(StubRoutePublisher, HttpRouteRegistry)], with an active rollout of the local artifact: ALL_NEW
+    /// from `1.0.0` (the local version, so it is the OLD one) to `2.0.0` -- every request is a strategy-forward candidate.
+    private void startServerWithRollout(StubRoutePublisher publisher, HttpRouteRegistry registry) {
+        httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+
+        var routing = new org.pragmatica.aether.update.DeploymentManager.ActiveRouting(org.pragmatica.aether.update.VersionRouting.ALL_NEW,
+                                                                                       org.pragmatica.aether.artifact.Version.version("1.0.0")
+                                                                                                                             .unwrap(),
+                                                                                       org.pragmatica.aether.artifact.Version.version("2.0.0")
+                                                                                                                             .unwrap());
+        var manager = (org.pragmatica.aether.update.DeploymentManager) java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                                                                                                                new Class<?>[] {org.pragmatica.aether.update.DeploymentManager.class},
+                                                                                                                (proxy, method, args) -> "activeRouting".equals(method.getName())
+                                                                                                                                         ? Option.some(routing)
+                                                                                                                                         : null);
+
+        server = AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY)),
+                                             ForwardingTimeouts.forwardingTimeouts(),
+                                             SELF_NODE,
+                                             registry,
+                                             Option.some(publisher),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.none(),
+                                             Option.some(manager));
+        server.start().await();
+    }
+
     private void startServer(StubRoutePublisher publisher, HttpRouteRegistry registry) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
@@ -408,6 +440,34 @@ class AppHttpServerRouteSecurityPolicyTest {
         var publicSibling = get("/orders/5");
         assertThat(publicSibling.statusCode()).as("CONTROL: the local public sibling is still served: %s", publicSibling.body())
                                               .isEqualTo(200);
+    }
+
+    /// #1678 (C1), the deployment-strategy half: under a rollout, a request the local PUBLIC sibling serves is a
+    /// strategy-forward candidate. Now that a base this node serves keeps its OTHER siblings in the remote view, a
+    /// strategy forward must require the SAME shape remotely -- here only the admin sibling is remote, so
+    /// `/orders/5` stays local (200) rather than being forwarded to the admin sibling's nodes.
+    @Test
+    void strategyForward_requiresTheSameShapeRemotely_otherwiseTheLocalSiblingServes() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        var remoteAdmin = RouteEntry.activeRoute("GET", "/orders/", "adminOrder", "ROLE:admin", "ROLE:admin", 2, List.of("admin"));
+
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, REMOTE_ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(remoteAdmin), Epoch.ZERO)),
+                                                Option.none()));
+        startServerWithRollout(new StubRoutePublisher("GET",
+                                                      "/orders/",
+                                                      SecurityPolicy.publicRoute(),
+                                                      new StubSliceRouter(),
+                                                      SecurityOverrides.EMPTY,
+                                                      SecurityPolicy.publicRoute(),
+                                                      path -> !path.contains("/admin"),
+                                                      Option.some(Set.of(HttpRouteRegistry.RouteInfo.shapeKeyOf(1, List.of())))),
+                               registry);
+
+        var response = get("/orders/5");
+
+        assertThat(response.statusCode()).as("served by the local sibling, not forwarded: %s", response.body()).isEqualTo(200);
+        assertThat(response.body()).contains("served-locally");
     }
 
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> siblingRoutes(boolean adminFirst) {
