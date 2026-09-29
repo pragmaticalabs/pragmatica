@@ -108,30 +108,6 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         }
     }
 
-    /// 409 — `/baseline` was addressed at a record whose migration is in flight (PENDING or MIGRATING), or
-    /// whose status this node cannot read (UNKNOWN) (#217). Baselining writes COMPLETED, and the orchestrator
-    /// dispatches only PENDING records, so the in-flight migration would silently never run. `?force=true`
-    /// overrides; see `SchemaRoutes.guardBaseline`.
-    record SchemaBaselineOverInFlightMigration(String datasource, SchemaStatus currentStatus) implements SchemaRouteError {
-        public static SchemaBaselineOverInFlightMigration schemaBaselineOverInFlightMigration(String datasource,
-                                                                                              SchemaStatus currentStatus) {
-            return new SchemaBaselineOverInFlightMigration(datasource, currentStatus);
-        }
-
-        @Override
-        public String message() {
-            return "Schema for datasource '" + datasource
-                 + "' is " + currentStatus.name()
-                 + " — a baseline would mark it COMPLETED and the in-flight migration would never run; wait for it"
-                 + " to finish (or fail), or pass force=true to baseline over it deliberately";
-        }
-
-        @Override
-        public HttpStatus httpStatus() {
-            return HttpStatus.CONFLICT;
-        }
-    }
-
     /// 409 — `/migrate` was addressed at a PENDING record (#760/#724 review round 2 item l).
     /// `guardReactivation` special-cased only COMPLETED-with-active-slices; every other status,
     /// PENDING included, fell through to `writeMigratingStatus` and was silently re-armed to

@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -334,7 +335,7 @@ public final class SchemaRoutes implements RouteSource {
                                   .flatMap(_ -> requireLeader(datasource, "baseline"))
                                   .flatMap(_ -> nodeSupplier.get()
                                                             .schemaOrchestrator()
-                                                            .baseline(datasource, version))
+                                                            .baseline(datasource, version, force))
                                   .flatMap(_ -> reportOutcome(datasource, "Baseline"));
     }
 
@@ -369,9 +370,10 @@ public final class SchemaRoutes implements RouteSource {
             return Promise.success(current);
         }
 
-        return SchemaRouteError.SchemaBaselineOverInFlightMigration.schemaBaselineOverInFlightMigration(datasource,
-                                                                                                        current.status())
-                                                                   .promise();
+        return SchemaError.BaselineOverInFlightMigration.baselineOverInFlightMigration(datasource,
+                                                                                       current.status(),
+                                                                                       "route check")
+                                                        .promise();
     }
 
     /// #543 condition 2: `SchemaOrchestratorServiceInstance`'s single-flight fence is an

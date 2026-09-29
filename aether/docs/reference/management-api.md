@@ -4929,11 +4929,14 @@ undo to the target version instead, or baseline at (or above) the existing versi
 with `400 Bad Request`.
 
 A datasource whose migration is **in flight** (status `PENDING` or `MIGRATING`, or `UNKNOWN` on a node
-that cannot read the status) is refused with `409 Conflict` (`SchemaBaselineOverInFlightMigration`,
+that cannot read the status) is refused with `409 Conflict` (`BaselineOverInFlightMigration`,
 #217): baseline writes `COMPLETED`, and the orchestrator dispatches only `PENDING` records, so the
 in-flight migration would silently never run. Wait for it to finish or fail, then baseline. To
 baseline over it deliberately, pass `force=true`; the override is written to the audit log
-(`SCHEMA_BASELINE_FORCED`). `force` does not bypass the leader binding or `BaselineConflict`.
+(`SCHEMA_BASELINE_FORCED`). `force` does not bypass the leader binding or `BaselineConflict`. The status
+is checked again under the orchestrator's migration fence, before the database is touched and just before
+`COMPLETED` is written, so a deploy that arms a migration while the baseline runs is not overwritten; that
+refusal names the stage (after the second check the database baseline has already run).
 [verified: `aether/node/src/test/java/org/pragmatica/aether/api/routes/SchemaRoutesBaselineTest.java` `InFlightGuard` — route plus the real orchestrator over a fake schema manager, not a cluster run]
 
 > **Likewise not sticky across a republish**, for the same declarative-contract reason as undo

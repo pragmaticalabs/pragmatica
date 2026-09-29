@@ -19,6 +19,7 @@ import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.resource.artifact.ArtifactFile;
@@ -38,6 +39,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -104,6 +106,8 @@ class SchemaRoutesBaselineTest {
 
     private InMemoryKvStore store;
     private SchemaRoutes routes;
+    /// Runs inside the fake schema manager's baseline, i.e. under the orchestrator's fence, after the route's check.
+    private Runnable duringBaseline = () -> {};
 
     @BeforeEach
     void setUp() {
@@ -179,15 +183,43 @@ class SchemaRoutesBaselineTest {
             assertThat(recorded().currentVersion()).isEqualTo(7);
         }
 
+        /// #217 race (v1617): the route checks the status BEFORE the orchestrator's fence. A deploy that arms a
+        /// migration (writes PENDING) while the baseline runs used to be overwritten with COMPLETED, so that
+        /// migration never ran. The fake schema manager writes PENDING mid-baseline, after the route's check.
+        /// Mutation that reddens it: drop the re-check before `recordOutcome`.
+        @Test
+        void baselineDatasource_doesNotOverwrite_aMigrationArmedWhileTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            duringBaseline = () -> seed(SchemaStatus.PENDING);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("the fenced re-check must refuse: %s", result).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.BaselineOverInFlightMigration.class));
+            assertThat(recorded().status()).as("the armed migration's PENDING record survives").isEqualTo(SchemaStatus.PENDING);
+        }
+
+        @Test
+        void baselineDatasource_forced_overwritesAMigrationArmedWhileTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            duringBaseline = () -> seed(SchemaStatus.PENDING);
+
+            routes.baselineDatasource(DATASOURCE, Option.some("7"), Option.some(true))
+                  .await()
+                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
+        }
+
         private void assertRefusedAndUntouched(SchemaStatus inFlight) {
             seed(inFlight);
 
             var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
 
             assertThat(result.isFailure()).as("#217: baseline over %s must be refused: %s", inFlight, result).isTrue();
-            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaRouteError.SchemaBaselineOverInFlightMigration.class)
-                                                       .satisfies(refusal -> assertThat(((SchemaRouteError) refusal).httpStatus()
-                                                                                                                    .code()).isEqualTo(409)));
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.BaselineOverInFlightMigration.class)
+                                                       .satisfies(refusal -> assertThat(((HttpStatusAware) refusal).httpStatus()
+                                                                                                                   .code()).isEqualTo(409)));
             assertThat(recorded().status()).as("the in-flight record is left as it was").isEqualTo(inFlight);
         }
     }
@@ -251,7 +283,7 @@ class SchemaRoutesBaselineTest {
                                                                                kvStore,
                                                                                artifactStoreServing(),
                                                                                noLocalRepository(),
-                                                                               new BaselineOnlySchemaManager(),
+                                                                               new BaselineOnlySchemaManager(() -> duringBaseline.run()),
                                                                                stubConnectionProvider(),
                                                                                SELF);
 
@@ -396,6 +428,12 @@ class SchemaRoutesBaselineTest {
     /// and `migrate` are never exercised by this file's tests and fail loudly if they ever are, so a
     /// wiring mistake shows up as a test failure instead of a silently wrong result.
     private static final class BaselineOnlySchemaManager implements AetherSchemaManager {
+        private final Runnable duringBaseline;
+
+        BaselineOnlySchemaManager(Runnable duringBaseline) {
+            this.duringBaseline = duringBaseline;
+        }
+
         @Override
         public Promise<SchemaResult> migrate(String datasource, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
             return Causes.cause("migrate() not exercised by SchemaRoutesBaselineTest").promise();
@@ -408,6 +446,8 @@ class SchemaRoutesBaselineTest {
 
         @Override
         public Promise<SchemaResult> baseline(String datasource, int baselineVersion, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
+            duringBaseline.run();
+
             return Promise.success(SchemaResult.schemaResult(scripts.size(), baselineVersion, 1L));
         }
     }
