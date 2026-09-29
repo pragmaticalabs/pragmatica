@@ -251,7 +251,8 @@ class SystemStreamRegistrarTest {
                                                                         refusals::add);
 
             registrar.onLeaderChange(gained());
-            scheduler.fireAll();
+            // fireNext, never fireAll: were the refusal retried, fireAll would loop forever instead of failing.
+            scheduler.fireNext();
 
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(scheduler.hasPending()).as("a refusal is never retried").isFalse();
@@ -276,7 +277,8 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
-            scheduler.fireAll();
+            scheduler.fireNext();
+            assertThat(scheduler.hasPending()).as("the refusal latched without a retry").isFalse();
             refuse.set(false);
             registrar.onClusterConfigChanged();
 
