@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.replication;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -18,6 +19,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
@@ -158,11 +160,13 @@ public final class PartitionBackfill {
     /// loaded / cold-start self-promote), which earn one re-verify.
     private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs = new ConcurrentHashMap<>();
     /// #1638 F1: the backfill in flight per partition ([#backfill]'s single-flight).
-    private final ConcurrentHashMap<PartitionKey, Promise<Long>> inFlight = new ConcurrentHashMap<>();
-    /// #1638 N1: how long one flight may hold its partition's slot. A backfill that never settles would otherwise
-    /// make every later trigger join it forever. Past the bound the flight fails ([BackfillError.General#FLIGHT_TIMED_OUT],
-    /// never a success) and the slot is released; the stuck run is not cancelled, and if it ever settles its install
-    /// is still settled correctly by the provenance seam. [Option#none] (test factories only) leaves flights unbounded.
+    private final ConcurrentHashMap<PartitionKey, Flight> inFlight = new ConcurrentHashMap<>();
+    /// #1638 N1, B2: how long a flight may go WITHOUT PROGRESS and keep its partition's slot -- an idle bound, not a
+    /// cap on the total duration. Progress is each catch-up page received and each record applied ([#progress]), so a
+    /// long catch-up that keeps moving keeps its slot and no overlapping pull starts. A backfill that stalls this long
+    /// fails ([BackfillError.General#FLIGHT_TIMED_OUT], never a success) and releases the slot, so it cannot make every
+    /// later trigger join it forever; the stalled run is not cancelled, and if it ever settles its install is still
+    /// settled correctly by the provenance seam. [Option#none] (test factories only) leaves flights unbounded.
     private final Option<TimeSpan> flightBound;
 
     private PartitionBackfill(ReplicaRegistry registry,
@@ -218,7 +222,7 @@ public final class PartitionBackfill {
                                      Option.none());
     }
 
-    /// The backward-compatible factory with a single-flight `flightBound` (#1638 N1), for tests of the bound.
+    /// The backward-compatible factory with a single-flight idle `flightBound` (#1638 N1, B2), for tests of the bound.
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
@@ -304,8 +308,8 @@ public final class PartitionBackfill {
     /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
     /// barrier a completed backfill run commits through before promoting self (see [#durability]), the
     /// `quarantine` record that refuses every self-promotion of a partition holding a divergent entry (#1505 F2),
-    /// and the `flightBound` past which a backfill that has not settled releases its partition's single-flight slot,
-    /// failed (#1638 N1, see [#flightBound]).
+    /// and the `flightBound`: how long a backfill may go without progress before it releases its partition's
+    /// single-flight slot, failed (#1638 N1, B2, see [#flightBound]).
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                       AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
@@ -436,30 +440,81 @@ public final class PartitionBackfill {
     /// nothing itself. Two concurrent catch-ups of one partition would interleave their installs and applies; the
     /// provenance seam settles each install correctly regardless ([AlignedRecovery#applyAttributed]), and this keeps
     /// the pulls themselves from racing. The in-flight entry is removed before its result is delivered, so a caller
-    /// reacting to that result starts a fresh run. A flight that has not settled within [#flightBound] fails and
-    /// releases the slot (#1638 N1), so one backfill that never settles cannot wedge the partition's catch-up.
+    /// reacting to that result starts a fresh run. A flight that makes no progress for [#flightBound] fails and
+    /// releases the slot (#1638 N1, B2), so one backfill that never settles cannot wedge the partition's catch-up,
+    /// while one that keeps progressing keeps its slot however long it runs.
     public Promise<Long> backfill(String streamName, int partition) {
         var key = partitionKey(streamName, partition);
-        var flight = Promise.<Long> promise();
+        var flight = Flight.flight();
 
-        return Option.option(inFlight.putIfAbsent(key, flight)).or(() -> fly(key, flight, streamName, partition));
+        return Option.option(inFlight.putIfAbsent(key, flight))
+                     .map(Flight::result)
+                     .or(() -> fly(key, flight, streamName, partition));
     }
 
-    private Promise<Long> fly(PartitionKey key, Promise<Long> flight, String streamName, int partition) {
+    private Promise<Long> fly(PartitionKey key, Flight flight, String streamName, int partition) {
         runBackfill(streamName, partition).onResult(result -> land(key, flight, result));
-        flightBound.onPresent(bound -> Promise.<Long> promise(bound, FLIGHT_TIMED_OUT::result).onResult(result -> land(key,
-                                                                                                                       flight,
-                                                                                                                       result)));
+        flightBound.onPresent(bound -> watch(key, flight, bound, bound));
 
-        return flight;
+        return flight.result();
     }
 
-    /// The first of the run's result and the bound's failure resolves the flight; the later one finds the slot already
-    /// released and the flight already resolved, and changes neither.
+    /// #1638 B2: wakes after `delay` and fails the flight if it has made no progress for `bound`; otherwise sleeps
+    /// again until `bound` after its last progress.
     @Contract
-    private void land(PartitionKey key, Promise<Long> flight, Result<Long> result) {
+    private void watch(PartitionKey key, Flight flight, TimeSpan bound, TimeSpan delay) {
+        Promise.<Unit> promise(delay, Result::unitResult).onResult(_ -> checkIdle(key, flight, bound));
+    }
+
+    @Contract
+    private void checkIdle(PartitionKey key, Flight flight, TimeSpan bound) {
+        if (flight.result().isResolved()) {
+            return;
+        }
+
+        var idle = flight.idleNanos();
+
+        if (idle >= bound.nanos()) {
+            land(key, flight, FLIGHT_TIMED_OUT.result());
+        } else {
+            watch(key,
+                  flight,
+                  bound,
+                  TimeSpan.timeSpan(bound.nanos() - idle).nanos());
+        }
+    }
+
+    /// The first of the run's result and the bound's failure resolves the flight; the later one changes nothing. The
+    /// removal is conditional (#1638 B1): a run that lands after its flight timed out must not evict the NEXT flight
+    /// of the partition from the slot.
+    @Contract
+    private void land(PartitionKey key, Flight flight, Result<Long> result) {
         inFlight.remove(key, flight);
-        flight.resolve(result);
+        flight.result().resolve(result);
+    }
+
+    /// #1638 B2: the partition's backfill made progress -- a catch-up page arrived or a record was applied -- so its
+    /// flight's idle bound restarts. Keyed by partition: a timed-out run that is still progressing keeps the NEXT
+    /// flight's slot too, which is harmless (work is happening on the partition) and never starts a pull.
+    @Contract
+    private void progress(String streamName, int partition) {
+        Option.option(inFlight.get(partitionKey(streamName, partition))).onPresent(Flight::touch);
+    }
+
+    /// One backfill of a partition: its result, shared by every caller that joined it, and when it last progressed.
+    private record Flight(Promise<Long> result, AtomicLong lastProgressNanos) {
+        static Flight flight() {
+            return new Flight(Promise.promise(), new AtomicLong(System.nanoTime()));
+        }
+
+        long idleNanos() {
+            return System.nanoTime() - lastProgressNanos.get();
+        }
+
+        @Contract
+        void touch() {
+            lastProgressNanos.set(System.nanoTime());
+        }
     }
 
     private Promise<Long> runBackfill(String streamName, int partition) {
@@ -771,7 +826,9 @@ public final class PartitionBackfill {
                   owner,
                   fromOffset);
 
-        return transport.requestCatchup(owner, request)
+        return transport.requestCatchup(owner,
+                                        request,
+                                        () -> progress(streamName, partition))
                         .flatMap(response -> applyOwnerResponse(streamName,
                                                                 partition,
                                                                 owner,
@@ -843,7 +900,8 @@ public final class PartitionBackfill {
                   source.confirmedOffset());
 
         return transport.requestCatchup(source.nodeId(),
-                                        request)
+                                        request,
+                                        () -> progress(streamName, partition))
                         .flatMap(response -> applyAndPromote(streamName,
                                                              partition,
                                                              source.confirmedOffset(),
@@ -1011,6 +1069,7 @@ public final class PartitionBackfill {
             }
 
             applied++;
+            progress(streamName, partition);
         }
 
         return Result.success(applied);
@@ -1219,7 +1278,9 @@ public final class PartitionBackfill {
                  localWatermark,
                  survivorTail);
 
-        return transport.requestCatchup(survivorNode, request)
+        return transport.requestCatchup(survivorNode,
+                                        request,
+                                        () -> progress(streamName, partition))
                         .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
                         .onSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
     }

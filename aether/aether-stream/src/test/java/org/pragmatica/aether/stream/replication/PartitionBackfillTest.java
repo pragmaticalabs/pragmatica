@@ -19,6 +19,9 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -150,11 +153,11 @@ class PartitionBackfillTest {
             assertThat(await(retry)).isEqualTo(5L);
         }
 
-        /// #1638 N1: a backfill whose pull never settles holds the slot only until the flight bound. The flight then
-        /// FAILS (never a success) and a later call pulls again instead of joining the stuck run forever. Red under
-        /// "no bound".
+        /// #1638 N1, B2 (ii): a backfill that makes no progress -- its pull never settles and reports no page -- holds
+        /// the slot only for the idle bound. The flight then FAILS (never a success) and a later call pulls again instead
+        /// of joining the stuck run forever. Red under "no bound" and under "the bound resolves as a success".
         @Test
-        void neverSettlingBackfill_releasesItsSlot_failed_afterTheBound() {
+        void stalledBackfill_releasesItsSlot_failed_afterTheIdleBound() {
             registry.registerReplica(STREAM, PARTITION, SOURCE);
             registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
             registry.registerReplica(STREAM, PARTITION, SELF);
@@ -175,6 +178,94 @@ class PartitionBackfillTest {
             backfill.backfill(STREAM, PARTITION);
 
             assertThat(pulls.get()).as("a call after the bound pulls again").isEqualTo(2);
+        }
+
+        /// #1638 B2 (i): a catch-up that takes several idle bounds in total but reports a page every 50 ms keeps its
+        /// slot: a call made past the bound joins it, no second pull starts, and it lands its records. Red under
+        /// "progress is not reported" and under "the bound caps the total duration".
+        @Test
+        void progressingBackfill_slowerThanTheBound_keepsItsSlot() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            var served = fixedSource(eventsFrom(0, 5));
+            var pager = Executors.newSingleThreadScheduledExecutor();
+            var slowPager = new CatchupTransport() {
+                @Override
+                public Promise<ReplicationMessage.CatchupResponse> requestCatchup(NodeId target,
+                                                                                   ReplicationMessage.CatchupRequest request) {
+                    return requestCatchup(target, request, () -> {});
+                }
+
+                @Override
+                public Promise<ReplicationMessage.CatchupResponse> requestCatchup(NodeId target,
+                                                                                   ReplicationMessage.CatchupRequest request,
+                                                                                   Runnable onPage) {
+                    pulls.incrementAndGet();
+                    var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                    for (var page = 1; page <= 20; page++) {
+                        pager.schedule(onPage, page * 50L, TimeUnit.MILLISECONDS);
+                    }
+                    pager.schedule(() -> served.requestCatchup(target, request).onResult(response::resolve),
+                                   1_050L,
+                                   TimeUnit.MILLISECONDS);
+
+                    return response;
+                }
+            };
+            var backfill = partitionBackfill(registry, recovery, slowPager, SELF, TimeSpan.timeSpan(200).millis());
+
+            try {
+                var first = backfill.backfill(STREAM, PARTITION);
+
+                pager.schedule(() -> {}, 600L, TimeUnit.MILLISECONDS).get(5, TimeUnit.SECONDS);
+                var joined = backfill.backfill(STREAM, PARTITION);
+
+                assertThat(pulls.get()).as("past three idle bounds, the progressing flight still holds the slot").isEqualTo(1);
+                assertThat(first.await(TimeSpan.timeSpan(10).seconds()).or(-1L)).isEqualTo(5L);
+                assertThat(joined.await(TimeSpan.timeSpan(10).seconds()).or(-1L)).isEqualTo(5L);
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                pager.shutdownNow();
+            }
+        }
+
+        /// #1638 B1: a run that lands after its flight timed out must not evict the NEXT flight from the slot. The old
+        /// run stalls past the bound, a new flight starts, then the old run settles; a later call still joins the new
+        /// flight. Red under "unconditional remove".
+        @Test
+        void lateLandingOldRun_doesNotEvictTheNextFlight() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            CatchupTransport gated = (_, _) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+
+            var next = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pending).as("the next flight pulled").hasSize(2);
+
+            pending.getFirst().fail(ReplicationError.General.REPLICATION_TIMEOUT);
+            // let the old run's failure travel through its continuations to `land`
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            var joined = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pending).as("the late old run did not free the next flight's slot").hasSize(2);
+            assertThat(joined).isSameAs(next);
         }
     }
 

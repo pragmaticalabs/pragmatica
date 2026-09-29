@@ -52,26 +52,38 @@ public final class ForwardCatchupTransport implements CatchupTransport {
 
     @Override
     public Promise<CatchupResponse> requestCatchup(NodeId target, ReplicationMessage.CatchupRequest request) {
-        return page(target, request, request.fromOffset(), new ArrayList<>());
+        return requestCatchup(target,
+                              request,
+                              () -> {});
+    }
+
+    /// Each page received is reported through `onPage` before the next is requested (#1638 B2).
+    @Override
+    public Promise<CatchupResponse> requestCatchup(NodeId target,
+                                                   ReplicationMessage.CatchupRequest request,
+                                                   Runnable onPage) {
+        return page(target, request, request.fromOffset(), new ArrayList<>(), onPage);
     }
 
     private Promise<CatchupResponse> page(NodeId target,
                                           ReplicationMessage.CatchupRequest request,
                                           long cursor,
-                                          List<RawEventDto> accumulated) {
+                                          List<RawEventDto> accumulated,
+                                          Runnable onPage) {
         return forwardClient.readRemoteCatchup(target,
                                                request.streamName(),
                                                request.partition(),
                                                cursor,
                                                batchSize)
-                            .flatMap(result -> continueOrFinish(target, request, cursor, accumulated, result));
+                            .flatMap(result -> continueOrFinish(target, request, cursor, accumulated, result, onPage));
     }
 
     private Promise<CatchupResponse> continueOrFinish(NodeId target,
                                                       ReplicationMessage.CatchupRequest request,
                                                       long cursor,
                                                       List<RawEventDto> accumulated,
-                                                      ReadForwardResult result) {
+                                                      ReadForwardResult result,
+                                                      Runnable onPage) {
         var events = result.events();
 
         if (!events.isEmpty() && events.getFirst().offset() != cursor) {
@@ -82,10 +94,11 @@ public final class ForwardCatchupTransport implements CatchupTransport {
         }
 
         accumulated.addAll(events);
+        onPage.run();
         if (events.size() >= batchSize) {
             var nextCursor = events.getLast().offset() + 1;
 
-            return page(target, request, nextCursor, accumulated);
+            return page(target, request, nextCursor, accumulated, onPage);
         }
 
         return Promise.success(toResponse(target, request, accumulated, result.history()));
