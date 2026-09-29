@@ -38,9 +38,11 @@ import static org.pragmatica.lang.Result.success;
 
 
 /// How `aether cluster apply` (scale-up, add-role, reprovision, replace-before-retire, `--resume`/`--rollback`)
-/// provisions a CLOUD node — through the same composition the leader's auto-heal uses
+/// provisions a CLOUD node — through the composition the leader's auto-heal uses
 /// ([ReplacementNodeConfigComposer], [SourceCloudBindings#resolveOverlayFromConfig], [NodeUserDataRenderer]), so the
-/// node boots with its cluster identity, secret, role, source, zone and the live core peers, and joins.
+/// node boots with its cluster identity, secret, role, source, zone and the live core peers, and joins. One difference
+/// from auto-heal: `ssh_key_ids` are empty here (auto-heal threads the leader's own, #442), so a node minted here that
+/// later becomes leader provisions through the provider's by-name key fallback; see #1724.
 ///
 /// #1695: this path used to hand the provider a spec with NO user-data, so an apply-minted cloud node booted with no
 /// identity and no runtime and could never join; and it asked for a location literally named `default` when the source

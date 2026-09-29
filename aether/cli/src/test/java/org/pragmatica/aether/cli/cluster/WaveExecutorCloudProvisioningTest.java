@@ -28,8 +28,8 @@ import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #1695 / #1027 — `aether cluster apply` provisions CLOUD nodes through [WaveExecutor#provisionCloudNodes], the same
-/// composition the leader's auto-heal uses. Driven against a fake provider that captures each [ProvisionSpec] it is
+/// #1695 / #1027 — `aether cluster apply` provisions CLOUD nodes through [WaveExecutor#provisionCloudNodes], the
+/// composition the leader's auto-heal uses (except `ssh_key_ids`, which are empty on apply; see #1724). Driven against a fake provider that captures each [ProvisionSpec] it is
 /// handed, so the assertions read exactly what a real provider would receive.
 class WaveExecutorCloudProvisioningTest {
     private static final String ZONED = """

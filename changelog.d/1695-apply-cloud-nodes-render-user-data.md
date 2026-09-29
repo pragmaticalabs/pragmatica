@@ -3,8 +3,10 @@
   rolling reprovision, replace-before-retire, and `--resume`/`--rollback`. `WaveExecutor` handed the provider a
   spec with NO user-data: no `AETHER_CLUSTER_NAME`, secret, role, source, zone or peers, and no runtime install. So
   the VM booted, billed, and never joined.
-  CLOUD nodes are now provisioned through the same composition the leader's auto-heal uses
-  (`ReplacementNodeConfigComposer`, `SourceCloudBindings.resolveOverlayFromConfig`, `NodeUserDataRenderer`), with:
+  CLOUD nodes are now provisioned through the composition the leader's auto-heal uses
+  (`ReplacementNodeConfigComposer`, `SourceCloudBindings.resolveOverlayFromConfig`, `NodeUserDataRenderer`). The one
+  exception is `ssh_key_ids`, which are empty on apply, so a node minted here that later becomes leader falls back to
+  the provider's by-name key lookup (#1724). The inputs are:
   - the cluster secret from this machine's bootstrap state (else `AETHER_CLUSTER_SECRET`);
   - the live core peers from `GET /api/v1/nodes/live`.
   Either missing refuses the provision with a message naming it, instead of creating a node that cannot join.

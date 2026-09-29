@@ -527,8 +527,9 @@ public sealed interface NodeUserDataRenderer {
     /// terminal-removal: once a node has been gone long enough to be removed, its id can never be admitted
     /// again. An enabled unit (linked into `multi-user.target`) relaunched a rebooted VM under that removed
     /// id, so the rejoin was refused and the VM kept billing without ever joining — the same-id hazard
-    /// behind #1467 and #1543. A rebooted host is replaced by CTM auto-heal under a FRESH id, as
-    /// `aether/docs/operators/deployment-recovery.md` §2.3 describes. The container path already runs
+    /// behind #1467 and #1543. A rebooted host is replaced by CTM auto-heal under a FRESH id, and a host-level
+    /// unit must not start on boot while the id is fixed (`aether/docs/operators/deployment-recovery.md` §2.3 and
+    /// §4.4). The container path already runs
     /// `docker run --restart no` for the same reason.
     private static void appendJvmUnit(StringBuilder sb) {
         sb.append("# --- Install and start the aether-node systemd unit ---\n");
