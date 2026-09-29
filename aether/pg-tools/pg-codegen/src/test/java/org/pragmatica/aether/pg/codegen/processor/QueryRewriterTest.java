@@ -60,6 +60,18 @@ class QueryRewriterTest {
             assertThat(extractNamedParams(sql)).containsExactly("id");
         }
 
+        /// #1707: a PostgreSQL cast `x::text` is left untouched while the real `:name` beside it is a parameter.
+        /// Controls: a `::` inside a literal and inside a comment are not placeholders either way.
+        @Test
+        void castBesideANamedParam_castIsLeftAsIs() {
+            var sql = "SELECT id::text, '::a' FROM t WHERE name = :name::varchar /* x::b */";
+            var result = rewriteNamedParams(sql, List.of("name"));
+
+            assertThat(result.sql()).isEqualTo("SELECT id::text, '::a' FROM t WHERE name = $1::varchar /* x::b */");
+            assertThat(result.parameterOrder()).containsExactly("name");
+            assertThat(extractNamedParams(sql)).containsExactly("name");
+        }
+
         @Test
         void noParams_unchangedSql() {
             var result = rewriteNamedParams(

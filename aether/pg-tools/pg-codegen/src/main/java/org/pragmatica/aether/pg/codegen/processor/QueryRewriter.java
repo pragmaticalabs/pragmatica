@@ -18,7 +18,8 @@ import org.pragmatica.aether.pg.codegen.NamingConvention;
 public final class QueryRewriter {
     private QueryRewriter() {}
 
-    private static final Pattern NAMED_PARAM_PATTERN = Pattern.compile(":([a-zA-Z][a-zA-Z0-9]*)");
+    /// `(?<!:)`: the `text` in a PostgreSQL cast `x::text` is a type name, not a `:text` placeholder (#1707).
+    private static final Pattern NAMED_PARAM_PATTERN = Pattern.compile("(?<!:):([a-zA-Z][a-zA-Z0-9]*)");
     private static final Pattern SELECT_STAR_PATTERN = Pattern.compile("(?i)SELECT\\s+\\*\\s+FROM");
 
     private static final Pattern SELECT_ALIAS_STAR_PATTERN = Pattern.compile("(?i)SELECT\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.\\s*\\*\\s+");
