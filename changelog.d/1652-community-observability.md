@@ -4,20 +4,20 @@
   each community's lifecycle state (`FORMING` / `ACTIVE` / `DEGRADED` / `DISSOLVED`), target size, role,
   mint and dissolve instants, governor, roster and community term, joined from the two committed records.
   A half with no committed record is `null`; an unknown id is a 404. CLI: `aether cluster communities [<id>]`.
-  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java`]
+  [unverified: pending bigboy run — `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java`]
 - **`liveMembers` is the leader's instantaneous view, not committed state**: roster members still directed to
   the community that the leader has not observed absent. It is the same count the per-community FSM compares
   against the viability floor (one shared computation, `CommunityLiveMembers`), and it is `null` where the
   serving node cannot observe it (not the leader, liveness unwired, no roster) rather than `0`.
-  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` —
+  [unverified: pending bigboy run — `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` —
   it drops below the floor after a real worker kill]
 - **Four new cluster events** (wire tags 1740–1743): `COMMUNITY_MINTED`, `COMMUNITY_STATE_CHANGED` (one event
   per edge, `from`/`to` in `details`; WARNING only for the edge into `DEGRADED`), `COMMUNITY_MEMBER_JOINED` and
   `COMMUNITY_MEMBER_LEFT` (roster changes: assignment, not liveness). They are derived from the committed
   `CommunityValue` / governor-roster writes, so every node observes them and only the cluster-events owner publishes them
   (the owner-gated delivery contract, `guarantees.md` row 14b: at-least-once across an ownership handover).
-  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` —
-  minted, member joined, FORMING→ACTIVE and ACTIVE→DEGRADED on a live cluster]
+  [unverified: pending bigboy run — `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` —
+  minted, member joined, FORMING→ACTIVE, ACTIVE→DEGRADED and the killed worker's member left on a live cluster]
 - The `→ DISSOLVED` edge for placement-policy retirement is not drivable in an in-JVM cluster; it is pinned by
   committing the retirement write exactly as `CommunityPlacementReconciler.markDissolved` does, through the real
   applier and the node codec. [mechanism: the applier's `ValuePut` for the retirement write;
