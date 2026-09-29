@@ -23,7 +23,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
-import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
@@ -448,7 +447,7 @@ class ScheduledTaskManagerTest {
                                                        ScheduledTaskValue.intervalTask(self, "30s", ExecutionMode.ALL),
                                                        pauseKey,
                                                        ScheduledTaskPauseValue.scheduledTaskPauseValue(1L));
-            var restored = codec.encode(BackupHeader.backupHeader(1L, Option.none()), live)
+            var restored = codec.encode(1L, live)
                                 .flatMap(codec::decode)
                                 .unwrap()
                                 .entries();

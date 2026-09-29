@@ -375,6 +375,7 @@ class ManagementServerImpl implements ManagementServer {
         apiKeyRoutesRef.set(apiKeyRoutes);
         routeSources.add(apiKeyRoutes);
         routeSources.add(GossipKeyRoutes.gossipKeyRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.BackupRoutes.backupRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));

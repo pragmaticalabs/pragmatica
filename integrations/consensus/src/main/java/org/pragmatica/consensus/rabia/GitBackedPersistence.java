@@ -45,6 +45,22 @@ import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedSt
 
 /// Git-backed persistence for Rabia consensus state.
 /// Writes state snapshots as TOML files in a local git repository.
+///
+/// **Interim — deleted by #1533** together with its restore, when the change-triggered KV backup (#1532)
+/// gains a restore. Until then this is what a full-cluster restart restores from: a restarting node installs
+/// a whole snapshot at boot through sync adoption, its own included (#1020). Its hazards, read from code:
+///
+/// - it restores the WHOLE KV, runtime keys included (for example `StreamPartitionOwnershipKey`), contrary
+///   to the cluster-state/runtime classification (#1530) and the OQ-25 reversal;
+/// - it restores `ClusterIncarnationKey` as it was and never advances it, so an incarnation increase on a
+///   cold restart is NOT guaranteed until #1533;
+/// - it is selected by a non-blank `[backup] path` alone: `[backup] enabled` is ignored on this path (Ember
+///   passes `enabled = false` with a path), and `[backup] interval` has no reader;
+/// - (d) a cold restart restored from an OLDER snapshot comes back with the same lineage and incarnation and
+///   a lower revision than the change-triggered backup head. Its changes are not backed up while the head is
+///   ahead — the only signal is the `BACKUP_HEAD_AHEAD` warning once the stall outlasts its bound — and once
+///   its revision overtakes the head's, its state is written OVER that head: the newer head is replaced, not
+///   merely delayed (git history keeps the replaced commit).
 class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     private static final String STATE_FILE = "state.toml";
     /// The snapshot is written here, fsynced and renamed over [#STATE_FILE] in ONE rename

@@ -2690,6 +2690,30 @@ aether cluster list-keys [--audit]
 
 ---
 
+## Backup
+
+The KV backup (#1532) is written by the leader to a git repository under `[backup] path`
+(`<path>/kv-backup`, branch `kv-backup`) whenever cluster-state keys change, and pushed as a
+fast-forward to `[backup] remote` when one is configured. It is enabled only with `[backup] enabled = true`
+and a path.
+
+### `aether backup declare-genesis`
+
+Make this cluster's state the KV backup head, superseding a backup of another lineage. ADMIN only.
+
+```bash
+aether backup declare-genesis
+```
+
+A freshly started cluster mints its own lineage and will not overwrite a backup that belongs to another
+cluster history: its backup is **gated**, and the node logs `BACKUP_GATED` naming this command. Run it
+only when this cluster's state — not the backup's — is the one to keep; the superseded head stays in the
+git history. It is refused when the backup head already belongs to this cluster's lineage, and when that
+head is **newer** than the cluster — restore it instead (`POST /api/v1/backup/declare-genesis`, see the
+Management API reference for the refusals).
+
+---
+
 ## TTM (Foundation Model)
 
 ### `aether ttm status`
