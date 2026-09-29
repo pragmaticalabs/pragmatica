@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
@@ -101,6 +103,8 @@ class CoreAbsenceFenceOrderingTest {
 
     private EmberCluster cluster;
     private String worker;
+    /// Held from setUp: the fence drains and deregisters the worker, so its node cannot be looked up after.
+    private ClusterEventAggregator workerEvents;
 
     @BeforeAll
     @TerminalOperation
@@ -126,6 +130,9 @@ class CoreAbsenceFenceOrderingTest {
                                             cluster.addWorkerNode())
                                .id();
         log.info("FENCE-PROBE: added node {} — expected to exceed the core cap and be minted a WORKER", worker);
+        workerEvents = cluster.getNode(worker)
+                              .map(AetherNode::eventAggregator)
+                              .unwrap();
 
         // CORRECTION (found by running it): `isArmed()` is `!lastPingNanos.isEmpty()` — "a core ping
         // has ever been accepted" — NOT "the suppressor released". Gating on it proves the node is
@@ -244,6 +251,22 @@ class CoreAbsenceFenceOrderingTest {
                 + "refuses at load. Measured gap: %dms",
                 COMMUNITY_ABSENCE.toMillis(), COMMUNITY_ABSENCE.toMillis() - fenceMs)
             .isLessThan(COMMUNITY_ABSENCE.toMillis());
+
+        // #1617 R1: the fence's operator warning reaches THIS worker's own aggregator through the sink
+        // AetherNode binds. It cannot reach the cluster event log from an isolated node (that is the case the
+        // log line exists for), so this reads the worker's aggregator directly. Unbinding the sink in
+        // AetherNode leaves it empty.
+        await().atMost(Duration.ofSeconds(5))
+               .pollInterval(POLL)
+               .until(() -> workerEvents.lastRaisedOperatorWarning().isPresent());
+
+        var warning = workerEvents.lastRaisedOperatorWarning().unwrap();
+
+        assertThat(warning).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(warning.severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(warning.details()).containsEntry("code", "core-absence-fence")
+                                     .containsEntry("nodeId", worker)
+                                     .containsEntry("subject", "core");
 
         // Only assertable when the direct observation won the race. On the deregistration path the
         // observer is gone by construction — the fence removes its own node — so demanding a captured

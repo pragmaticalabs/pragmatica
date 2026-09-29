@@ -66,6 +66,7 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$NodeFailed (at:org.pragmatica.hlc.H
 SHAPE org.pragmatica.aether.api.ClusterEvent$NodeJoined (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$NodeLeft (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$NodeLifecycleChanged (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$OperatorWarning (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$QuorumEstablished (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$QuorumLost (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleCapped (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -387,6 +388,7 @@ TAG  org.pragmatica.aether.api.ClusterEvent$NodeFailed 274
 TAG  org.pragmatica.aether.api.ClusterEvent$NodeJoined 275
 TAG  org.pragmatica.aether.api.ClusterEvent$NodeLeft 276
 TAG  org.pragmatica.aether.api.ClusterEvent$NodeLifecycleChanged 277
+TAG  org.pragmatica.aether.api.ClusterEvent$OperatorWarning 292
 TAG  org.pragmatica.aether.api.ClusterEvent$QuorumEstablished 278
 TAG  org.pragmatica.aether.api.ClusterEvent$QuorumLost 279
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleCapped 280
