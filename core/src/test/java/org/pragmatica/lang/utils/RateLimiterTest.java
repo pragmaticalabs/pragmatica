@@ -332,4 +332,51 @@ class RateLimiterTest {
         }
         assertEquals(150, successes, "Capacity must cap at rate + burst regardless of idle duration");
     }
+
+    /// #1315 — a caller that samples the clock, is preempted while another caller refills and exhausts the
+    /// bucket, and then resumes with its older sample, must not mint permits. The masked difference
+    /// `(now - lastRefill) & TIME_MASK` turns that small negative interval into ~2^48 ns, i.e. a full
+    /// refill. The schedule is deterministic: the other caller runs INSIDE the first caller's clock read,
+    /// after the value it will return is fixed — exactly a preemption between sample and use. The first
+    /// caller's CAS then loses, so this also covers the retry path.
+    ///
+    /// Mutations that redden it: sample `now` once before the loop (the pre-fix code), or sample it once
+    /// and reuse it across a lost CAS.
+    @Test
+    void staleTimeSample_afterAnotherCallerExhaustsTheBucket_mintsNoPermit() {
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        var interleave = new java.util.concurrent.atomic.AtomicReference<Runnable>();
+        TimeSource source = () -> {
+            var sampled = clock.get();
+            var other = interleave.getAndSet(null);
+
+            if (other != null) {
+                other.run();
+            }
+            return sampled;
+        };
+        var limiter = RateLimiter.builder()
+                .rate(2)
+                .period(timeSpan(1).seconds())
+                .burst(0)
+                .timeSource(source);
+        var otherGranted = new AtomicInteger();
+
+        clock.set(TimeUnit.MILLISECONDS.toNanos(9_900));
+        interleave.set(() -> {
+            clock.set(TimeUnit.MILLISECONDS.toNanos(10_000));
+            for (int i = 0; i < 3; i++) {
+                if (limiter.tryAcquire()) {
+                    otherGranted.incrementAndGet();
+                }
+            }
+        });
+
+        var staleGranted = limiter.tryAcquire();
+
+        assertNull(interleave.get(), "control: the other caller really ran inside the first caller's clock read");
+        assertEquals(2, otherGranted.get(), "control: the other caller took the whole bucket (rate 2, burst 0)");
+        assertFalse(staleGranted, "#1315: a stale time sample must not refill an exhausted bucket");
+        assertFalse(limiter.tryAcquire(), "no permit is due 0 ms after the bucket emptied");
+    }
 }

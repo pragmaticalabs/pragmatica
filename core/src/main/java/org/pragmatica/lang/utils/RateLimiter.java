@@ -125,10 +125,13 @@ public interface RateLimiter {
 
                 @Override
                 public boolean tryAcquire() {
-                    long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
-
                     while (true) {
+                        // #1315: state first, then time, on every attempt. `lastRefill` was written by a
+                        // caller that sampled before its CAS, so a time sampled AFTER reading it is never
+                        // earlier; a time sampled before the read (or reused after a lost CAS) can be, and
+                        // the masked difference then turns a small negative interval into ~2^48 ns of refill.
                         long observed = state.get();
+                        long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
                         long tokens = observed >>> TOKENS_SHIFT;
                         long lastRefill = observed & TIME_MASK;
                         long elapsed = (now - lastRefill) & TIME_MASK;
@@ -151,14 +154,14 @@ public interface RateLimiter {
                         } else {
                             return false;
                         }
-                        // CAS lost — retry with the same `now`, freshly observed state.
+                        // CAS lost — retry with freshly observed state and a fresh `now`.
                     }
                 }
 
                 @Override
                 public TimeSpan retryAfter() {
-                    long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
                     long observed = state.get();
+                    long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
                     long lastRefill = observed & TIME_MASK;
                     long timeSinceRefill = (now - lastRefill) & TIME_MASK;
                     long fraction = timeSinceRefill % nanosPerToken;
