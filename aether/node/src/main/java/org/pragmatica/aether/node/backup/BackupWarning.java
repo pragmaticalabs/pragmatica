@@ -52,7 +52,7 @@ public record BackupWarning(Code code, String detail) {
         @Contract
         void emit(BackupWarning warning);
 
-        /// WARN (INFO for a recovery). TODO(#1574): also emit as an `OperatorWarning` cluster event.
+        /// WARN (INFO for a recovery). The `OperatorWarning` cluster event arrives with #1617.
         static Sink logging() {
             return BackupWarning::log;
         }

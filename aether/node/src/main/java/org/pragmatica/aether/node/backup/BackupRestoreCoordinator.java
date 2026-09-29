@@ -344,7 +344,8 @@ public final class BackupRestoreCoordinator {
         var withheld = entityCheckpointsNotRestored(document);
 
         if (!withheld.isEmpty()) {
-            // TODO(#1574): also emit as an OperatorWarning cluster event once #1617 lands.
+            // WARN log only: the OperatorWarning cluster event arrives with #1617; whichever of #1533 and #1617
+            // merges second wires it here.
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED,
                                                       "entity checkpoints from the previous cluster were not restored: their"
                                                      + " offsets belong to a log that did not survive, so entity state"
@@ -626,7 +627,8 @@ public final class BackupRestoreCoordinator {
     @Contract
     private void onFailure(Cause cause) {
         if (cause instanceof RestoreError.Blocked && blocked.compareAndSet(false, true)) {
-            // TODO(#1574): also emit as an OperatorWarning cluster event once #1617 lands.
+            // WARN log only: the OperatorWarning cluster event arrives with #1617; whichever of #1533 and #1617
+            // merges second wires it here.
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
                                                      + "; this cluster will not start fresh over a backup it"
