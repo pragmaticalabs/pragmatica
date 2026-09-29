@@ -172,7 +172,9 @@ Exact local checkpoint commands and the authoritative CI artifact contract are i
 - Foundation mutations run for relevant paths on all PR bases and main/release pushes. Runtime
   acceptance is opt-in with the `run-hierarchy` PR label or manual dispatch, and runs automatically
   after main/release pushes changing the hierarchy acceptance tests/checker/workflow. It requires
-  every selected class to exist and to report executed, passing cases; partial selections refuse.
+  the selection to name every `Hierarch*Test` class in the Forge test directory plus six supporting classes
+  (a partial selection is refused before the build, #1451), every selected class to exist, and every selected
+  class to report executed, passing cases.
   Its final-head results remain required evidence for this hierarchy batch.
 
 ### Placement review dispositions

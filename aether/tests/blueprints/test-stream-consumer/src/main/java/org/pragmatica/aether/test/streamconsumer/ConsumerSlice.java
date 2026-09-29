@@ -164,20 +164,17 @@ public interface ConsumerSlice {
 
         @Override
         public Promise<Unit> onConsumerEvent(String event) {
-            return Promise.success(delivered.add(event))
-                          .mapToUnit();
+            return Promise.success(delivered.add(event)).mapToUnit();
         }
 
         @Override
         public Promise<Unit> onOrderPlaced(OrderPlaced event) {
-            return Promise.success(deliveredOrders.add(event))
-                          .mapToUnit();
+            return Promise.success(deliveredOrders.add(event)).mapToUnit();
         }
 
         @Override
         public Promise<Unit> onSpreadEvent(String event) {
-            return Promise.success(deliveredSpread.add(event))
-                          .mapToUnit();
+            return Promise.success(deliveredSpread.add(event)).mapToUnit();
         }
     }
 }
