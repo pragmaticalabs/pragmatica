@@ -449,7 +449,9 @@ public final class StorageFactory {
         static Option<StoragePathsOverlap> find(Map<String, StorageConfig> configs) {
             var claims = configs.entrySet()
                                 .stream()
-                                .flatMap(entry -> java.util.stream.Stream.of(claim(entry.getKey(), "disk_path", entry.getValue().diskPath()),
+                                .flatMap(entry -> java.util.stream.Stream.of(claim(entry.getKey(),
+                                                                                   "disk_path",
+                                                                                   entry.getValue().diskPath()),
                                                                              claim(entry.getKey(),
                                                                                    "snapshot_path",
                                                                                    entry.getValue().snapshotPath())))
@@ -458,8 +460,10 @@ public final class StorageFactory {
 
             return Option.from(claims.stream()
                                      .flatMap(a -> claims.stream()
-                                                         .filter(b -> a.instance().compareTo(b.instance()) < 0)
-                                                         .filter(b -> overlaps(a.path(), b.path()))
+                                                         .filter(b -> a.instance()
+                                                                       .compareTo(b.instance()) < 0)
+                                                         .filter(b -> overlaps(a.path(),
+                                                                               b.path()))
                                                          .map(b -> new StoragePathsOverlap(a.instance(),
                                                                                            a.kind() + " " + a.path(),
                                                                                            b.instance(),
@@ -468,7 +472,9 @@ public final class StorageFactory {
         }
 
         private static Claim claim(String instance, String kind, String path) {
-            return new Claim(instance, kind, Path.of(path).toAbsolutePath().normalize());
+            return new Claim(instance,
+                             kind,
+                             Path.of(path).toAbsolutePath().normalize());
         }
 
         private static boolean overlaps(Path a, Path b) {
@@ -477,7 +483,10 @@ public final class StorageFactory {
 
         @Override
         public String message() {
-            return "storage instances '" + first + "' (" + firstPath + ") and '" + second + "' (" + secondPath
+            return "storage instances '" + first
+                 + "' (" + firstPath
+                 + ") and '" + second
+                 + "' (" + secondPath
                  + ") share a directory -- refusing to boot: each would count the other's bytes against its own "
                  + "disk_max_bytes and they would share metadata snapshots. Give every [storage.<name>] section its "
                  + "own disk_path and snapshot_path (an instance that omits them resolves the shared "
