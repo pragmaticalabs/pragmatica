@@ -53,11 +53,12 @@ public class LintCommand implements Callable<Integer> {
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
 
+        // #1100: a run that examined nothing is a coverage gap, never a pass, so it exits 2 like any other gap.
         if (filesToProcess.isEmpty()) {
-            operatorOut().println("No Java files found.");
+            operatorOut().println("No Java files found: nothing was examined. This is a COVERAGE GAP, not a pass.");
             printResults(List.of(), 0, List.of());
 
-            return 0;
+            return 2;
         }
 
         if (verbose) {
@@ -265,18 +266,17 @@ public class LintCommand implements Callable<Integer> {
         System.out.print(sb);
     }
 
-    /// The run's coverage in SARIF's own terms. A file the linter could not analyse is an `error`
-    /// notification and makes `executionSuccessful` false; a run that collected no files at all completed,
-    /// but says with a `warning` notification that it examined nothing. A clean scan is
-    /// `executionSuccessful`, no notifications and no results.
+    /// The run's coverage in SARIF's own terms. A file the linter could not analyse, and a run that collected
+    /// no files at all, are both coverage gaps (exit 2): each is an `error` notification and makes
+    /// `executionSuccessful` false. A clean scan is `executionSuccessful`, no notifications and no results.
     private void appendSarifInvocation(StringBuilder sb, int collected, List<Unanalysed> unanalysed) {
         sb.append("    \"invocations\": [{\n");
-        sb.append("      \"executionSuccessful\": %s,\n".formatted(unanalysed.isEmpty()));
+        sb.append("      \"executionSuccessful\": %s,\n".formatted(collected > 0 && unanalysed.isEmpty()));
         sb.append("      \"toolExecutionNotifications\": [");
         var notifications = new ArrayList<String>();
 
         if (collected == 0) {
-            notifications.add("        { \"level\": \"warning\", \"message\": { \"text\": \"No Java files found: nothing was examined.\" } }");
+            notifications.add("        { \"level\": \"error\", \"message\": { \"text\": \"No Java files found: nothing was examined.\" } }");
         }
 
         for (var skipped : unanalysed) {

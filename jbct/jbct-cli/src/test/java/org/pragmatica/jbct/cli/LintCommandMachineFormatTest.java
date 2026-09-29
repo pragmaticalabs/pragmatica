@@ -132,15 +132,15 @@ class LintCommandMachineFormatTest {
     }
 
     @Test
-    void json_noJavaFiles_documentSaysNothingWasExamined_noticeGoesToStderr() {
+    void json_noJavaFiles_exitsTwo_documentSaysNothingWasExamined_noticeGoesToStderr() {
         var exitCode = lint("--format", "json");
 
-        assertThat(exitCode).isZero();
+        assertThat(exitCode).as("#1100: examining nothing is a coverage gap, not a pass").isEqualTo(2);
         assertThat(parsedStdout().isObject()).as("nothing to lint is still a document: " + out).isTrue();
         assertThat(parsedStdout().path("examined").asInt(-1)).isZero();
         assertThat(jsonIsClean(parsedStdout())).as("#1100: a run that examined nothing is not a clean scan: " + out)
                   .isFalse();
-        assertThat(err.toString(UTF_8)).contains("No Java files found.");
+        assertThat(err.toString(UTF_8)).contains("No Java files found: nothing was examined");
     }
 
     /// #1100 — a coverage-gap run (exit 2) must say so IN the document: most CI SARIF uploaders never read
@@ -180,11 +180,13 @@ class LintCommandMachineFormatTest {
     }
 
     @Test
-    void sarif_noJavaFiles_carriesAWarningThatNothingWasExamined() {
-        lint("--format", "sarif");
+    void sarif_noJavaFiles_invocationIsUnsuccessful_withAnErrorThatNothingWasExamined() {
+        var exitCode = lint("--format", "sarif");
         var invocation = parsedStdout().path("runs").get(0).path("invocations").get(0);
 
-        assertThat(invocation.path("toolExecutionNotifications").get(0).path("level").asText()).isEqualTo("warning");
+        assertThat(exitCode).isEqualTo(2);
+        assertThat(invocation.path("executionSuccessful").asBoolean(true)).isFalse();
+        assertThat(invocation.path("toolExecutionNotifications").get(0).path("level").asText()).isEqualTo("error");
         assertThat(sarifIsClean(parsedStdout())).as("#1100: a run that examined nothing is not a clean scan: " + out)
                   .isFalse();
     }
