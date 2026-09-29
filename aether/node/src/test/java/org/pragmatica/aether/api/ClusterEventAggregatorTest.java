@@ -552,6 +552,29 @@ class ClusterEventAggregatorTest {
         assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies landed").isEqualTo(1);
     }
 
+    /// #1653: the feed's read starts at the offset it is given, not at the start of the retained log, and reports
+    /// where the next read starts. A whole-log read would return all five events for every offset.
+    @Test
+    void eventsFrom_readsFromTheGivenOffset_andReportsTheNextOne() {
+        var h = Harness.create();
+
+        for (int i = 0; i < 5; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+
+        var all = h.aggregator().eventsFrom(0).await().unwrap();
+        var tail = h.aggregator().eventsFrom(3).await().unwrap();
+        var none = h.aggregator().eventsFrom(5).await().unwrap();
+
+        assertThat(all.events()).as("control: every event from offset 0").extracting(ClusterEvent::summary)
+                                .containsExactly("e0", "e1", "e2", "e3", "e4");
+        assertThat(all.nextOffset()).isEqualTo(5);
+        assertThat(tail.events()).extracting(ClusterEvent::summary).containsExactly("e3", "e4");
+        assertThat(tail.nextOffset()).isEqualTo(5);
+        assertThat(none.events()).isEmpty();
+        assertThat(none.nextOffset()).isEqualTo(5);
+    }
+
     private static void landThenFailFirst(FrameworkStreamPublisher<ClusterEvent> real,
                                           ClusterEvent event,
                                           java.util.concurrent.atomic.AtomicInteger calls) {
