@@ -262,8 +262,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     /// A positional `$n` placeholder (#1139).
     private static final Pattern POSITIONAL_PARAM_PATTERN = Pattern.compile("\\$(\\d+)");
-    /// The opening tag of a dollar-quoted string: `$$` or `$tag$` (a tag does not start with a digit).
-    private static final Pattern DOLLAR_QUOTE_TAG = Pattern.compile("\\$(?:[A-Za-z_][A-Za-z_0-9]*)?\\$");
     private static final Pattern CTE_HINT_PATTERN = Pattern.compile("(?i)\\bWITH\\b");
 
     /// Rejects data-modifying CTEs — a `WITH` clause whose body is `INSERT`/`UPDATE`/`DELETE`
@@ -858,7 +856,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private boolean rejectsParamMismatch(ExecutableElement execElement, String sql, List<String> availableParamNames) {
         var sqlParams = QueryRewriter.extractNamedParams(sql);
 
-        var positional = POSITIONAL_PARAM_PATTERN.matcher(sqlCodeOnly(sql))
+        var positional = POSITIONAL_PARAM_PATTERN.matcher(QueryRewriter.sqlCodeOnly(sql))
                                                  .results()
                                                  .mapToInt(match -> Integer.parseInt(match.group(1)))
                                                  .max();
@@ -897,71 +895,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             return true;
         }
         return false;
-    }
-
-    /// `sql` with string literals, quoted identifiers, dollar-quoted bodies and comments blanked out, so a `$n` inside
-    /// them is not taken for a bind placeholder (#1707 review; PostgreSQL does not bind inside them). Blanking keeps
-    /// the length and the placeholder positions.
-    static String sqlCodeOnly(String sql) {
-        var out = new StringBuilder(sql);
-        var i = 0;
-
-        while (i < sql.length()) {
-            var end = skippedRegionEnd(sql, i);
-
-            if (end > i) {
-                for (int k = i; k < end; k++) {
-                    out.setCharAt(k, ' ');
-                }
-                i = end;
-            } else {
-                i++;
-            }
-        }
-        return out.toString();
-    }
-
-    /// The end (exclusive) of a literal, quoted identifier, dollar-quoted body or comment starting at `i`, or `i`.
-    private static int skippedRegionEnd(String sql, int i) {
-        var c = sql.charAt(i);
-
-        if (c == '\'' || c == '"') {
-            return quotedEnd(sql, i, c);
-        }
-        if (sql.startsWith("--", i)) {
-            var eol = sql.indexOf('\n', i);
-            return eol < 0 ? sql.length() : eol;
-        }
-        if (sql.startsWith("/*", i)) {
-            var close = sql.indexOf("*/", i + 2);
-            return close < 0 ? sql.length() : close + 2;
-        }
-        if (c == '$') {
-            var tag = DOLLAR_QUOTE_TAG.matcher(sql).region(i, sql.length());
-
-            if (tag.lookingAt()) {
-                var close = sql.indexOf(tag.group(), i + tag.group().length());
-                return close < 0 ? sql.length() : close + tag.group().length();
-            }
-        }
-        return i;
-    }
-
-    /// A quoted run from `i`; a doubled quote inside it is an escaped quote.
-    private static int quotedEnd(String sql, int i, char quote) {
-        var k = i + 1;
-
-        while (k < sql.length()) {
-            if (sql.charAt(k) == quote) {
-                if (k + 1 < sql.length() && sql.charAt(k + 1) == quote) {
-                    k += 2;
-                    continue;
-                }
-                return k + 1;
-            }
-            k++;
-        }
-        return sql.length();
     }
 
     // --- Stage 3: Schema-aware validation ---

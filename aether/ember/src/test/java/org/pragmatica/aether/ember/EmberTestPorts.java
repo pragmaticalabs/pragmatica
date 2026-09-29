@@ -12,10 +12,13 @@ import java.net.ServerSocket;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.function.ToIntFunction;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
@@ -80,6 +83,16 @@ final class EmberTestPorts {
     static EmberCluster startedCluster(IntFunction<EmberCluster> clusterAt,
                                        TimeSpan startBound,
                                        ToIntFunction<Set<Integer>> chooseBase) {
+        return startedCluster(clusterAt, EmberCluster::start, EmberCluster::stop, startBound, chooseBase);
+    }
+
+    /// The retry loop over any cluster type, so EmberTestPortsTest can inject start and stop outcomes deterministically
+    /// (#1707 review round 2: a real cluster cannot be made to fail its stop on demand).
+    static <C> C startedCluster(IntFunction<C> clusterAt,
+                                Function<C, Promise<Unit>> start,
+                                Function<C, Promise<Unit>> stop,
+                                TimeSpan startBound,
+                                ToIntFunction<Set<Integer>> chooseBase) {
         var lastCollision = "";
         var attempted = new HashSet<Integer>();
 
@@ -88,13 +101,13 @@ final class EmberTestPorts {
 
             attempted.add(base);
             var cluster = clusterAt.apply(base);
-            var outcome = cluster.start().await(startBound).fold(Cause::message, _ -> "started");
+            var outcome = start.apply(cluster).await(startBound).fold(Cause::message, _ -> "started");
 
             if ("started".equals(outcome)) {
                 return cluster;
             }
 
-            var stopped = cluster.stop().await(startBound).fold(Cause::message, _ -> "stopped");
+            var stopped = stop.apply(cluster).await(startBound).fold(Cause::message, _ -> "stopped");
 
             if (!"stopped".equals(stopped)) {
                 // A cluster that did not stop may still hold sockets; starting another beside it proves nothing.

@@ -10,7 +10,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -28,6 +32,9 @@ class EmberTestPortsTest {
     private static final EmberTestPorts.Block BLOCK = new EmberTestPorts.Block(46100, 46900, 200, 3, 40, 80);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
+
+    private static final Cause BIND_COLLISION = Causes.cause("Transport failure: java.net.BindException: Address already in use");
+    private static final Cause STOP_REFUSED = Causes.cause("stop refused");
 
     private final List<ServerSocket> taken = new ArrayList<>();
     private EmberCluster cluster;
@@ -103,30 +110,39 @@ class EmberTestPortsTest {
     }
 
     /// #1707 review: a failed start whose cleanup also fails is reported, never retried beside a half-stopped cluster.
+    /// Round 2: the start and stop outcomes are injected, so the test cannot depend on how fast a real stop is. The start
+    /// fails with a bind collision, which would otherwise be retried; only the failed stop ends the loop.
     @Test
-    @Timeout(300)
     void startedCluster_cleanupFails_failsWithTheCleanupError() {
-        var built = new ArrayList<EmberCluster>();
+        var built = new ArrayList<Integer>();
 
-        try {
-            assertThatThrownBy(() -> EmberTestPorts.startedCluster(BLOCK,
-                                                                   base -> {
-                                                                       var attempt = emberCluster(3,
-                                                                                                  base,
-                                                                                                  base + BLOCK.mgmtOffset(),
-                                                                                                  base + BLOCK.appOffset(),
-                                                                                                  "ports");
+        assertThatThrownBy(() -> EmberTestPorts.startedCluster(base -> {
+                                                                   built.add(base);
+                                                                   return base;
+                                                               },
+                                                               _ -> BIND_COLLISION.<Unit>promise(),
+                                                               _ -> STOP_REFUSED.<Unit>promise(),
+                                                               START_BOUND,
+                                                               attempted -> 46100 + 200 * attempted.size()))
+            .hasMessageContaining("its cleanup failed too: " + STOP_REFUSED.message());
+        assertThat(built).as("no second cluster was started beside the unstopped one").containsExactly(46100);
+    }
 
-                                                                       built.add(attempt);
+    /// Control for the test above: the same injected bind collision with a clean stop IS retried, every attempt.
+    @Test
+    void startedCluster_cleanStopAfterBindCollision_retriesUpToTheBound() {
+        var built = new ArrayList<Integer>();
 
-                                                                       return attempt;
-                                                                   },
-                                                                   TimeSpan.timeSpan(1).millis())).hasMessageContaining("its cleanup failed too");
-            assertThat(built).as("no second cluster was started beside the unstopped one").hasSize(1);
-        } finally {
-            built.forEach(started -> started.stop()
-                                            .await(STOP_BOUND));
-        }
+        assertThatThrownBy(() -> EmberTestPorts.startedCluster(base -> {
+                                                                   built.add(base);
+                                                                   return base;
+                                                               },
+                                                               _ -> BIND_COLLISION.<Unit>promise(),
+                                                               _ -> Promise.success(Unit.unit()),
+                                                               START_BOUND,
+                                                               attempted -> 46100 + 200 * attempted.size()))
+            .hasMessageContaining("every one of " + EmberTestPorts.START_ATTEMPTS);
+        assertThat(built).hasSize(EmberTestPorts.START_ATTEMPTS);
     }
 
     /// #1707 review: a base that lost a bind is excluded from the next attempt, even once the colliding port is free.

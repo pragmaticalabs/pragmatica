@@ -48,6 +48,18 @@ class QueryRewriterTest {
             assertThat(result.parameterOrder()).containsExactly("id");
         }
 
+        /// #1707 review round 2: `:name` inside a literal, quoted identifier or comment is text, not a placeholder,
+        /// so it is neither rewritten nor reported; the real placeholder beside it still is.
+        @Test
+        void namedLookalikesInLiteralsAndComments_areLeftAsIs() {
+            var sql = "SELECT ':label', \":col\" FROM t /* :c1 */ WHERE id = :id -- :c2";
+            var result = rewriteNamedParams(sql, List.of("id"));
+
+            assertThat(result.sql()).isEqualTo("SELECT ':label', \":col\" FROM t /* :c1 */ WHERE id = $1 -- :c2");
+            assertThat(result.parameterOrder()).containsExactly("id");
+            assertThat(extractNamedParams(sql)).containsExactly("id");
+        }
+
         @Test
         void noParams_unchangedSql() {
             var result = rewriteNamedParams(

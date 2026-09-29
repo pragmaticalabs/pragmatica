@@ -337,6 +337,30 @@ class AnnotationProcessorE2ETest {
             assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
         }
 
+        /// #1707 review round 2: a `:name` inside a string literal is not a placeholder, so a parameterless query
+        /// containing one compiles.
+        @Test
+        void namedLookalikeInsideALiteral_isNotAParameter() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface NamedLiteralRepo {
+
+                    @Query("UPDATE users SET name = 'at :noon' WHERE id = 1")
+                    Promise<Unit> renameFirst();
+                }
+                """;
+            var result = compileWithProcessor(source, "test/NamedLiteralRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+        }
+
         /// #1707 review: a query mixing `:name` and `$n` binds by an order neither check sees, so it is refused.
         @Test
         void mixedNamedAndPositionalPlaceholders_failsCompilation() throws Exception {
@@ -364,7 +388,7 @@ class AnnotationProcessorE2ETest {
         @Test
         void sqlCodeOnly_blanksLiteralsIdentifiersDollarQuotesAndComments() {
             var sql = "SELECT '$1''x', \"$2\", $$ $3 $$, $t$ $4 $t$ /* $5 */ FROM t -- $6\nWHERE a = $7";
-            var code = QueryAnnotationProcessor.sqlCodeOnly(sql);
+            var code = QueryRewriter.sqlCodeOnly(sql);
 
             assertThat(code).hasSize(sql.length()).contains("$7").doesNotContain("$1", "$2", "$3", "$4", "$5", "$6");
         }
