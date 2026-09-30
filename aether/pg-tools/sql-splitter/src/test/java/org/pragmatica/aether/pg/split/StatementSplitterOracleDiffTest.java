@@ -57,7 +57,7 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// excluded from the default build. If Docker is unavailable the whole class is skipped via
 /// [#dockerAvailable] rather than failing.
 @Tag("heavy-db")
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class StatementSplitterOracleDiffTest {
     private static final DialectSpec ORACLE = Dialects.ORACLE;
 
