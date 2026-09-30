@@ -7082,9 +7082,12 @@ public interface AetherNode extends ManageableNode {
 
     /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /
     /// FAULTY / DEPARTED / UNKNOWN map to the matching `onSwim*` ingress; JoinAnnounced /
-    /// MemberDiscovered are ignored (the FSM tracks liveness transitions, not discovery). The FSM
+    /// MemberDiscovered upsert the member descriptor (address, role, source — the role a gossiped
+    /// `MembershipUpdate` carries reaches the FSM here). The FSM
     /// drives the per-member lifecycle and, on the DEAD edge, hard-evicts from NTT — the membership-
-    /// death authority. Leader-gating happens inside the FSM.
+    /// death authority. Leader-gating happens inside the FSM. Package-private so the node tests drive
+    /// the real routing; `@Contract` because it is the sink of a `Consumer<SwimObservation>` listener.
+    @Contract
     static void routeSwimEdgeToMembershipFsm(SwimObservation observation, MembershipFsm membershipFsm) {
         switch (observation) {
             case SwimObservation.HealthyObserved healthy -> membershipFsm.onSwimHealthy(healthy.peer(),

@@ -1674,7 +1674,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// NodeInfo of a topology-known peer, built from its Hello data only when the Hello carried labels;
     /// empty otherwise, so a label-less Hello for a known peer adds nothing upstream.
-    private static Option<NodeInfo> labelledNodeInfo(NodeId peerId, NodeAddress peerAddress, Map<String, String> peerLabels) {
+    private static Option<NodeInfo> labelledNodeInfo(NodeId peerId,
+                                                     NodeAddress peerAddress,
+                                                     Map<String, String> peerLabels) {
         return peerLabels.isEmpty()
                ? Option.empty()
                : Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerLabels));
