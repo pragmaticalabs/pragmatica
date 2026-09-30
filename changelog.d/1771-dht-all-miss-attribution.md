@@ -13,9 +13,11 @@
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTResolveFallbackTest.java`, `ResolveMissTest.java`]
 - **Every line now says how long the read took and how it ended**: the all-miss WARN carries `kind=quorum-empty|fallback-degraded`
   and `elapsedMs`; a metadata read the 15s resolve timeout cut (a target departed mid-read, so nothing reports an all-miss)
-  logs `outcome=timed-out elapsedMs=...` with the same key; `NotFound` says `outcome=answered-empty, elapsedMs=...`.
+  logs `outcome=timed-out elapsedMs=...` with the same key; `NotFound` says `outcome=dht-returned-empty, elapsedMs=...`.
   [verified: `ResolveMissTest`, `DHTResolveFallbackTest`, `ArtifactStoreTest$MetadataAttributionTests`; unverified: that the
   store's `log.warn` call itself fires, only its line builder is pinned]
+- The all-miss WARN is scoped to artifact-store keys (`artifacts/` prefix); the client also serves other keys whose absence is
+  normal traffic, and those log at DEBUG. [verified: `ResolveMissTest.observer_nonWarnableKey_goesToDebugNotWarn`]
 - `ArtifactStoreError.NotFound` names the DHT key hex, and unparseable metadata is its own `MetadataUnparseable` cause
   instead of reading as absence. [verified: `ArtifactStoreTest$MetadataAttributionTests`]
 - Attribution only: resolution and quorum rules are unchanged. [unverified: the WARN in a running cluster; the three gaps of "absent" this leaves unresolved (slow third R-set replica, dead fallback holder, corrupt metadata) are now attributed, not fixed; that a
