@@ -105,26 +105,19 @@ test_concurrent_deploy() {
     local result_a_file="/tmp/deploy-a-$$.txt"
     local result_b_file="/tmp/deploy-b-$$.txt"
 
-    # http_status_with_body, not http_status: the blind form is why the baseline could only say
-    # "A=400, B=400" with no detail. One request per branch, so there is no flood risk here.
+    # stream_publish_status keeps the HTTP status (the blind form is why the baseline could only say
+    # "A=400, B=400" with no detail) and retries a transient 503 "retry" refusal for a bounded time (an
+    # owner not yet promoted while both deploys settle); a 500 is never retried (#1750).
     (
         local status
-        status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/v1/streams/${coord_a}/publish" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "{\"data\":\"concurrent-a\"}")
+        status=$(stream_publish_status "$STREAM_A" "{\"data\":\"concurrent-a\"}")
         echo "$status" > "$result_a_file"
     ) &
     local pid_a=$!
 
     (
         local status
-        status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/v1/streams/${coord_b}/publish" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "{\"data\":\"concurrent-b\"}")
+        status=$(stream_publish_status "$STREAM_B" "{\"data\":\"concurrent-b\"}")
         echo "$status" > "$result_b_file"
     ) &
     local pid_b=$!
