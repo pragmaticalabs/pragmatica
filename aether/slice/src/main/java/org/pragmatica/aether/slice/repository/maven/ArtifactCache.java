@@ -32,12 +32,14 @@ import org.slf4j.LoggerFactory;
 ///
 /// A `.aether-sha256` sidecar holding the verified digest is published next to the jar. It is this node's
 /// OWNERSHIP mark as well as its checksum, and deliberately not Maven's `.sha256` name, which Maven itself may write.
-/// A cache hit is checked on load ([#check]):
-/// - a jar carrying this node's sidecar that no longer matches it is fetched again and replaced — the node wrote it;
-/// - a jar that fails a Maven `.sha1`/`.sha256` sidecar but carries no mark of ours is NOT the node's to delete (the
-///   local repository is the operator's `~/.m2` in dev and Forge flows, possibly holding a locally built, never
-///   published artifact). It is refused, loudly and with a typed cause, and every file is left as it was (v1617, M1);
+/// A cache hit is checked on load ([#check]). The local repository is the operator's `~/.m2` in dev and Forge flows, so
+/// a jar that fails its checksum may be the operator's own build, and the node never deletes or overwrites it:
+/// - a jar carrying this node's sidecar that no longer matches it had its bytes changed after the node wrote it (an
+///   operator's `mvn install` over it, or corruption). It is refused, loudly and with a typed cause naming the jar, and
+///   left as it was — never refetched over (#1725 ruling);
+/// - a jar that fails a Maven `.sha1`/`.sha256` sidecar is refused the same way (v1617, M1);
 /// - a jar with no sidecar (installed by Maven itself) cannot be checked and is used, as before.
+/// Since a jar is published only when none is cached, [#store] never replaces an existing jar.
 final class ArtifactCache {
     private static final Logger log = LoggerFactory.getLogger(ArtifactCache.class);
     /// This node's sidecar: its checksum AND its mark that the node wrote the jar.
@@ -51,10 +53,8 @@ final class ArtifactCache {
     enum CacheState {
         /// Load it: it matches its sidecar, or it has none to check against.
         USABLE,
-        /// It was this node's and does not match: do not load it, fetch it again; the fetch replaces it atomically.
-        STALE,
-        /// It fails a Maven checksum and is not this node's: refuse, and leave every file untouched.
-        FOREIGN_MISMATCH
+        /// It fails its checksum — this node's mark or a Maven one: refuse, and leave every file untouched.
+        MISMATCH
     }
 
     private record Sidecar(String suffix, String algorithm) {
@@ -108,20 +108,20 @@ final class ArtifactCache {
                              .orElse(CacheState.USABLE);
     }
 
-    /// A jar of ours that no longer matches is NOT deleted (CodeRabbit on #1725): it is reported STALE, never loaded,
-    /// and [#store]'s atomic rename replaces it once a refetch succeeds. If the refetch fails, the stale jar and its
-    /// sidecar are still there, still mismatched, and the next resolve tries again — nothing is lost before a good
-    /// copy exists.
+    /// A jar of ours whose bytes no longer match the mark changed AFTER the node wrote it — possibly an operator's
+    /// `mvn install` over it — so it is refused exactly like a foreign mismatch, never refetched over (#1725 ruling).
     private static CacheState checkOwn(Path jar) {
         if (matches(jar, OWN_SIDECAR)) {
             return CacheState.USABLE;
         }
 
-        log.warn("Cached artifact {} no longer matches the checksum this node recorded when it wrote it; fetching it again "
-                + "(the stale copy is replaced only once the fetch succeeds)",
-                 jar);
+        log.error("Cached artifact {} no longer matches the checksum this node recorded when it wrote it ({}); its bytes changed "
+                 + "after the node wrote it, so it is left untouched and NOT loaded. Rebuild or reinstall it, or remove it and "
+                 + "its sidecar so the node can fetch it",
+                  jar,
+                  OWN_SIDECAR.of(jar).getFileName());
 
-        return CacheState.STALE;
+        return CacheState.MISMATCH;
     }
 
     private static CacheState checkForeign(Path jar, Sidecar sidecar) {
@@ -135,7 +135,7 @@ final class ArtifactCache {
                   sidecar.algorithm(),
                   sidecar.of(jar).getFileName());
 
-        return CacheState.FOREIGN_MISMATCH;
+        return CacheState.MISMATCH;
     }
 
     private static boolean matches(Path jar, Sidecar sidecar) {

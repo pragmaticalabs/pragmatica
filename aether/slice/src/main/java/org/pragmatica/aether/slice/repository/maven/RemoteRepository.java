@@ -55,15 +55,14 @@ public interface RemoteRepository extends Repository {
                                                      Path localRepo,
                                                      Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
-        // #1599: a cached jar is loaded only if it still matches its checksum sidecar. One the node wrote and that
-        // no longer matches is evicted and fetched again; one that fails a Maven checksum but was not written by the
-        // node is refused and left untouched (v1617, M1) — it may be the operator's local, never-published build.
+        // #1599: a cached jar is loaded only if it still matches its checksum sidecar. One that does not — whether the
+        // node's own mark or a Maven checksum — is refused and left untouched, never fetched over (v1617 M1, #1725
+        // ruling): it may be the operator's local build, installed over a jar the node once wrote.
         if (exists(cachedPath)) {
             return switch (ArtifactCache.check(cachedPath)) {
                 case USABLE -> cacheHit(artifact, cachedPath);
-                case STALE -> downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
-                case FOREIGN_MISMATCH -> new RemoteRepositoryError.CachedArtifactChecksumMismatch(artifact.asString(),
-                                                                                                  cachedPath.toString()).promise();
+                case MISMATCH -> new RemoteRepositoryError.CachedArtifactChecksumMismatch(artifact.asString(),
+                                                                                          cachedPath.toString()).promise();
             };
         }
 
@@ -308,15 +307,16 @@ public interface RemoteRepository extends Repository {
             }
         }
 
-        /// #1599 (v1617, M1): a jar in the local Maven repository fails its Maven checksum and was not written by this
-        /// node. It is neither loaded nor deleted nor overwritten; the operator decides.
+        /// #1599 (v1617 M1, #1725 ruling): a jar in the local Maven repository fails its checksum — a Maven one, or the mark
+        /// this node wrote with it, whose bytes then changed. It is neither loaded nor deleted nor overwritten; the operator
+        /// decides.
         record CachedArtifactChecksumMismatch(String artifact, String path) implements RemoteRepositoryError {
             @Override
             public String message() {
                 return "Cached artifact " + artifact
                      + " at " + path
-                     + " does not match its Maven checksum and was not written by"
-                     + " this node; it was left untouched and not loaded. Rebuild or reinstall it, or remove it so it can be fetched";
+                     + " does not match its checksum sidecar; it was left untouched and not loaded."
+                     + " Rebuild or reinstall it, or remove it and its sidecar so it can be fetched";
             }
         }
 

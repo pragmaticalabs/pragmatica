@@ -24,10 +24,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1599 — the wiring through `RemoteRepository` itself, against a local HTTP server and a local repository
 /// in a temp directory (`maven.repo.local`, which the locator reads first, so `~/.m2` is never touched).
-/// A download is cached with its sidecar, and a cached jar that no longer matches it is fetched again
-/// rather than loaded, while a jar the node did not write is never deleted or overwritten (v1617, M1). Mutation that
-/// reddens the second test: drop the `ArtifactCache.check` from
-/// the cache-hit branch of `resolveArtifact`.
+/// A download is cached with its sidecar, and a cached jar that no longer matches its checksum — the node's own mark or a
+/// Maven one — is refused, never loaded and never deleted or fetched over (v1617 M1, #1725 ruling). Mutation that
+/// reddens the torn-jar test: drop the `ArtifactCache.check` from the cache-hit branch of `resolveArtifact`.
 class RemoteRepositoryCacheWiringTest {
     private static final byte[] JAR = "PK\u0003\u0004 served jar bytes for the wiring test".getBytes(StandardCharsets.UTF_8);
     private static final String JAR_PATH = "/org/example/demo/1.0.0/demo-1.0.0.jar";
@@ -36,7 +35,6 @@ class RemoteRepositoryCacheWiringTest {
     Path localRepo;
 
     private final AtomicInteger jarRequests = new AtomicInteger();
-    private final java.util.concurrent.atomic.AtomicBoolean failJar = new java.util.concurrent.atomic.AtomicBoolean();
     private HttpServer server;
     private String previousRepoProperty;
 
@@ -51,11 +49,6 @@ class RemoteRepositoryCacheWiringTest {
             var body = path.endsWith(".sha256") ? sha256 : JAR;
             if (!path.endsWith(".sha256")) {
                 jarRequests.incrementAndGet();
-                if (failJar.get()) {
-                    exchange.sendResponseHeaders(503, -1);
-                    exchange.close();
-                    return;
-                }
             }
             exchange.sendResponseHeaders(200, body.length);
             try (var out = exchange.getResponseBody()) {
@@ -86,15 +79,34 @@ class RemoteRepositoryCacheWiringTest {
     }
 
     @Test
-    void tornCachedJar_isFetchedAgainInsteadOfLoaded() throws IOException {
+    void tornCachedJar_isRefusedInsteadOfLoaded() throws IOException {
         assertThat(repository().locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
         Files.write(cachedJar(), Arrays.copyOf(JAR, JAR.length / 2));
 
         var location = repository().locate(artifact()).await(timeSpan(10).seconds());
 
-        assertThat(location.isSuccess()).as("located: %s", location).isTrue();
-        assertThat(jarRequests.get()).as("#1599: the torn cached jar was re-fetched, not loaded").isEqualTo(2);
-        assertThat(Files.readAllBytes(cachedJar())).isEqualTo(JAR);
+        assertThat(location.isFailure()).as("#1599: the torn cached jar is not loaded: %s", location).isTrue();
+    }
+
+    /// #1725 ruling — an operator runs `mvn install` over a jar the node wrote, so its bytes no longer match the node's
+    /// mark. Resolution refuses it by name and the operator's bytes survive: nothing is fetched over them. Mutation that
+    /// reddens it: route the mismatch back to `downloadAndCache` in `resolveArtifact` (the pre-ruling refetch).
+    @Test
+    void operatorInstallOverANodeMarkedJar_isRefused_andItsBytesSurvive() throws IOException {
+        assertThat(repository().locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
+        var operatorBuild = "PK\u0003\u0004 the operator's own mvn install of the same coordinates".getBytes(StandardCharsets.UTF_8);
+        Files.write(cachedJar(), operatorBuild);
+
+        var location = repository().locate(artifact()).await(timeSpan(10).seconds());
+
+        assertThat(location.isFailure()).as("refused, not loaded or refetched: %s", location).isTrue();
+        location.onFailure(cause -> assertThat(cause).isInstanceOf(RemoteRepository.RemoteRepositoryError.CachedArtifactChecksumMismatch.class)
+                                                     .extracting(c -> c.message())
+                                                     .asString()
+                                                     .contains(cachedJar().toString()));
+        assertThat(jarRequests.get()).as("nothing is fetched over it").isEqualTo(1);
+        assertThat(Files.readAllBytes(cachedJar())).as("the operator's bytes survive").isEqualTo(operatorBuild);
+        assertThat(cachedJar().resolveSibling("demo-1.0.0.jar.aether-sha256")).exists();
     }
 
     /// v1617 M1 — a jar in the local repository that fails Maven's `.sha1` and was not written by the node: the resolve
@@ -113,24 +125,6 @@ class RemoteRepositoryCacheWiringTest {
         location.onFailure(cause -> assertThat(cause).isInstanceOf(RemoteRepository.RemoteRepositoryError.CachedArtifactChecksumMismatch.class));
         assertThat(jarRequests.get()).as("nothing is fetched over it").isZero();
         assertThat(Files.readAllBytes(cachedJar())).as("M1: the operator's jar is untouched").isEqualTo(local);
-    }
-
-    /// CodeRabbit on #1725 — a stale jar of ours is NOT deleted before a good copy exists: when the refetch fails, the
-    /// stale jar and its sidecar are still there (never loaded, retried on the next resolve). Mutation that reddens it:
-    /// delete the stale jar in `ArtifactCache.checkOwn`.
-    @Test
-    void staleCachedJar_whoseRefetchFails_isKept() throws IOException {
-        assertThat(repository().locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
-        var torn = Arrays.copyOf(JAR, JAR.length / 2);
-        Files.write(cachedJar(), torn);
-        failJar.set(true);
-
-        var location = repository().locate(artifact()).await(timeSpan(10).seconds());
-
-        assertThat(location.isFailure()).as("the refetch failed: %s", location).isTrue();
-        assertThat(jarRequests.get()).as("control: the refetch was attempted").isEqualTo(2);
-        assertThat(cachedJar()).as("the stale copy survives a failed refetch").exists();
-        assertThat(cachedJar().resolveSibling("demo-1.0.0.jar.aether-sha256")).exists();
     }
 
     /// CONTROL — an intact cached jar is a cache hit: no second download.

@@ -67,18 +67,19 @@ class ArtifactCacheTest {
         assertThat(ArtifactCache.check(target)).as("a freshly stored jar verifies").isEqualTo(ArtifactCache.CacheState.USABLE);
     }
 
-    /// A jar THIS NODE wrote that no longer matches its sidecar — torn before this fix, or corrupted since — is reported
-    /// STALE so it is fetched again instead of being loaded. It is NOT deleted: the refetch replaces it atomically, so a
-    /// failed refetch loses nothing (CodeRabbit on #1725). Mutation that reddens it: make `check` skip the comparison.
+    /// A jar THIS NODE wrote that no longer matches its sidecar — torn before this fix, corrupted since, or overwritten
+    /// by an operator's `mvn install` — is refused and left as it was (#1725 ruling). Mutation that reddens it: make
+    /// `check` skip the comparison.
     @Test
-    void check_ownJarNotMatchingItsSidecar_isStaleAndKeptUntilReplaced() throws IOException {
+    void check_ownJarNotMatchingItsSidecar_isRefusedAndLeftUntouched() throws IOException {
         var target = dir.resolve("a-1.0.jar");
+        var torn = Arrays.copyOf(JAR, JAR.length / 2);
 
         assertThat(ArtifactCache.store(target, JAR).isSuccess()).isTrue();
-        Files.write(target, Arrays.copyOf(JAR, JAR.length / 2));
+        Files.write(target, torn);
 
-        assertThat(ArtifactCache.check(target)).as("#1599: a torn jar is not loaded").isEqualTo(ArtifactCache.CacheState.STALE);
-        assertThat(target).as("it is kept until a refetch replaces it").exists();
+        assertThat(ArtifactCache.check(target)).as("#1599: a torn jar is not loaded").isEqualTo(ArtifactCache.CacheState.MISMATCH);
+        assertThat(Files.readAllBytes(target)).as("its bytes are left as they are").isEqualTo(torn);
         assertThat(dir.resolve("a-1.0.jar.aether-sha256")).exists();
     }
 
@@ -93,7 +94,7 @@ class ArtifactCacheTest {
         Files.write(target, JAR);
         Files.writeString(sha1, "0000000000000000000000000000000000000000  a-1.0.jar");
 
-        assertThat(ArtifactCache.check(target)).isEqualTo(ArtifactCache.CacheState.FOREIGN_MISMATCH);
+        assertThat(ArtifactCache.check(target)).isEqualTo(ArtifactCache.CacheState.MISMATCH);
         assertThat(target).as("M1: a jar the node did not write survives").exists();
         assertThat(Files.readAllBytes(target)).isEqualTo(JAR);
         assertThat(sha1).as("and so does Maven's sidecar").exists();
@@ -108,7 +109,7 @@ class ArtifactCacheTest {
         Files.write(target, JAR);
         Files.writeString(dir.resolve("a-1.0.jar.sha256"), "00".repeat(32));
 
-        assertThat(ArtifactCache.check(target)).isEqualTo(ArtifactCache.CacheState.FOREIGN_MISMATCH);
+        assertThat(ArtifactCache.check(target)).isEqualTo(ArtifactCache.CacheState.MISMATCH);
         assertThat(target).exists();
     }
 
