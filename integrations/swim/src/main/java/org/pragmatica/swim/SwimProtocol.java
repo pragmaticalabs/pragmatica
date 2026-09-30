@@ -244,6 +244,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// This process's random boot token, seeded by [#announceJoin]; `0` until then (and for callers
     /// that announce without one). Carried on every self-ANNOUNCE and self-ALIVE.
     private final AtomicLong selfBootToken = new AtomicLong(0);
+    /// This node's own descriptor labels (role/source), taken from the `NodeInfo` given to [#announceJoin]
+    /// and carried on every self update, so a peer that never saw our ANNOUNCE still learns them from
+    /// steady-state gossip. Empty until the first announce.
+    private volatile Map<String, String> selfLabels = Map.of();
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
@@ -817,7 +821,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                           MemberState.ALIVE,
                                                           refreshedSelfIncarnation(incarnation),
                                                           selfAddress,
-                                                          selfBootToken.get()));
+                                                          selfBootToken.get(),
+                                                          selfLabels));
     }
 
     /// Fix 1 (#336 PRIMARY): the incarnation this round's proactive self-ALIVE advertises.
@@ -873,7 +878,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void probeTarget(SwimMember target) {
         var seq = sequenceCounter.incrementAndGet();
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
         var ping = Ping.ping(selfId, seq, piggyback);
 
         lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
@@ -1473,7 +1478,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         inboundProbeReceived = true;
         recordInboundReachability();
         processPiggyback(ping.piggyback(), ping.from());
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
 
         transport.send(sender, ack);
@@ -1839,6 +1844,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // already advanced the value) never regresses it.
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
+            selfLabels = self.labels();
             var attempts = new AtomicInteger(0);
             var future = new AtomicReference<ScheduledFuture<?>>();
             var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
@@ -2015,7 +2021,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                         requesterAddress,
                                         target.nodeId(),
                                         System.currentTimeMillis()));
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
         var ping = Ping.ping(selfId, relaySeq, piggyback);
 
         transport.send(target.address(), ping);
@@ -2152,7 +2158,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                           MemberState.ALIVE,
                                                           bumped,
                                                           selfAddress,
-                                                          selfBootToken.get()));
+                                                          selfBootToken.get(),
+                                                          selfLabels));
     }
 
     private void applyNewMember(MembershipUpdate update) {

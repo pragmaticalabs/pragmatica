@@ -13,6 +13,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.swim.PiggybackBuffer;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimMessage.Ack;
@@ -82,4 +83,55 @@ class SwimMessageLabelsCodecTest {
         assertThat(decoded).isEqualTo(ack);
         assertThat(decoded.piggyback().getFirst().labels()).isEqualTo(CORE_LABELS);
     }
+
+    /// The size estimate that packs piggybacks must never UNDER-state what the production codec writes, or the
+    /// budget is fiction. Checked for update shapes from bare to heavily labelled.
+    @Test
+    void estimatedBytes_neverUnderstatesTheEncodedUpdate() {
+        var shapes = List.of(Map.<String, String>of(),
+                             CORE_LABELS,
+                             REALISTIC_LABELS,
+                             Map.of(NodeInfo.LABEL_ROLE, "\u00e9\u00e9\u00e9\u00e9", "k", "v"));
+
+        for (var labels : shapes) {
+            var update = MembershipUpdate.membershipUpdate(new NodeId("aether-test-cluster-node-01m3rc2gnr6bnvmnmc7rs0rcmb"),
+                                                           MemberState.ALIVE,
+                                                           123456789L,
+                                                           ADDRESS,
+                                                           987654321L,
+                                                           labels);
+            byte[] encoded = codec.encode(update);
+
+            assertThat(PiggybackBuffer.estimatedBytes(update)).as("labels %s", labels).isGreaterThanOrEqualTo(encoded.length);
+        }
+    }
+
+    /// A Ping packed from a large labelled backlog fits one datagram once AES-GCM framing (32 B) is added, and
+    /// the same 12 updates packed WITHOUT the budget do not (the 2476 B case v1757 measured).
+    @Test
+    void packedPing_fromLargeLabelledBacklog_fitsTheDatagramBudget() {
+        var buffer = PiggybackBuffer.piggybackBuffer(64);
+
+        for (int i = 0; i < 40; i++) {
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(new NodeId("aether-test-cluster-node-01m3rc2gnr6bnvmnmc7rs0r" + i),
+                                                               MemberState.ALIVE,
+                                                               1L,
+                                                               ADDRESS,
+                                                               5L,
+                                                               REALISTIC_LABELS));
+        }
+
+        byte[] unbudgeted = codec.encode((SwimMessage) Ping.ping(FROM, 1L, buffer.peekUpdates(12)));
+        byte[] budgeted = codec.encode((SwimMessage) Ping.ping(FROM, 2L, buffer.peekUpdates(12, PiggybackBuffer.PIGGYBACK_BUDGET_BYTES)));
+
+        assertThat(unbudgeted.length + 32).as("12 realistic labelled updates without a budget").isGreaterThan(PiggybackBuffer.MAX_DATAGRAM_BYTES);
+        assertThat(budgeted.length + 32).as("budgeted Ping incl. AES-GCM framing").isLessThanOrEqualTo(PiggybackBuffer.MAX_DATAGRAM_BYTES);
+    }
+
+    private static final Map<String, String> REALISTIC_LABELS = Map.of(NodeInfo.LABEL_ROLE, "core",
+                                                                        NodeInfo.LABEL_SOURCE, "replacement",
+                                                                        NodeInfo.LABEL_HOSTNAME, "aether-prod-eu-core-0123456789",
+                                                                        NodeInfo.LABEL_ZONE, "fsn1-dc14",
+                                                                        NodeInfo.LABEL_INSTANCE_TYPE, "ccx33",
+                                                                        NodeInfo.LABEL_POOL, "core-pool-primary");
 }
