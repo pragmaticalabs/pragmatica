@@ -389,7 +389,7 @@ class PartitionBackfillLiveInterleaveTest {
 
     private PartitionBackfill backfill() {
         return partitionBackfill(registry,
-                                 replica::appendRecovered,
+                                 replica.alignedRecovery(),
                                  this::deferredCatchup,
                                  (_, message) -> recordBackfillAck((ReplicationMessage.ReplicateAck) message),
                                  (_, _, _) -> probeAnswer,

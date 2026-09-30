@@ -19,9 +19,11 @@ import org.pragmatica.aether.update.CleanupPolicy;
 import org.pragmatica.aether.update.Deployment;
 import org.pragmatica.aether.update.DeploymentError;
 import org.pragmatica.aether.update.DeploymentManager;
+import org.pragmatica.aether.update.DeploymentState;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.HealthThresholds;
 import org.pragmatica.aether.update.StrategyConfig;
+import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -181,6 +183,21 @@ class DeployRouteStatusTest {
                       .contains(DEPLOYMENT_ID)
                       .contains("Deployment not found")
                       .contains("404");
+        }
+    }
+
+    /// The other half of the status contract: a deployment the manager reports, terminal or not, is
+    /// answered with its response (the route yields a success `Result`, which `asJson` writes as 200),
+    /// not with `DeploymentNotFound`. A terminal deployment is the case the manager used to lose after a
+    /// STRATEGIES reassignment.
+    @Nested
+    class DeploymentPresent {
+        @Test
+        void statusRoute_answersWithTheTerminalDeployment_whenManagerReportsIt() {
+            var response = statusResponseFrom(rolledBackDeployment());
+
+            assertThat(response.deploymentId()).isEqualTo(DEPLOYMENT_ID);
+            assertThat(response.state()).isEqualTo("ROLLED_BACK");
         }
     }
 
@@ -374,6 +391,39 @@ class DeployRouteStatusTest {
                          new StubRequestContext(List.of(deploymentId), Option.none(), STATUS_INSTANCE));
     }
 
+    private static Deployment rolledBackDeployment() {
+        var now = System.currentTimeMillis();
+
+        return new Deployment(DEPLOYMENT_ID,
+                              COORDS,
+                              Version.version("1.0.0").unwrap(),
+                              Version.version("2.0.0").unwrap(),
+                              DeploymentState.ROLLED_BACK,
+                              DeploymentStrategy.BLUE_GREEN,
+                              new StrategyConfig.RollingConfig(false),
+                              VersionRouting.ALL_OLD,
+                              HealthThresholds.DEFAULT,
+                              CleanupPolicy.GRACE_PERIOD,
+                              List.of(),
+                              3,
+                              now,
+                              now);
+    }
+
+    private static DeployRoutes.DeploymentResponse statusResponseFrom(Deployment known) {
+        var holder = new AtomicReference<Object>();
+
+        deployRoute(ManagementRoute.DEPLOY_STATUS, new StubDeploymentManager(NOT_CALLED, Option.some(known))).handler()
+                                                                                                             .handle(new StubRequestContext(List.of(DEPLOYMENT_ID),
+                                                                                                                                            Option.none(),
+                                                                                                                                            STATUS_INSTANCE))
+                                                                                                             .await()
+                                                                                                             .onFailure(cause -> Assertions.fail(cause.message()))
+                                                                                                             .onSuccess(holder::set);
+
+        return (DeployRoutes.DeploymentResponse) holder.get();
+    }
+
     /// Drives the REAL route handler and returns the cause the routing layer would hand to
     /// `ManagementRouter.writeError`.
     private static Cause causeFrom(ManagementRoute route, DeploymentManager manager, RequestContext context) {
@@ -413,11 +463,16 @@ class DeployRouteStatusTest {
     }
 
     /// Fails every operation the tests exercise with the supplied cause, and reports every deployment
-    /// id as unknown. `status` returning `none()` is precisely what `getDeployment` converts into
+    /// id as `known` (unknown unless a deployment is supplied), recording the instance count `start` was
+    /// handed. `status` returning `none()` is precisely what `getDeployment` converts into
     /// `DeploymentNotFound(id)`.
-    private record StubDeploymentManager(Cause failure, AtomicInteger startedWith) implements DeploymentManager {
+    private record StubDeploymentManager(Cause failure, AtomicInteger startedWith, Option<Deployment> known) implements DeploymentManager {
         StubDeploymentManager(Cause failure) {
-            this(failure, new AtomicInteger(NOT_STARTED));
+            this(failure, new AtomicInteger(NOT_STARTED), Option.none());
+        }
+
+        StubDeploymentManager(Cause failure, Option<Deployment> known) {
+            this(failure, new AtomicInteger(NOT_STARTED), known);
         }
 
         @Override
@@ -464,7 +519,7 @@ class DeployRouteStatusTest {
 
         @Override
         public Option<Deployment> status(String deploymentId) {
-            return Option.none();
+            return known;
         }
 
         @Override

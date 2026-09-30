@@ -70,7 +70,7 @@ class CatchUpWalDurabilityTest {
     void partitionBackfill_completedRun_isFsyncedOnce_withoutALaterLiveBatch() {
         registry.registerReplica(STREAM, PARTITION, SELF);
         var backfill = PartitionBackfill.partitionBackfill(registry,
-                                                           replica::appendRecovered,
+                                                           replica.alignedRecovery(),
                                                            CatchUpWalDurabilityTest::sourceRange,
                                                            ReplicationTransport.NOOP,
                                                            (_, _, _) -> Causes.cause("no probe").promise(),
@@ -95,7 +95,7 @@ class CatchUpWalDurabilityTest {
     @Test
     void failoverRecovery_completedRun_isFsyncedOnce_andItsRecordsAreVisible_withoutALaterLiveBatch() {
         var recovery = failoverRecovery(registry,
-                                        replica::appendRecovered,
+                                        replica.alignedRecovery(),
                                         CatchUpWalDurabilityTest::sourceRange,
                                         replica::syncReplicated);
         var before = fsyncCount();

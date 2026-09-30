@@ -391,6 +391,30 @@ mgmt_entry_point_node() {
     printf ''
 }
 
+# The node id behind a management endpoint, from GET /health/live (a LOCAL route: never forwarded, names
+# the answering node in `nodeId`). Empty when the read fails.
+_endpoint_node_id() {
+    curl -sk -m 3 "${1}/health/live" 2>/dev/null \
+        | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/' || true
+}
+
+# Management endpoint of a NAMED node, or empty when it cannot be derived. Cloud: the VM's public IP at
+# the uniform mgmt port; docker: `node-N` maps to MGMT_PORT + N - 1. For a caller that must read one
+# specific node's view (for example the leader across a partition) rather than whichever node the
+# pinned endpoint happens to be.
+node_mgmt_endpoint() {
+    local node_id="$1" ip
+    [ -n "$node_id" ] || return 0
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        ip=$(cloud_public_ip "$node_id" 2>/dev/null) || return 0
+        [ -n "$ip" ] && printf '%s://%s:%s' "${MGMT_SCHEME:-http}" "$ip" "${CLOUD_MGMT_PORT:-8080}"
+    elif [[ "$node_id" =~ ^node-([0-9]+)$ ]]; then
+        printf 'http://%s:%s' "${TARGET_HOST}" "$((MGMT_PORT + BASH_REMATCH[1] - 1))"
+    fi
+    return 0
+}
+
 # Pick a non-leader node from the cluster's CURRENT live membership.
 # Always excludes the leader. Additionally excludes any explicitly pinned MGMT
 # entry-point node (MGMT_ENTRY_POINT_NODE env override -- empty in normal
@@ -468,6 +492,24 @@ pick_non_leader() {
                 leader="$derived_leader"
             fi
 
+            # The harness's ENTRY-POINT node(s): the node(s) behind the endpoint the harness talks to
+            # (_resolve_live_endpoint, the pin api_get uses; MGMT_ENTRY_POINT, the pin the CLI uses).
+            # Cloud never sets MGMT_ENTRY_POINT_NODE, so nothing excluded them, and S05 partitioned
+            # the very node its leader query went through, read the minority's leaderless view and
+            # reported a majority failure that never happened. Identity comes from GET /health/live,
+            # a LOCAL route (ManagementRoute.HEALTH_LIVE): it is never forwarded and names the
+            # ANSWERING node in `nodeId`. /api/v1/nodes/status is NOT usable for this: it is
+            # LEADER-targeted, a follower forwards it, and the leader's nodeId comes back whichever
+            # node was asked. Such nodes are offered only if too few other candidates exist.
+            local entry_nodes="" _ep _eid
+            for _ep in "$(_resolve_live_endpoint 2>/dev/null)" "${MGMT_ENTRY_POINT:-}"; do
+                [ -n "$_ep" ] || continue
+                _eid=$(_endpoint_node_id "$_ep")
+                [ -n "$_eid" ] || continue
+                case " ${entry_nodes} " in *" ${_eid} "*) ;; *) entry_nodes="${entry_nodes} ${_eid}" ;; esac
+            done
+            local deferred_entries=""
+
             # Candidate enumeration: server-side READY filter via the aether CLI.
             # The response is a JSON array of `{nodeId, state, updatedAt}` triplets,
             # all already READY post-filter — extract `nodeId` with grep+sed (no jq).
@@ -522,11 +564,27 @@ pick_non_leader() {
                             continue
                         fi
                     fi
+                    case " ${entry_nodes} " in
+                        *" ${candidate} "*)
+                            pass_diag="${pass_diag} ${candidate}=DEFER-entrypoint"
+                            deferred_entries="${deferred_entries} ${candidate}"
+                            continue ;;
+                    esac
                     pass_diag="${pass_diag} ${candidate}=LIVE"
                     attempt_list="${attempt_list}${candidate}"$'\n'
                     attempt_found=$((attempt_found + 1))
                     if [ "$attempt_found" -ge "$count" ]; then break; fi
                 done 3<<< "$current_members"
+
+                # Fallback: entry-point nodes are used only when nothing else satisfies the count.
+                local _d
+                for _d in $deferred_entries; do
+                    [ "$attempt_found" -ge "$count" ] && break
+                    log_warn "pick_non_leader: too few candidates besides the entry-point node ${_d}; offering it (harness may lose its view if it is killed or partitioned)" >&2
+                    pass_diag="${pass_diag} ${_d}=FALLBACK-entrypoint"
+                    attempt_list="${attempt_list}${_d}"$'\n'
+                    attempt_found=$((attempt_found + 1))
+                done
 
                 if [ "$attempt_found" -ge "$count" ]; then
                     printf '%s' "$attempt_list" | grep -v '^$' | head -n "$count"
@@ -4028,6 +4086,53 @@ restore_cluster_baseline_or_flag() {
     return 0
 }
 
+# The core node ids the topology read lists as active (the `coreNodes` array cluster_active_core_count
+# counts), one per line. Empty when the read fails or the array is absent.
+_active_core_ids() {
+    api_get "/api/v1/cluster/topology" 2>/dev/null \
+        | grep -oE '"coreNodes"[[:space:]]*:[[:space:]]*\[[^]]*\]' \
+        | head -1 \
+        | grep -oE '"[^"]+"' \
+        | grep -v '^"coreNodes"$' \
+        | tr -d '"' || true
+}
+
+# The leader's countedCoreMembers from the provisioning snapshot; empty when unreadable.
+_leader_counted_core_members() {
+    provisioning_snapshot 2>/dev/null \
+        | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | head -1 || true
+}
+
+# Terminal agreement gate for restore_cluster_baseline: the harness's active core count (topology
+# coreNodes, no role filter) and the LEADER's countedCoreMembers (role-filtered, what its reconciler
+# acts on) must BOTH equal the target. They diverge when a present, healthy core is not counted by the
+# leader (blank role label — the phantom-core defect): the leader then provisions a replacement for it
+# and the cluster ends up with too many real cores. cluster_no_deficit alone cannot see this: it needs
+# counted >= target and passes with 5 counted beside 6 active.
+# Waits (bounded, $SECONDS-based like the READY barrier; budget AETHER_RESTORE_COUNTED_TIMEOUT base,
+# default 60s, x TIMEOUT_SCALE) because a surplus node can be mid-drain; on a miss it FAILS loudly and
+# never passes. The counted ids are not exposed by /api/v1/cluster/provisioning, so the message lists
+# the active ids: the uncounted node is among them.
+_restore_active_counted_gate() {
+    local target="$1"
+    local budget=$(( ${AETHER_RESTORE_COUNTED_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
+    local poll="${AETHER_RESTORE_COUNTED_POLL:-5}"
+    local deadline=$(( SECONDS + budget ))
+    local active counted
+    while :; do
+        active=$(cluster_active_core_count)
+        counted=$(_leader_counted_core_members)
+        if [ "${active:-x}" = "$target" ] && [ "${counted:-x}" = "$target" ]; then
+            log_info "restore_cluster_baseline: active=${active} == leader counted=${counted} == target=${target}"
+            return 0
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "$poll"
+    done
+    log_fail "restore_cluster_baseline: active core count and the leader's counted core members do not both equal the target ${target} after ${budget}s: active=${active:-<unreadable>} counted=${counted:-<unreadable>}. Active core ids (the leader does not count at least one of them when active > counted; counted ids are not exposed by /api/v1/cluster/provisioning): $(_active_core_ids | tr '\n' ' ')"
+    return 1
+}
+
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"
@@ -4287,6 +4392,10 @@ restore_cluster_baseline() {
     _pc=$(printf '%s' "$_passed_snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
     _pe=$(printf '%s' "$_passed_snap" | grep -oE '"effective"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
     _pd=$(printf '%s' "$_passed_snap" | grep -oE '"deficit"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    # 9. ACTIVE == COUNTED == TARGET. Step 8 passes on counted >= target, which cannot see a present
+    # core the leader does not count (active 6, counted 5); wait bounded for agreement, else FAIL.
+    _restore_active_counted_gate "$target" || return 1
+
     log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
 }

@@ -38,6 +38,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
@@ -48,6 +49,12 @@ import org.pragmatica.aether.stream.replication.QuarantineView;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
+import org.pragmatica.aether.stream.provenance.LogProvenance;
+import org.pragmatica.aether.stream.provenance.PartitionFlags;
+import org.pragmatica.aether.stream.provenance.ProvenanceComparison;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
+import org.pragmatica.aether.stream.provenance.ProvenanceEpoch;
+import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -203,6 +210,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// leave in between. Lock order is always ring section → this lock, never the reverse, because a promotion
     /// never appends to a ring.
     private final Object quarantineLock = new Object();
+    /// #1596: the durable partition flag, late-bound ([#partitionFlags(PartitionFlags)]).
+    private volatile Option<PartitionFlags> partitionFlags = none();
+    /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
+    /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
+    /// next occurrence.
+    private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
+    /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
+    /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
+    /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
+    /// sidecar fsyncs (#1638 N2). Lock order: a partition's list → its log's write lock, never the reverse. One list per
+    /// partition that ever caught up here, kept for the manager's lifetime.
+    private final Map<PartitionRef, List<InstalledSlice>> pendingInstalls = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -279,6 +298,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
     /// A publish with no confirmation barrier: the floor check is trivially met.
     private static final int NO_REPLICA_FLOOR = 0;
+    /// The base of every partition log's owner-epoch history (#1596, spec #1569 §7.5.2): 0 until operator
+    /// resolution (AD14) can start a copy at a `BASE(d)` entry.
+    private static final long PROVENANCE_BASE = 0L;
 
     /// Live committed-ownership admission for application appends (#1230). Consulted by [#publishLocal]
     /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
@@ -778,6 +800,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.committedConfigSource = source;
     }
 
+    /// Late-bind the durable partition flag (#1596). `AetherNode` wires the KV-backed one. Until then -- and in
+    /// Forge/unit/legacy managers -- a provenance failure is fenced locally (quarantine, refused appends) and
+    /// logged at ERROR, but not recorded as cluster state. Set once at wiring.
+    @Contract
+    public void partitionFlags(PartitionFlags flags) {
+        this.partitionFlags = some(flags);
+    }
+
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
     /// `maxTotalBytes`. CAS loop — correct under concurrent create and concurrent growth (replaces the
     /// former read-then-add TOCTOU). See spec §4.3.
@@ -1017,7 +1047,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       logs,
-                                      lastSealedOffset)
+                                      lastSealedOffset,
+                                      this::trimFailedAtOpen)
                           .onFailure(_ -> release(floorBytes))
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
@@ -1328,7 +1359,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         // fromConfig threads the per-partition floor-allocation Result (bug #6): a native-OOM on any
         // held partition closes the built siblings and fails. On that (rare) failure we release the
         // reserved floor budget and insert NO entry (computeIfAbsent null) — the node physically cannot
-        // allocate the memory, so there is no committed partition to diverge from. markCommitted on
+        // allocate the memory, so there is no committed partition to diverge from. The same path takes
+        // a WAL open or recovery refusal, and a failed trim at open (#1638 F6), which also leave the whole
+        // stream unmaterialized on this node; the trim failure is flagged durably first. markCommitted on
         // success keeps the follower's later createStream short-circuiting (no re-publish).
         return StreamEntry.fromConfig(config,
                                       evictionListener,
@@ -1337,7 +1370,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       logs,
-                                      lastSealedOffset)
+                                      lastSealedOffset,
+                                      this::trimFailedAtOpen)
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
@@ -1400,8 +1434,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    /// The cause is the ring build's own — an off-heap allocation, a WAL open, or a refused WAL recovery
-    /// (#1345: `WalReplayMismatch`) — so it is carried, not narrated as an allocation failure.
+    /// The cause is the ring build's own — an off-heap allocation, a WAL open, a refused WAL recovery
+    /// (#1345: `WalReplayMismatch`) or a failed trim at open (#1638 F6, flagged at [#trimFailedAtOpen]) — so it is
+    /// carried, not narrated as an allocation failure.
     private void hydrationFailed(StreamConfig config, long floorBytes, Cause cause) {
         release(floorBytes);
         log.warn("Follower could not materialize committed stream '{}' — entry not created: {}",
@@ -1581,7 +1616,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                 ownerEpoch,
                                                                                 admitOwnerWrite(streamName,
                                                                                                 partition,
-                                                                                                minAcks)))
+                                                                                                minAcks).flatMap(_ -> provenanceAdmits(streamName,
+                                                                                                                                       partition,
+                                                                                                                                       some(ownerEpoch)))))
                                  .flatMap(this::awaitDurable)
                                  .onSuccess(offset -> ownerDurable(streamName, partition, offset))
                                  .fold(cause -> handleDrop(cause, streamName, partition),
@@ -1821,27 +1858,148 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  byte[] payload,
                                                  long timestamp,
                                                  Epoch ownerEpoch) {
-        return writeWalFrame(walFor(streamName, partition), offset, payload, timestamp).onSuccess(_ -> replicationManager.replicateEvent(streamName,
-                                                                                                                                         partition,
-                                                                                                                                         offset,
-                                                                                                                                         payload,
-                                                                                                                                         timestamp,
-                                                                                                                                         ownerEpoch));
+        return writeWalFrame(walFor(streamName, partition),
+                             offset,
+                             payload,
+                             timestamp,
+                             ownerEpoch).onSuccess(_ -> replicationManager.replicateEvent(streamName,
+                                                                                          partition,
+                                                                                          offset,
+                                                                                          payload,
+                                                                                          timestamp,
+                                                                                          ownerEpoch))
+                            .onSuccess(_ -> flagMissingHistory(streamName, partition, offset));
     }
 
     private static Result<LoggedAppend> writeWalFrame(Option<AppendLog> wal,
                                                       long offset,
                                                       byte[] payload,
-                                                      long timestamp) {
-        return wal.map(w -> writeWalFrame(w, offset, payload, timestamp))
+                                                      long timestamp,
+                                                      Epoch ownerEpoch) {
+        return wal.map(w -> writeWalFrame(w, offset, payload, timestamp, ownerEpoch))
                   .or(() -> success(new LoggedAppend(offset,
                                                      Promise.unitPromise())));
     }
 
-    private static Result<LoggedAppend> writeWalFrame(AppendLog wal, long offset, byte[] payload, long timestamp) {
-        return wal.write(offset, payload, timestamp)
-                  .map(writeSeq -> new LoggedAppend(offset,
-                                                    wal.commit(writeSeq)));
+    private static Result<LoggedAppend> writeWalFrame(AppendLog wal,
+                                                      long offset,
+                                                      byte[] payload,
+                                                      long timestamp,
+                                                      Epoch ownerEpoch) {
+        return attributedWrite(wal, offset, payload, timestamp, some(ownerEpoch)).map(writeSeq -> new LoggedAppend(offset,
+                                                                                                                   wal.commit(writeSeq)));
+    }
+
+    /// #1596, spec #1569 §7.5.1: the WAL frame of the record at `offset`, attributed to owner epoch `provenance` --
+    /// the epoch under which the record was FIRST appended: the owner's stamp on a publish, the batch epoch on a
+    /// live replica receive (one epoch per batch, #1577). The log records the epoch start durably before the frame
+    /// ([AppendLog#write(long, byte[], long, AppendLog.EpochKey, AppendLog.EpochOrder)]) the first time an epoch
+    /// writes, so every record on disk is attributed. [Option#none] writes an unattributed frame: a catch-up apply,
+    /// whose provenance is the source's installed slice ([#installProvenance]), never the fence epoch it presents.
+    ///
+    /// Empty-history rule: a history starts only at the base. A log that already holds records but has no history
+    /// (written before provenance existed) records nothing; the divergence rule reads it as `HISTORY_MISSING` and
+    /// flags it rather than attributing its old records to the epoch that happens to write next.
+    private static Result<Long> attributedWrite(AppendLog wal,
+                                                long offset,
+                                                byte[] payload,
+                                                long timestamp,
+                                                Option<Epoch> provenance) {
+        return provenance.filter(_ -> historyMayRecordAt(wal, offset))
+                         .map(epoch -> keyedWrite(wal, offset, payload, timestamp, epoch))
+                         .or(() -> wal.write(offset, payload, timestamp));
+    }
+
+    private static boolean historyMayRecordAt(AppendLog wal, long offset) {
+        return offset == PROVENANCE_BASE || !wal.epochHistory()
+                                                .isEmpty();
+    }
+
+    /// #1596 empty-history rule, the flag half: an attributed append the log could not attribute (records, no
+    /// history) raises `HISTORY_MISSING` for this copy -- once per process, not once per append.
+    @Contract
+    private void flagMissingHistory(String streamName, int partition, long offset) {
+        walFor(streamName, partition).filter(wal -> !historyMayRecordAt(wal, offset))
+              .onPresent(_ -> raiseOnce(streamName,
+                                        partition,
+                                        PartitionRecoveryReasonKind.HISTORY_MISSING,
+                                        "this copy holds records written before owner-epoch provenance existed"));
+    }
+
+    /// #1638 F6: the trim at open failed ([StreamEntry#trimAtOpen]), so the owner-epoch history keeps entries above the
+    /// head that no record reaches and the partition is not opened on this node. The trim's own cause is logged at
+    /// ERROR here, and `LOCAL_MISMATCH` is raised for this copy on the durable flag -- the log's history disagrees with
+    /// its own records, the local-verification failure of spec #1569 §7.5.3 -- so the state is visible cluster-wide
+    /// and survives the restart, like an N13 divergence. The evidence carries the head only, so a retry raises the same
+    /// reason. Returns `cause`, which fails the open.
+    private Cause trimFailedAtOpen(String streamName, int partition, long head, Cause cause) {
+        log.error("Partition {}[{}] not opened: its owner-epoch history holds entries above head {} that could not be trimmed: {}",
+                  streamName,
+                  partition,
+                  head,
+                  cause.message());
+        raiseOnce(streamName,
+                  partition,
+                  PartitionRecoveryReasonKind.LOCAL_MISMATCH,
+                  "the owner-epoch history holds entries above head " + head + " that the trim at open could not drop");
+
+        return cause;
+    }
+
+    /// Where the static recovery path reports a failed trim at open (#1638 F6); returns the cause the open fails with.
+    @FunctionalInterface
+    interface TrimFailure {
+        Cause trimFailed(String streamName, int partition, long head, Cause cause);
+    }
+
+    /// Raise a reason about this node's copy on the durable flag, at most once per process per reason. Without a
+    /// flag wired the reason is logged at ERROR and left to the local fence.
+    @Contract
+    private void raiseOnce(String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence) {
+        if (raisedLocally.add(streamName + "#" + partition + "#" + kind + "#" + evidence)) {
+            partitionFlags.onEmpty(() -> log.error("Partition {}[{}] needs the durable flag {} ({}), but no partition flag is wired here",
+                                                   streamName,
+                                                   partition,
+                                                   kind,
+                                                   evidence))
+                          .onPresent(flags -> raise(flags, streamName, partition, kind, evidence));
+        }
+    }
+
+    /// Recovery: FER -- a raise that did not commit (no leader, contention) is forgotten, so the next occurrence of
+    /// the condition raises again; the local fence (quarantine, refused appends) holds meanwhile.
+    @Contract
+    private void raise(PartitionFlags flags,
+                       String streamName,
+                       int partition,
+                       PartitionRecoveryReasonKind kind,
+                       String evidence) {
+        flags.raise(streamName,
+                    partition,
+                    flags.local(kind, evidence))
+             .onFailure(cause -> forgetRaise(streamName, partition, kind, evidence, cause));
+    }
+
+    @Contract
+    private void forgetRaise(String streamName,
+                             int partition,
+                             PartitionRecoveryReasonKind kind,
+                             String evidence,
+                             Cause cause) {
+        raisedLocally.remove(streamName + "#" + partition + "#" + kind + "#" + evidence);
+        log.warn("Partition {}[{}]: raising {} on the durable flag failed, retried at its next occurrence: {}",
+                 streamName,
+                 partition,
+                 kind,
+                 cause.message());
+    }
+
+    private static Result<Long> keyedWrite(AppendLog wal, long offset, byte[] payload, long timestamp, Epoch epoch) {
+        return ProvenanceEntry.provenanceEntry(epoch,
+                                               none(),
+                                               offset)
+                              .key()
+                              .flatMap(key -> wal.write(offset, payload, timestamp, key, ProvenanceEntry.ORDER));
     }
 
     /// Gate the publish ack on WAL fsync (streaming-persistence W3), OUTSIDE the ordered section. With no
@@ -1891,6 +2049,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admitOwnerWrite(streamName,
                                                                                               partition,
                                                                                               minAcks))
+                             .flatMap(_ -> provenanceAdmits(streamName,
+                                                            partition,
+                                                            some(ownerEpoch)))
                              .flatMap(_ -> checkEventSizes(entry, payloads))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> appendRunInSection(buffer,
@@ -1939,20 +2100,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                     Epoch ownerEpoch) {
         var firstOffset = lastOffset - payloads.size() + 1;
 
-        return writeWalFrames(walFor(streamName, partition), firstOffset, payloads, timestamp).onSuccess(_ -> replicationManager.replicateEvents(streamName,
-                                                                                                                                                 partition,
-                                                                                                                                                 firstOffset,
-                                                                                                                                                 payloads,
-                                                                                                                                                 Collections.nCopies(payloads.size(),
-                                                                                                                                                                     timestamp),
-                                                                                                                                                 ownerEpoch));
+        return writeWalFrames(walFor(streamName, partition),
+                              firstOffset,
+                              payloads,
+                              timestamp,
+                              ownerEpoch).onSuccess(_ -> replicationManager.replicateEvents(streamName,
+                                                                                            partition,
+                                                                                            firstOffset,
+                                                                                            payloads,
+                                                                                            Collections.nCopies(payloads.size(),
+                                                                                                                timestamp),
+                                                                                            ownerEpoch))
+                             .onSuccess(_ -> flagMissingHistory(streamName, partition, firstOffset));
     }
 
     private static Result<LoggedAppend> writeWalFrames(Option<AppendLog> wal,
                                                        long firstOffset,
                                                        List<byte[]> payloads,
-                                                       long timestamp) {
-        return wal.map(w -> writeWalFrames(w, firstOffset, payloads, timestamp))
+                                                       long timestamp,
+                                                       Epoch ownerEpoch) {
+        return wal.map(w -> writeWalFrames(w, firstOffset, payloads, timestamp, ownerEpoch))
                   .or(() -> success(new LoggedAppend(firstOffset + payloads.size() - 1,
                                                      Promise.unitPromise())));
     }
@@ -1960,12 +2127,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static Result<LoggedAppend> writeWalFrames(AppendLog wal,
                                                        long firstOffset,
                                                        List<byte[]> payloads,
-                                                       long timestamp) {
+                                                       long timestamp,
+                                                       Epoch ownerEpoch) {
         var writes = IntStream.range(0,
                                      payloads.size())
-                              .mapToObj(i -> wal.write(firstOffset + i,
-                                                       payloads.get(i),
-                                                       timestamp))
+                              .mapToObj(i -> attributedWrite(wal,
+                                                             firstOffset + i,
+                                                             payloads.get(i),
+                                                             timestamp,
+                                                             some(ownerEpoch)))
                               .toList();
 
         return Result.allOf(writes).map(writeSeqs -> new LoggedAppend(firstOffset + payloads.size() - 1,
@@ -2072,9 +2242,31 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Offset-addressed replica append (#1505) stamped with the no-epoch floor ([Epoch#ZERO]), for callers that
-    /// carry no owner epoch. See the fenced overload below.
+    /// carry no owner epoch. It records NO provenance (#1596): it is the catch-up apply's shape, whose records are
+    /// attributed by the source's installed slice ([#installProvenance]). See the fenced overload below.
     public Result<Long> appendRecovered(String streamName, int partition, long offset, byte[] payload, long timestamp) {
-        return appendRecovered(streamName, partition, offset, payload, timestamp, Epoch.ZERO);
+        return appendCaughtUp(streamName, partition, offset, payload, timestamp, Epoch.ZERO);
+    }
+
+    /// A catch-up apply's append (#1505, #1596): fenced with `fenceEpoch` like the live receive, but attributed to
+    /// no epoch, because `fenceEpoch` is the partition's CURRENT owner epoch and the record may have been written
+    /// under an earlier one. Its provenance is the source's slice, installed first by [#installProvenance].
+    public Result<Long> appendCaughtUp(String streamName,
+                                       int partition,
+                                       long offset,
+                                       byte[] payload,
+                                       long timestamp,
+                                       Epoch fenceEpoch) {
+        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
+                                                                                  streamName,
+                                                                                  partition,
+                                                                                  offset,
+                                                                                  payload,
+                                                                                  timestamp,
+                                                                                  fenceEpoch,
+                                                                                  none()))
+                                 .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
+                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// Offset-addressed replica append (#1505): the single offset authority shared by the replica's catch-up
@@ -2088,6 +2280,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// [StreamError.ReplicaQuarantined] (`offset` is at or past a known divergence), [StreamError.CursorExpired]
     /// (held once, evicted, unverifiable).
     /// The epoch fence and size check run first, exactly as for [#appendRecovered(String, int, byte[], long, Epoch)].
+    /// This is the LIVE receive's shape: the record is attributed to `ownerEpoch`, the batch epoch (#1596, #1577).
     public Result<Long> appendRecovered(String streamName,
                                         int partition,
                                         long offset,
@@ -2100,7 +2293,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                   offset,
                                                                                   payload,
                                                                                   timestamp,
-                                                                                  ownerEpoch))
+                                                                                  ownerEpoch,
+                                                                                  some(ownerEpoch)))
                                  .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
                                  .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
@@ -2148,8 +2342,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  payload,
                                  timestamp,
                                  ownerEpoch,
-                                 RECEIPT_NEEDS_NO_ADMISSION,
-                                 offset -> success(logReplicated(streamName, partition, offset, payload, timestamp)));
+                                 provenanceAdmits(streamName, partition, some(ownerEpoch)),
+                                 offset -> success(logReplicated(streamName,
+                                                                 partition,
+                                                                 offset,
+                                                                 payload,
+                                                                 timestamp,
+                                                                 some(ownerEpoch))));
     }
 
     /// Offset-addressed sibling of [#appendReplicatedInSection] (#1505): the same fence, admission and size
@@ -2160,17 +2359,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             long offset,
                                             byte[] payload,
                                             long timestamp,
-                                            Epoch ownerEpoch) {
-        return appendTarget(entry, streamName, partition, payload, ownerEpoch, RECEIPT_NEEDS_NO_ADMISSION).flatMap(buffer -> buffer.appendOrderedAt(offset,
-                                                                                                                                                    payload,
-                                                                                                                                                    timestamp,
-                                                                                                                                                    new PartitionQuarantine(streamName,
-                                                                                                                                                                            partition),
-                                                                                                                                                    assigned -> success(logReplicated(streamName,
-                                                                                                                                                                                      partition,
-                                                                                                                                                                                      assigned,
-                                                                                                                                                                                      payload,
-                                                                                                                                                                                      timestamp))))
+                                            Epoch ownerEpoch,
+                                            Option<Epoch> provenance) {
+        return appendTarget(entry,
+                            streamName,
+                            partition,
+                            payload,
+                            ownerEpoch,
+                            provenanceAdmits(streamName, partition, provenance)).flatMap(buffer -> buffer.appendOrderedAt(offset,
+                                                                                                                          payload,
+                                                                                                                          timestamp,
+                                                                                                                          new PartitionQuarantine(streamName,
+                                                                                                                                                  partition),
+                                                                                                                          assigned -> success(logReplicated(streamName,
+                                                                                                                                                            partition,
+                                                                                                                                                            assigned,
+                                                                                                                                                            payload,
+                                                                                                                                                            timestamp,
+                                                                                                                                                            provenance))))
                            .onSuccess(_ -> entry.updateActivity());
     }
 
@@ -2241,14 +2447,22 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// promoting — and it commits every frame written so far in one group commit. The record's offset is
     /// handed through unchanged. A failed write is recorded rather than raised: the record is applied and
     /// serveable, but [#syncReplicated] fails, so acks stop and the owner's barrier degrades honestly.
-    private long logReplicated(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+    private long logReplicated(String streamName,
+                               int partition,
+                               long offset,
+                               byte[] payload,
+                               long timestamp,
+                               Option<Epoch> provenance) {
         walFor(streamName, partition).onPresent(wal -> recordReplicatedWrite(streamName,
                                                                              partition,
                                                                              new ReplicatedWrite(wal,
                                                                                                  offset,
-                                                                                                 wal.write(offset,
-                                                                                                           payload,
-                                                                                                           timestamp))));
+                                                                                                 attributedWrite(wal,
+                                                                                                                 offset,
+                                                                                                                 payload,
+                                                                                                                 timestamp,
+                                                                                                                 provenance))));
+        provenance.onPresent(_ -> flagMissingHistory(streamName, partition, offset));
 
         return offset;
     }
@@ -2407,6 +2621,335 @@ public final class StreamPartitionManager implements AutoCloseable {
             case OWNER, REPLICA -> buildAndInstall(entry, partition);
             case NONE -> StreamError.General.PARTITION_NOT_LOCAL.result();
         };
+    }
+
+    /// #1596: an append attributed to `provenance` is refused BEFORE the ordered section when this partition's log
+    /// already records a strictly later epoch ([StreamError.ProvenanceRegression]) -- a deposed owner's batch that
+    /// reaches a replica before the replica's fence high-water has observed the new ownership. Refusing here keeps
+    /// the ring and the WAL in step: the in-section refusal ([AppendLog.WalError.EpochRegression]) remains for the
+    /// race with a concurrent newer-epoch append, and runs after the ring has assigned the offset. An unattributed
+    /// append, a partition without a log, or an unreadable last entry passes (the log's own order check decides).
+    private Result<Unit> provenanceAdmits(String streamName, int partition, Option<Epoch> provenance) {
+        return provenance.flatMap(epoch -> lastRecordedEpoch(streamName, partition).filter(recorded -> recorded.isStrictlyAfter(epoch))
+                                                            .map(recorded -> new StreamError.ProvenanceRegression(streamName,
+                                                                                                                  partition,
+                                                                                                                  epoch,
+                                                                                                                  recorded)))
+                         .map(StreamError::<Unit> result)
+                         .or(Result::unitResult);
+    }
+
+    private Option<Epoch> lastRecordedEpoch(String streamName, int partition) {
+        return walFor(streamName, partition).flatMap(wal -> Option.from(wal.epochHistory()
+                                                                           .stream()
+                                                                           .reduce((earlier, later) -> later)))
+                     .flatMap(last -> ProvenanceEntry.provenanceEntry(last).option())
+                     .map(entry -> entry.epoch()
+                                        .rank());
+    }
+
+    /// The owner-epoch history of this node's copy of `(streamName, partition)`, oldest first (#1596): empty when
+    /// the partition keeps no log here or its log records none. A failure only for a history this codec did not
+    /// write.
+    public Result<List<ProvenanceEntry>> epochHistory(String streamName, int partition) {
+        return walFor(streamName, partition).map(wal -> Result.allOf(wal.epochHistory()
+                                                                        .stream()
+                                                                        .map(ProvenanceEntry::provenanceEntry)
+                                                                        .toList()))
+                     .or(() -> success(List.of()));
+    }
+
+    /// What this node's copy of `(streamName, partition)` says about its records' provenance (#1596): the input of
+    /// [org.pragmatica.aether.stream.provenance.ProvenanceComparison] for the promotion gate and cold-restart
+    /// detection. `low` is the lowest offset held locally, `head` the highest (`-1` for none).
+    ///
+    /// [Option#none] for a partition that keeps no log here (Forge, the explicit non-durable opt-in): provenance
+    /// applies ONLY to WAL-backed, durable partitions (CTO ruling for rc4). A log-less copy records no history, so
+    /// comparing it would read `HISTORY_MISSING` and flag every such partition; it makes no durability claim and
+    /// keeps its behaviour from before provenance, so a caller (the promotion gate, AD7) excludes it from the
+    /// comparison instead of flagging it.
+    public Result<Option<LogProvenance>> localProvenance(String streamName, int partition) {
+        return walFor(streamName, partition).map(_ -> provenanceOf(streamName, partition).map(Option::some))
+                     .or(() -> success(none()));
+    }
+
+    private Result<LogProvenance> provenanceOf(String streamName, int partition) {
+        return epochHistory(streamName, partition).map(history -> LogProvenance.logProvenance(LogProvenance.baseOf(history),
+                                                                                              earliestRetainedOffset(streamName,
+                                                                                                                     partition),
+                                                                                              nextExpectedOffset(streamName,
+                                                                                                                 partition) - 1,
+                                                                                              history));
+    }
+
+    /// Install a catch-up source's owner-epoch slice, apply the page, and settle the install (#1596, spec #1569
+    /// §7.5.1; #1638 F1). The one entry point of a catch-up apply ([AlignedRecovery#applyAttributed]), so no caller
+    /// can apply without the install or forget to settle it.
+    ///
+    /// The slice is the source's entries covering `[base, toOffset]`, read by the source AFTER the records it served,
+    /// so they cover every one of them; it is installed first ([#installProvenance]), and nothing of the page is
+    /// applied when that fails. When `apply` then fails, the entries THIS install recorded that no record reaches are
+    /// dropped ([#trimProvenance]), so the retry installs cleanly and the copy is never ranked by an epoch it did not
+    /// receive; a trim that fails is logged, and the next open trims whatever it left.
+    public Result<Long> applyAttributed(String streamName,
+                                        int partition,
+                                        long fromOffset,
+                                        long toOffset,
+                                        List<ProvenanceEntry> slice,
+                                        AlignedRecovery.PageApply apply) {
+        return installProvenance(streamName, partition, fromOffset, toOffset, slice).flatMap(installed -> settle(installed,
+                                                                                                                 apply.apply()));
+    }
+
+    /// [#applyAttributed] for records from a place that carries no provenance ([#installUnattributed]).
+    public Result<Long> applyUnattributed(String streamName,
+                                          int partition,
+                                          long toOffset,
+                                          AlignedRecovery.PageApply apply) {
+        return installUnattributed(streamName, partition, toOffset).flatMap(installed -> settle(installed, apply.apply()));
+    }
+
+    private Result<Long> settle(InstalledSlice installed, Result<Long> applied) {
+        return applied.onSuccess(_ -> releaseProvenance(installed))
+                      .onFailure(_ -> trimAfterFailedApply(installed));
+    }
+
+    /// Recovery: FER -- a trim that fails is logged, and the next open trims (trim at open) whatever it left.
+    @Contract
+    private void trimAfterFailedApply(InstalledSlice installed) {
+        trimProvenance(installed).onFailure(cause -> log.warn("Stream {}[{}]: trimming provenance after a failed apply failed: {}",
+                                                              installed.streamName(),
+                                                              installed.partition(),
+                                                              cause.message()));
+    }
+
+    /// Install a catch-up source's owner-epoch slice before its records are applied (#1596, spec #1569 §7.5.1).
+    /// Production reaches it through [#applyAttributed] only.
+    ///
+    /// N13 first: this copy's provenance must equal the slice's over every offset it already holds up to
+    /// `toOffset` -- the spec's `[base, fromOffset - 1]`, widened to the held overlap a re-verifying pull covers.
+    /// On a mismatch nothing is installed or applied, [StreamError.ProvenanceMismatch] is returned, and the
+    /// mismatch is recorded twice: at once, by quarantining the partition locally at the first differing offset
+    /// (#1505 F2: nothing at or past it is acked or promoted here), and durably, by raising `MARKED_DIVERGED` for
+    /// this copy on the partition flag ([PartitionFlags]), which survives a restart and blocks the partition
+    /// cluster-wide until operator resolution (AD14).
+    ///
+    /// Then every slice entry starting in `[fromOffset, toOffset]` that this log does not already hold is recorded, in
+    /// order; one it already holds (same key, same start) is skipped, so a re-install is idempotent. The returned
+    /// [InstalledSlice] names what this install recorded and every entry of its range it relies on (#1638 F1); it
+    /// stays pending until settled by [#releaseProvenance] or [#trimProvenance]. A partition that keeps no log records
+    /// no provenance, and this is a no-op for it.
+    public Result<InstalledSlice> installProvenance(String streamName,
+                                                    int partition,
+                                                    long fromOffset,
+                                                    long toOffset,
+                                                    List<ProvenanceEntry> slice) {
+        return walFor(streamName, partition).map(wal -> installProvenance(wal,
+                                                                          streamName,
+                                                                          partition,
+                                                                          fromOffset,
+                                                                          toOffset,
+                                                                          slice))
+                     .or(() -> Result.success(InstalledSlice.installedSlice(streamName,
+                                                                            partition,
+                                                                            List.of(),
+                                                                            List.of())));
+    }
+
+    private Result<InstalledSlice> installProvenance(AppendLog wal,
+                                                     String streamName,
+                                                     int partition,
+                                                     long fromOffset,
+                                                     long toOffset,
+                                                     List<ProvenanceEntry> slice) {
+        var sourceBase = LogProvenance.baseOf(slice);
+        var source = LogProvenance.logProvenance(sourceBase, sourceBase, toOffset, slice);
+
+        return provenanceOf(streamName, partition).flatMap(local -> refuseMismatch(streamName,
+                                                                                   partition,
+                                                                                   ProvenanceComparison.firstDivergence(local,
+                                                                                                                        source,
+                                                                                                                        0,
+                                                                                                                        Math.min(local.head(),
+                                                                                                                                 toOffset))))
+                           .flatMap(_ -> startsIn(slice, fromOffset, toOffset))
+                           .flatMap(claimed -> recordClaimed(wal, streamName, partition, claimed));
+    }
+
+    private static Result<List<AppendLog.EpochStart>> startsIn(List<ProvenanceEntry> slice,
+                                                               long fromOffset,
+                                                               long toOffset) {
+        return Result.allOf(slice.stream()
+                                 .filter(entry -> entry.startOffset() >= fromOffset && entry.startOffset() <= toOffset)
+                                 .map(entry -> entry.key()
+                                                    .map(key -> new AppendLog.EpochStart(key,
+                                                                                         entry.startOffset())))
+                                 .toList());
+    }
+
+    private Result<Unit> refuseMismatch(String streamName, int partition, Option<Long> divergence) {
+        return divergence.map(offset -> quarantineMismatch(streamName, partition, offset))
+                         .or(Result::unitResult);
+    }
+
+    private Result<Unit> quarantineMismatch(String streamName, int partition, long offset) {
+        new PartitionQuarantine(streamName, partition).recordDivergence(offset);
+        raiseOnce(streamName,
+                  partition,
+                  PartitionRecoveryReasonKind.MARKED_DIVERGED,
+                  "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset);
+
+        return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
+    }
+
+    /// Records, in order, the `claimed` entries this log does not already hold (#1638 B1): an entry already present --
+    /// same key, same start -- is skipped, so re-installing a page (a retry after a failed apply, an overlapping pull)
+    /// is idempotent. The first refusal stops the install and drops what it had recorded, as a failed apply would.
+    ///
+    /// #1638 F1: recording and registering the install happen under the partition's [#pendingInstalls] list, as does
+    /// every trim, so a trim always sees every install that has recorded or skipped an entry it might drop.
+    private Result<InstalledSlice> recordClaimed(AppendLog wal,
+                                                 String streamName,
+                                                 int partition,
+                                                 List<AppendLog.EpochStart> claimed) {
+        var pending = pending(new PartitionRef(streamName, partition));
+
+        synchronized (pending) {
+            var held = wal.epochHistory();
+            var recorded = new ArrayList<AppendLog.EpochStart>();
+            var outcome = Result.unitResult();
+
+            for (var entry : claimed) {
+                if (outcome.isSuccess() && !held.contains(entry)) {
+                    outcome = wal.recordEpochStart(entry.key(),
+                                                   entry.startOffset(),
+                                                   ProvenanceEntry.ORDER)
+                                 .onSuccess(_ -> recorded.add(entry));
+                }
+            }
+
+            var installed = InstalledSlice.installedSlice(streamName, partition, recorded, claimed);
+
+            pending.add(installed);
+
+            return outcome.fold(cause -> trimProvenance(installed).flatMap(_ -> cause.result()),
+                                _ -> Result.success(installed));
+        }
+    }
+
+    /// Settles a page that applied (#1638 F1): its install is no longer pending, so its entries no longer shield
+    /// themselves from another install's trim -- a record now reaches each one it relied on.
+    public Unit releaseProvenance(InstalledSlice installed) {
+        var pending = pending(installed.ref());
+
+        synchronized (pending) {
+            pending.remove(installed);
+
+            return unit();
+        }
+    }
+
+    /// Settles a page whose apply failed (#1638 B1, F1): drops the entries THIS install recorded that no held record
+    /// reaches, except one another pending install also relies on -- recorded or found already held. Never an entry it
+    /// did not record: another catch-up's entries above the head are that catch-up's to settle. A partition that keeps
+    /// no log has nothing to trim.
+    public Result<Unit> trimProvenance(InstalledSlice installed) {
+        var pending = pending(installed.ref());
+
+        synchronized (pending) {
+            pending.remove(installed);
+            var shielded = pending.stream().flatMap(other -> other.claimed()
+                                                                  .stream()).collect(Collectors.toSet());
+            var droppable = installed.recorded().stream().filter(entry -> !shielded.contains(entry)).toList();
+
+            return walFor(installed.streamName(),
+                          installed.partition()).map(wal -> wal.dropEpochStartsAboveHead(nextExpectedOffset(installed.streamName(),
+                                                                                                            installed.partition()) - 1,
+                                                                                         droppable))
+                         .or(Result::unitResult);
+        }
+    }
+
+    /// The partition's pending installs, and its lock; read and changed only while holding it.
+    private List<InstalledSlice> pending(PartitionRef ref) {
+        return pendingInstalls.computeIfAbsent(ref, _ -> new ArrayList<>());
+    }
+
+    /// One catch-up's install of a source slice (#1638 F1): the entries it `recorded`, and every entry of its range it
+    /// `claimed` -- recorded, or skipped because the log already held it. Only the recorded ones are its to trim; the
+    /// claimed ones are shielded from any other install's trim while it is pending.
+    public record InstalledSlice(String streamName,
+                                 int partition,
+                                 List<AppendLog.EpochStart> recorded,
+                                 List<AppendLog.EpochStart> claimed) {
+        public InstalledSlice {
+            recorded = List.copyOf(recorded);
+            claimed = List.copyOf(claimed);
+        }
+
+        static InstalledSlice installedSlice(String streamName,
+                                             int partition,
+                                             List<AppendLog.EpochStart> recorded,
+                                             List<AppendLog.EpochStart> claimed) {
+            return new InstalledSlice(streamName, partition, recorded, claimed);
+        }
+
+        private PartitionRef ref() {
+            return new PartitionRef(streamName, partition);
+        }
+    }
+
+    /// The seam every catch-up apply lands through (#1505, #1596): records are appended unattributed and fenced with
+    /// the partition's current owner epoch, inside [#applyAttributed] / [#applyUnattributed], which install the
+    /// source's slice first and settle it after.
+    public AlignedRecovery alignedRecovery() {
+        return AlignedRecovery.alignedRecovery((streamName, partition, offset, payload, timestamp) -> appendCaughtUp(streamName,
+                                                                                                                     partition,
+                                                                                                                     offset,
+                                                                                                                     payload,
+                                                                                                                     timestamp,
+                                                                                                                     ownerEpochSource.currentOwnerEpoch(streamName,
+                                                                                                                                                        partition)),
+                                               this::applyAttributed,
+                                               this::applyUnattributed);
+    }
+
+    /// Records about to be applied up to `toOffset` carry no provenance (#1596: a sealed segment without a slice).
+    /// When they reach past this copy's head, `UNKNOWN(d)` -- a fresh `d`, floored at the last epoch this log records
+    /// -- is recorded at the head + 1 before they are appended, and `HISTORY_INCOMPLETE` is raised for this copy:
+    /// the range equals no other copy's, so any comparison over it fails closed rather than attributing the records
+    /// to whichever epoch came before them. A partition without a log records nothing; records that land at or
+    /// below the head are verified against what is held and need nothing. Production reaches it through
+    /// [#applyUnattributed] only; the install is pending until settled, like [#installProvenance]'s.
+    ///
+    /// The head is read outside the partition's ordered section: a live append landing between that read and the
+    /// replay's first append makes the replay's appends at those offsets a verification instead, and the unknown
+    /// entry then starts above records the live batch attributed -- conservative, never permissive.
+    public Result<InstalledSlice> installUnattributed(String streamName, int partition, long toOffset) {
+        var start = nextExpectedOffset(streamName, partition);
+
+        return walFor(streamName, partition).filter(_ -> toOffset >= start)
+                     .map(wal -> recordUnattributed(wal, streamName, partition, start))
+                     .or(() -> Result.success(InstalledSlice.installedSlice(streamName,
+                                                                            partition,
+                                                                            List.of(),
+                                                                            List.of())));
+    }
+
+    private Result<InstalledSlice> recordUnattributed(AppendLog wal, String streamName, int partition, long start) {
+        var unknown = ProvenanceEpoch.unknown(lastRecordedEpoch(streamName, partition).or(Epoch.ZERO));
+
+        return ProvenanceEntry.provenanceEntry(unknown, start)
+                              .key()
+                              .flatMap(key -> recordClaimed(wal,
+                                                            streamName,
+                                                            partition,
+                                                            List.of(new AppendLog.EpochStart(key, start))))
+                              .onSuccess(_ -> raiseOnce(streamName,
+                                                        partition,
+                                                        PartitionRecoveryReasonKind.HISTORY_INCOMPLETE,
+                                                        "records from offset " + start
+                                                       + " were taken from a sealed segment that carries no owner-epoch provenance"));
     }
 
     /// The owner-epoch fence (#345 item 1d-ii, spec §5b/§6): reject the append when `ownerEpoch` is
@@ -3077,7 +3620,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           bytes -> reserveForGrowth(config, bytes),
                                           this::release,
                                           logs,
-                                          lastSealedOffset)
+                                          lastSealedOffset,
+                                          this::trimFailedAtOpen)
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
@@ -3747,13 +4291,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               LongConsumer release,
                                               IntPredicate shouldMaterialize,
                                               Option<AppendLog.Opener> logs,
-                                              LastSealedOffsetSource lastSealedOffset) {
+                                              LastSealedOffsetSource lastSealedOffset,
+                                              TrimFailure trimFailed) {
             var selected = selectedPartitions(config, shouldMaterialize);
             var ringResults = buildRings(config, selected, listener, reserve, release);
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(rings -> openEntryWals(config, selected, rings, logs, lastSealedOffset))
+                         .flatMap(rings -> openEntryWals(config, selected, rings, logs, lastSealedOffset, trimFailed))
                          .onFailure(_ -> closeBuilt(ringResults));
         }
 
@@ -3821,30 +4366,39 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                             LongPredicate reserve,
                                                             LongConsumer release,
                                                             Option<AppendLog.Opener> logs,
-                                                            LastSealedOffsetSource lastSealedOffset) {
+                                                            LastSealedOffsetSource lastSealedOffset,
+                                                            TrimFailure trimFailed) {
             return buildRing(config, partition, listener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                            .flatMap(ring -> openAndRecoverOne(config, partition, ring, logs, lastSealedOffset));
+                            .flatMap(ring -> openAndRecoverOne(config,
+                                                               partition,
+                                                               ring,
+                                                               logs,
+                                                               lastSealedOffset,
+                                                               trimFailed));
         }
 
         private static Result<MaterializedPartition> openAndRecoverOne(StreamConfig config,
                                                                        int partition,
                                                                        OffHeapRingBuffer ring,
                                                                        Option<AppendLog.Opener> logs,
-                                                                       LastSealedOffsetSource lastSealedOffset) {
+                                                                       LastSealedOffsetSource lastSealedOffset,
+                                                                       TrimFailure trimFailed) {
             return openWal(config, partition, logs).onFailure(_ -> ring.closeWithoutRelease())
-                          .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset));
+                          .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset, trimFailed));
         }
 
         private static Result<MaterializedPartition> recoverOne(StreamConfig config,
                                                                 int partition,
                                                                 OffHeapRingBuffer ring,
                                                                 Option<AppendLog> wal,
-                                                                LastSealedOffsetSource lastSealedOffset) {
+                                                                LastSealedOffsetSource lastSealedOffset,
+                                                                TrimFailure trimFailed) {
             return recoverPartition(config.name(),
                                     partition,
                                     ring,
                                     wal,
-                                    lastSealedOffset).map(_ -> new MaterializedPartition(ring, wal))
+                                    lastSealedOffset,
+                                    trimFailed).map(_ -> new MaterializedPartition(ring, wal))
                                    .onFailure(_ -> closeRingAndWal(ring, wal));
         }
 
@@ -3880,12 +4434,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          List<Integer> selected,
                                                          List<OffHeapRingBuffer> rings,
                                                          Option<AppendLog.Opener> logs,
-                                                         LastSealedOffsetSource lastSealedOffset) {
+                                                         LastSealedOffsetSource lastSealedOffset,
+                                                         TrimFailure trimFailed) {
             return openWals(config, selected, logs).flatMap(wals -> recoverWals(config,
                                                                                 selected,
                                                                                 rings,
                                                                                 wals,
-                                                                                lastSealedOffset))
+                                                                                lastSealedOffset,
+                                                                                trimFailed))
                            .map(wals -> entryOf(config, selected, rings, wals));
         }
 
@@ -3898,11 +4454,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                    List<Integer> selected,
                                                                    List<OffHeapRingBuffer> rings,
                                                                    List<Option<AppendLog>> wals,
-                                                                   LastSealedOffsetSource lastSealedOffset) {
+                                                                   LastSealedOffsetSource lastSealedOffset,
+                                                                   TrimFailure trimFailed) {
             var results = new ArrayList<Result<Unit>>(rings.size());
 
             for (int i = 0; i < rings.size(); i++) {
-                results.add(recoverPartition(config.name(), selected.get(i), rings.get(i), wals.get(i), lastSealedOffset));
+                results.add(recoverPartition(config.name(),
+                                             selected.get(i),
+                                             rings.get(i),
+                                             wals.get(i),
+                                             lastSealedOffset,
+                                             trimFailed));
             }
 
             return Result.allOf(results)
@@ -3918,10 +4480,33 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<AppendLog> wal,
-                                                     LastSealedOffsetSource lastSealedOffset) {
+                                                     LastSealedOffsetSource lastSealedOffset,
+                                                     TrimFailure trimFailed) {
             return wal.onPresent(ring::attachWal)
-                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
+                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset).flatMap(_ -> trimAtOpen(streamName,
+                                                                                                                     partition,
+                                                                                                                     w,
+                                                                                                                     ring,
+                                                                                                                     trimFailed)))
                       .or(() -> success(unit()));
+        }
+
+        /// #1638 S1, trim at open: once the ring holds the recovered head, drop every provenance entry above it -- one a
+        /// crash left between its durable record and the first frame of its epoch, or a catch-up whose apply did not
+        /// happen. Such a ghost would rank this copy by an epoch it holds no record of (`LogProvenance.SOURCE_ORDER`),
+        /// and a promotion that picked it would lose the acked records above its head.
+        ///
+        /// #1638 F6: a trim that fails leaves the ghost in place, so the partition stays closed on this node -- detect and
+        /// flag, never guess -- and the failure is reported with its own cause ([TrimFailure]).
+        private static Result<Unit> trimAtOpen(String streamName,
+                                               int partition,
+                                               AppendLog wal,
+                                               OffHeapRingBuffer ring,
+                                               TrimFailure trimFailed) {
+            var head = ring.headOffset();
+
+            return wal.truncateEpochsAboveHead(head)
+                      .mapError(cause -> trimFailed.trimFailed(streamName, partition, head, cause));
         }
 
         /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its

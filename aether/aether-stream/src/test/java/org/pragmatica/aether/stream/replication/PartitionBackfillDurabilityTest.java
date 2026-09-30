@@ -84,7 +84,7 @@ class PartitionBackfillDurabilityTest {
 
     private PartitionBackfill backfillWith(ReplicationReceiveHandler.ReplicaDurability durability) {
         return partitionBackfill(registry,
-                                 manager::appendRecovered,
+                                 manager.alignedRecovery(),
                                  PartitionBackfillDurabilityTest::eventsFromSource,
                                  ReplicationTransport.NOOP,
                                  (_, _, _) -> Causes.cause("no probe").promise(),

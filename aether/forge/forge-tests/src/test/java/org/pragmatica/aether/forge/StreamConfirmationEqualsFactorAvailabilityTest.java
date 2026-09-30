@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
@@ -48,8 +49,10 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// (`[streams.acked-events]`: RF 3, CF 3) on a 3-node Ember cluster, where RF 3 places the partition on every core.
 /// The flow: publishes succeed with every core up → kill one NON-owner core → publishes to the partition fail (the
 /// owner cannot reach CF 3: `NOT_ENOUGH_REPLICAS` once the dead peer leaves the registry, a replication timeout
-/// while it is still registered) → a replacement joins under a fresh identity and is placed → publishes succeed
-/// again. This is the availability half of the policy: writes tolerate `RF − CF` = 0 replica losses.
+/// while it is still registered) → a replacement joins under a fresh identity. Today it is NOT placed into the
+/// partition's replica set (#1732), so writes stay refused; a tripwire pins that, beside the disabled real
+/// assertion that publishes succeed again once it is placed. This is the availability half of the policy: writes
+/// tolerate `RF − CF` = 0 replica losses.
 ///
 /// Ember equivalence: the kill is [EmberCluster#killNode] (`node.stop()`, a SWIM leave), not a SIGKILL.
 @Tag("Heavy")
@@ -147,16 +150,95 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
         }
     }
 
+    /// TRIPWIRE, not a specification (#1732): asserts TODAY'S behaviour so that fixing it cannot go unnoticed. A
+    /// replacement core that joins under a fresh identity is NOT placed into the partition's existing replica set, so
+    /// RF stays at the two survivors and CF 3 can never be met: publishes stay refused. Measured 2026-09-29 on
+    /// cloudbb-2 at `d4bf26db9`: 3 minutes after the replacement `stre-4` was a member, the owner's registry still held
+    /// only the two survivors (both CAUGHT_UP) and `stre-4`'s local view was empty. This is the RF restoration that
+    /// `StreamOwnerFailoverTest`'s phase 9 also records as non-converging.
+    ///
+    /// Also observed in that run, and consistent with the outcome-unknown contract: the first publish in
+    /// [#oneCoreLost_publishesToThePartitionAreRefused] answered `REPLICATION_TIMEOUT` ("outcome unknown") while the dead
+    /// peer was still registered, and it HAD appended — the owner's head moved 20 → 21 on both survivors.
     @Test
     @Order(3)
+    void replacementJoined_isNotPlaced_writesStayRefused_TRIPWIRE() {
+        joinReplacement();
+
+        // Positive control (v1735): the tripwire reads the owner's replica view, so an unreadable view would pass it
+        // vacuously. The view must be served and list exactly the two survivors before "not placed" means anything.
+        var survivors = ownerView().map(view -> view.replicas()
+                                                    .stream()
+                                                    .map(replica -> replica.nodeId())
+                                                    .toList())
+                                   .or(List.of());
+
+        assertThat(survivors).describedAs("positive control: the owner view is readable and lists the two survivors")
+                             .hasSize(2)
+                             .doesNotContain(killedNode);
+
+        var placed = placedWithin(PLACEMENT_TIMEOUT);
+
+        assertThat(placed)
+            .describedAs("TRIPWIRE (#1732): the replacement %s entered the partition's replica set — replacement placement "
+                         + "works now. Delete this tripwire and enable replacementPlaced_publishesSucceedAgain.",
+                         replacementNode)
+            .isFalse();
+        assertThat(httpPost(appPort(), "/api/stream-acked/publish", "{\"payload\":\"after\"}"))
+            .describedAs("with only two replicas placed CF 3 cannot be met, so a publish stays refused — with the replica "
+                         + "refusal itself, not any error")
+            .doesNotContain("\"published\"")
+            .containsAnyOf("Not enough replicas", "REPLICATION_TIMEOUT");
+    }
+
+    /// The real acceptance for the recovery half, disabled until #1732: once the replacement is placed and caught
+    /// up, CF 3 is met again and publishes succeed. The tripwire above fails the day this becomes true.
+    @Test
+    @Order(4)
+    @Disabled("#1732: a fresh-identity replacement is not placed into an existing replica set; the tripwire "
+              + "replacementJoined_isNotPlaced_writesStayRefused_TRIPWIRE fails when that is fixed")
     void replacementPlaced_publishesSucceedAgain() {
-        var replacement = cluster.addNode().await().unwrap();
-        assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedNode);
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
+        if (replacementNode.isEmpty()) {
+            joinReplacement();
+        }
 
         awaitOrDump("publishes succeed once the replacement is placed",
                     () -> httpPost(appPort(), "/api/stream-acked/publish", "{\"payload\":\"after\"}").contains("\"published\""));
         LOG.log(System.Logger.Level.INFO, "#1564 nodes holding the pre-kill history after the replacement: {0}", survivorsHoldingFullHistory());
+    }
+
+    private String replacementNode = "";
+
+    private void joinReplacement() {
+        var replacement = cluster.addNode().await().unwrap();
+
+        assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedNode);
+        replacementNode = replacement.id();
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
+    }
+
+    /// Whether the owner's registry lists the replacement for the partition within `bound` — polled, so the tripwire
+    /// reports placement as soon as it happens rather than after a fixed sleep.
+    private boolean placedWithin(Duration bound) {
+        var until = System.nanoTime() + bound.toNanos();
+
+        while (System.nanoTime() < until) {
+            if (replacementPlaced()) {
+                return true;
+            }
+
+            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
+        }
+
+        return replacementPlaced();
+    }
+
+    private boolean replacementPlaced() {
+        return ownerView().map(view -> view.replicas()
+                                           .stream()
+                                           .anyMatch(replica -> replica.nodeId()
+                                                                       .equals(replacementNode)))
+                          .or(false);
     }
 
     /// Live nodes whose LOCAL partition holds offsets `0..N-1` — read from each node's own ring, not from

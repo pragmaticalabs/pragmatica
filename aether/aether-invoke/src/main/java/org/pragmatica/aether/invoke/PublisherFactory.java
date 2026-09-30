@@ -80,7 +80,9 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
         spec.replicationWarnings()
             .forEach(warning -> OperatorWarnings.raise(LOG,
                                                        sink,
-                                                       OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                       warning.loud()
+                                                       ? OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE
+                                                       : OperatorWarningCode.REPLICATION_POLICY_WARNING,
                                                        resource,
                                                        "{}durable topic replication warning [{}]: {}",
                                                        warning.loud()

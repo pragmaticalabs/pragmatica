@@ -14,6 +14,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResp
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.stream.VisibleBounds;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -115,13 +116,18 @@ public interface StreamForwardClient {
 
     /// `bounds` (#1333): the serving node's visible span of the partition at answer time; none when it held
     /// no ring, or from a client that does not carry it.
-    record ReadForwardResult(List<RawEventDto> events, boolean truncated, Option<VisibleBounds> bounds) {
+    /// `history` (#1596): the serving node's owner-epoch history on a replica catch-up read, empty otherwise.
+    record ReadForwardResult(List<RawEventDto> events,
+                             boolean truncated,
+                             Option<VisibleBounds> bounds,
+                             List<ProvenanceEntry> history) {
         public ReadForwardResult {
             events = List.copyOf(events);
+            history = List.copyOf(history);
         }
 
         public ReadForwardResult(List<RawEventDto> events, boolean truncated) {
-            this(events, truncated, Option.none());
+            this(events, truncated, Option.none(), List.of());
         }
 
         public static ReadForwardResult readForwardResult(List<RawEventDto> events, boolean truncated) {
@@ -329,7 +335,10 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     private void resolveFromReadResponse(Promise<ReadForwardResult> promise, ReadForwardResponse response) {
         if (response.success()) {
             metrics.recordSuccess();
-            promise.succeed(new ReadForwardResult(response.events(), response.truncated(), response.bounds()));
+            promise.succeed(new ReadForwardResult(response.events(),
+                                                  response.truncated(),
+                                                  response.bounds(),
+                                                  response.history()));
         } else {
             promise.resolve(new StreamForwardError.ReadForwardFailed(response.errorMessage()).result());
         }

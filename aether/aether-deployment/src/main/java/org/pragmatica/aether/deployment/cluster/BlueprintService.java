@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.zip.ZipInputStream;
 
+import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -664,13 +665,21 @@ class BlueprintServiceInstance implements BlueprintService {
     /// #1564 (owner ruling, know 596bdfd07(3)): every deploy warning is LOUD — the deploy response carries it,
     /// and it is raised as a `deploy-warning` operator warning (#1617, R10): a WARN log plus a cluster event.
     @Contract
+    /// The LOUD warning (an explicitly declared RF below 3) is the CRITICAL `replication-factor-below-three`, as at
+    /// activation (v1735); every other deploy warning is `deploy-warning` (WARNING).
+    private static OperatorWarningCode deployWarningCode(String rule) {
+        return ReplicationWarning.FACTOR_BELOW_THREE.code().equals(rule)
+               ? OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE
+               : OperatorWarningCode.DEPLOY_WARNING;
+    }
+
     private void raiseDeployWarnings(PublishedBlueprint published) {
         var blueprint = published.blueprint().id().asString();
 
         published.warnings()
                  .forEach(warning -> OperatorWarnings.raise(log,
                                                             operatorWarnings,
-                                                            OperatorWarningCode.DEPLOY_WARNING,
+                                                            deployWarningCode(warning.rule()),
                                                             blueprint,
                                                             "Blueprint {} deploy warning [{}] at {}: {}",
                                                             blueprint,
