@@ -28,7 +28,7 @@ class ClusterAwaitQuiescedCommand implements Callable<Integer> {
     @Mixin
     ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Option(names = "--epoch", description = "Required epoch in T:C form (e.g. 7:142)", required = true)
+    @Option(names = "--epoch", description = "Required epoch in I:T:C form, cluster incarnation first (e.g. 1:7:142)", required = true)
     private String epoch;
 
     @Option(names = "--timeout", description = "Timeout (default 30s, max 120s)", defaultValue = "30s")

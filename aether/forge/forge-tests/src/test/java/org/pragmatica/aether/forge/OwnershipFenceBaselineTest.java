@@ -110,6 +110,9 @@ class OwnershipFenceBaselineTest {
 
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesReady);
+        // #1529: epochs are read from the live incarnation; read it only once every node carries the genesis
+        // incarnation, or a read that races the genesis commit captures 0 and the fixture literal returns as a flake.
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::genesisIncarnationObserved);
         log.info("OWNERSHIP-FENCE-BASELINE: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
     }
 
@@ -134,8 +137,10 @@ class OwnershipFenceBaselineTest {
         var rf = ReplicaPlacement.replicationFactor(REQUESTED_RF, members.size());
         var owner0 = ownerOf(FENCE_STREAM, members, rf);
 
-        var epoch0 = Epoch.epoch(7L, 0L);
-        var epoch1 = Epoch.epoch(8L, 0L);
+        // #1529: the live cluster incarnation leads every epoch it compares; a literal 0 would sit below it.
+        var incarnation = cluster.allNodes().getFirst().currentGenerationEpoch().incarnation();
+        var epoch0 = Epoch.epoch(incarnation, 7L, 0L);
+        var epoch1 = Epoch.epoch(incarnation, 8L, 0L);
         assertThat(epoch1.isStrictlyAfter(epoch0))
             .as("new owner's generation (term 8) must strictly dominate the deposed owner's (term 7)")
             .isTrue();
@@ -247,6 +252,12 @@ class OwnershipFenceBaselineTest {
 
     private static Result<Long> appendOnce(StreamPartitionManager spm, String stream, byte[] payload) {
         return spm.publishLocal(stream, PARTITION, payload, System.currentTimeMillis());
+    }
+
+    private boolean genesisIncarnationObserved() {
+        return cluster.allNodes()
+                      .stream()
+                      .allMatch(node -> node.currentGenerationEpoch().incarnation() >= 1L);
     }
 
     private boolean allNodesReady() {

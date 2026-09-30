@@ -102,7 +102,7 @@ class NodeDeploymentStateSeedEpochAckTest {
             return List.of();
         }
     };
-    private static final Epoch SEED_EPOCH = Epoch.epoch(7L, 42L);
+    private static final Epoch SEED_EPOCH = Epoch.epoch(0L, 7L, 42L);
 
     private KVStore<AetherKey, AetherValue> kvStore;
     private NodeDeploymentContext ctx;

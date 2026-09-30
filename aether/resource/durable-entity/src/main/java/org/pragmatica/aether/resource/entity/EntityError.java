@@ -129,7 +129,7 @@ public sealed interface EntityError extends Cause {
     /// A fenced write was rejected because this node's owner epoch is stale — it has been deposed
     /// as owner of the entity's ownership arc since the operation began (split-brain handover; spec
     /// §4.2, §6). The write committed nowhere; the caller must re-resolve the current owner and
-    /// retry there. `presentedEpoch` renders the rejected stamp (`term:counter`), carried straight
+    /// retry there. `presentedEpoch` renders the rejected stamp (`incarnation:term:counter`), carried straight
     /// from the underlying [org.pragmatica.dht.DHTError.StaleEpochWrite]; the committed high-water
     /// that out-ranked it is strictly newer and is observable via the ownership triad endpoint.
     record StaleOwnerEpoch(String key, String presentedEpoch) implements EntityError {
@@ -200,7 +200,7 @@ public sealed interface EntityError extends Cause {
     /// no-op round). The read-side sibling of [StaleOwnerEpoch] and the stream's `StreamError.StaleEpochRead`:
     /// the read is rejected rather than served stale, so the caller re-resolves the current owner.
     /// `presentedEpoch` is the stale committed stamp; `highWaterEpoch` the committed high-water that
-    /// out-ranked it (both `term:counter`).
+    /// out-ranked it (both `incarnation:term:counter`).
     record StaleEpochRead(String key, String presentedEpoch, String highWaterEpoch) implements EntityError {
         @Override
         public String message() {

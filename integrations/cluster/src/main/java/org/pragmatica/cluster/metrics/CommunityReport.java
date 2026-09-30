@@ -15,6 +15,7 @@ import org.pragmatica.serialization.Codec;
 @Codec
 public record CommunityReport(String communityId,
                               long communityTerm,
+                              long communityEpochIncarnation,
                               long communityEpochTerm,
                               long communityEpochCounter,
                               NodeId governorNodeId,

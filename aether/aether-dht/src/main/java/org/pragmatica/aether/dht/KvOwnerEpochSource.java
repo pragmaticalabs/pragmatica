@@ -39,6 +39,11 @@ public final class KvOwnerEpochSource implements OwnerEpochSource {
     }
 
     @Override
+    public long currentEpochIncarnation() {
+        return currentEpoch().incarnation();
+    }
+
+    @Override
     public long currentEpochTerm() {
         return currentEpoch().rabiaTerm();
     }

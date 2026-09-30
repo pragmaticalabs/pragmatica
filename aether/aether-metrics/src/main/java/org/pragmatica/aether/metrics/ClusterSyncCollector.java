@@ -305,7 +305,11 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private final ConcurrentHashMap<NodeId, RingBuffer<MetricsSnapshot>> historicalMetricsMap = new ConcurrentHashMap<>();
 
-    private final AtomicLong observedRabiaTerm = new AtomicLong();
+    /// The authority-ping fence (#1529): the highest `(cluster incarnation, rabiaTerm)` an accepted
+    /// authority ping carried. A cold restart restarts the Rabia term, so a raw-term high-water would
+    /// refuse every authority ping of the new run once #1533 advances the incarnation; ordering by
+    /// incarnation first, a higher incarnation resets the term high-water.
+    private final AtomicReference<PingFence> pingFence = new AtomicReference<>(PingFence.ZERO);
     private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
 
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
@@ -380,7 +384,25 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     /// Term-tagged retained in-flight provisioning set. `term` is the broadcasting leader's
     /// `rabiaTerm`; `nodes` is the leader's in-flight provisioning id set at broadcast time.
-    private record RetainedDispatched(long term, Set<NodeId> nodes) {}
+    private record RetainedDispatched(PingFence fence, Set<NodeId> nodes) {}
+
+    /// `(incarnation, term)` of an authority ping, ordered incarnation first (#1529). `incarnation` is the
+    /// ping's epoch incarnation — the sender's committed `ClusterIncarnation` — and `term` its `rabiaTerm`.
+    /// A leader that has not yet applied a newer incarnation is refused until it has, exactly as a lower
+    /// term is.
+    private record PingFence(long incarnation, long term) {
+        static final PingFence ZERO = new PingFence(0L, 0L);
+
+        static PingFence pingFence(ClusterSyncPing ping) {
+            return new PingFence(ping.epochIncarnation(), ping.rabiaTerm());
+        }
+
+        boolean isStrictlyAfter(PingFence other) {
+            return incarnation != other.incarnation
+                   ? incarnation > other.incarnation
+                   : term > other.term;
+        }
+    }
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -595,9 +617,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     @Override
     @Contract
     public void onClusterSyncPing(ClusterSyncPing ping) {
-        log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
+        log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{}:{})",
                   ping.sender(),
                   ping.rabiaTerm(),
+                  ping.epochIncarnation(),
                   ping.epochTerm(),
                   ping.epochCounter());
         recordCoreReachability(ping);
@@ -626,7 +649,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             retainPingRoster(ping.allMetrics().keySet());
         }
 
-        advanceObservedEpoch(Epoch.epoch(ping.epochTerm(), ping.epochCounter()));
+        advanceObservedEpoch(Epoch.epoch(ping.epochIncarnation(), ping.epochTerm(), ping.epochCounter()));
         processEvictionHints(ping);
         cacheReadinessView(ping);
         retainDispatchedNodes(ping);
@@ -691,8 +714,9 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     @Override
     @Contract
     public void onClusterSyncPong(ClusterSyncPong pong) {
-        log.debug("ClusterSync: received PONG from {} (epoch={}:{})",
+        log.debug("ClusterSync: received PONG from {} (epoch={}:{}:{})",
                   pong.sender(),
+                  pong.observedEpochIncarnation(),
                   pong.observedEpochTerm(),
                   pong.observedEpochCounter());
         acceptObservation(pong.sender(), pong.observation());
@@ -777,14 +801,17 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     /// Provisioning-stickiness fix — term-fenced sticky store of the leader's broadcast in-flight
-    /// provisioning set. A ping at a term >= the retained term REPLACES the retained set
+    /// provisioning set. A ping at a fence (incarnation, term) >= the retained one REPLACES the retained set
     /// UNCONDITIONALLY (including with an empty set — empty-from-the-current-leader means the leader
-    /// has nothing in flight, which is the truth). A strictly-lower-term ping is rejected (stale
+    /// has nothing in flight, which is the truth). A strictly-lower-fence ping is rejected (stale
     /// fence). No TTL: the retained set survives a leaderless gap so a freshly-elected leader can seed
     /// from it. Lock-free CAS so concurrent ping handling never clobbers a higher-term retention.
     private void retainDispatchedNodes(ClusterSyncPing ping) {
-        retainedDispatched.updateAndGet(current -> current.filter(retained -> retained.term() > ping.rabiaTerm())
-                                                          .orElse(Option.some(new RetainedDispatched(ping.rabiaTerm(),
+        var incoming = PingFence.pingFence(ping);
+
+        retainedDispatched.updateAndGet(current -> current.filter(retained -> retained.fence()
+                                                                                      .isStrictlyAfter(incoming))
+                                                          .orElse(Option.some(new RetainedDispatched(incoming,
                                                                                                      Set.copyOf(ping.dispatchedNodes())))));
     }
 
@@ -884,6 +911,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
         var buffer = peerObservationBuffer.get();
         var epoch = observedEpoch.get();
+        var epochIncarnation = epoch.incarnation();
         var epochTerm = epoch.rabiaTerm();
         var epochCounter = epoch.localCounter();
 
@@ -893,6 +921,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                                              connected.contains(peer)
                                                              ? ConnectivityState.CONNECTED
                                                              : ConnectivityState.DISCONNECTED,
+                                                             epochIncarnation,
                                                              epochTerm,
                                                              epochCounter,
                                                              nowMs))
@@ -901,7 +930,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override
     public long observedRabiaTerm() {
-        return observedRabiaTerm.get();
+        return pingFence.get()
+                        .term();
     }
 
     @Override
@@ -928,7 +958,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     private boolean acceptPingFencing(ClusterSyncPing ping) {
-        return observedRabiaTerm.accumulateAndGet(ping.rabiaTerm(), Math::max) == ping.rabiaTerm();
+        var incoming = PingFence.pingFence(ping);
+
+        return pingFence.updateAndGet(current -> current.isStrictlyAfter(incoming)
+                                                 ? current
+                                                 : incoming)
+                        .equals(incoming);
     }
 
     private void advanceObservedEpoch(Epoch incomingEpoch) {
@@ -945,7 +980,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return new ClusterSyncPong(self,
                                    observation,
                                    membershipIncarnationSupplier.get().getAsLong(),
-                                   observedRabiaTerm.get(),
+                                   observedRabiaTerm(),
+                                   epoch.incarnation(),
                                    epoch.rabiaTerm(),
                                    epoch.localCounter(),
                                    reportedLifecycleState(),

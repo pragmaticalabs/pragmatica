@@ -100,7 +100,7 @@ class DivergentTailPromotionTest {
     /// naming it, drive the first demand through the gate, and wait for the attempt to settle.
     private OwnerActivation attemptPromotion(NodeId self, StreamPartitionManager promoted, StreamPartitionManager peer) {
         var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(self,
-                                                                                             Epoch.epoch(3, 0),
+                                                                                             Epoch.epoch(0L, 3, 0),
                                                                                              3,
                                                                                              HlcTimestamp.ZERO));
         var other = self.equals(A) ? C : A;

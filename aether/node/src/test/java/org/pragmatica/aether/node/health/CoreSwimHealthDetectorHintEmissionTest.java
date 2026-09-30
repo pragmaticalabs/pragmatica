@@ -73,7 +73,7 @@ class CoreSwimHealthDetectorHintEmissionTest {
         Serializer serializer = Mockito.mock(Serializer.class);
         Deserializer deserializer = Mockito.mock(Deserializer.class);
         detector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
-                                                                   () -> Epoch.epoch(7L, 3L),
+                                                                   () -> Epoch.epoch(0L, 7L, 3L),
                                                                    () -> true, store);
         // Drive the FSM to Running so the membership-callback assertions exercise the
         // production-active code path with a live SwimProtocol behind the listener.
@@ -114,7 +114,7 @@ class CoreSwimHealthDetectorHintEmissionTest {
         Serializer serializer = Mockito.mock(Serializer.class);
         Deserializer deserializer = Mockito.mock(Deserializer.class);
         var det = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
-                                                                 () -> Epoch.epoch(7L, 3L),
+                                                                 () -> Epoch.epoch(0L, 7L, 3L),
                                                                  () -> false, store);
         driveToRunning(det);
         return det;

@@ -71,7 +71,7 @@ class SpokesmanPingLoopTest {
         @Test
         void onSpokesmanPut_activeStatusWithCommunities_activatesLoop() {
             var value = SpokesmanValue.spokesmanValue(List.of("pool-a"),
-                                                      Epoch.epoch(7L, 0L),
+                                                      Epoch.epoch(0L, 7L, 0L),
                                                       HlcTimestamp.ZERO,
                                                       1L)
                                       .withStatus(SpokesmanStatus.ACTIVE);
@@ -152,6 +152,7 @@ class SpokesmanPingLoopTest {
                                                                  Map.of()),
                                    0L,
                                            7L,
+                                           0L,
                                            7L,
                                            3L,
                                            "READY",
@@ -182,6 +183,7 @@ class SpokesmanPingLoopTest {
                                                                              Map.of()),
                                    0L,
                                                        7L,
+                                                       0L,
                                                        7L,
                                                        3L,
                                                        "READY",
@@ -202,6 +204,7 @@ class SpokesmanPingLoopTest {
                                                                              Map.of()),
                                    0L,
                                                        7L,
+                                                       0L,
                                                        7L,
                                                        3L,
                                                        "READY",
@@ -216,6 +219,7 @@ class SpokesmanPingLoopTest {
                                                                              Map.of()),
                                    0L,
                                                        7L,
+                                                       0L,
                                                        7L,
                                                        5L,
                                                        "READY",
@@ -229,7 +233,7 @@ class SpokesmanPingLoopTest {
 
     private void activateWith(List<String> communities) {
         var value = SpokesmanValue.spokesmanValue(communities,
-                                                  Epoch.epoch(7L, 0L),
+                                                  Epoch.epoch(0L, 7L, 0L),
                                                   HlcTimestamp.ZERO,
                                                   1L)
                                   .withStatus(SpokesmanStatus.ACTIVE);

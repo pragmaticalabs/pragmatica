@@ -113,7 +113,7 @@ public final class TopicRoutes implements RouteSource {
                            Map<Integer, PartitionReplayView> partitions,
                            String state) {}
 
-    record RewindTokenView(long generation, long rewind) {}
+    record RewindTokenView(long incarnation, long generation, long rewind) {}
 
     record PartitionReplayView(long nextOffset, long throughOffset) {}
 
@@ -297,7 +297,7 @@ public final class TopicRoutes implements RouteSource {
                                                         status.generation(),
                                                         status.currentRewind()
                                                               .map(TopicRoutes::tokenView)
-                                                              .or(new RewindTokenView(0L, 0L)),
+                                                              .or(new RewindTokenView(0L, 0L, 0L)),
                                                         replayViews(status),
                                                         status.isLive()
                                                         ? LIVE
@@ -305,7 +305,7 @@ public final class TopicRoutes implements RouteSource {
     }
 
     private static RewindTokenView tokenView(RewindToken token) {
-        return new RewindTokenView(token.generation(), token.rewind());
+        return new RewindTokenView(token.incarnation(), token.generation(), token.rewind());
     }
 
     private static Map<Integer, PartitionReplayView> replayViews(ReplayStatus status) {

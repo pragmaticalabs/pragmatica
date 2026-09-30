@@ -146,7 +146,7 @@ class HierarchyAuthorityAcceptanceTest {
         for (long term : new long[] {0, Long.MAX_VALUE - 1}) {
             int previousPongs = pongs.get();
             int previousSeen = seen.get();
-            var ping = new ClusterSyncPing(sender.self(), Map.of(), term, term, 1, Set.of(),
+            var ping = new ClusterSyncPing(sender.self(), Map.of(), term, 0L, term, 1, Set.of(),
                 Set.of(receiver.self()), Map.of(receiver.self(), "DRAINING"), Set.of(), true, true);
             assertThat(runtime(sender).network().sendOutcome(receiver.self(), ping).await(REQUEST).unwrap().isSent()).isTrue();
             await().atMost(REQUEST.duration()).until(() -> seen.get() > previousSeen && pongs.get() > previousPongs);
@@ -197,7 +197,7 @@ class HierarchyAuthorityAcceptanceTest {
 
     private void sendObservation(AetherNode sender, AetherNode receiver, NodeId producer,
         org.pragmatica.cluster.metrics.MetricObservation observation) {
-        var ping = new ClusterSyncPing(sender.self(), Map.of(producer, observation), 0, 0, 0,
+        var ping = new ClusterSyncPing(sender.self(), Map.of(producer, observation), 0, 0L, 0, 0,
             Set.of(), Set.of(), Map.of(), Set.of(), false, false);
         assertThat(runtime(sender).network().sendOutcome(receiver.self(), ping).await(REQUEST).unwrap().isSent()).isTrue();
     }

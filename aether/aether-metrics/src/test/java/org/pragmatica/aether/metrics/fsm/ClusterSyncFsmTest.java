@@ -114,7 +114,7 @@ class ClusterSyncFsmTest {
             var harness = buildFsmHarness(countingNetwork);
 
             harness.context().setTopology(List.of(SELF, PEER_A));
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
             assertThat(harness.fsm().current()).isSameAs(harness.context().dormant());
             assertThat(countingNetwork.sent()).isEmpty();
         }
@@ -137,7 +137,7 @@ class ClusterSyncFsmTest {
             // Topology is never seeded (no MembershipDecision/NodeJoined deltas) — recipients
             // are the live transport peers; the leader BROADCASTS one uniform ping to all of them.
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
             assertThat(network.sent()).containsExactlyInAnyOrder(PEER_A, PEER_B);
             assertThat(network.broadcasts()).isEmpty();
@@ -149,7 +149,7 @@ class ClusterSyncFsmTest {
             var harness = buildFsmHarness(network);
 
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
             assertThat(network.broadcasts()).isEmpty();
         }
@@ -164,7 +164,7 @@ class ClusterSyncFsmTest {
             // Topology knows SELF and PEER_A only — PEER_B is transport-connected but absent.
             harness.context().setTopology(List.of(SELF, PEER_A));
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
             assertThat(network.sent()).containsExactlyInAnyOrder(PEER_A, PEER_B);
             assertThat(counterForPeer(harness, PEER_B)).as("PEER_B miss-tracked despite missing topology edge — recipients are connectedPeers")
                       .isEqualTo(1);
@@ -182,8 +182,8 @@ class ClusterSyncFsmTest {
             var harness = buildFsmHarness(new ConfigurableConnectedNetwork(Set.of(PEER_A)), 2, collector);
 
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
             assertThat(reported).containsExactly(PEER_A);
             // The missed count itself is only observable here, on the counter the threshold reads.
             assertThat(counterForPeer(harness, PEER_A)).isEqualTo(2);
@@ -198,8 +198,8 @@ class ClusterSyncFsmTest {
             var harness = buildFsmHarness(new ConfigurableConnectedNetwork(Set.of(PEER_A, PEER_B)), 3, collector);
 
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
-            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 7L, 0L)));
             assertThat(counterForPeer(harness, PEER_A)).isEqualTo(2);
             assertThat(counterForPeer(harness, PEER_B)).isEqualTo(2);
             harness.fsm().dispatch(new ClusterSyncEvents.PongReceived(PEER_A));
@@ -233,7 +233,7 @@ class ClusterSyncFsmTest {
             assertThat(reported).as("no unreachable hint fed into SWIM for a SWIM-ALIVE peer").isEmpty();
             // The inert eviction-hint wire path must also stay empty — the next outbound ping carries
             // no hint for any peer (emitPingTimeoutIfExceeded is the sole writer and no longer writes).
-            harness.context().broadcastPing(Epoch.epoch(7L, 0L), 7L);
+            harness.context().broadcastPing(Epoch.epoch(0L, 7L, 0L), 7L);
             var pings = network.sent()
                                .stream()
                                .filter(m -> m instanceof org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing)
@@ -330,7 +330,7 @@ class ClusterSyncFsmTest {
                                              TimeSpan.timeSpan(1).hours(),
                                              () -> 7L,
                                              threshold,
-                                             () -> Epoch.epoch(7L, 0L),
+                                             () -> Epoch.epoch(0L, 7L, 0L),
                                              org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore());
 
             ctxRef.set(ctx);

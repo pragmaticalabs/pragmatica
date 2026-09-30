@@ -49,8 +49,8 @@ class DHTAntiEntropyTest {
         @Test
         void computeDigest_isDeterministic_forSameEntries() {
             var entries = List.of(
-                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L),
-                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L)
+                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L, 0L),
+                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L, 0L)
             );
 
             var digest1 = DHTNode.computeDigest(entries);
@@ -62,12 +62,12 @@ class DHTAntiEntropyTest {
         @Test
         void computeDigest_isDeterministic_regardlessOfInputOrder() {
             var ordered = List.of(
-                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L),
-                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L)
+                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L, 0L),
+                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L, 0L)
             );
             var reversed = List.of(
-                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L),
-                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L)
+                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L, 0L),
+                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L, 0L)
             );
 
             var digest1 = DHTNode.computeDigest(ordered);
@@ -78,8 +78,8 @@ class DHTAntiEntropyTest {
 
         @Test
         void computeDigest_differs_forDifferentEntries() {
-            var entries1 = List.of(new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L));
-            var entries2 = List.of(new DHTMessage.KeyValue(key("a"), value("2"), 300L, 0L, 0L));
+            var entries1 = List.of(new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L, 0L));
+            var entries2 = List.of(new DHTMessage.KeyValue(key("a"), value("2"), 300L, 0L, 0L, 0L));
 
             var digest1 = DHTNode.computeDigest(entries1);
             var digest2 = DHTNode.computeDigest(entries2);
@@ -132,7 +132,7 @@ class DHTAntiEntropyTest {
         @Test
         void onDigestResponse_requestsMigration_whenDigestsDiffer() {
             var localDigest = DHTNode.computeDigest(List.of());
-            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L, 0L, 0L)));
+            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L, 0L, 0L, 0L)));
             var requestId = "test-req-2";
             injectPendingDigest(requestId, PEER, 5, localDigest);
 
@@ -182,7 +182,7 @@ class DHTAntiEntropyTest {
         @Test
         void onDigestResponse_doesNotRequestMigration_whenTheRingNoLongerMakesThisNodeAReplica() {
             var localDigest = DHTNode.computeDigest(List.of());
-            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L, 0L, 0L)));
+            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L, 0L, 0L, 0L)));
 
             // The ring grows while the digest is in flight — widening only, the same `addNode` the join
             // path uses. Afterwards some partitions no longer have LOCAL among their replicas.
@@ -246,8 +246,8 @@ class DHTAntiEntropyTest {
             var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
 
             var entries = List.of(
-                new DHTMessage.KeyValue(key("repaired-k1"), value("repaired-v1"), 100L, 0L, 0L),
-                new DHTMessage.KeyValue(key("repaired-k2"), value("repaired-v2"), 200L, 0L, 0L)
+                new DHTMessage.KeyValue(key("repaired-k1"), value("repaired-v1"), 100L, 0L, 0L, 0L),
+                new DHTMessage.KeyValue(key("repaired-k2"), value("repaired-v2"), 200L, 0L, 0L, 0L)
             );
 
             antiEntropy.onMigrationDataResponse(
@@ -287,7 +287,7 @@ class DHTAntiEntropyTest {
             var network = new CapturingNetwork();
             var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
 
-            var entries = List.of(new DHTMessage.KeyValue(key("pushed-k1"), value("pushed-v1"), 100L, 0L, 0L));
+            var entries = List.of(new DHTMessage.KeyValue(key("pushed-k1"), value("pushed-v1"), 100L, 0L, 0L, 0L));
 
             antiEntropy.onMigrationDataResponse(
                 new DHTMessage.MigrationDataResponse("push-1", PEER, entries, true));
@@ -315,7 +315,7 @@ class DHTAntiEntropyTest {
             var network = new CapturingNetwork();
             var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
 
-            var entries = List.of(new DHTMessage.KeyValue(key("pull-k1"), value("pull-v1"), 100L, 0L, 0L));
+            var entries = List.of(new DHTMessage.KeyValue(key("pull-k1"), value("pull-v1"), 100L, 0L, 0L, 0L));
 
             antiEntropy.onMigrationDataResponse(
                 new DHTMessage.MigrationDataResponse("pull-1", PEER, entries, false));
