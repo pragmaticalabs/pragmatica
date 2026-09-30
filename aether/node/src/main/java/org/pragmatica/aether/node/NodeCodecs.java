@@ -78,6 +78,8 @@ public sealed interface NodeCodecs {
         // active replication / catch-up / forward sends throw "No codec registered" over the cluster network.
         all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.replication.ReplicationCodecsStream.CODECS);
+        // #1596 owner-epoch provenance entries, nested in the catch-up response.
+        all.addAll(org.pragmatica.aether.stream.provenance.ProvenanceCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.forward.ForwardCodecsStream.CODECS);
         // #386 durable pub-sub wire types (TopicEventEnvelope on `topic:<address>` streams,
         // DlqEnvelope on their `.dlq` streams) — MAILBOX-announced 2026-08-28 before this line.

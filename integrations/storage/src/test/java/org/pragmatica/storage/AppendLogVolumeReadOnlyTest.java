@@ -33,6 +33,8 @@ import static org.pragmatica.lang.Option.some;
 /// #1569 A3/A4/A10 on the storage engine's logs: looking at a volume changes nothing on it, and cutting a
 /// torn tail -- the one place a log discards bytes -- happens only on an explicit open, loudly.
 class AppendLogVolumeReadOnlyTest {
+    private static final AppendLog.EpochKey EPOCH_ONE = AppendLog.EpochKey.epochKey("1").unwrap();
+
     private static final byte[] TORN = {0, 0, 0, 40, 1, 2, 3};
 
     @TempDir
@@ -72,7 +74,7 @@ class AppendLogVolumeReadOnlyTest {
         assertThat(extent.lowOffset()).isZero();
         assertThat(extent.headOffset()).isEqualTo(2L);
         assertThat(extent.fileBytes() - extent.validBytes()).as("the torn tail is reported, not cut").isEqualTo(TORN.length);
-        assertThat(AppendLog.readEpochHistory(logFile()).unwrap()).containsExactly(new AppendLog.EpochStart(1, 0));
+        assertThat(AppendLog.readEpochHistory(logFile()).unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE, 0));
         assertThat(snapshot()).isEqualTo(before);
     }
 
@@ -128,7 +130,7 @@ class AppendLogVolumeReadOnlyTest {
         for (var i = 0; i < 3; i++) {
             wal.append(i, ("e" + i).getBytes(StandardCharsets.UTF_8), 1L).await().onFailure(c -> fail(c.message()));
         }
-        wal.recordEpochStart(1, 0).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(EPOCH_ONE, 0, (later, earlier) -> false).onFailure(c -> fail(c.message()));
         wal.close();
         Files.write(logFile(), TORN, StandardOpenOption.APPEND);
     }
