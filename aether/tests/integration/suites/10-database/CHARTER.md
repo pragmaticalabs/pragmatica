@@ -2,7 +2,7 @@
 
 **Test-ID convention:** `TC-10-DATABASE-NNN`.
 
-**Scope:** Schema-management contracts on top of declarative PostgreSQL persistence (`pg-persistence-spec`). Covers schema baseline (initial migration), retry semantics for FAILED states, and versioned-migration progression. Per audit §1.12, all 18 functions are SOUND and every prior green-sticker has been remediated via the datasource-discovery pattern.
+**Scope:** Schema-management contracts on top of declarative PostgreSQL persistence (`pg-persistence-spec`). Covers the schema-baseline conflict contract on an already-migrated datasource, retry semantics for FAILED states, and versioned-migration progression. Per audit §1.12, all 18 functions are SOUND and every prior green-sticker has been remediated via the datasource-discovery pattern.
 
 ---
 
@@ -12,10 +12,10 @@
 |---|---|---|
 | C1 | Cluster reaches the canonical "ready" state before any schema probe runs. | `aether/docs/specs/test-readiness-contract.md §1.1` |
 | C2 | A tracked datasource (declared via `@PgSql`) becomes discoverable through `/api/schema/status` GET (filtered for `"datasource":"<name>"`) within a bounded window. | `aether/docs/specs/pg-persistence-spec.md`; `aether/docs/reference/management-api.md §Schema` |
-| C3 | `/api/schema/baseline` accepts a discovered datasource and returns 2xx with a non-empty body. | `aether/docs/reference/management-api.md §Schema Baseline` |
-| C4 | Post-baseline `/api/schema/status` returns a non-`{UNKNOWN,FAILED,empty}` status for the datasource (baseline call landed in orchestrator state). | `aether/docs/specs/pg-persistence-spec.md §Schema Lifecycle` |
-| C5 | Slices backed by the baselined schema reach `instances > 0` (schema baseline does not block slice activation). | `aether/docs/specs/pg-persistence-spec.md`; `aether/docs/specs/unified-deploy-spec.md` |
-| C6 | Calling `/api/schema/baseline` twice on the same datasource is idempotent (second call returns 2xx + non-empty). | `aether/docs/specs/pg-persistence-spec.md §Idempotency` |
+| C3 | `/api/schema/baseline` on an ALREADY-MIGRATED datasource (fixture `test-persistence`, V900 applied by the Step 7 blueprint deploy) is refused with `409 Baseline conflict ... already applied up to version <N>`, naming the datasource's current version. The first-time success path is NOT asserted here (see Known limitations). | `aether/docs/reference/management-api.md §Schema Baseline` |
+| C4 | Post-refused-baseline `/api/schema/status` returns a non-`{UNKNOWN,FAILED,empty}` status for the datasource (baseline call landed in orchestrator state). | `aether/docs/specs/pg-persistence-spec.md §Schema Lifecycle` |
+| C5 | Slices backed by the schema stay at `instances > 0` after a refused baseline. | `aether/docs/specs/pg-persistence-spec.md`; `aether/docs/specs/unified-deploy-spec.md` |
+| C6 | Repeating the refused baseline gets the IDENTICAL 409 (same status and detail), and `currentVersion` is unchanged by both calls. | `aether/docs/specs/pg-persistence-spec.md §Idempotency` |
 | C7 | `/api/schema/retry` either succeeds (datasource is in FAILED state and transitions out) OR returns a documented `not in FAILED state` envelope (datasource is not retryable). | `aether/docs/specs/pg-persistence-spec.md §Retry`; `aether/docs/reference/management-api.md §Schema Retry` |
 | C8 | Post-retry `/api/schema/status` returns FAILED (orchestrator preserves FAILED for the documented contract) or transitions to a documented healthy state — never empty/UNKNOWN. | `aether/docs/specs/pg-persistence-spec.md §Retry` |
 | C9 | `/api/schema/retry` is idempotent (same contract on repeated calls). | `aether/docs/specs/pg-persistence-spec.md §Idempotency` |
@@ -30,12 +30,13 @@
 
 | TC ID | Test function | File:line | Contract(s) | Severity | Notes |
 |---|---|---|---|---|---|
-| TC-10-DATABASE-001 | `test_cluster_ready` | `test-schema-baseline.sh:29` | C1, C2 | smoke | Pushes + deploys schema-backed slice; `wait_for "tracked datasource discovered"` strict 60s — hard log_fail on miss. This is the datasource-discovery gate that unlocks all subsequent strict assertions. |
-| TC-10-DATABASE-002 | `test_schema_baseline_endpoint` | `test-schema-baseline.sh:49` | C3 | core | Strict: empty datasource → fail; `api_post` failure → fail; empty body → fail (`assert_ne`). |
-| TC-10-DATABASE-003 | `test_schema_status_after_baseline` | `test-schema-baseline.sh:66` | C4 | core | Case match — empty/UNKNOWN/FAILED → log_fail; anything else → log_pass. Acknowledges orchestrator landed the baseline. |
-| TC-10-DATABASE-004 | `test_slices_active_after_baseline` | `test-schema-baseline.sh:82` | C5 | core | `assert_gt instances 0` against real cluster state. |
-| TC-10-DATABASE-005 | `test_baseline_idempotent` | `test-schema-baseline.sh:90` | C6 | core | Second POST returns 2xx + non-empty. |
-| TC-10-DATABASE-006 | `test_cluster_healthy_after_baseline` | `test-schema-baseline.sh:103` | C13 | core | — |
+| TC-10-DATABASE-001 | `test_cluster_ready` | `test-schema-baseline-conflict.sh` | C1, C2 | smoke | Pushes + deploys schema-backed slice; `wait_for "tracked datasource discovered"` strict 60s — hard log_fail on miss. This is the datasource-discovery gate that unlocks all subsequent strict assertions. |
+| TC-10-DATABASE-002 | `test_baseline_refused_on_migrated_datasource` | `test-schema-baseline-conflict.sh` | C3 | core | Waits (bounded) for `currentVersion >= 900`, records it, POSTs baseline via `_api_call` (status kept) and requires status 409 AND the detail `...already applied up to version <N>`. A 2xx fails loudly as a changed premise. |
+| TC-10-DATABASE-003 | `test_schema_status_after_refused_baseline` | `test-schema-baseline-conflict.sh` | C4 | core | Case match — empty/UNKNOWN/FAILED → log_fail; anything else → log_pass. |
+| TC-10-DATABASE-004 | `test_slices_active_after_refused_baseline` | `test-schema-baseline-conflict.sh` | C5 | core | `assert_gt instances 0` against real cluster state. |
+| TC-10-DATABASE-005 | `test_refused_baseline_is_repeatable` | `test-schema-baseline-conflict.sh` | C6 | core | Second POST must return the identical 409 naming the recorded version. |
+| TC-10-DATABASE-019 | `test_version_unchanged_after_refused_baselines` | `test-schema-baseline-conflict.sh` | C6 | core | `currentVersion` equals the version recorded before the first refused baseline. Mutation-probed in `test/test-baseline-conflict-suite.sh` (B4; disabling the check leaves B4 green). |
+| TC-10-DATABASE-006 | `test_cluster_healthy_after_refused_baseline` | `test-schema-baseline-conflict.sh` | C13 | core | — |
 | TC-10-DATABASE-007 | `test_cluster_ready` | `test-schema-retry.sh:22` | C1, C2 | smoke | Strict datasource-discovery gate. |
 | TC-10-DATABASE-008 | `test_schema_status_before_retry` | `test-schema-retry.sh:37` | C4 | smoke | Strict non-empty status precondition for retry test. |
 | TC-10-DATABASE-009 | `test_schema_retry_endpoint` | `test-schema-retry.sh:54` | C7 | core | Either `schema_retry` succeeds (2xx) OR response contains documented `not in FAILED state` message → pass; else hard fail with body dump. Inline comment acknowledges fault-injection TODO for the deeper FAILED→HEALTHY transition. |
@@ -65,6 +66,7 @@
 
 | TC ID | Limitation | Tracking |
 |---|---|---|
+| TC-10-DATABASE-002 | **The FIRST-TIME baseline path has no end-to-end coverage.** `run-tests.sh` Step 7 deploys test-persistence before any suite runs, so its datasource is at V900 before this suite starts; the earlier version of these tests asserted a first-time 2xx and failed 2 of 3 on every docker and cloud run (`rc4-baseline-suite-20260923T054907Z`, `rc4-baseline2-suite-20260923T215409Z`, cloud 2026-09-30) — the server's 409 was correct each time. Not caused by parallel suites: 06 only polls for the V900 that the Step 7 deploy already triggered. Existing partial coverage, all with the manager faked: `SchemaRoutesBaselineTest` (route rewrites version/status/ownership, real orchestrator wiring, `AetherSchemaManager` replaced by `BaselineOnlySchemaManager`) and `SchemaRouteStatusTest.baselineRoute_*` (409 mapping from an injected `BaselineConflict`). **No test drives `AetherSchemaManager.executeBaseline`'s success path (`recordSyntheticBaselines`) against a database, and none drives its conflict branch against real history.** [unverified: first-time baseline has no end-to-end coverage; see #<rc5-ticket> — dedicated blueprint + datasource; draft in oss/internal/sweep-state/s29/t-baseline-first-time.md] | Positive control for this file: `test/test-baseline-conflict-suite.sh` (stub server) — the pre-change script fails it exactly as the real runs did. |
 | TC-10-DATABASE-009 | `schema_retry` cannot drive a real FAILED→HEALTHY transition without fault injection. Inline comment acknowledges the gap; the test verifies the orchestrator's documented contract message for the "not in FAILED state" path. | Audit §1.12 SOUND — contract-driven, not a green-sticker. Fault-injection TODO captured in code comment. |
 | TC-10-DATABASE-010 | "FAILED is acceptable post-retry" branch relies on orchestrator contract documentation. If the orchestrator contract changes (e.g., post-retry should always transition out of FAILED), this assertion will silently mis-track. | Audit §1.12 SOUND — pinned to current orchestrator contract; revisit if `pg-persistence-spec` adds explicit retry-state-transition rules. |
 | TC-10-DATABASE-015 | Coupled to V900 fixture in `test-persistence`. | Fixture-test coupling; document in test header comment. |
@@ -80,3 +82,4 @@
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-21 | charter authoring agent | Initial charter; TC-10-DATABASE-001 through TC-10-DATABASE-018 catalogued from audit §1.12. All prior green-stickers recorded as REMEDIATED via the datasource-discovery pattern. |
+| 2026-09-30 | f-partheal | Baseline tests repurposed to the already-migrated 409 contract (C3, C6; file renamed `test-schema-baseline-conflict.sh`; TC-10-DATABASE-019 added); first-time baseline recorded as an unverified gap. |
