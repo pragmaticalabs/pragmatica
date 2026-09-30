@@ -26,8 +26,10 @@ test_create_stream() {
 }
 
 test_publish_events_for_replication() {
-    local success=0 errfile
+    local success=0 errfile trace
     errfile=$(mktemp)
+    trace=$(mktemp)
+    STREAM_PUBLISH_TRACE="$trace"
     for i in $(seq 1 10); do
         local payload="{\"key\":\"repl-${i}\",\"data\":\"replicated-payload-${i}\",\"timestamp\":$(now_epoch)}"
         # `2>&1` here discarded the `api ... status=NNN: <body>` diagnostic `_api_call` emits on
@@ -36,8 +38,12 @@ test_publish_events_for_replication() {
             success=$((success + 1))
         fi
     done
-    [ "$success" -eq 10 ] || log_warn "Replication publish diagnostics (first 500B): $(head -c 500 "$errfile" 2>/dev/null | tr -d '\n')"
-    rm -f "$errfile"
+    [ "$success" -eq 10 ] || {
+        log_warn "Replication publish diagnostics (first 500B): $(head -c 500 "$errfile" 2>/dev/null | tr -d '\n')"
+        log_warn "shortfall capture: $(stream_shortfall_report "$STREAM_NAME" "$trace")"
+    }
+    unset STREAM_PUBLISH_TRACE
+    rm -f "$errfile" "$trace"
     assert_eq "$success" "10" "All 10 events published for replication test"
 }
 

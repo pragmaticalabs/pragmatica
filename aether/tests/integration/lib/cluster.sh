@@ -1258,7 +1258,7 @@ slices_total_instances() {
 # ManagementApiResponses.ClusterSliceInfo):
 #   { "slices": [
 #       { "artifact": "<group>:<artifact>:<version>",
-#         "targetInstances": N, "minInstances": M, "currentVersion": "...",
+#         "targetInstances": N, "minInstances": M, "version": "...",
 #         "instances": [
 #           { "nodeId": "hetzner-eu-core-3", "state": "ACTIVE", "failureReason": "" },
 #           ...
@@ -1942,7 +1942,7 @@ drop_ctm_replacements() {
 # run2/run4 pre-kill deaths (node-5, node-3) undiagnosable. A remote-side daemon
 # (scripts/log-streamer.sh) keeps an appending `docker logs -f` attached to every aether-*
 # container — including auto-heal replacements, via a 5s re-scan — so the FILES survive
-# container removal. capture_node_logs (run-tests.sh) fetches them as streamed-*.log.
+# container removal. capture_node_logs (lib/capture.sh) fetches them as streamed-*.log.
 start_log_streamers() {
     [ "$ENV_TYPE" = "remote" ] || return 0
 
@@ -3235,6 +3235,8 @@ _cloud_full_drain_recover() {
         log_fail "_cloud_full_drain_recover: tools/cloud-reaper.sh not found or not executable (resolved path: ${reaper}) — nothing destroyed"
         return 2
     fi
+    # The reap deletes every VM and its logs; keep them if this suite has already failed.
+    capture_before_destructive "cloud-reap"
     log_warn "_cloud_full_drain_recover: full self-drain confirmed from per-VM evidence (_cloud_reap_after_confirmed_drain) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
     local reap_out reap_rc
     reap_out=$("$reaper" --cluster "$cluster_name" --strict-cluster --destroy --force 2>&1)
@@ -3283,6 +3285,8 @@ _cloud_full_drain_recover() {
 
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
+    # The recreate below destroys the outgoing containers' logs; keep them if this suite has already failed.
+    capture_before_destructive "restart_all_nodes"
     if [ "$CLOUD_MODE" = "true" ]; then
         # Cloud has NO single Docker host and NO docker-compose project — each node
         # is its own VM. The old SSH-based `docker restart` / JVM pkill+relaunch loop
@@ -4133,6 +4137,80 @@ _restore_active_counted_gate() {
     return 1
 }
 
+# One line per artifact entry in a /api/v1/slices body (stdin), layout-independent (the body may be
+# pretty-printed or one line):  <artifact>\t<targetInstances>\t<version>\t<node>=<STATE> <node>=<STATE> ...
+# `version` is the JSON key of ManagementApiResponses.ClusterSliceInfo's 4th component (`currentVersion()` is the
+# Java accessor on the SliceTarget value, NOT a key; a parser on it matches nothing and the gate passes
+# vacuously — test-restore-slices-gate.sh derives its fixtures from the record and pins the key). It is
+# non-empty ONLY when a SliceTarget backs the artifact (SliceRoutes.toClusterSliceInfo takes it from the
+# SliceTarget and falls back to ""), and targetInstances falls back to instances.size() without one: so an
+# UNDEPLOYED artifact with a lingering non-ACTIVE row reads as target > 0, and only `version` tells a deployed
+# artifact from such a row.
+_slices_by_artifact() {
+    tr '\n' ' ' | sed 's/"artifact"/\
+"artifact"/g' | grep '^"artifact"' | while IFS= read -r chunk; do
+        local art tgt ver states
+        art=$(printf '%s' "$chunk" | sed -E 's/^"artifact"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        ver=$(printf '%s' "$chunk" | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
+        tgt=$(printf '%s' "$chunk" | grep -oE '"targetInstances"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)
+        states=$(printf '%s' "$chunk" \
+            | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"[^}]*"state"[[:space:]]*:[[:space:]]*"[A-Z_]+"' \
+            | sed -E 's/"nodeId"[[:space:]]*:[[:space:]]*"([^"]*)".*"state"[[:space:]]*:[[:space:]]*"([A-Z_]+)"/\1=\2/' \
+            | tr '\n' ' ' || true)
+        printf '%s\t%s\t%s\t%s\n' "$art" "${tgt:-0}" "${ver:-}" "$states"
+    done
+}
+
+# Every DEPLOYED slice artifact must have >= 1 ACTIVE instance (any version of it: during a rolling update
+# the old version legitimately drains while the new one is ACTIVE). "Deployed" means a SliceTarget backs it
+# (`version` non-empty): an undeployed artifact can linger as a non-ACTIVE row, and with target read back
+# as instances.size() it would fail every later restore. Artifacts are keyed group:artifact (version
+# stripped); one with targetInstances 0 is not required to run anything. Prints, on stdout, the per-artifact
+# instance states of each starved artifact, and nothing when all are fine.
+_slices_missing_active() {
+    local report="$1"
+    printf '%s\n' "$report" | awk -F'\t' '
+        NF >= 3 {
+            key = $1; sub(/:[^:]*$/, "", key)
+            seen[key] = 1; target[key] += $2
+            if ($3 != "") deployed[key] = 1
+            n = split($4, inst, " ")
+            for (i = 1; i <= n; i++) if (inst[i] ~ /=ACTIVE$/) active[key]++
+            states[key] = states[key] " [" $1 " target=" $2 " version=" $3 ": " $4 "]"
+        }
+        END { for (k in seen) if (deployed[k] && target[k] > 0 && active[k] == 0) print k ":" states[k] }'
+}
+
+# restore_cluster_baseline's slice gate: the cluster is not "at baseline" while a deployed blueprint has
+# NO ACTIVE instance (2026-09-30 S-prime: test-echo 5 x UNLOADING passed the restore, and 02-chaos then failed
+# 90s later with a misleading "no ACTIVE owner"). Bounded wait ($SECONDS-based, AETHER_RESTORE_SLICES_TIMEOUT
+# base 60s x TIMEOUT_SCALE) so a legitimate rolling update, where every instance is briefly LOADING with none
+# ACTIVE, settles first. On a miss it FAILS naming each starved artifact with every instance's state, so the
+# root cause is visible at the restore. An unreadable /api/v1/slices is a failure too, never a pass.
+_restore_slices_gate() {
+    local budget=$(( ${AETHER_RESTORE_SLICES_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
+    local poll="${AETHER_RESTORE_SLICES_POLL:-5}"
+    local deadline=$(( SECONDS + budget ))
+    local body report missing
+    while :; do
+        body=$(api_get "/api/v1/slices" 2>/dev/null) || body=""
+        if printf '%s' "$body" | grep -q '"slices"'; then
+            report=$(printf '%s' "$body" | _slices_by_artifact)
+            missing=$(_slices_missing_active "$report")
+            if [ -z "$missing" ]; then
+                log_info "restore_cluster_baseline: every deployed slice artifact has an ACTIVE instance ($(printf '%s\n' "$report" | grep -c . || true) artifact entries)"
+                return 0
+            fi
+        else
+            missing="/api/v1/slices unreadable or without a slices list: $(printf '%s' "$body" | head -c 200)"
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "$poll"
+    done
+    log_fail "restore_cluster_baseline: deployed slice artifact(s) (SliceTarget-backed: `version` set) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
+    return 1
+}
+
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"
@@ -4396,6 +4474,10 @@ restore_cluster_baseline() {
     # core the leader does not count (active 6, counted 5); wait bounded for agreement, else FAIL.
     _restore_active_counted_gate "$target" || return 1
 
+    # 10. EVERY DEPLOYED BLUEPRINT HAS AN ACTIVE INSTANCE. Cores agreeing (step 9) says nothing about the
+    # slices on them; a cluster whose echo slice is 5 x UNLOADING is not at baseline.
+    _restore_slices_gate || return 1
+
     log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
 }
@@ -4643,22 +4725,47 @@ stream_create() {
 # "catalog unreachable" and "stream absent from an otherwise healthy catalog" call for different
 # actions (fix the cluster vs create the stream), so they must not read alike. stdout stays
 # coordinate-only: the assert call sites capture it with `$(...)` and redirect stderr away.
+# Resolution is EXACT for streams this harness creates (stream_create puts them in
+# STREAM_TEST_NAMESPACE at STREAM_TEST_VERSION): when that address is in the catalog it is returned,
+# whatever else carries the same bare name. Cluster A holds `integration/test-events` AND the
+# `org.pragmatica.aether.test.test-persistence/test-events` that a deployed blueprint declares; the old
+# namespace-blind `head -1` over an unordered listing picked either one, re-resolved on every publish, so
+# one test's writes split across the two streams (6 + 14 of 20 measured, and the batch's 48 in the other).
+# A bare name with no harness-namespace entry resolves only when it matches EXACTLY ONE catalog entry (an
+# app-declared stream such as `notifications`); a match in several namespaces FAILS, loudly, naming them.
+# The exact address is cached per test process ($$, one process per test file) so a test resolves it once.
 stream_coordinate() {
-    local name="$1" body coord
+    local name="$1" body matches exact count cache
+    cache="${TMPDIR:-/tmp}/aether-stream-coord.$$.${name}"
+    if [ -s "$cache" ]; then
+        cat "$cache"
+        return 0
+    fi
     body=$(api_get "/api/v1/streams" 2>/dev/null) || {
         log_warn "stream_coordinate ${name}: GET /api/v1/streams failed — catalog unreachable" >&2
         return 1
     }
-    coord=$(printf '%s' "$body" \
+    matches=$(printf '%s' "$body" \
         | tr '}' '\n' \
         | grep -F "\"stream\":\"${name}\"" \
         | sed -E 's/.*"namespace":"([^"]*)".*"stream":"([^"]*)".*"version":"([^"]*)".*/\1\/\2\/\3/' \
-        | head -1)
-    [ -n "$coord" ] || {
-        log_warn "stream_coordinate ${name}: not in the catalog (create it with stream_create); catalog holds: $(printf '%s' "$body" | grep -oE '"stream":"[^"]*"' | tr '\n' ' ' | head -c 300)" >&2
+        | sort -u)
+    exact="${STREAM_TEST_NAMESPACE}/${name}/${STREAM_TEST_VERSION}"
+    if printf '%s\n' "$matches" | grep -qxF "$exact"; then
+        printf '%s' "$exact" | tee "$cache"
+        return 0
+    fi
+    count=$(printf '%s\n' "$matches" | grep -c . || true)
+    if [ "$count" -eq 1 ]; then
+        printf '%s' "$matches"
+        return 0
+    fi
+    if [ "$count" -gt 1 ]; then
+        log_warn "stream_coordinate ${name}: AMBIGUOUS — the bare name matches ${count} catalog entries and none is the harness address ${exact}: $(printf '%s' "$matches" | tr '\n' ' ')" >&2
         return 1
-    }
-    printf '%s' "$coord"
+    fi
+    log_warn "stream_coordinate ${name}: not in the catalog (create it with stream_create); catalog holds: $(printf '%s' "$body" | grep -oE '"stream":"[^"]*"' | tr '\n' ' ' | head -c 300)" >&2
+    return 1
 }
 
 stream_info() {
@@ -4703,10 +4810,64 @@ stream_declared_name() {
     printf '%s' "$declared"
 }
 
+# Publish one event with the retry policy below and print the FINAL HTTP status ("000" when nothing
+# answered) on stdout; the final response body goes to $3 when given. ONLY a 503 whose body says the
+# publish was "refused before writing" (ManagementServerError.PublishRetryable: an owner not yet promoted,
+# not enough replicas) is retried, with 250ms -> 1s backoff for up to STREAM_PUBLISH_RETRY_BUDGET_S
+# (default 10s); the last refusal is then reported as-is. Everything else returns after exactly ONE
+# request, in particular a 500 including "Publish outcome unknown ... FORWARD_TIMEOUT": the publish may
+# have landed, and without a message id a resend can duplicate it (#1750).
+# When STREAM_PUBLISH_TRACE names a file, one line per call is appended:
+#   endpoint=<ep> status=<s> attempts=<n> offset=<o> partition=<p>
+# so a later shortfall can be tied to which node answered which offset (partition is the response's
+# field when present, else 0, the Management API default).
+stream_publish_status() {
+    local name="$1" body="$2" body_file="${3:-/dev/null}" coord
+    coord=$(stream_coordinate "$name") || { printf '000'; return 0; }
+    local budget="${STREAM_PUBLISH_RETRY_BUDGET_S:-10}"
+    local delay="${STREAM_PUBLISH_RETRY_DELAY_S:-0.25}" max_delay="${STREAM_PUBLISH_RETRY_MAX_DELAY_S:-1}"
+    local deadline=$(( SECONDS + budget ))
+    local out status resp_body ep attempt=0 off part
+    while :; do
+        attempt=$((attempt + 1))
+        ep=$(_resolve_live_endpoint)
+        out=$(_api_call POST "${ep}/api/v1/streams/${coord}/publish" "$body" 1) || true
+        status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+        resp_body=$(printf '%s' "$out" | sed '$d')
+        if [ "$status" = "503" ] && printf '%s' "$resp_body" | grep -qi 'refused before writing'; then
+            if [ "$SECONDS" -lt "$deadline" ]; then
+                log_warn "stream_publish ${name}: attempt ${attempt} got 503 ($(printf '%s' "$resp_body" | head -c 120)); retrying in ${delay}s" >&2
+                sleep "$delay"
+                delay=$(awk -v d="$delay" -v m="$max_delay" 'BEGIN { d = d * 2; if (d > m) d = m; print d }')
+                continue
+            fi
+            log_warn "stream_publish ${name}: 503 refused-before-writing still refused after ${attempt} attempt(s) in ${budget}s; last body: $(printf '%s' "$resp_body" | head -c 300)" >&2
+        fi
+        printf '%s' "$resp_body" > "$body_file"
+        if [ -n "${STREAM_PUBLISH_TRACE:-}" ]; then
+            off=$(json_value "$resp_body" "offset" 2>/dev/null || true)
+            part=$(json_value "$resp_body" "partition" 2>/dev/null || true)
+            printf 'endpoint=%s status=%s attempts=%s offset=%s partition=%s\n' \
+                "$ep" "${status:-000}" "$attempt" "${off:--}" "${part:-0}" >> "$STREAM_PUBLISH_TRACE"
+        fi
+        printf '%s' "${status:-000}"
+        return 0
+    done
+}
+
+# Publish one event; success (rc 0) prints the response body, any refusal returns 1. See
+# stream_publish_status for the retry policy.
 stream_publish() {
-    local name="$1" body="$2" coord
-    coord=$(stream_coordinate "$name") || return 1
-    api_post "/api/v1/streams/${coord}/publish" "$body"
+    local name="$1" body="$2" body_file status
+    body_file=$(mktemp)
+    status=$(stream_publish_status "$name" "$body" "$body_file")
+    if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        cat "$body_file"
+        rm -f "$body_file"
+        return 0
+    fi
+    rm -f "$body_file"
+    return 1
 }
 
 # The catalog identity in CLI form: `namespace:stream:version`.
@@ -4760,6 +4921,43 @@ stream_replicas() {
     local name="$1" partition="${2:-0}" coord
     coord=$(stream_coordinate "$name") || return 1
     api_get "/api/v1/streams/${coord}/replicas/${partition}"
+}
+
+# Management endpoints of every live node, one per line (best effort; a node that does not answer is
+# handled by the caller). Cloud: the running cores' public IPs; docker/remote: MGMT_PORT + 0..NODE_COUNT-1.
+_stream_live_endpoints() {
+    local id ip i
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        for id in $(cloud_running_cores); do
+            ip=$(cloud_public_ip "$id" 2>/dev/null) || continue
+            printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+            printf '%s://%s:%s\n' "${MGMT_SCHEME:-http}" "$ip" "${CLOUD_MGMT_PORT:-8080}"
+        done
+    else
+        for i in $(seq 0 $(( ${NODE_COUNT:-5} - 1 ))); do
+            printf 'http://%s:%s\n' "${TARGET_HOST}" "$(( ${MGMT_PORT:-5151} + i ))"
+        done
+    fi
+}
+
+# Capture for a stream whose count fell short of what was acknowledged (a possible acked-data loss):
+# every acked offset and which endpoint answered it (from the STREAM_PUBLISH_TRACE file), the /info body
+# (partitionDetails), /replicas/0, and `replicas-local` from EVERY node — a node that fails is reported
+# and skipped over, never a reason to stop. Prints on stdout; the caller quotes it in one log line.
+stream_shortfall_report() {
+    local name="$1" trace="${2:-}" identity ep body
+    echo "acked offsets (offset@partition, in publish order): $(grep -E 'status=(2|3)[0-9][0-9]' "$trace" 2>/dev/null | sed -E 's/.*offset=([^ ]+) partition=([^ ]+).*/\1@\2/' | tr '\n' ' ')"
+    echo "answering endpoints: $(grep -oE 'endpoint=[^ ]+' "$trace" 2>/dev/null | sort | uniq -c | tr '\n' ' ')"
+    echo "non-2xx publishes: $(grep -vE 'status=(2|3)[0-9][0-9]' "$trace" 2>/dev/null | tr '\n' '|')"
+    echo "/info: $(stream_status "$name" 2>&1 | head -c 2000)"
+    echo "/replicas/0: $(stream_replicas "$name" 0 2>&1 | head -c 2000)"
+    identity=$(stream_identity "$name" 2>/dev/null) || identity=""
+    for ep in $(_stream_live_endpoints); do
+        if [ -z "$identity" ]; then echo "replicas-local @ ${ep}: <no catalog identity>"; continue; fi
+        body=$(curl -sk -m 5 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/streams/${identity}/0/replicas-local" 2>&1) \
+            || body="<request failed rc=$?: ${body}>"
+        echo "replicas-local @ ${ep}: $(printf '%s' "$body" | head -c 1500)"
+    done
 }
 
 # ---------------------------------------------------------------------------

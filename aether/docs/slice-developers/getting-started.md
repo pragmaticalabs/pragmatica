@@ -724,6 +724,13 @@ Error responses follow the pattern mapping:
 | `UnsupportedLanguage` | 400 | `*Unsupported*` |
 | Everything else | 500 | `default` |
 
+A cause that implements `Cause.Transient` (a refusal that passes when retried — e.g. a stream partition
+not yet promoted on this node) and that no explicit mapping claims answers **503** instead of the
+`default` 500, so a client can tell a retryable refusal from a server fault (#1737). No `Retry-After`
+header is set. A cause you map explicitly keeps its configured status, and a failure that is not
+classified transient — including `PublishOutcomeUnknown`, which is not retry-safe without a message ID —
+stays 500.
+
 ### Inheriting Common Configuration
 
 If multiple slices share error mappings or a common prefix, create a

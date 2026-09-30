@@ -140,32 +140,91 @@ pick_publish_endpoint() {
     fi
 }
 
+# Retry policy (the shared stream_publish_status in lib/cluster.sh cannot be reused: it drives the
+# management route, this drives the app route on a sticky per-node endpoint):
+#   - an ANSWERED 503 whose body is a before-write refusal (the app route's producers: StreamError.OwnerNotActivated "is not yet
+#     promoted on this node", StreamForwardError "Remote publish retryable"; test-02y-publish-retry.sh
+#     reads both sources so a reworded producer reddens it. "refused before writing" is the MANAGEMENT
+#     route's wording (ManagementServerError) and is deliberately absent here) is retried on the SAME
+#     endpoint, PUBLISH_503_DELAY_S doubling up to PUBLISH_503_MAX_DELAY_S, for PUBLISH_503_BUDGET_S.
+#     Nothing was written, so a resend cannot duplicate. 30s because s29's 37/40 saw a >=18s refusal
+#     (a zombie link to a p0 holder, #1762) and the budget must cover one link TTL plus the 5s reconcile.
+#   - a 500 is NEVER retried: "Publish outcome unknown" may have landed and there is no message id, so a
+#     resend can duplicate the event. That yields an at-least-once WARN and hides whether the first
+#     write landed (#1750).
+#   - only 000 (nothing answered: a dead pin) re-picks an endpoint, once.
+# An outage the retry absorbs must stay visible: each retried publish appends "idx retries wait_s
+# outcome" to PUBLISH_503_LOG (a file, because the concurrent publisher runs in a background subshell)
+# and WARNs; print_503_summary emits one "02y max-503-wait=Ns retries=M" line at the end.
+PUBLISH_503_BUDGET_S="${PUBLISH_503_BUDGET_S:-30}"
+PUBLISH_503_DELAY_S="${PUBLISH_503_DELAY_S:-0.25}"
+PUBLISH_503_MAX_DELAY_S="${PUBLISH_503_MAX_DELAY_S:-2}"
+PUBLISH_503_LOG="${PUBLISH_503_LOG:-$(mktemp)}"
+
 publish_marker() {
-    local idx="$1" body payload
+    local idx="$1" payload out status body retries=0 repicked=0 first503=""
+    local delay="$PUBLISH_503_DELAY_S" deadline=$((SECONDS + PUBLISH_503_BUDGET_S)) wait_s
     payload="{\"payload\":\"$(marker_for "$idx")\"}"
 
     [ -n "$STREAM_PUBLISH_ENDPOINT" ] || pick_publish_endpoint || return 1
 
-    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload" 2>/dev/null)
-    if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
-        return 0
-    fi
+    while :; do
+        # `_api_call` logs status + the first 300 bytes of any error body on stderr, the only account
+        # of WHY a publish failed; it is deliberately not suppressed.
+        out=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload" 1) || true
+        status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+        status="${status:-000}"
+        body=$(printf '%s' "$out" | sed '$d')
 
-    # The pin may have just been killed — re-pick ONCE and retry, so the sticky choice survives a
-    # crash without becoming a rotation.
-    #
-    # The retry does NOT suppress stderr: `_api_call` logs status + the first 300 bytes of any error
-    # body there, and that is the only account of WHY a publish failed. Suppressing both attempts
-    # (as the first version of this did) left "39 of 40 ACKED" with nothing to explain the missing
-    # one — the same silent-stderr trap this suite's siblings were fixed for.
-    pick_publish_endpoint "$STREAM_PUBLISH_ENDPOINT" || return 1
-    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload")
-    if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
-        return 0
-    fi
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] && printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
+            record_503_wait "$idx" "$retries" "$first503" acked
+            return 0
+        fi
 
-    log_warn "publish ${idx}: not ACKED after re-pick; last body: $(printf '%s' "$body" | head -c 200)" >&2
+        if [ "$status" = "503" ] && printf '%s' "$body" | grep -qiE 'is not yet promoted on this node|Remote publish retryable'; then
+            [ -n "$first503" ] || first503="$SECONDS"
+            if [ "$SECONDS" -lt "$deadline" ]; then
+                retries=$((retries + 1))
+                sleep "$delay"
+                delay=$(awk -v d="$delay" -v m="$PUBLISH_503_MAX_DELAY_S" 'BEGIN { d = d * 2; if (d > m) d = m; print d }')
+                continue
+            fi
+            record_503_wait "$idx" "$retries" "$first503" gave-up
+            log_warn "publish ${idx}: 503 before-write refusal persisted for ${PUBLISH_503_BUDGET_S}s (${retries} retries); last body: $(printf '%s' "$body" | head -c 200)" >&2
+            return 1
+        fi
+
+        if [ "$status" = "000" ] && [ "$repicked" -eq 0 ]; then
+            # Nothing answered: the pin may have just been killed. Re-pick ONCE, so the sticky choice
+            # survives a crash without becoming a rotation.
+            repicked=1
+            pick_publish_endpoint "$STREAM_PUBLISH_ENDPOINT" || return 1
+            continue
+        fi
+        break
+    done
+
+    record_503_wait "$idx" "$retries" "$first503" not-acked
+    log_warn "publish ${idx}: not ACKED (HTTP ${status}, not retried); last body: $(printf '%s' "$body" | head -c 200)" >&2
     return 1
+}
+
+# Log and record a publish that needed 503 retries. $3 is $SECONDS at its first 503, so the elapsed
+# wait is in whole seconds (a sub-second absorption reads 0s; the retry count still shows it).
+record_503_wait() {
+    local idx="$1" retries="$2" first503="$3" outcome="$4" wait_s
+    [ "$retries" -gt 0 ] || return 0
+    wait_s=$((SECONDS - first503))
+    printf '%s %s %s %s\n' "$idx" "$retries" "$wait_s" "$outcome" >> "$PUBLISH_503_LOG"
+    log_warn "publish ${idx}: absorbed ${retries} 503 before-write refusal(s) over ~${wait_s}s (${outcome})" >&2
+}
+
+# One summary line so an outage absorbed by the retry stays visible in run-container.log.
+print_503_summary() {
+    local max_wait total
+    max_wait=$(awk 'BEGIN { m = 0 } $3 > m { m = $3 } END { print m }' "$PUBLISH_503_LOG")
+    total=$(awk '{ t += $2 } END { print t + 0 }' "$PUBLISH_503_LOG")
+    printf '02y max-503-wait=%ss retries=%s\n' "$max_wait" "$total"
 }
 
 # Publish [start .. start+count-1], appending ACKED indices to $outfile.
@@ -683,7 +742,7 @@ test_post_crash_liveness() {
 # verified to resolve it — that needs a full suite re-run with this file present.
 cleanup() {
     reap_publisher
-    rm -f "$ACKED_PRE" "$ACKED_DURING"
+    rm -f "$ACKED_PRE" "$ACKED_DURING" "$PUBLISH_503_LOG"
 
     # UNDEPLOY FIRST — this is the whole fix, and the order is load-bearing.
     #
@@ -747,4 +806,5 @@ run_test "Failover completed"                           test_failover_completed
 run_test "Every ACKED event survives the crash"         test_every_acked_event_survives_the_crash
 run_test "Per-partition offsets contiguous + ordered"   test_per_partition_offsets_contiguous_and_ordered
 run_test "Post-crash liveness"                          test_post_crash_liveness
+print_503_summary
 print_summary
