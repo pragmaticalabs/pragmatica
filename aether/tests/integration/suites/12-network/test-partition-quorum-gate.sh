@@ -322,8 +322,10 @@ _majority_sample() {
 # node the pinned endpoint happens to be: a partitioned minority node keeps mgmt open and answers
 # with ITS view (leaderless, not quorate), which S05 once scored as a majority failure (harness
 # false positive: the pinned node was the minority victim). A FAILED read is UNKNOWN — retried at the
-# next poll; only a SUCCESSFUL read that reports no leader or quorate=false is a violation. A window
-# with no successful read at all is inconclusive and fails loudly (never a pass).
+# next poll; only a SUCCESSFUL read that reports no leader or quorate=false is a violation. Unknown is
+# BOUNDED so it cannot mask a real loss: S05_MAX_CONSECUTIVE_UNKNOWN (default 3) failed reads in a row
+# mean the leader is unreachable and fail the test, and fewer than S05_MIN_OK_READS (default 3)
+# successful reads across the window is inconclusive and fails too — never a pass.
 monitor_majority_during_partition() {
     local leader="$1"
     local ep
@@ -333,14 +335,21 @@ monitor_majority_during_partition() {
         log_warn "S05: could not derive the leader's (${leader:-?}) management endpoint; reading through ${ep} (it may be a partitioned node)"
     fi
     local deadline=$((SECONDS + PARTITION_DURATION_S))
-    local ok_reads=0 unknown_reads=0 sample cur_leader quorate
+    local ok_reads=0 unknown_reads=0 consecutive_unknown=0 sample cur_leader quorate
+    local max_unknown="${S05_MAX_CONSECUTIVE_UNKNOWN:-3}" min_ok="${S05_MIN_OK_READS:-3}"
     while [ $SECONDS -lt $deadline ]; do
         sample=$(_majority_sample "$ep")
         if [ -z "$sample" ]; then
             unknown_reads=$((unknown_reads + 1))
+            consecutive_unknown=$((consecutive_unknown + 1))
+            if [ "$consecutive_unknown" -ge "$max_unknown" ]; then
+                log_fail "S05 leader-unreachable: ${consecutive_unknown} consecutive failed reads of the majority leader's endpoint ${ep} (${ok_reads} successful before) — the leader may be down, which S05 must not report as a pass"
+                return 1
+            fi
             sleep "${S05_POLL_S:-1}"
             continue
         fi
+        consecutive_unknown=0
         ok_reads=$((ok_reads + 1))
         cur_leader="${sample%% *}"
         quorate="${sample##* }"
@@ -354,8 +363,8 @@ monitor_majority_during_partition() {
         fi
         sleep "${S05_POLL_S:-1}"
     done
-    if [ "$ok_reads" -eq 0 ]; then
-        log_fail "S05 inconclusive: no successful read of the majority (${ep}) in ${PARTITION_DURATION_S}s (${unknown_reads} failed reads) — cannot claim the majority stayed quorate and led"
+    if [ "$ok_reads" -lt "$min_ok" ]; then
+        log_fail "S05 inconclusive: only ${ok_reads} successful read(s) of the majority (${ep}) in ${PARTITION_DURATION_S}s, need ${min_ok} (${unknown_reads} failed) — cannot claim the majority stayed quorate and led"
         return 1
     fi
 

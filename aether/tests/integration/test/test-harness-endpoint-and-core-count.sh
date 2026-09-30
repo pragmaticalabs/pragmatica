@@ -7,7 +7,8 @@
 #   R1  restore_cluster_baseline with active=6 beside leader counted=5 FAILS, naming both numbers and ids.
 #   R2  active=5, counted=5 passes (positive control).
 #   R3  active=6 that settles to 5 inside the budget passes (it WAITS rather than failing at once).
-#   P1  pick_non_leader never returns the node that ANSWERED the status read (the pinned entry point).
+#   P1  pick_non_leader never returns the entry-point node, identified via the LOCAL /health/live (the
+#       status route is leader-targeted and would name the leader); the stub models that forwarding.
 #   P2  ...unless too few other candidates exist: then it is offered as a logged fallback.
 #   P3  entry point == leader: no effect, candidates are the other four.
 #   R4  active=5 beside counted=4 (the other direction) also fails.
@@ -133,20 +134,26 @@ else fail "R4 rc=$(cat "$WORK/rc.r4")"; fi
 cat <<'STUB'
 log_info() { :; }; log_warn() { echo "WARN $*" >&2; }; log_fail() { echo "FAIL $*" >&2; }
 CLOUD_MODE=true
-api_get() { echo "{\"nodeId\":\"${ENTRY}\",\"cluster\":{\"leaderId\":\"core-1\",\"quorate\":true}}"; }
+# /api/v1/nodes/status is LEADER-targeted: a follower forwards it, so it names the LEADER as nodeId
+# whichever node the entry point is. (A fixture that names the entry node here would share the premise
+# of the code under test.) Only the LOCAL /health/live names the answering node.
+api_get() { echo "{\"nodeId\":\"core-1\",\"cluster\":{\"leaderId\":\"core-1\",\"quorate\":true}}"; }
+_resolve_live_endpoint() { echo http://entry:8080; }
+curl() { case "${*: -1}" in http://entry:8080/health/live) echo "{\"status\":\"UP\",\"nodeId\":\"${ENTRY}\",\"state\":\"ON_DUTY\",\"ready\":true}" ;; *) return 7 ;; esac; }
 aether_failover() { echo '[{"nodeId":"core-1","state":"READY"},{"nodeId":"core-2","state":"READY"},{"nodeId":"core-3","state":"READY"},{"nodeId":"core-4","state":"READY"},{"nodeId":"core-5","state":"READY"}]'; }
 remote_exec() { :; }
 STUB
 extract "$CLUSTER_SH" mgmt_entry_point_node
+extract "$CLUSTER_SH" _endpoint_node_id
 extract "$CLUSTER_SH" pick_non_leader
 } > "$WORK/pick.sh"
 run_pick() {  # <label> <ENTRY> <count>
-    ( export PICK_NON_LEADER_TIMEOUT=2 MGMT_ENTRY_POINT=http://stub ENTRY="$2"; source "$WORK/pick.sh"; pick_non_leader core-1 "$3" ) > "$WORK/p.$1" 2> "$WORK/pe.$1"
+    ( export PICK_NON_LEADER_TIMEOUT=2 MGMT_ENTRY_POINT=http://entry:8080 ENTRY="$2"; source "$WORK/pick.sh"; pick_non_leader core-1 "$3" ) > "$WORK/p.$1" 2> "$WORK/pe.$1"
     echo $? > "$WORK/prc.$1"
 }
 run_pick p1 core-2 2
 if [ "$(cat "$WORK/prc.p1")" = "0" ] && [ "$(grep -c . "$WORK/p.p1")" = "2" ] && ! grep -qx 'core-2' "$WORK/p.p1"; then
-    ok "P1 the entry-point node (core-2, the status answerer) is never picked: $(tr '\n' ' ' < "$WORK/p.p1")"
+    ok "P1 the entry-point node (core-2, the /health/live answerer, a FOLLOWER; status names the leader) is never picked: $(tr '\n' ' ' < "$WORK/p.p1")"
 else fail "P1 rc=$(cat "$WORK/prc.p1") picked=[$(tr '\n' ' ' < "$WORK/p.p1")]"; fi
 run_pick p2 core-2 4
 if [ "$(cat "$WORK/prc.p2")" = "0" ] && [ "$(grep -c . "$WORK/p.p2")" = "4" ] && grep -qx 'core-2' "$WORK/p.p2" && grep -q 'entry-point node core-2' "$WORK/pe.p2"; then

@@ -391,6 +391,14 @@ mgmt_entry_point_node() {
     printf ''
 }
 
+# The node id behind a management endpoint, from GET /health/live (a LOCAL route: never forwarded, names
+# the answering node in `nodeId`). Empty when the read fails.
+_endpoint_node_id() {
+    curl -sk -m 3 "${1}/health/live" 2>/dev/null \
+        | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/' || true
+}
+
 # Management endpoint of a NAMED node, or empty when it cannot be derived. Cloud: the VM's public IP at
 # the uniform mgmt port; docker: `node-N` maps to MGMT_PORT + N - 1. For a caller that must read one
 # specific node's view (for example the leader across a partition) rather than whichever node the
@@ -484,19 +492,23 @@ pick_non_leader() {
                 leader="$derived_leader"
             fi
 
-            # The node that ANSWERED this read is the harness's entry point (MGMT_ENTRY_POINT /
-            # CLUSTER_ENDPOINT is pinned to one node and nothing sets MGMT_ENTRY_POINT_NODE on cloud).
-            # A victim that is the entry point can cut the harness off from the cluster it is
-            # observing: S05 partitioned the very node its leader query went through, read a
-            # minority view, and reported a leaderless majority that never existed. The status body
-            # names its own node in the top-level `nodeId`; such a node is offered only if too few
-            # other candidates exist (fallback, logged).
-            local entry_node
-            entry_node=$(printf '%s' "$status_payload" \
-                | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-                | head -1 \
-                | sed 's/.*"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)
-            local deferred_entry=""
+            # The harness's ENTRY-POINT node(s): the node(s) behind the endpoint the harness talks to
+            # (_resolve_live_endpoint, the pin api_get uses; MGMT_ENTRY_POINT, the pin the CLI uses).
+            # Cloud never sets MGMT_ENTRY_POINT_NODE, so nothing excluded them, and S05 partitioned
+            # the very node its leader query went through, read the minority's leaderless view and
+            # reported a majority failure that never happened. Identity comes from GET /health/live,
+            # a LOCAL route (ManagementRoute.HEALTH_LIVE): it is never forwarded and names the
+            # ANSWERING node in `nodeId`. /api/v1/nodes/status is NOT usable for this: it is
+            # LEADER-targeted, a follower forwards it, and the leader's nodeId comes back whichever
+            # node was asked. Such nodes are offered only if too few other candidates exist.
+            local entry_nodes="" _ep _eid
+            for _ep in "$(_resolve_live_endpoint 2>/dev/null)" "${MGMT_ENTRY_POINT:-}"; do
+                [ -n "$_ep" ] || continue
+                _eid=$(_endpoint_node_id "$_ep")
+                [ -n "$_eid" ] || continue
+                case " ${entry_nodes} " in *" ${_eid} "*) ;; *) entry_nodes="${entry_nodes} ${_eid}" ;; esac
+            done
+            local deferred_entries=""
 
             # Candidate enumeration: server-side READY filter via the aether CLI.
             # The response is a JSON array of `{nodeId, state, updatedAt}` triplets,
@@ -552,24 +564,27 @@ pick_non_leader() {
                             continue
                         fi
                     fi
-                    if [ -n "$entry_node" ] && [ "$candidate" = "$entry_node" ]; then
-                        pass_diag="${pass_diag} ${candidate}=DEFER-entrypoint"
-                        deferred_entry="$candidate"
-                        continue
-                    fi
+                    case " ${entry_nodes} " in
+                        *" ${candidate} "*)
+                            pass_diag="${pass_diag} ${candidate}=DEFER-entrypoint"
+                            deferred_entries="${deferred_entries} ${candidate}"
+                            continue ;;
+                    esac
                     pass_diag="${pass_diag} ${candidate}=LIVE"
                     attempt_list="${attempt_list}${candidate}"$'\n'
                     attempt_found=$((attempt_found + 1))
                     if [ "$attempt_found" -ge "$count" ]; then break; fi
                 done 3<<< "$current_members"
 
-                # Fallback: the entry-point node is used only when nothing else satisfies the count.
-                if [ "$attempt_found" -lt "$count" ] && [ -n "$deferred_entry" ]; then
-                    log_warn "pick_non_leader: only ${attempt_found}/${count} candidates besides the entry-point node ${deferred_entry}; offering it (harness may lose its view if it is killed or partitioned)" >&2
-                    pass_diag="${pass_diag} ${deferred_entry}=FALLBACK-entrypoint"
-                    attempt_list="${attempt_list}${deferred_entry}"$'\n'
+                # Fallback: entry-point nodes are used only when nothing else satisfies the count.
+                local _d
+                for _d in $deferred_entries; do
+                    [ "$attempt_found" -ge "$count" ] && break
+                    log_warn "pick_non_leader: too few candidates besides the entry-point node ${_d}; offering it (harness may lose its view if it is killed or partitioned)" >&2
+                    pass_diag="${pass_diag} ${_d}=FALLBACK-entrypoint"
+                    attempt_list="${attempt_list}${_d}"$'\n'
                     attempt_found=$((attempt_found + 1))
-                fi
+                done
 
                 if [ "$attempt_found" -ge "$count" ]; then
                     printf '%s' "$attempt_list" | grep -v '^$' | head -n "$count"

@@ -9,7 +9,9 @@
 #   H5  ORDER: in H1 (and in H1b, where the first heal FAILS) each minority heal precedes S06's start.
 #       Without it the in-step heal is unpinned: run_test masks a step failure and the EXIT cleanup
 #       heals later, so deleting the in-step heals (or `|| return 1` on the first) left H1-H4 green.
-#   S1  every majority read FAILS: S05 is INCONCLUSIVE (loud), never a violation and never a pass.
+#   S1  every majority read FAILS: S05 fails as leader-unreachable (loud), never a violation, never a pass.
+#   S5  one good read, then the leader dies (every read fails): fails as leader-unreachable, no PASS.
+#   S6  too few successful reads across the window (S05_MIN_OK_READS above what the window yields): inconclusive.
 #   S2  the first two reads fail, later ones succeed: S05 passes (a failed read is unknown, retried).
 #   S3  a SUCCESSFUL read reports leaderId=none: that is the violation.
 #   S4  reads go to the leader's own endpoint (node_mgmt_endpoint), never the pinned one, whose view
@@ -77,6 +79,7 @@ url="${*: -1}"; echo "curl $url" >> "$CALLS"
 case "${STUB_CURL:-ok}" in
     fail) exit 7 ;;
     flaky) [ "$n" -le 2 ] && exit 7 ;;
+    dies) [ "$n" -ge 2 ] && exit 7 ;;
     none) echo "{\"cluster\":{\"leaderId\":null,\"quorate\":true}}"; exit 0 ;;
 esac
 case "$url" in
@@ -138,13 +141,21 @@ else fail "H5b order: $(tr '\n' '|' < "$WORK/calls.h1b")"; fi
 
 # S1-S4: the S05 monitor's read discipline (cloud mode, window 3s)
 run s1 CLOUD_MODE=true STUB_CURL=fail CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
-if grep -q 'S05 inconclusive' "$WORK/out.s1" && ! grep -q 'S05 violation' "$WORK/out.s1" && ! grep -q 'PASS S05' "$WORK/out.s1" \
-   && grep -qx 'heal core-2' "$WORK/calls.s1"; then ok "S1 all reads failing is inconclusive (not a violation, not a pass) and still heals"
+if grep -q 'S05 leader-unreachable' "$WORK/out.s1" && ! grep -q 'S05 violation' "$WORK/out.s1" && ! grep -q 'PASS S05' "$WORK/out.s1" \
+   && grep -qx 'heal core-2' "$WORK/calls.s1"; then ok "S1 all reads failing is leader-unreachable (not a violation, not a pass) and still heals"
 else fail "S1 out: $(grep -c 'S05' "$WORK/out.s1") S05 lines: $(grep 'S05' "$WORK/out.s1" | head -2 | cut -c1-90 | tr '\n' '|')"; fi
 run s2 CLOUD_MODE=true STUB_CURL=flaky CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
-if grep -q 'PASS S05: majority stayed quorate' "$WORK/out.s2" && ! grep -q 'S05 violation\|S05 inconclusive' "$WORK/out.s2"; then
+if grep -q 'PASS S05: majority stayed quorate' "$WORK/out.s2" && ! grep -q 'S05 violation\|S05 inconclusive\|S05 leader-unreachable' "$WORK/out.s2"; then
     ok "S2 two failed reads then successes: S05 passes (failed read = unknown)"
 else fail "S2 out: $(grep 'S05' "$WORK/out.s2" | head -2 | cut -c1-90 | tr '\n' '|')"; fi
+run s5 CLOUD_MODE=true STUB_CURL=dies CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
+if grep -q 'S05 leader-unreachable.*(1 successful before)' "$WORK/out.s5" && ! grep -q 'PASS S05' "$WORK/out.s5" && ! grep -q 'S05 violation' "$WORK/out.s5"; then
+    ok "S5 one good read then a dead leader fails as leader-unreachable (no PASS)"
+else fail "S5 out: $(grep 'S05' "$WORK/out.s5" | head -2 | cut -c1-110 | tr '\n' '|')"; fi
+run s6 CLOUD_MODE=true S05_MIN_OK_READS=1000 CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
+if grep -q 'S05 inconclusive: only' "$WORK/out.s6" && ! grep -q 'PASS S05' "$WORK/out.s6"; then
+    ok "S6 too few successful reads across the window is inconclusive (no PASS)"
+else fail "S6 out: $(grep 'S05' "$WORK/out.s6" | head -2 | cut -c1-110 | tr '\n' '|')"; fi
 run s3 CLOUD_MODE=true STUB_CURL=none CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
 if grep -q 'S05 violation: the majority.*NO leader' "$WORK/out.s3"; then ok "S3 a successful leaderId=none read is the violation"
 else fail "S3 out: $(grep 'S05' "$WORK/out.s3" | head -2 | cut -c1-90 | tr '\n' '|')"; fi
