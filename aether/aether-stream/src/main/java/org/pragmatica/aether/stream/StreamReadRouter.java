@@ -138,6 +138,29 @@ public final class StreamReadRouter {
                                .or(() -> forwardBounds(streamName, partition));
     }
 
+    /// #1478: the bounds of a partition as its OWNER reports them. [#bounds] prefers any local ring, which
+    /// is right for a read but wrong for a total: a replica ring that has not backfilled yet reports an
+    /// empty span while the owner holds every event. Here the local ring answers only when this node IS the
+    /// owner (or no owner is resolvable, so the local ring is the only source there is); otherwise the
+    /// question goes to the owner, and fails when it cannot be asked — never answered from a replica.
+    public Promise<VisibleBounds> ownerBounds(String streamName, int partition) {
+        return ownerResolver.resolve(streamName, partition)
+                            .filter(owner -> !selfNodeId.equals(owner))
+                            .map(owner -> remoteOwnerBounds(owner, streamName, partition))
+                            .or(() -> localBounds(streamName, partition));
+    }
+
+    private Promise<VisibleBounds> remoteOwnerBounds(NodeId owner, String streamName, int partition) {
+        return forwardClient.map(client -> client.boundsRemote(owner, streamName, partition))
+                            .or(StreamError.General.PARTITION_NOT_LOCAL::promise);
+    }
+
+    private Promise<VisibleBounds> localBounds(String streamName, int partition) {
+        return partitionManager.visibleBounds(streamName, partition)
+                               .map(Promise::success)
+                               .or(StreamError.General.PARTITION_NOT_LOCAL::promise);
+    }
+
     private Promise<VisibleBounds> forwardBounds(String streamName, int partition) {
         return Option.all(forwardClient,
                           ownerResolver.resolve(streamName, partition))
