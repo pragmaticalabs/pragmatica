@@ -1201,6 +1201,12 @@ if [ "$ENV_TYPE" = "cloud" ]; then
     # baselined database and the server correctly answered 409 (#1228).
     reset_cloud_pg_database "${PG_DB}_testpersistence" \
         || log_warn "could not reset PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
+    # Cluster B's OWN copy (env/cloud-hetzner-b.toml, cloud-hetzner-jvm-b.toml: database.testpersistence ->
+    # ${PG_DB}_testpersistence_b). Without that section, and this database, test-persistence deployed on B (by
+    # 13-edge-cases) fails its schema migration and stays LOADED forever. Separate from A's so B's V900 cannot
+    # collide with suite 10's baselines on the shared PG VM. Reset like A's: a fresh database per run.
+    reset_cloud_pg_database "${PG_DB}_testpersistence_b" \
+        || log_warn "could not reset PG database ${PG_DB}_testpersistence_b — test-persistence on cluster B will fail its schema migration if it is deployed"
 fi
 
 # --- Step 1.5: CLI / node-image version-parity preflight (#440) ---

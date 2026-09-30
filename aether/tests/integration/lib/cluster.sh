@@ -2867,13 +2867,13 @@ reap_cloud_cluster() {
 # url-shortener fixture gap — a test depending on ambient shared state rather than a
 # provisioned one.
 #
-# Guarded to names ending in `_testpersistence`: this DROPs a database, and it must not
+# Guarded to names ending in `_testpersistence` or `_testpersistence_b` (cluster B's own copy): this DROPs a database, and it must not
 # be reachable for anything but the suite fixture it exists for.
 reset_cloud_pg_database() {
     local dbname="$1"
     case "$dbname" in
-        *_testpersistence) ;;
-        *) log_warn "reset_cloud_pg_database(${dbname}): REFUSING — only *_testpersistence may be dropped"
+        *_testpersistence|*_testpersistence_b) ;;
+        *) log_warn "reset_cloud_pg_database(${dbname}): REFUSING — only *_testpersistence and *_testpersistence_b (cluster B's own) may be dropped"
            return 1 ;;
     esac
     local pg_ssh_user="${PG_VM_SSH_USER:-root}"
@@ -4181,6 +4181,27 @@ _slices_missing_active() {
         END { for (k in seen) if (deployed[k] && target[k] > 0 && active[k] == 0) print k ":" states[k] }'
 }
 
+# One line per datasource whose schema migration FAILED and is holding slices, from a /api/v1/schema/status body
+# (stdin): SchemaRoutes.SchemaStatusResponse(datasource, currentVersion, lastMigration, status, owningBlueprint,
+# heldSlices). `status` FAILED (AetherValue.SchemaStatus) with a non-empty `heldSlices` (#760: the slices the record
+# blocks) is a PERMANENT hold: waiting on it only burns the budget (2026-09-30 S-double-prime: "Config section not
+# found: database.testpersistence" -> SCHEMA_MIGRATION_FAILED, test-persistence LOADED forever). Layout-independent.
+_schema_failed_holds() {
+    tr '\n' ' ' | sed 's/"datasource"/\
+"datasource"/g' | grep '^"datasource"' | while IFS= read -r chunk; do
+        local st ds lm ob held inner
+        st=$(printf '%s' "$chunk" | grep -oE '"status"[[:space:]]*:[[:space:]]*"[A-Z_]+"' | head -1 | sed -E 's/.*:[[:space:]]*"([A-Z_]+)"/\1/' || true)
+        [ "$st" = "FAILED" ] || continue
+        held=$(printf '%s' "$chunk" | grep -oE '"heldSlices"[[:space:]]*:[[:space:]]*\[[^]]*\]' | head -1 || true)
+        inner="${held#*\[}"
+        case "$inner" in *'"'*) ;; *) continue ;; esac
+        ds=$(printf '%s' "$chunk" | sed -E 's/^"datasource"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        lm=$(printf '%s' "$chunk" | grep -oE '"lastMigration"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
+        ob=$(printf '%s' "$chunk" | grep -oE '"owningBlueprint"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
+        printf 'datasource=%s status=FAILED lastMigration=%s owningBlueprint=%s heldSlices=%s\n' "$ds" "${lm:--}" "${ob:--}" "$(printf '%s' "${inner%\]}" | tr -d '" ')"
+    done
+}
+
 # restore_cluster_baseline's slice gate: the cluster is not "at baseline" while a deployed blueprint has
 # NO ACTIVE instance (2026-09-30 S-prime: test-echo 5 x UNLOADING passed the restore, and 02-chaos then failed
 # 90s later with a misleading "no ACTIVE owner"). Bounded wait ($SECONDS-based, AETHER_RESTORE_SLICES_TIMEOUT
@@ -4191,7 +4212,7 @@ _restore_slices_gate() {
     local budget=$(( ${AETHER_RESTORE_SLICES_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
     local poll="${AETHER_RESTORE_SLICES_POLL:-5}"
     local deadline=$(( SECONDS + budget ))
-    local body report missing
+    local body report missing failed
     while :; do
         body=$(api_get "/api/v1/slices" 2>/dev/null) || body=""
         if printf '%s' "$body" | grep -q '"slices"'; then
@@ -4204,10 +4225,19 @@ _restore_slices_gate() {
         else
             missing="/api/v1/slices unreadable or without a slices list: $(printf '%s' "$body" | head -c 200)"
         fi
+        # A starved artifact held by a FAILED schema migration is a permanent hold: fail NOW and name it, instead
+        # of waiting out the budget and printing only LOADED.
+        if [ -n "$missing" ] && printf '%s' "$body" | grep -q '"slices"'; then
+            failed=$(api_get "/api/v1/schema/status" 2>/dev/null | _schema_failed_holds || true)
+            if [ -n "$failed" ]; then
+                log_fail "restore_cluster_baseline: slice(s) held by a FAILED schema migration (permanent: waiting will not clear it; fix the datasource config or migration): $(printf '%s' "$failed" | tr '\n' ' ') — starved artifacts: $(printf '%s' "$missing" | tr '\n' ' ')"
+                return 1
+            fi
+        fi
         [ "$SECONDS" -ge "$deadline" ] && break
         sleep "$poll"
     done
-    log_fail "restore_cluster_baseline: deployed slice artifact(s) (SliceTarget-backed: `version` set) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
+    log_fail "restore_cluster_baseline: deployed slice artifact(s) (SliceTarget-backed: 'version' set) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
     return 1
 }
 
