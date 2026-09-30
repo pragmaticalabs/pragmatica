@@ -39,8 +39,8 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
-import io.netty.channel.FixedRecvByteBufAllocator;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.FixedRecvByteBufAllocator;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
@@ -72,7 +72,6 @@ public final class NettySwimTransport implements SwimTransport {
     /// a datagram longer than this is truncated. Senders stay under [PiggybackBuffer#MAX_DATAGRAM_BYTES],
     /// well below it.
     static final int RECEIVE_BUFFER_BYTES = 2048;
-
     private static final int ANNOUNCE_RATE_PER_SECOND = 10;
     /// Evict per-source rate limiter entries idle longer than this.
     private static final long ANNOUNCE_LIMITER_IDLE_EVICT_MS = 5 * 60 * 1_000L;
@@ -297,7 +296,8 @@ public final class NettySwimTransport implements SwimTransport {
         nettyResolver.set(option(dnsResolver));
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioDatagramChannel.class)
-                                       .option(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(RECEIVE_BUFFER_BYTES))
+                                       .option(ChannelOption.RCVBUF_ALLOCATOR,
+                                               new FixedRecvByteBufAllocator(RECEIVE_BUFFER_BYTES))
                                        .handler(new ChannelInitializer<DatagramChannel>() {
             @Override
             @Contract
@@ -404,7 +404,7 @@ public final class NettySwimTransport implements SwimTransport {
 
         if (buf.readableBytes() >= RECEIVE_BUFFER_BYTES) {
             LOG.error("SWIM datagram from {} filled the whole {} B receive buffer — it was probably truncated and"
-                    + " will fail to decrypt; the sender packed more than the {} B datagram budget",
+                     + " will fail to decrypt; the sender packed more than the {} B datagram budget",
                       packet.sender(),
                       RECEIVE_BUFFER_BYTES,
                       PiggybackBuffer.MAX_DATAGRAM_BYTES);

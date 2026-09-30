@@ -98,7 +98,6 @@ public final class PiggybackBuffer {
 
             if (!result.isEmpty() && usedBytes + itemBytes > budgetBytes) {
                 buffer.addFirst(item);
-
                 break;
             }
 
@@ -123,12 +122,10 @@ public final class PiggybackBuffer {
     /// It is also well under the 2048 B receive buffer Netty allocates by default per datagram — a
     /// datagram larger than that buffer is truncated and then fails to decrypt, silently losing gossip.
     public static final int MAX_DATAGRAM_BYTES = 1400;
-
     /// Bytes reserved for everything in a datagram that is not piggybacked updates: the message
     /// envelope (type tag, sender id, sequence, list header, up to ~60 B for a ULID-based id) and the
     /// AES-GCM framing (4 B key id + 12 B nonce + 16 B tag = 32 B), rounded up generously.
     public static final int ENVELOPE_RESERVE_BYTES = 160;
-
     /// Budget for the piggybacked updates of one message.
     public static final int PIGGYBACK_BUDGET_BYTES = MAX_DATAGRAM_BYTES - ENVELOPE_RESERVE_BYTES;
 
