@@ -45,13 +45,18 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface ArtifactStore {
-    /// Every artifact-store DHT key (metadata, file list, version list) starts with this. The DHT client that
-    /// serves the store also serves other keys, so an all-miss report scopes its WARN by this prefix.
+    /// Every artifact-store DHT key (metadata, file list, version list) starts with this.
     String KEY_PREFIX = "artifacts/";
+    /// Only a file's metadata key ends with this. The file-list and version-list keys share [#KEY_PREFIX] but are
+    /// routinely absent (a first deploy reads them before writing), so they must not WARN.
+    String METADATA_KEY_SUFFIX = "/meta";
 
-    /// Whether a hex-encoded DHT key belongs to the artifact store.
-    static boolean isArtifactKeyHex(String keyHex) {
-        return keyHex.startsWith(HexFormat.of().formatHex(KEY_PREFIX.getBytes(StandardCharsets.UTF_8)));
+    /// Whether a hex-encoded DHT key is an artifact's METADATA key: the one key whose absence means "this artifact
+    /// is not deployed". Total on any string: it compares in hex space, never decoding.
+    static boolean isArtifactMetadataKeyHex(String keyHex) {
+        var hex = HexFormat.of();
+
+        return keyHex.startsWith(hex.formatHex(KEY_PREFIX.getBytes(StandardCharsets.UTF_8))) && keyHex.endsWith(hex.formatHex(METADATA_KEY_SUFFIX.getBytes(StandardCharsets.UTF_8)));
     }
 
     /// The store is keyed per FILE (#281): a coordinate's jar, pom and classified files are
@@ -926,8 +931,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         var key = KEY_PREFIX + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()
                 + "/" + artifact.version().withQualifier()
-                + "/" + file.fileName()
-                + "/meta";
+                + "/" + file.fileName() + METADATA_KEY_SUFFIX;
 
         return key.getBytes(StandardCharsets.UTF_8);
     }

@@ -760,11 +760,14 @@ class ArtifactStoreTest {
         }
 
         @Test
-        void isArtifactKeyHex_recognisesStoreKeysAndNothingElse() {
+        void isArtifactMetadataKeyHex_recognisesOnlyMetadataKeys() {
             var hex = java.util.HexFormat.of();
 
-            assertThat(ArtifactStore.isArtifactKeyHex(hex.formatHex("artifacts/g/a/1/jar/meta".getBytes(StandardCharsets.UTF_8)))).isTrue();
-            assertThat(ArtifactStore.isArtifactKeyHex(hex.formatHex("stream/x".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("artifacts/g/a/1/jar/meta".getBytes(StandardCharsets.UTF_8)))).isTrue();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("artifacts/g/a/1/files".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("artifacts/g/a/versions".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("stream/x/meta".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex("not hex at all")).isFalse();
         }
 
         @Test

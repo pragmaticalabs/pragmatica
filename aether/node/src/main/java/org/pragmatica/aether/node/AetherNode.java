@@ -1818,7 +1818,7 @@ public interface AetherNode extends ManageableNode {
         // says whether the key is absent everywhere or unreachable, for artifact keys only (other keys' absence is normal
         // traffic and logs at DEBUG). The cache client is scoped from the base client, not from this one:
         // a cache miss is normal traffic and must not WARN.
-        var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(ArtifactStore::isArtifactKeyHex,
+        var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(ArtifactStore::isArtifactMetadataKeyHex,
                                                                                                                                 LOG::warn,
                                                                                                                                 LOG::debug,
                                                                                                                                 LOG::info));

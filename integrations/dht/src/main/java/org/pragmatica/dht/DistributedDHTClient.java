@@ -355,7 +355,12 @@ public final class DistributedDHTClient implements DHTClient {
     /// slot) and re-issue to a replacement replica from the current ring. Quorum semantics are
     /// untouched: same quorum, same slot count, and a departure is never counted as an empty answer.
     private void reissueAfterDeparture(InFlightRead read, NodeId departed) {
-        read.claim(departed).flatMap(this::removePending).onPresent(_ -> replaceOrFail(read, departed));
+        read.claim(departed).flatMap(this::removePending).onPresent(_ -> takeOverDepartedSlot(read, departed));
+    }
+
+    private void takeOverDepartedSlot(InFlightRead read, NodeId departed) {
+        read.collector().noteDeparted();
+        replaceOrFail(read, departed);
     }
 
     /// Fill a departed target's slot with a replacement, or fail the slot (fast-fail accrual, the same
@@ -541,7 +546,8 @@ public final class DistributedDHTClient implements DHTClient {
                                        probesFailed,
                                        Math.max(0, candidates - probed),
                                        rSetCollector.elapsedMillis(),
-                                       rSetCollector.valueSource().or(""));
+                                       rSetCollector.valueSource().or(""),
+                                       rSetCollector.departedCount());
     }
 
     private List<Promise<Option<byte[]>>> probeAll(byte[] key,

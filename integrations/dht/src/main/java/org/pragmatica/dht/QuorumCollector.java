@@ -47,6 +47,7 @@ public final class QuorumCollector<T> {
     private final Function<QuorumCollector<T>, Unit> onQuorumNotDecisive;
     private final long createdNanos = System.nanoTime();
     private final AtomicReference<String> valueSource = new AtomicReference<>();
+    private final AtomicInteger departed = new AtomicInteger();
     private final Promise<Unit> allReplied = Promise.promise();
 
     private QuorumCollector(int quorum,
@@ -209,6 +210,16 @@ public final class QuorumCollector<T> {
     /// Milliseconds since this collector was created, i.e. since the read it serves began.
     public long elapsedMillis() {
         return (System.nanoTime() - createdNanos) / 1_000_000L;
+    }
+
+    /// Record that a replica this read was waiting on left the ring mid-read and its slot was taken over.
+    public void noteDeparted() {
+        departed.incrementAndGet();
+    }
+
+    /// Replicas that left the ring mid-read while still owing a reply.
+    public int departedCount() {
+        return departed.get();
     }
 
     /// Replies recorded so far, including those arriving after the quorum resolved the promise.
