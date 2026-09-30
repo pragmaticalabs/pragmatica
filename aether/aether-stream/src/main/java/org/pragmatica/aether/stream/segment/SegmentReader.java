@@ -15,6 +15,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.storage.AppendLog.EpochStart;
 import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.Compression;
 import org.pragmatica.storage.EncryptionParams;
@@ -204,12 +205,27 @@ public final class SegmentReader {
                                                 int remaining) {
         var refName = buildRefName(streamName, partition, ref);
 
+        return readBlock(refName, ref).flatMap(split -> deserializeAndFilter(refName,
+                                                                             split.events(),
+                                                                             fromOffset,
+                                                                             remaining).async());
+    }
+
+    /// The owner-epoch slice the segment `ref` carries (#1596, [SegmentProvenance]): none for a segment sealed
+    /// without one. A header that does not parse fails the read.
+    public Promise<Option<List<EpochStart>>> readProvenance(String streamName,
+                                                            int partition,
+                                                            SegmentIndex.SegmentRef ref) {
+        return readBlock(buildRefName(streamName, partition, ref), ref).map(SegmentProvenance.Split::slice);
+    }
+
+    private Promise<SegmentProvenance.Split> readBlock(String refName, SegmentIndex.SegmentRef ref) {
         return storage.resolveRef(refName)
                       .async(SegmentError.General.SEGMENT_REF_NOT_FOUND)
                       .flatMap(storage::get)
                       .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
                       .map(bytes -> decryptAndDecompress(bytes, ref))
-                      .flatMap(bytes -> deserializeAndFilter(refName, bytes, fromOffset, remaining).async());
+                      .flatMap(bytes -> SegmentProvenance.split(bytes).async());
     }
 
     private byte[] decryptAndDecompress(byte[] data, SegmentIndex.SegmentRef ref) {

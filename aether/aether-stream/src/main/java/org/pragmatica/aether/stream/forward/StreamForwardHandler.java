@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.forward;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
@@ -319,7 +320,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// transient — its committed config not yet visible ({@link StreamError.StreamConfigNotYetVisible}) or a
     /// capacity-deferred partition ({@link ResourceCapacityExhausted}), or a committed owner that is not yet
     /// this node ({@link StreamError.NotOwnerAppend}, #1230: the HRW-routed target during a reshuffle, before
-    /// the leader commits the ownership change) — is sent as a RETRYABLE response so the forwarder backs off
+    /// the leader commits the ownership change), or a replica floor not yet met (`NOT_ENOUGH_REPLICAS`, #1564:
+    /// refused before the append, and it passes once the replica set registers) — is sent as a RETRYABLE response so the forwarder backs off
     /// and retries a bounded number of times. A [PublishOutcomeUnknown] (#1236) — the barrier failed AFTER
     /// this owner appended — is sent as outcome-unknown, so the sender does not report a clean failure for
     /// an event that may be in the log. Every other cause is permanent.
@@ -347,7 +349,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     }
 
     private static boolean isRetryable(Cause cause) {
-        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || cause instanceof StreamError.OwnerNotActivated || ResourceCapacityExhausted.isTransientCapacity(cause);
+        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || cause instanceof StreamError.OwnerNotActivated || cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || ResourceCapacityExhausted.isTransientCapacity(cause);
     }
 
     @Contract
@@ -362,6 +364,20 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  errorMessage);
     }
 
+    /// #1596: a replica catch-up answer carries this node's owner-epoch history, read AFTER the events so it covers
+    /// every one of them; the replica installs it before applying them. A history this node cannot decode fails
+    /// the read rather than shipping records without their provenance. Every other answer carries none.
+    private ReadForwardResponse withCatchupHistory(ReadForward request, ReadForwardResponse answer) {
+        return isReplicaCatchup(request)
+               ? partitionManager.epochHistory(request.streamName(),
+                                               request.partition())
+                                 .fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
+                                                                                    request.correlationId(),
+                                                                                    cause.message()),
+                                       answer::withHistory)
+               : answer;
+    }
+
     /// #1333: every successful answer carries this node's visible bounds of the partition, read AFTER
     /// the events so the head is never behind the last event served.
     @Contract
@@ -370,15 +386,13 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         var bounds = partitionManager.visibleBounds(request.streamName(),
                                                     request.partition())
                                      .or(VisibleBounds::absent);
-        var response = capped.truncated()
-                       ? ReadForwardResponse.truncatedResponse(selfNodeId,
-                                                               request.correlationId(),
-                                                               capped.events(),
-                                                               bounds)
-                       : ReadForwardResponse.successResponse(selfNodeId,
+        var answer = capped.truncated()
+                     ? ReadForwardResponse.truncatedResponse(selfNodeId,
                                                              request.correlationId(),
                                                              capped.events(),
-                                                             bounds);
+                                                             bounds)
+                     : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events(), bounds);
+        var response = withCatchupHistory(request, answer);
 
         if (capped.truncated()) {
             metrics.recordTruncated();

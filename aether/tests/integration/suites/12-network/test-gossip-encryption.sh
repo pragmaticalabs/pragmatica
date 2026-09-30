@@ -69,7 +69,7 @@ test_nodes_communicating_encrypted() {
 
 test_health_probes_over_encrypted_transport() {
     assert_cluster_healthy "Cluster healthy over encrypted transport"
-    assert_http_status "${CLUSTER_ENDPOINT}/health/live" "200" "Liveness probe over encrypted transport"
+    assert_http_status "$(_resolve_live_endpoint)/health/live" "200" "Liveness probe over encrypted transport"
 }
 
 run_test "Cluster ready" test_cluster_ready

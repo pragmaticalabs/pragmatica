@@ -269,6 +269,19 @@ public class AlertManager {
                                      .map(_ -> stampAndStoreInjection(name, severity, message, metric, value));
     }
 
+    /// #1564 (v1735 B1): a node-raised alert that must CLEAR with its condition. It is stored in THIS node's list
+    /// only and never replicated to the cluster event log: a replicated `AlertInjected` copy is served by every node's
+    /// `/api/alerts/active` until log retention, and [#clearInjected] cannot remove it. Listed on this node's
+    /// `/api/alerts/active`; its [#clearInjected] resolves it completely.
+    public Promise<AlertInjectResponse> injectLocal(String name, String severity, String message) {
+        return validateInjectionInput(name, severity, message).async()
+                                     .map(_ -> responseFor(storeInjection(name,
+                                                                          severity,
+                                                                          message,
+                                                                          Option.none(),
+                                                                          Option.none())));
+    }
+
     // RET-06: `name`/`message` are raw injection-request fields; the null/blank checks ARE the
     // parse-don't-validate entry validation.
     @SuppressWarnings("JBCT-RET-06")
@@ -297,15 +310,34 @@ public class AlertManager {
                                                        String message,
                                                        Option<String> metric,
                                                        Option<Double> value) {
+        var alert = storeInjection(name, severity, message, metric, value);
+
+        publishInjectionToClusterLog(alert);
+
+        return responseFor(alert);
+    }
+
+    private InjectedAlert storeInjection(String name,
+                                         String severity,
+                                         String message,
+                                         Option<String> metric,
+                                         Option<Double> value) {
         var timestamp = System.currentTimeMillis();
         var alertId = "injected-" + timestamp + "-" + injectionSequence.incrementAndGet();
         var alert = new InjectedAlert(alertId, name, severity, message, metric, value, timestamp);
 
         injectedAlerts.put(alertId, alert);
-        publishInjectionToClusterLog(alert);
         log.info("Injected synthetic alert id={} name={} severity={}", alertId, name, severity);
 
-        return new AlertInjectResponse(alertId, name, severity, message, timestamp);
+        return alert;
+    }
+
+    private static AlertInjectResponse responseFor(InjectedAlert alert) {
+        return new AlertInjectResponse(alert.alertId(),
+                                       alert.name(),
+                                       alert.severity(),
+                                       alert.message(),
+                                       alert.timestamp());
     }
 
     /// Replicate the injected alert via the cluster-wide events stream so peer nodes can return
@@ -1153,6 +1185,26 @@ public class AlertManager {
         Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
                                                                                                                                  rejoined.id(),
                                                                                                                                  cleared.reason()));
+    }
+
+    /// #1564: resolve every injected alert named `name`. For a node-raised alert whose condition has cleared (the
+    /// `cluster-events-registration-refused` refusal, once a corrected cluster config commits the stream), so the
+    /// alert does not outlive its cause on `/api/alerts/active`. Returns how many were resolved.
+    @Contract
+    public int clearInjected(String name) {
+        var resolved = injectedAlerts.values()
+                                     .stream()
+                                     .filter(alert -> alert.name()
+                                                           .equals(name))
+                                     .map(InjectedAlert::alertId)
+                                     .toList();
+
+        resolved.forEach(injectedAlerts::remove);
+        if (!resolved.isEmpty()) {
+            log.info("Resolved {} injected alert(s) named {}", resolved.size(), name);
+        }
+
+        return resolved.size();
     }
 
     public List<AlertEvent.NodeHealthAlert> getActiveNodeHealthAlerts() {

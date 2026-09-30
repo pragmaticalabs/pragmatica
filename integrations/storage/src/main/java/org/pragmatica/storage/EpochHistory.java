@@ -12,6 +12,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -27,9 +30,16 @@ import static org.pragmatica.lang.Unit.unit;
 /// one under the sidecar's name, never a mix, and a stale `.tmp` is ignored and overwritten. The file ends
 /// in a CRC over everything before it, so a sidecar damaged on the device is refused -- loudly, not read
 /// as a shorter history.
+///
+/// Format v2 (#1596) stores each epoch as the caller's opaque [AppendLog.EpochKey] token. A v1 sidecar held
+/// one number per epoch, which cannot carry a real owner epoch, and no production path ever wrote one: it is
+/// read as an EMPTY history (with a WARN), so a log carrying one reads as a log whose records have no
+/// provenance, and the divergence rule flags it rather than trusting it (pre-GA, no migration).
 final class EpochHistory {
-    static final String HEADER = "aether-append-log-epochs v1";
+    static final String HEADER = "aether-append-log-epochs v2";
+    static final String LEGACY_HEADER = "aether-append-log-epochs v1";
     private static final String CRC_PREFIX = "crc ";
+    private static final Logger log = LoggerFactory.getLogger(EpochHistory.class);
 
     private final Path sidecar;
     private final Fn2<Result<Unit>, Path, byte[]> writer;
@@ -71,13 +81,26 @@ final class EpochHistory {
         return entries;
     }
 
-    /// Monotonic: a lower epoch, or a start below the previous start, is refused; re-recording the last
-    /// entry exactly is a no-op; the same epoch at a different start is refused.
-    Result<Unit> recordStart(long ownerEpoch, long startOffset) {
+    /// Monotonic under `order`: a key that does not follow the last one, or a start below the previous
+    /// start, is refused; re-recording the last entry exactly is a no-op; the same key at a different start
+    /// is refused.
+    Result<Unit> recordStart(AppendLog.EpochKey key, long startOffset, AppendLog.EpochOrder order) {
         synchronized (lock) {
             return entries.isEmpty()
-                   ? persist(appended(ownerEpoch, startOffset))
-                   : recordAfter(entries.getLast(), ownerEpoch, startOffset);
+                   ? persist(appended(key, startOffset))
+                   : recordAfter(entries.getLast(), key, startOffset, order);
+        }
+    }
+
+    /// [#recordStart] unless `key` is already the last recorded epoch, whatever that entry's start: the first
+    /// record of an epoch starts it, every later one of the same epoch is attributed by it.
+    Result<Unit> recordIfNew(AppendLog.EpochKey key, long startOffset, AppendLog.EpochOrder order) {
+        synchronized (lock) {
+            return ! entries.isEmpty() && entries.getLast()
+                                                 .key()
+                                                 .equals(key)
+                   ? Result.unitResult()
+                   : recordStart(key, startOffset, order);
         }
     }
 
@@ -93,21 +116,38 @@ final class EpochHistory {
         }
     }
 
+    /// Drop each of `named` that starts above `offset`; every other entry is kept. Nothing to drop is a no-op, with no
+    /// write.
+    Result<Unit> removeAbove(long offset, List<AppendLog.EpochStart> named) {
+        synchronized (lock) {
+            var kept = entries.stream()
+                              .filter(entry -> entry.startOffset() <= offset || !named.contains(entry))
+                              .toList();
+
+            return kept.size() == entries.size()
+                   ? Result.unitResult()
+                   : persist(kept);
+        }
+    }
+
     /// Runs under `lock`.
-    private Result<Unit> recordAfter(AppendLog.EpochStart last, long ownerEpoch, long startOffset) {
-        if (last.ownerEpoch() == ownerEpoch && last.startOffset() == startOffset) {
+    private Result<Unit> recordAfter(AppendLog.EpochStart last,
+                                     AppendLog.EpochKey key,
+                                     long startOffset,
+                                     AppendLog.EpochOrder order) {
+        if (last.key().equals(key) && last.startOffset() == startOffset) {
             return Result.unitResult();
         }
 
-        return ownerEpoch <= last.ownerEpoch() || startOffset < last.startOffset()
-               ? new AppendLog.WalError.EpochRegression(ownerEpoch, startOffset, last.ownerEpoch(), last.startOffset()).result()
-               : persist(appended(ownerEpoch, startOffset));
+        return ! order.follows(key, last.key()) || startOffset < last.startOffset()
+               ? new AppendLog.WalError.EpochRegression(key, startOffset, last.key(), last.startOffset()).result()
+               : persist(appended(key, startOffset));
     }
 
-    private List<AppendLog.EpochStart> appended(long ownerEpoch, long startOffset) {
+    private List<AppendLog.EpochStart> appended(AppendLog.EpochKey key, long startOffset) {
         var next = new ArrayList<>(entries);
 
-        next.add(new AppendLog.EpochStart(ownerEpoch, startOffset));
+        next.add(new AppendLog.EpochStart(key, startOffset));
 
         return List.copyOf(next);
     }
@@ -135,7 +175,7 @@ final class EpochHistory {
     static byte[] encode(List<AppendLog.EpochStart> history) {
         var body = new StringBuilder(HEADER).append('\n');
 
-        history.forEach(entry -> body.append(entry.ownerEpoch())
+        history.forEach(entry -> body.append(entry.key().token())
                                      .append(' ')
                                      .append(entry.startOffset())
                                      .append('\n'));
@@ -161,9 +201,21 @@ final class EpochHistory {
 
         var lines = body.split("\n");
 
+        if (lines.length > 0 && lines[0].equals(LEGACY_HEADER)) {
+            return legacyAsEmpty(sidecar);
+        }
+
         return lines.length == 0 || !lines[0].equals(HEADER)
                ? corrupt(sidecar, "unknown header")
                : Result.allOf(Arrays.stream(lines, 1, lines.length).map(line -> parseEntry(sidecar, line)).toList());
+    }
+
+    private static Result<List<AppendLog.EpochStart>> legacyAsEmpty(Path sidecar) {
+        log.warn("Epoch history {} is format v1, which cannot carry an owner epoch; it is read as EMPTY, so this log's "
+                + "records have no provenance and a divergence check flags it (#1596)",
+                 sidecar);
+
+        return Result.success(List.of());
     }
 
     private static Result<AppendLog.EpochStart> parseEntry(Path sidecar, String line) {
@@ -171,7 +223,13 @@ final class EpochHistory {
 
         return fields.length != 2
                ? corrupt(sidecar, "malformed entry '" + line + "'")
-               : Result.all(parseLong(sidecar, fields[0]), parseLong(sidecar, fields[1])).map(AppendLog.EpochStart::new);
+               : Result.all(parseKey(sidecar, fields[0]), parseLong(sidecar, fields[1])).map(AppendLog.EpochStart::new);
+    }
+
+    private static Result<AppendLog.EpochKey> parseKey(Path sidecar, String field) {
+        return AppendLog.EpochKey.epochKey(field).mapError(_ -> new AppendLog.WalError.EpochHistoryCorrupt(sidecar,
+                                                                                                           "not an epoch key: '" + field
+                                                                                                          + "'"));
     }
 
     private static Result<Long> parseLong(Path sidecar, String field) {

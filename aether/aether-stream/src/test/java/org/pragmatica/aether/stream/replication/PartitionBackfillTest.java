@@ -24,7 +24,11 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -48,7 +52,7 @@ class PartitionBackfillTest {
         registry = replicaRegistry();
         manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
         manager.createStream(StreamConfig.streamConfig("orders"));
-        recovery = manager::appendRecovered;
+        recovery = manager.alignedRecovery();
     }
 
     @Nested
@@ -110,6 +114,305 @@ class PartitionBackfillTest {
 
             assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
             assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+    }
+
+    /// #1638 F1: one backfill of a partition at a time. A call made while one is in flight joins it -- the same result,
+    /// no second pull -- and a call after it lands starts a fresh run. Red under "no single-flight" (the second call
+    /// pulls again).
+    @Nested
+    class SingleFlight {
+        @Test
+        void concurrentBackfills_ofOnePartition_shareOnePull() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            var pending = new AtomicReference<Promise<ReplicationMessage.CatchupResponse>>();
+            var served = fixedSource(eventsFrom(0, 5));
+            CatchupTransport gated = (target, request) -> {
+                pulls.incrementAndGet();
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.set(response);
+
+                return response.flatMap(_ -> served.requestCatchup(target, request));
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF);
+
+            var first = backfill.backfill(STREAM, PARTITION);
+            var second = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("the second call joined the first").isEqualTo(1);
+
+            pending.get().fail(ReplicationError.General.REPLICATION_TIMEOUT);
+
+            assertThat(first.await().isFailure()).isTrue();
+            assertThat(second.await().isFailure()).as("the joined call resolves with the same result").isTrue();
+
+            var retry = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("a call after the flight landed runs again").isEqualTo(2);
+
+            pending.get().succeed(catchupResponse(SOURCE, STREAM, PARTITION, 0, -1, List.of(), List.of()));
+
+            assertThat(await(retry)).isEqualTo(5L);
+        }
+
+        /// #1638 N1, B2 (ii): a backfill that makes no progress -- its pull never settles and reports no page -- holds
+        /// the slot only for the idle bound. The flight then FAILS (never a success) and a later call pulls again instead
+        /// of joining the stuck run forever. Red under "no bound" and under "the bound resolves as a success".
+        @Test
+        void stalledBackfill_releasesItsSlot_failed_afterTheIdleBound() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            CatchupTransport neverSettles = (_, _) -> {
+                pulls.incrementAndGet();
+
+                return Promise.promise();
+            };
+            var backfill = partitionBackfill(registry, recovery, neverSettles, SELF, TimeSpan.timeSpan(200).millis());
+
+            var stuck = backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+
+            assertThat(stuck.isFailure()).as("the bound fails the flight").isTrue();
+            stuck.onFailure(cause -> assertThat(cause).isEqualTo(BackfillError.General.FLIGHT_TIMED_OUT));
+            assertThat(descriptorFor(SELF).state()).as("never promoted").isEqualTo(ReplicationState.SYNCING);
+
+            backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("a call after the bound pulls again").isEqualTo(2);
+        }
+
+        /// #1638 B2 (i): a catch-up that takes several idle bounds in total but reports a page every 50 ms keeps its
+        /// slot: a call made past the bound joins it, no second pull starts, and it lands its records. Red under
+        /// "progress is not reported" and under "the bound caps the total duration".
+        @Test
+        void progressingBackfill_slowerThanTheBound_keepsItsSlot() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            var served = fixedSource(eventsFrom(0, 5));
+            var pager = Executors.newSingleThreadScheduledExecutor();
+            var slowPager = new CatchupTransport() {
+                @Override
+                public Promise<ReplicationMessage.CatchupResponse> requestCatchup(NodeId target,
+                                                                                   ReplicationMessage.CatchupRequest request) {
+                    return requestCatchup(target, request, () -> {});
+                }
+
+                @Override
+                public Promise<ReplicationMessage.CatchupResponse> requestCatchup(NodeId target,
+                                                                                   ReplicationMessage.CatchupRequest request,
+                                                                                   Runnable onPage) {
+                    pulls.incrementAndGet();
+                    var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                    for (var page = 1; page <= 20; page++) {
+                        pager.schedule(onPage, page * 50L, TimeUnit.MILLISECONDS);
+                    }
+                    pager.schedule(() -> served.requestCatchup(target, request).onResult(response::resolve),
+                                   1_050L,
+                                   TimeUnit.MILLISECONDS);
+
+                    return response;
+                }
+            };
+            var backfill = partitionBackfill(registry, recovery, slowPager, SELF, TimeSpan.timeSpan(200).millis());
+
+            try {
+                var first = backfill.backfill(STREAM, PARTITION);
+
+                pager.schedule(() -> {}, 600L, TimeUnit.MILLISECONDS).get(5, TimeUnit.SECONDS);
+                var joined = backfill.backfill(STREAM, PARTITION);
+
+                assertThat(pulls.get()).as("past three idle bounds, the progressing flight still holds the slot").isEqualTo(1);
+                assertThat(first.await(TimeSpan.timeSpan(10).seconds()).or(-1L)).isEqualTo(5L);
+                assertThat(joined.await(TimeSpan.timeSpan(10).seconds()).or(-1L)).isEqualTo(5L);
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                pager.shutdownNow();
+            }
+        }
+
+        /// #1638 B2: an apply slower than the idle bound in total -- 10 records at 50 ms each against a 200 ms bound --
+        /// keeps its slot, because each applied record is progress. Red under "applied records are not reported".
+        @Test
+        void slowApply_keepsItsSlot_whileRecordsLand() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 9L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var slowAppends = AlignedRecovery.alignedRecovery((stream, partition, offset, payload, timestamp) -> {
+                                                                  LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+
+                                                                  return recovery.appendRecovered(stream,
+                                                                                                  partition,
+                                                                                                  offset,
+                                                                                                  payload,
+                                                                                                  timestamp);
+                                                              },
+                                                              recovery::applyAttributed,
+                                                              recovery::applyUnattributed);
+            var served = fixedSource(eventsFrom(0, 10));
+            // the response arrives on a timer thread, so the apply runs AFTER the flight's idle watch is armed
+            CatchupTransport later = (target, request) -> Promise.promise(TimeSpan.timeSpan(20).millis(),
+                                                                          () -> served.requestCatchup(target, request)
+                                                                                      .await());
+            var backfill = partitionBackfill(registry, slowAppends, later, SELF, TimeSpan.timeSpan(200).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).or(-1L))
+                    .as("the slow apply completed rather than timing out").isEqualTo(10L);
+        }
+
+        /// #1638 late side effects: a run that settles AFTER its flight timed out -- here while the NEXT flight holds
+        /// the slot -- changes no replica row: it does not promote self, whatever its stale response says. Then the next
+        /// flight's own settlement promotes. Red under "the run's side effects are not gated".
+        @Test
+        void lateSettlement_afterTheTimeout_leavesTheRegistryUnchanged() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var served = fixedSource(eventsFrom(0, 5));
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            var next = backfill.backfill(STREAM, PARTITION);
+            var before = descriptorFor(SELF);
+
+            served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(descriptorFor(SELF)).as("the late run changed no replica row").isEqualTo(before);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
+
+            served.requestCatchup(SOURCE, requests.get(1)).onResult(pending.get(1)::resolve);
+
+            assertThat(next.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).as("the next flight settles").isTrue();
+            assertThat(descriptorFor(SELF).state()).as("the current flight promotes").isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// #1638 late side effects, the ack half: with the owner known (SOURCE), a completed backfill acks the owner.
+        /// A run that settles AFTER its flight timed out sends no ack, while the next flight's own settlement does. Red
+        /// under "the ack is not gated".
+        @Test
+        void lateSettlement_afterTheTimeout_sendsNoAckToTheOwner() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            var served = fixedSource(eventsFrom(0, 5));
+            var acks = new CopyOnWriteArrayList<ReplicationMessage>();
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             gated,
+                                             (_, message) -> acks.add(message),
+                                             SELF,
+                                             TimeSpan.timeSpan(500).millis());
+
+            backfill.ownerResolver((_, _) -> Option.some(SOURCE));
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            var next = backfill.backfill(STREAM, PARTITION);
+
+            served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(acks).as("the late run acked nothing").isEmpty();
+
+            served.requestCatchup(SOURCE, requests.get(1)).onResult(pending.get(1)::resolve);
+
+            assertThat(next.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).isTrue();
+            assertThat(acks).as("the current flight acks the owner once").hasSize(1);
+        }
+
+        /// #1638 D1: a durability barrier slower than the idle bound -- 600 ms against 200 ms -- does not time the flight
+        /// out: a run that applied everything still promotes self CAUGHT_UP. Red under "no progress at the barrier".
+        @Test
+        void slowDurabilityBarrier_stillPromotes() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var served = fixedSource(eventsFrom(0, 5));
+            CatchupTransport later = (target, request) -> Promise.promise(TimeSpan.timeSpan(20).millis(),
+                                                                          () -> served.requestCatchup(target, request)
+                                                                                      .await());
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             later,
+                                             ReplicationTransport.NOOP,
+                                             (_, _, _) -> BackfillError.General.NO_SOURCE_REPLICA.promise(),
+                                             (_, _) -> - 1L,
+                                             SELF,
+                                             TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
+                                             List::of,
+                                             CommittedStreamOwnerSource.none(),
+                                             (_, _) -> Promise.promise(TimeSpan.timeSpan(600).millis(),
+                                                                       org.pragmatica.lang.Result::unitResult),
+                                             QuarantineView.NONE,
+                                             Option.some(TimeSpan.timeSpan(200).millis()));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).or(-1L))
+                    .as("the run that applied everything is not timed out in its barrier").isEqualTo(5L);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// #1638 B1: a run that lands after its flight timed out must not evict the NEXT flight from the slot. The old
+        /// run stalls past the bound, a new flight starts, then the old run settles; a later call still joins the new
+        /// flight. Red under "unconditional remove".
+        @Test
+        void lateLandingOldRun_doesNotEvictTheNextFlight() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            CatchupTransport gated = (_, _) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+
+            var next = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pending).as("the next flight pulled").hasSize(2);
+
+            pending.getFirst().fail(ReplicationError.General.REPLICATION_TIMEOUT);
+            // let the old run's failure travel through its continuations to `land`
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            var joined = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pending).as("the late old run did not free the next flight's slot").hasSize(2);
+            assertThat(joined).isSameAs(next);
         }
     }
 
@@ -1756,6 +2059,40 @@ class PartitionBackfillTest {
 
             assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// SAFETY: a paced co-replica reports a durable watermark AHEAD of the fresh owner. The owner
+        /// must try to catch up from it and, while that peer cannot serve (still paced), stay SYNCING -- inside the
+        /// source wait AND long after it. Promoting at its local -1 would drop offsets 0..5 the peer durably holds.
+        @Test
+        void freshOwner_pacedPeerAhead_neverPromotesPastItsDurableWatermark() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            otherMembers().forEach(peer -> registry.registerReplica(STREAM, PARTITION, peer));
+
+            var clock = new AtomicLong(0L);
+            var catchups = new AtomicInteger();
+            CatchupTransport pacedCatchup = (_, _) -> {
+                catchups.incrementAndGet();
+                return new StreamForwardError.ReadForwardFailed(new StreamError.PartitionHeldNotMaterialized(STREAM,
+                                                                                                             PARTITION,
+                                                                                                             5L).message()).promise();
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             pacedCatchup,
+                                             probeThrough(pacedHolder(5L), new AtomicInteger()),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+            clock.set(10 * BOUND.millis());
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(catchups.get()).as("the owner tried to catch up from the paced peer each time").isEqualTo(2);
         }
 
         private static List<NodeId> otherMembers() {

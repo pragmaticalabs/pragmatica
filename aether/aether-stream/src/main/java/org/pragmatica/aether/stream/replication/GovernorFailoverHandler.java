@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentIndex.SegmentRef;
 import org.pragmatica.aether.stream.segment.SegmentReader;
@@ -15,6 +16,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AppendLog.EpochStart;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -136,8 +138,77 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
                  segments.size());
 
         return segmentReader.readEvents(streamName, partition, fromOffset, MAX_EVENTS_PER_SEGMENT_READ)
-                            .flatMap(events -> applyEvents(streamName, partition, events).async())
+                            .flatMap(events -> installThenApply(streamName, partition, segments, segmentReader, events))
                             .flatMap(_ -> durability.sync(streamName, partition));
+    }
+
+    /// #1596: the replayed records' provenance is installed BEFORE any of them is appended. It is the slice the
+    /// segment holding the LAST replayed record carries -- the sealing log's history over `[base, its end]`, so it
+    /// covers every record read -- checked against this copy's own history first (N13, as a catch-up is). A
+    /// segment without one (sealed before slices existed, or its header lost) falls back to `UNKNOWN(d)` for
+    /// whatever lands past this copy's head: fail closed, never attributed to the epoch before it.
+    ///
+    /// When replay reaches past the head at all, from code at the change: the index lists only segments this
+    /// node's own sink sealed, and a WAL-backed ring is rebuilt seeded at the contiguous sealed end with every
+    /// WAL record above it, so with a WAL the replayed offsets sit at or below the head (verified, or passed
+    /// over as evicted). Past-head appends come from a partition WITHOUT a log (Forge, the non-durable opt-in),
+    /// which records no provenance at all. This path is the defense for a future tier or seed that breaks that.
+    private Promise<Long> installThenApply(String streamName,
+                                           int partition,
+                                           List<SegmentRef> segments,
+                                           SegmentReader segmentReader,
+                                           List<RawEvent> events) {
+        if (events.isEmpty()) {
+            return Promise.success(0L);
+        }
+
+        var first = events.getFirst().offset();
+        var last = events.getLast().offset();
+
+        return sliceCovering(streamName, partition, segments, segmentReader, last).flatMap(slice -> applyPage(streamName,
+                                                                                                              partition,
+                                                                                                              first,
+                                                                                                              last,
+                                                                                                              slice,
+                                                                                                              events).async());
+    }
+
+    /// The slice of the segment holding `offset`, decoded; none when no segment holds it, when the segment carries
+    /// none, or when its entries do not decode (fail closed: unattributed).
+    private static Promise<Option<List<ProvenanceEntry>>> sliceCovering(String streamName,
+                                                                        int partition,
+                                                                        List<SegmentRef> segments,
+                                                                        SegmentReader segmentReader,
+                                                                        long offset) {
+        return Option.from(segments.stream()
+                                   .filter(ref -> ref.startOffset() <= offset && offset <= ref.endOffset())
+                                   .findFirst())
+                     .map(ref -> segmentReader.readProvenance(streamName, partition, ref)
+                                              .map(DefaultGovernorFailoverHandler::decoded))
+                     .or(Promise.success(Option.none()));
+    }
+
+    private static Option<List<ProvenanceEntry>> decoded(Option<List<EpochStart>> slice) {
+        return slice.flatMap(starts -> Result.allOf(starts.stream().map(ProvenanceEntry::provenanceEntry).toList()).option());
+    }
+
+    /// The install and its settlement wrap the appends (#1638 B1): a failed apply trims what the install recorded.
+    private Result<Long> applyPage(String streamName,
+                                   int partition,
+                                   long first,
+                                   long last,
+                                   Option<List<ProvenanceEntry>> slice,
+                                   List<RawEvent> events) {
+        return slice.fold(() -> partitionRecovery.applyUnattributed(streamName,
+                                                                    partition,
+                                                                    last,
+                                                                    () -> applyEvents(streamName, partition, events)),
+                          entries -> partitionRecovery.applyAttributed(streamName,
+                                                                       partition,
+                                                                       first,
+                                                                       last,
+                                                                       entries,
+                                                                       () -> applyEvents(streamName, partition, events)));
     }
 
     /// Sequential fail-fast fold: each event at its own offset. An evicted offset ([StreamError.CursorExpired])

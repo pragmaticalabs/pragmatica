@@ -549,6 +549,15 @@ public interface SystemTags {
         // cluster incarnation — the single lineage/incarnation authority (#1529 part 1); next free after 1708
         pin(table, 1709, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey");
         pin(table, 1710, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue");
+        // owner-epoch provenance entry nested in catch-up answers (#1596); next free after 1710
+        pin(table, 1711, "org.pragmatica.aether.stream.provenance.ProvenanceEntry");
+        pin(table, 1712, "org.pragmatica.aether.stream.provenance.ProvenanceEntry.ProvenanceKind");
+        // stream partition recovery record, the durable flag (#1596, spec #1569 §7.5.3)
+        pin(table, 1713, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionRecoveryKey");
+        pin(table, 1714, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionRecoveryValue");
+        pin(table, 1715, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryState");
+        pin(table, 1716, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReason");
+        pin(table, 1717, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind");
         // community lifecycle cluster events (#1652) — claimed range from 1740
         pin(table, 1740, "org.pragmatica.aether.api.ClusterEvent.CommunityMinted");
         pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");

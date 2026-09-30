@@ -13,6 +13,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 
 import org.pragmatica.lang.Cause;
@@ -23,6 +24,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.FileOps;
 
 import org.slf4j.Logger;
@@ -51,7 +53,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// Beside the log sits `<log>.epochs`, the durable history of which owner epoch began writing at which
 /// offset ([#recordEpochStart], [#epochHistory]) -- what ranks replicas by `(last owner epoch, head)` after
 /// an ownership move or a cold restart. It is a separate file written by temp, force, rename and directory
-/// force ([EpochHistory]); the record framing below is unchanged by it.
+/// force ([EpochHistory]); the record framing below is unchanged by it. An epoch is an opaque [EpochKey]:
+/// the caller encodes it and supplies its order ([EpochOrder]), so the log knows nothing of what an owner
+/// epoch is made of (#1596).
 ///
 /// ## Seal-gated truncation (#1567)
 /// [#truncate] never discards past [#sealedThrough], and only [StorageInstance#seal] advances that
@@ -340,6 +344,19 @@ public final class AppendLog implements AutoCloseable {
                : syncFailure.fold(() -> writeRecord(offset, payload, timestampMillis), Cause::result);
     }
 
+    /// [#write], first recording -- durably, inside the same write section -- that owner epoch `key` begins
+    /// at `offset` when `key` is not the last recorded epoch (#1596). The history entry is durable before the
+    /// frame is written, so no record is ever on disk without the entry that attributes it. Refused unwritten
+    /// with [WalError.EpochRegression] when `key` does not follow the last epoch under `order`, exactly as an
+    /// [WalError.OffsetRegression] is. A history that cannot be made durable FAIL-STOPS the log, as a failed
+    /// frame write does: the caller has already been assigned `offset`, so a later frame that did land would
+    /// leave a hole at it.
+    public Result<Long> write(long offset, byte[] payload, long timestampMillis, EpochKey key, EpochOrder order) {
+        return closed
+               ? WalError.General.WAL_CLOSED.result()
+               : syncFailure.fold(() -> writeAttributed(offset, payload, timestampMillis, key, order), Cause::result);
+    }
+
     /// GROUP-COMMIT the write with sequence `writeSeq` (from [#write]): resolves once a `force(false)`
     /// covering it has completed, sharing that fsync with every write queued before it. Runs on the
     /// async executor, so a caller can release its own ordered section before the fsync.
@@ -386,12 +403,13 @@ public final class AppendLog implements AutoCloseable {
         return sealedThrough.get();
     }
 
-    /// Record, durably, that owner epoch `ownerEpoch` begins writing this log at `startOffset` (#1567 A11,
+    /// Record, durably, that owner epoch `key` begins writing this log at `startOffset` (#1567 A11,
     /// KIP-101's leader-epoch checkpoint). Durable before it returns -- see [EpochHistory] for the write
-    /// sequence -- and monotonic: refused with [WalError.EpochRegression] for an epoch at or below the last
-    /// one or a start below the last start, a no-op when it repeats the last entry exactly.
-    public Result<Unit> recordEpochStart(long ownerEpoch, long startOffset) {
-        return epochs.recordStart(ownerEpoch, startOffset);
+    /// sequence -- and monotonic under `order`: refused with [WalError.EpochRegression] for a key that does
+    /// not follow the last one or a start below the last start, a no-op when it repeats the last entry
+    /// exactly.
+    public Result<Unit> recordEpochStart(EpochKey key, long startOffset, EpochOrder order) {
+        return epochs.recordStart(key, startOffset, order);
     }
 
     /// The owner-epoch history, oldest first, as last made durable. Reads memory only.
@@ -403,6 +421,33 @@ public final class AppendLog implements AutoCloseable {
     /// where no epoch began past it.
     public Result<Unit> truncateEpochsAbove(long offset) {
         return epochs.truncateAbove(offset);
+    }
+
+    /// Drop every epoch entry that no written record reaches (#1596): an entry is recorded durably BEFORE the first
+    /// frame of its epoch, so a crash between the two, or a caller whose appends after recording did not happen,
+    /// leaves an entry starting above the head. `knownHead` is the caller's head of the log's data -- a log whose
+    /// sealed prefix was truncated away reopens with no records while the data continues in sealed blocks -- and
+    /// the bound is the larger of it and the last written offset, read under the write lock, so an entry a
+    /// concurrent attributed write has just used is never dropped. With neither known (`-1`), nothing is dropped.
+    public Result<Unit> truncateEpochsAboveHead(long knownHead) {
+        synchronized (writeLock) {
+            var head = Math.max(knownHead, lastOffset);
+
+            return head < 0
+                   ? Result.unitResult()
+                   : epochs.truncateAbove(head);
+        }
+    }
+
+    /// Drop the given epoch entries that no written record reaches (#1638 F1): each of `entries` whose start lies
+    /// above the larger of `knownHead` and the last written offset (read under the write lock, so an entry a
+    /// concurrent attributed write has just used is kept). Every other entry is kept, whatever its start -- an entry
+    /// above the head that the caller did not name belongs to someone else. Unlike [#truncateEpochsAboveHead] a head of
+    /// `-1` is not "unknown": the caller names entries it recorded itself, over a head it knows.
+    public Result<Unit> dropEpochStartsAboveHead(long knownHead, List<EpochStart> entries) {
+        synchronized (writeLock) {
+            return epochs.removeAbove(Math.max(knownHead, lastOffset), entries);
+        }
     }
 
     /// Delete the log's files -- the log, its epoch history and any stale temp -- after [#close], when the
@@ -517,6 +562,28 @@ public final class AppendLog implements AutoCloseable {
             return offset > lastOffset
                    ? writeNext(offset, payload, timestampMillis)
                    : new WalError.OffsetRegression(offset, lastOffset).result();
+        }
+    }
+
+    private Result<Long> writeAttributed(long offset,
+                                         byte[] payload,
+                                         long timestampMillis,
+                                         EpochKey key,
+                                         EpochOrder order) {
+        synchronized (writeLock) {
+            return offset > lastOffset
+                   ? epochs.recordIfNew(key, offset, order)
+                           .onFailure(this::failStopOnEpochWriteFailure)
+                           .flatMap(_ -> writeNext(offset, payload, timestampMillis))
+                   : new WalError.OffsetRegression(offset, lastOffset).result();
+        }
+    }
+
+    /// Runs under `writeLock`. A refused key wrote nothing and leaves the log writable; only an entry that could
+    /// not be made durable fail-stops it.
+    private void failStopOnEpochWriteFailure(Cause cause) {
+        if (cause instanceof WalError.EpochWriteFailed) {
+            failStopOnWriteFailure(cause);
         }
     }
 
@@ -917,8 +984,25 @@ public final class AppendLog implements AutoCloseable {
 
     private record ScanResult(long validEnd, long lastOffset) {}
 
-    /// Owner epoch `ownerEpoch` began writing the log at `startOffset`.
-    public record EpochStart(long ownerEpoch, long startOffset) {}
+    /// Owner epoch `key` began writing the log at `startOffset`.
+    public record EpochStart(EpochKey key, long startOffset) {}
+
+    /// An owner epoch as the log's caller encodes it (#1596): an opaque token of printable, non-space
+    /// characters. Equality is token equality; order is the caller's ([EpochOrder]).
+    public record EpochKey(String token) {
+        private static final Pattern TOKEN = Pattern.compile("\\p{Graph}+");
+
+        public static Result<EpochKey> epochKey(String token) {
+            return Verify.ensure(token, Verify.Is::matches, TOKEN).map(EpochKey::new);
+        }
+    }
+
+    /// The caller's order over [EpochKey]s: `later` may start after `earlier` in one history. Not required
+    /// to be total -- two keys neither of which follows the other refuse the second.
+    @FunctionalInterface
+    public interface EpochOrder {
+        boolean follows(EpochKey later, EpochKey earlier);
+    }
 
     /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
     public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {
@@ -1028,12 +1112,12 @@ public final class AppendLog implements AutoCloseable {
         }
 
         /// A [#recordEpochStart] that would move the history backwards (#1567 A11).
-        record EpochRegression(long ownerEpoch, long startOffset, long lastEpoch, long lastStart) implements WalError {
+        record EpochRegression(EpochKey key, long startOffset, EpochKey lastKey, long lastStart) implements WalError {
             @Override
             public String message() {
-                return "Epoch start refused: epoch %d at offset %d does not follow epoch %d at offset %d".formatted(ownerEpoch,
+                return "Epoch start refused: epoch %s at offset %d does not follow epoch %s at offset %d".formatted(key.token(),
                                                                                                                     startOffset,
-                                                                                                                    lastEpoch,
+                                                                                                                    lastKey.token(),
                                                                                                                     lastStart);
             }
         }

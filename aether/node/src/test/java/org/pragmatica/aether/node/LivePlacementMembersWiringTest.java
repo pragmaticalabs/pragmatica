@@ -98,6 +98,13 @@ class LivePlacementMembersWiringTest {
         assertThat(code).contains("streamPartitionManager.placementRoleSupplier(streamReplicaSetController::roleFor);");
     }
 
+    /// #1638 N1/B2: the backfill single-flight is bounded in production by the idle bound derived from StreamingConfig;
+    /// the unbounded factory is for tests only.
+    @Test
+    void backfillSingleFlight_isBoundedByTheConfiguredIdleBound() {
+        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()));");
+    }
+
     /// `AetherNode.java` with line comments removed and all whitespace stripped, so a pin matches the
     /// wiring expression regardless of formatter line breaks. The path is derived from this class's own
     /// location (`<module>/target/test-classes` → `<module>/src/main/java`); an unreadable file fails loudly,

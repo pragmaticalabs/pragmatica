@@ -172,7 +172,8 @@ class OwnerActivationTest {
         assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven with no further demand").isTrue();
     }
 
-    /// The re-drive stops once ownership has left the node: a moved partition is not retried forever.
+    /// The re-drive stops once ownership has left the node: after the attempt that finds another node named, no
+    /// further consensus round is ordered. (With the stop ignored the loop keeps running rounds every backoff.)
     @Test
     void admit_ownershipLeaves_redriveStops() {
         record.set(Option.some(ownedBy(SELF, 1)));
@@ -181,9 +182,10 @@ class OwnerActivationTest {
 
         activation.admit(STREAM, PARTITION);
         record.set(Option.some(ownedBy(PEER_B, 2)));
-        unreachable.remove(PEER_A);
+        LockSupport.parkNanos(1_500_000_000L);
 
-        assertThat(eventuallyActivatedWithin(1_500L)).isFalse();
+        assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
+        assertThat(rounds.get()).as("first attempt, then one re-drive that finds ownership gone").isEqualTo(2);
     }
 
     private boolean eventuallyActivatedWithin(long millis) {
@@ -206,6 +208,40 @@ class OwnerActivationTest {
         assertThat(activate()).isFalse();
         assertThat(rounds).hasValue(1);
         assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
+    }
+
+    /// Observation: the gate's probe and overlap reads go through the real [OwnerPeerReads] against a peer that
+    /// HOLDS the partition unmaterialized (paced) with durable data BELOW self. Pre-F1a that peer answered
+    /// `PARTITION_NOT_LOCAL`, read as `-1`, and was skipped; now it reports 5, its overlap window is read, the read is
+    /// refused (no ring), and activation is refused until the peer materializes.
+    @Test
+    void gate_pacedLowerPeerWithDurableData_refusesActivation_whileANonHolderDoesNot() {
+        var heldAtFive = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L).message()).promise());
+        var nonHolder = gateThrough((_, _, _, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            StreamError.General.PARTITION_NOT_LOCAL.message()).promise());
+
+        members.set(List.of(SELF, PEER_A));
+
+        assertThat(heldAtFive.activate(STREAM, PARTITION).await().isSuccess()).as("paced lower peer").isFalse();
+        assertThat(nonHolder.activate(STREAM, PARTITION).await().isSuccess()).as("genuine non-holder").isTrue();
+    }
+
+    private OwnerActivation gateThrough(OwnerPeerReads.PageRead peerRead) {
+        return OwnerActivation.ownerActivation(SELF,
+                                               (_, _) -> record.get(),
+                                               (_, _) -> placementOwner.get(),
+                                               Option.some(this::round),
+                                               members::get,
+                                               (peer, stream, partition) -> OwnerPeerReads.appendedWatermark(peerRead, peer, stream, partition, 16),
+                                               (_, _) -> localWatermark.get(),
+                                               this::catchUp,
+                                               consensusActive::get,
+                                               (node, stream, partition, from, to) -> node.equals(SELF)
+                                                                                     ? range(node, stream, partition, from, to)
+                                                                                     : OwnerPeerReads.appendedRange(peerRead, node, stream, partition, from, to, 16),
+                                               this::raise,
+                                               PromotionTestRanges.NEVER_ALARM);
     }
 
     /// Catch-up gate: a live member ahead of self is caught up from — the HIGHEST one — before activation.

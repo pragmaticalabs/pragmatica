@@ -62,7 +62,7 @@ test_generate_traceable_requests() {
 # Endpoint smoke check — must respond 200. Body content is asserted in the
 # field-level tests below.
 test_traces_endpoint() {
-    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/traces" "200" \
+    assert_http_status "$(_resolve_live_endpoint)/api/v1/traces" "200" \
         "GET /api/v1/traces returns 200" \
         -H "X-API-Key: ${API_KEY}"
 }

@@ -72,6 +72,25 @@ class AlertManagerInjectTest {
                    .await();
         }
 
+        /// #1564 (v1680 N-r3-1): a node-raised alert is resolved by name once its condition clears, so it does not
+        /// outlive its cause on `/api/alerts/active`; an alert of another name is left alone.
+        @Test
+        void clearInjected_removesEveryAlertOfThatName_andNoOther() {
+            var manager = newManager();
+
+            manager.inject("cluster-events-registration-refused", "CRITICAL", "refused", Option.empty(), Option.empty()).await();
+            manager.inject("cluster-events-registration-refused", "CRITICAL", "refused again", Option.empty(), Option.empty()).await();
+            manager.inject("other-alert", "WARNING", "unrelated", Option.empty(), Option.empty()).await();
+
+            assertEquals(2, manager.clearInjected("cluster-events-registration-refused"));
+            var activeJson = manager.activeAlertsAsJson();
+            assertTrue(!activeJson.contains("\"name\":\"cluster-events-registration-refused\""),
+                       "the resolved alerts must leave the active list: actual=" + activeJson);
+            assertTrue(activeJson.contains("\"name\":\"other-alert\""),
+                       "an alert of another name stays: actual=" + activeJson);
+            assertEquals(0, manager.clearInjected("cluster-events-registration-refused"));
+        }
+
         @Test
         void inject_entryVisibleInActiveAlertsJson_andHistoryJson() {
             var manager = newManager();
@@ -149,6 +168,39 @@ class AlertManagerInjectTest {
             assertEquals("must replicate via event stream", metadata.get("message"));
             assertEquals("test.metric", metadata.get("metric"));
             assertNotNull(metadata.get("timestamp"), "metadata must carry timestamp");
+        }
+
+        /// #1564 (v1735 B1): the cluster-events refusal alert must be GONE from `/api/alerts/active` once cleared, the
+        /// cluster-log path included. With the event sink AND the cluster-events source bound to the same log (so a
+        /// replicated copy WOULD be served back), `injectLocal` emits nothing to the log, and after `clearInjected` the
+        /// active list no longer names it. A replicating inject fails this: its log copy outlives the clear.
+        @Test
+        void injectLocal_thenClear_isGoneFromActiveAlerts_includingTheClusterLogPath() {
+            var manager = newManager();
+            var log = new CopyOnWriteArrayList<ClusterEvent>();
+
+            manager.bindEventSink(log::add, HLC);
+            manager.bindClusterEventsSource(() -> Promise.success(List.copyOf(log)));
+            manager.injectLocal("cluster-events-registration-refused", "CRITICAL", "refused")
+                   .onFailure(cause -> fail("Inject failed: " + cause.message()))
+                   .await();
+
+            assertTrue(namesOf(manager).contains("cluster-events-registration-refused"),
+                       "the alert is listed while its condition holds: " + namesOf(manager));
+            assertEquals(0, log.size(), "a local-only alert emits nothing to the cluster log: " + log);
+
+            assertEquals(1, manager.clearInjected("cluster-events-registration-refused"));
+            assertTrue(!namesOf(manager).contains("cluster-events-registration-refused"),
+                       "after the clear it is gone, cluster-log path included: " + namesOf(manager));
+        }
+
+        private static List<String> namesOf(AlertManager manager) {
+            return manager.activeAlertsAsList()
+                          .await()
+                          .or(List.of())
+                          .stream()
+                          .map(AlertManager.AlertView::name)
+                          .toList();
         }
 
         @Test

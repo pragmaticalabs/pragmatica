@@ -25,6 +25,7 @@ import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -167,6 +168,27 @@ class HeldNotMaterializedProbeTest {
         assertThat(answers.getLast().errorMessage()).isEqualTo(StreamError.General.PARTITION_NOT_LOCAL.message());
     }
 
+    /// A held partition whose sealed tier is past its WAL head (WAL compacted after a seal) reports the
+    /// sealed bound -- the durable max -- never the lower WAL head.
+    @Test
+    void heldPartitionSealedPastItsWal_reportsTheSealedBound() {
+        manager.close();
+        var sealed = streamPartitionManager(Long.MAX_VALUE,
+                                            Option.some(walDir),
+                                            (stream, _) -> "restarted".equals(stream) ? 7L : -1L);
+        var roles = new ConcurrentHashMap<String, Role>();
+
+        sealed.placementRoleSupplier((stream, _) -> roles.getOrDefault(stream, Role.NONE));
+        List.of(config("busy", 2), config("restarted", 1)).forEach(config -> sealed.onStreamConfigPut(configPut(config)));
+        List.of("busy", "restarted").forEach(stream -> roles.put(stream, Role.REPLICA));
+        sealed.materializePartition("busy", 0).onFailure(_ -> fail("first slot should materialize"));
+        sealed.materializePartition("busy", 1).onFailure(_ -> fail("second slot should materialize"));
+        sealed.materializePartition("restarted", 0).onSuccess(_ -> fail("restarted[0] must be paced"));
+
+        assertThat(sealed.heldNotMaterializedWatermark("restarted", 0)).isEqualTo(Option.some(7L));
+        sealed.close();
+    }
+
     @Test
     void heldNotMaterializedWatermark_reportsOnlyForAHeldPartitionWithoutARing() {
         assertThat(manager.heldNotMaterializedWatermark("fresh", 0)).isEqualTo(Option.some(-1L));
@@ -219,5 +241,107 @@ class HeldNotMaterializedProbeTest {
         roles.put("restarted", Role.REPLICA);
 
         assertThat(manager.heldNotMaterializedWatermark("restarted", 0)).isEqualTo(Option.some(3L));
+    }
+
+    /// The production naming path: the owner is a REGISTERED replica on the peer, so its catch-up probe is served by
+    /// `readAppended`, not `readVisible`. The unregistered sender used elsewhere in this class exercises only the
+    /// latter.
+    @Test
+    void catchupRead_fromARegisteredReplica_ofAHeldUnmaterializedPartition_isNamed() {
+        var registry = org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry();
+
+        registry.registerReplica("fresh", 0, PEER);
+        var registered = streamPartitionManager(Long.MAX_VALUE,
+                                                EvictionListener.NOOP,
+                                                org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager(SELF, registry),
+                                                Option.some(walDir.resolve("registered")),
+                                                LastSealedOffsetSource.none());
+
+        try {
+            roles.clear();
+            registered.placementRoleSupplier((stream, _) -> roles.getOrDefault(stream, Role.NONE));
+            List.of(config("busy", 2), config("fresh", 1)).forEach(config -> registered.onStreamConfigPut(configPut(config)));
+            roles.put("busy", Role.REPLICA);
+            roles.put("fresh", Role.REPLICA);
+            registered.materializePartition("busy", 0).onFailure(_ -> fail("first slot should materialize"));
+            registered.materializePartition("busy", 1).onFailure(_ -> fail("second slot should materialize"));
+            registered.materializePartition("fresh", 0).onSuccess(_ -> fail("fresh[0] must be paced"));
+            var registeredHandler = StreamForwardHandler.streamForwardHandler(SELF, registered, (_, message) -> record(message));
+
+            registeredHandler.onReadForward(readForward(PEER, "corr", "fresh", 0, 0L, PAGE, false, true));
+
+            assertThat(answers.getLast().success()).isFalse();
+            assertThat(StreamError.PartitionHeldNotMaterialized.watermarkOf(new StreamForwardError.ReadForwardFailed(answers.getLast().errorMessage())))
+                .isEqualTo(Option.some(-1L));
+        } finally {
+            registered.close();
+        }
+    }
+
+    /// A slow WAL read that started before a ring install and release must not put its pre-install value back after the
+    /// drop: `restarted[0]` is read (head 2) and held inside the inspect, the partition is then materialized, appended
+    /// to (head 3) and released, and only then does the slow read return. The next answer is the WAL's 3.
+    @Test
+    void heldNotMaterializedWatermark_slowReadSpanningInstallAndRelease_doesNotCacheItsStaleValue() throws Exception {
+        manager.close();
+        var inspecting = new java.util.concurrent.CountDownLatch(1);
+        var proceed = new java.util.concurrent.CountDownLatch(1);
+        var armed = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var directory = AppendLog.Opener.directory(walDir);
+        AppendLog.Opener slow = AppendLog.Opener.opener(directory::open, name -> slowInspect(directory, name, armed, inspecting, proceed));
+        var slowManager = StreamPartitionManager.streamPartitionManagerOverLogs(Long.MAX_VALUE, Option.some(slow), LastSealedOffsetSource.none());
+
+        try {
+            roles.clear();
+            slowManager.placementRoleSupplier((stream, _) -> roles.getOrDefault(stream, Role.NONE));
+            List.of(config("restarted", 1)).forEach(config -> slowManager.onStreamConfigPut(configPut(config)));
+            roles.put("restarted", Role.REPLICA);
+            var read = new java.util.concurrent.atomic.AtomicReference<Option<Long>>();
+            var reader = new Thread(() -> read.set(slowManager.heldNotMaterializedWatermark("restarted", 0)));
+
+            reader.start();
+            assertThat(inspecting.await(10, java.util.concurrent.TimeUnit.SECONDS)).as("the slow read is inside inspect").isTrue();
+
+            slowManager.replicaCatchupSource((_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(Integer.MAX_VALUE, true));
+            slowManager.clusterSizeSupplier(() -> 3);
+            slowManager.ownerReleaseGuard((_, _) -> true);
+            slowManager.materializePartition("restarted", 0).onFailure(cause -> fail(cause.message()));
+            slowManager.appendRecovered("restarted", 0, 3L, "fourth".getBytes(), 1003L).onFailure(cause -> fail(cause.message()));
+            roles.put("restarted", Role.NONE);
+            for (var tick = 0; tick < 4; tick++) {
+                slowManager.reconcileReshuffle();
+            }
+            assertThat(slowManager.partitionBuffer("restarted", 0).isPresent()).as("ring released, WAL kept").isFalse();
+            roles.put("restarted", Role.REPLICA);
+
+            proceed.countDown();
+            reader.join(10_000L);
+
+            assertThat(read.get()).as("the slow read itself saw the pre-install head").isEqualTo(Option.some(2L));
+            assertThat(slowManager.heldNotMaterializedWatermark("restarted", 0)).isEqualTo(Option.some(3L));
+        } finally {
+            proceed.countDown();
+            slowManager.close();
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static org.pragmatica.lang.Result<AppendLog.LogExtent> slowInspect(AppendLog.Opener directory,
+                                                                               String name,
+                                                                               java.util.concurrent.atomic.AtomicBoolean armed,
+                                                                               java.util.concurrent.CountDownLatch inspecting,
+                                                                               java.util.concurrent.CountDownLatch proceed) {
+        var extent = directory.inspect(name);
+
+        if (armed.compareAndSet(true, false)) {
+            inspecting.countDown();
+            try {
+                proceed.await(20, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        return extent;
     }
 }

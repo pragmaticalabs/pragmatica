@@ -191,16 +191,34 @@ public final class ReplicationBatcher implements AutoCloseable {
         var accumulator = accumulators.computeIfAbsent(key, _ -> new BatchAccumulator());
         var outcome = accumulator.add(offset, payload, timestamp, ownerEpoch, maxEvents);
 
-        return outcome == AddOutcome.RETIRED
-               ? retryOnFreshAccumulator(key, accumulator, offset, payload, timestamp, ownerEpoch)
-               : success(onAccepted(key, accumulator, outcome));
+        return switch (outcome) {
+            case RETIRED -> retryOnFreshAccumulator(key, accumulator, offset, payload, timestamp, ownerEpoch);
+            case EPOCH_CHANGED -> flushThenRetry(key, accumulator, offset, payload, timestamp, ownerEpoch);
+            case OPENED, APPENDED, FULL -> success(onAccepted(key, accumulator, outcome));
+        };
+    }
+
+    /// #1577: the open batch was accumulated under another owner epoch. It is flushed -- sent, on this thread,
+    /// before the event of the new epoch enters any batch -- and the event goes to a fresh accumulator, so a
+    /// batch never spans two epochs and its stamp is the epoch of every event in it. A replica records the
+    /// batch epoch as the provenance of the batch's first offset (#1596); a stamp covering earlier-epoch events
+    /// would mislabel them and make a healthy partition read as divergent after every failover.
+    private Result<Unit> flushThenRetry(PartitionKey key,
+                                        BatchAccumulator stale,
+                                        long offset,
+                                        byte[] payload,
+                                        long timestamp,
+                                        Epoch ownerEpoch) {
+        cancelAndFlush(key, stale);
+
+        return retryOnFreshAccumulator(key, stale, offset, payload, timestamp, ownerEpoch);
     }
 
     private Unit onAccepted(PartitionKey key, BatchAccumulator accumulator, AddOutcome outcome) {
         return switch (outcome) {
             case OPENED -> scheduleFlush(key, accumulator);
             case FULL -> flushNow(key, accumulator);
-            case APPENDED, RETIRED -> unit();
+            case APPENDED, RETIRED, EPOCH_CHANGED -> unit();
         };
     }
 
@@ -310,7 +328,9 @@ public final class ReplicationBatcher implements AutoCloseable {
         OPENED,
         APPENDED,
         FULL,
-        RETIRED
+        RETIRED,
+        /// The batch is open under another owner epoch; nothing was added (#1577).
+        EPOCH_CHANGED
     }
 
     /// One batch of one partition. Single-use: the first `drain` retires it, after which `add` refuses
@@ -343,12 +363,15 @@ public final class ReplicationBatcher implements AutoCloseable {
 
                 var opened = payloads.isEmpty();
 
+                if (!opened && !this.ownerEpoch.equals(ownerEpoch)) {
+                    return AddOutcome.EPOCH_CHANGED;
+                }
+
                 if (opened) {
                     fromOffset = offset;
                 }
-                // A single owner accumulates a partition batch at one epoch; the latest stamp wins so
-                // a flush always carries the most recent owner epoch the accumulated events were
-                // published under (monotonic within an owner).
+                // One batch, one epoch (#1577): the stamp is set when the batch opens and every later event
+                // matches it, so the flush carries the epoch every accumulated event was published under.
                 this.ownerEpoch = ownerEpoch;
                 payloads.add(payload.clone());
                 timestamps.add(timestamp);
