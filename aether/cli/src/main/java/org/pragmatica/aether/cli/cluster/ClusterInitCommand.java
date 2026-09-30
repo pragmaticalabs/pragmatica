@@ -28,6 +28,8 @@ import org.pragmatica.aether.cli.cluster.init.FirewallPresets;
 import org.pragmatica.aether.cli.cluster.init.InPlaceTomlMerge;
 import org.pragmatica.aether.cli.cluster.init.InputValidators;
 import org.pragmatica.aether.cli.cluster.init.CoreWorkerSplit;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.config.toml.TomlDocument;
@@ -482,8 +484,21 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private Result<Path> writeOutput(ClusterConfigAnswers answers) {
-        var generated = ClusterConfigGenerator.generate(answers);
+        return selfValidated(ClusterConfigGenerator.generate(answers)).flatMap(this::writeGenerated);
+    }
 
+    /// #1199 — `init` parses back what it is about to write with the SAME parser and validator
+    /// `aether cluster bootstrap` runs, and refuses to write a file bootstrap would reject. `init` and
+    /// `bootstrap` were each self-consistent and disagreed only at the seam between them, which no
+    /// per-component test reaches; this check sits on that seam.
+    private static Result<String> selfValidated(String generated) {
+        return ClusterBootstrapConfigParser.parse(generated)
+                                           .flatMap(ClusterBootstrapConfigValidator::validate)
+                                           .map(_ -> generated)
+                                           .mapError(cause -> new ClusterInitError.GeneratedConfigInvalid(cause.message()));
+    }
+
+    private Result<Path> writeGenerated(String generated) {
         if (!Files.exists(output) || force) {
             return write(generated).onSuccess(path -> System.out.println("Wrote " + path));
         }

@@ -743,8 +743,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     /// An offset the ring no longer holds is IN FLIGHT while the segment sealer still retains it (#1234): its
-    /// seal has not landed, so it is in no segment either, and the caller must back off and re-read rather
-    /// than skip it. Asked BEFORE the cold read: the sink indexes a segment before the sealer lets it go, so
+    /// seal may not have landed yet (it may also already be indexed — the sealer lets it go only after), and the
+    /// caller must back off and re-read rather than skip it. Asked BEFORE the cold read: the sink indexes a segment before the sealer lets it go, so
     /// an offset not retained at this point is already findable in the index — there is no instant at which
     /// it is in neither place.
     private Promise<List<StreamEvent<T>>> readEvicted(int partition,

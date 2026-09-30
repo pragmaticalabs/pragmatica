@@ -549,6 +549,11 @@ public interface SystemTags {
         // cluster incarnation — the single lineage/incarnation authority (#1529 part 1); next free after 1708
         pin(table, 1709, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey");
         pin(table, 1710, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue");
+        // community lifecycle cluster events (#1652) — claimed range from 1740
+        pin(table, 1740, "org.pragmatica.aether.api.ClusterEvent.CommunityMinted");
+        pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");
+        pin(table, 1742, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined");
+        pin(table, 1743, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // ---- 2114..16383 RESERVED ----

@@ -18,10 +18,14 @@ import org.pragmatica.aether.pg.codegen.NamingConvention;
 public final class QueryRewriter {
     private QueryRewriter() {}
 
-    private static final Pattern NAMED_PARAM_PATTERN = Pattern.compile(":([a-zA-Z][a-zA-Z0-9]*)");
+    /// `(?<!:)`: the `text` in a PostgreSQL cast `x::text` is a type name, not a `:text` placeholder (#1707).
+    private static final Pattern NAMED_PARAM_PATTERN = Pattern.compile("(?<!:):([a-zA-Z][a-zA-Z0-9]*)");
     private static final Pattern SELECT_STAR_PATTERN = Pattern.compile("(?i)SELECT\\s+\\*\\s+FROM");
 
     private static final Pattern SELECT_ALIAS_STAR_PATTERN = Pattern.compile("(?i)SELECT\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.\\s*\\*\\s+");
+
+    /// The opening tag of a dollar-quoted string: `$$` or `$tag$` (a tag does not start with a digit).
+    private static final Pattern DOLLAR_QUOTE_TAG = Pattern.compile("\\$(?:[A-Za-z_][A-Za-z_0-9]*)?\\$");
 
     public record RewrittenQuery(String sql, List<String> parameterOrder) {}
 
@@ -31,7 +35,8 @@ public final class QueryRewriter {
         var paramPositions = new LinkedHashMap<String, Integer>();
         var paramOrder = new ArrayList<String>();
         var result = new StringBuilder();
-        var matcher = NAMED_PARAM_PATTERN.matcher(sql);
+        // #1707 review: matched on the code-only text (same length), so a `:name` inside a literal or comment is left as is.
+        var matcher = NAMED_PARAM_PATTERN.matcher(sqlCodeOnly(sql));
         var lastEnd = 0;
 
         while (matcher.find()) {
@@ -57,7 +62,7 @@ public final class QueryRewriter {
     public static List<String> extractNamedParams(String sql) {
         var params = new ArrayList<String>();
         var seen = new HashSet<String>();
-        var matcher = NAMED_PARAM_PATTERN.matcher(sql);
+        var matcher = NAMED_PARAM_PATTERN.matcher(sqlCodeOnly(sql));
 
         while (matcher.find()) {
             var name = matcher.group(1);
@@ -68,6 +73,91 @@ public final class QueryRewriter {
         }
 
         return List.copyOf(params);
+    }
+
+    /// `sql` with string literals, quoted identifiers, dollar-quoted bodies and comments blanked out, so a `$n` or `:name` inside
+    /// them is not taken for a bind placeholder (#1707 review; PostgreSQL does not bind inside them). Blanking keeps
+    /// the length and the placeholder positions.
+    public static String sqlCodeOnly(String sql) {
+        var out = new StringBuilder(sql);
+        var i = 0;
+
+        while (i < sql.length()) {
+            var end = skippedRegionEnd(sql, i);
+
+            if (end > i) {
+                for (int k = i; k < end; k++) {
+                    out.setCharAt(k, ' ');
+                }
+
+                i = end;
+            } else {
+                i++;
+            }
+        }
+
+        return out.toString();
+    }
+
+    /// The end (exclusive) of a literal, quoted identifier, dollar-quoted body or comment starting at `i`, or `i`.
+    private static int skippedRegionEnd(String sql, int i) {
+        var c = sql.charAt(i);
+
+        if (c == '\'' || c == '"') {
+            return quotedEnd(sql, i, c);
+        }
+
+        if (sql.startsWith("--", i)) {
+            var eol = sql.indexOf('\n', i);
+
+            return eol < 0
+                   ? sql.length()
+                   : eol;
+        }
+
+        if (sql.startsWith("/*", i)) {
+            var close = sql.indexOf("*/", i + 2);
+
+            return close < 0
+                   ? sql.length()
+                   : close + 2;
+        }
+
+        if (c == '$') {
+            var tag = DOLLAR_QUOTE_TAG.matcher(sql).region(i, sql.length());
+
+            if (tag.lookingAt()) {
+                var close = sql.indexOf(tag.group(),
+                                        i + tag.group().length());
+
+                return close < 0
+                       ? sql.length()
+                       : close + tag.group()
+                                    .length();
+            }
+        }
+
+        return i;
+    }
+
+    /// A quoted run from `i`; a doubled quote inside it is an escaped quote.
+    private static int quotedEnd(String sql, int i, char quote) {
+        var k = i + 1;
+
+        while (k < sql.length()) {
+            if (sql.charAt(k) == quote) {
+                if (k + 1 < sql.length() && sql.charAt(k + 1) == quote) {
+                    k += 2;
+                    continue;
+                }
+
+                return k + 1;
+            }
+
+            k++;
+        }
+
+        return sql.length();
     }
 
     public static RewrittenQuery expandInsertRecord(String sql,

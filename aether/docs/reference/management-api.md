@@ -403,7 +403,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 ]
 ```
 
-**Event Types** (the 32 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
+**Event Types** (the 36 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
 
 - `NODE_JOINED` -- a node joined the cluster (sourced from the transport `PeerJoined` handshake; leader-gated). Severity INFO.
 - `NODE_LEFT` -- a node gracefully departed (consensus-committed decommission/drain decision; leader-gated). Severity WARNING.
@@ -421,7 +421,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `AUTO_ROLLBACK` -- the leader committed an automatic rollback. `details`: `artifact`, `from`, `to`, `rollbackNumber`, `windowMs`, `requestId`, and `defects.<nodeId>` per hosting node. Severity CRITICAL.
 - `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
 - `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
-- `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
+- `COMMUNITY_SCALE_REQUEST` -- **not currently produced** (#927): no code emits it; the type stays wire-pinned (tag 263) and never appears.
 - `COMMUNITY_METRICS_SNAPSHOT` -- a community-tier metrics snapshot was recorded. Severity INFO.
 - `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
 - `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
@@ -429,15 +429,25 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `BACKUP_CREATED` / `BACKUP_RESTORED` -- no producer since the backup API was removed (#676); the types stay wire-pinned (tags 258/259) and never appear.
 - `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
 - `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
-- `STREAM_REGISTERED` -- a stream was registered (carries the stream `ResourceAddress`). Severity INFO.
-- `STREAM_DELETED` -- a stream was deleted (carries the stream `ResourceAddress`). Severity INFO.
+- `STREAM_REGISTERED` / `STREAM_DELETED` -- **not currently produced** (#927): the stream-lifecycle emission points were never wired, so neither appears; the types (carrying the stream `ResourceAddress`) stay wire-pinned (tags 288/286).
 - `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/v1/alerts`. Severity per inject.
 - `TRACE_INJECTED` -- an operator-injected synthetic invocation trace, replicated cluster-wide so every node serves it on `/api/v1/traces`.
 - `SELF_DRAIN_INITIATED` -- the draining node reports its own drain start (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
+- `THRESHOLD_BREACHED` -- a metric crossed an alert threshold (owner-gated; `details` carries `metric`, `nodeId`, `value`, `threshold`, `alertSeverity`). The durable alert HISTORY, not the source of truth for what is firing now. Severity follows the alert (WARNING or CRITICAL).
+- `THRESHOLD_CLEARED` -- a breached metric fell below its hysteresis-adjusted clear point (owner-gated; `details` carries `metric`, `nodeId`, `value`, `clearedFrom`, `clearPoint`). Severity INFO.
+- `COMMUNITY_MINTED` -- the leader minted a worker community: its committed `CommunityValue` appeared (`details`: `communityId`, `state`, `targetSize`, `role`). Severity INFO.
+- `COMMUNITY_STATE_CHANGED` -- a community's committed lifecycle state changed; one event per edge (`details`: `communityId`, `from`, `to`, `targetSize`). `FORMING -> ACTIVE` is "formed", `ACTIVE -> DEGRADED` (severity WARNING, the only non-INFO edge) is live membership falling below the viability floor, `DEGRADED -> ACTIVE` is recovery, `-> DISSOLVED` is retirement by placement policy. Severity INFO otherwise.
+- `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO. A force-killed worker did not produce `COMMUNITY_MEMBER_LEFT` within 180 s of the kill (one Ember run, #1652; the core raised no worker leave, #1717). From the source, not measured: the roster shrinks only when the core deletes the member's activation directive (a worker leave, a decommission or a self-shutdown) and the governor's next authority write commits the smaller roster. [unverified: no live trigger of `COMMUNITY_MEMBER_LEFT` is demonstrated yet; the roster diff that emits it is pinned at unit level]
 - `OPERATOR_WARNING` -- a condition an operator needs to see, raised by the node that observed it (per-node fact, NOT leader-gated; see below). Severity WARNING or CRITICAL, fixed per code.
+
+The four community events are derived from committed records, so every node observes them and only the cluster-events owner publishes
+them, not every node. Delivery is the owner-gated contract of `guarantees.md` row 14b: at-least-once across an ownership handover (a raise
+on both sides appears twice, with distinct `eventId`s), and dropped and counted while ownership is unresolvable. They record what the core
+can see. A worker that loses the core fences itself locally and writes nothing, so no `-> DISSOLVED` event exists for
+that case; see [`GET /api/v1/cluster/communities`](#get-apiv1clustercommunities) for how that boundary looks.
 
 `GENERATION_CHANGED` no longer exists (#722). It was documented and consumer-wired but never produced: the
 v1 spec's leader-resident reconciler that would have emitted it was never built, and the epoch the cluster
@@ -3161,6 +3171,51 @@ List active community governors (worker pool leaders elected via SWIM).
 ```
 
 Returns empty list if no worker communities exist (all nodes are core).
+
+### GET /api/v1/cluster/communities
+
+List worker communities: lifecycle state, target size, roster and the leader's live-member count (#1652).
+Served by the leader. `GET /api/v1/cluster/communities/{id}` returns one entry, or 404 when no committed
+record exists for the id.
+
+**Response:**
+```json
+{
+  "communities": [
+    {
+      "communityId": "default:local:0",
+      "state": "ACTIVE",
+      "targetSize": 4,
+      "role": "WORKER",
+      "createdAt": 1759000000000,
+      "dissolvedAt": null,
+      "governorId": "node-6",
+      "members": ["node-6", "node-7", "node-8", "node-9"],
+      "memberCount": 4,
+      "communityTerm": 2,
+      "liveMembers": 3
+    }
+  ]
+}
+```
+
+Each entry is the union of two committed records: `CommunityValue` (`state`, `targetSize`, `role`,
+`createdAt`, `dissolvedAt`) and the governor's roster (`governorId`, `members`, `communityTerm`). A
+community known to only one of them shows the other half as `null`.
+
+- `state` is one of `FORMING`, `ACTIVE`, `DEGRADED`, `DISSOLVED`. `DISSOLVING` exists in the state enum
+  but nothing writes it today (#1656), so it is not a state you will see.
+- `liveMembers` is **the leader's instantaneous view, not committed state**: roster members still directed
+  to the community that the leader has not observed absent. It is the same count the leader compares
+  against the viability floor to move a community between `ACTIVE` and `DEGRADED`. It is `null` when the
+  serving node cannot observe it (not the leader, or no roster), never a stand-in `0`.
+
+**What the core cannot see.** A worker that loses contact with the core fences itself locally: it stops
+serving and writes nothing, because it cannot reach the core. The core therefore never records that
+community as `DISSOLVED`. What it shows is the consequence it observes: `liveMembers` drops and the
+community moves to `DEGRADED` once live membership falls below the floor. The worker's own fence is visible
+only on that worker, in the `coreAbsence` field of its `GET /api/v1/cluster/membership` (a LOCAL route; ask
+the worker directly).
 
 ---
 
