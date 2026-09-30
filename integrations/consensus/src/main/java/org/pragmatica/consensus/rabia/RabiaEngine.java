@@ -1594,6 +1594,11 @@ public class RabiaEngine<C extends Command> {
         return settled;
     }
 
+    /// Package-private test hook: Decisions currently buffered for in-order replay.
+    int bufferedDecisionCountForTesting() {
+        return bufferedDecisions.size();
+    }
+
     Phase currentPhaseForTesting() {
         return currentPhase.get();
     }
@@ -3647,7 +3652,7 @@ public class RabiaEngine<C extends Command> {
             bufferDecisionForReplay(decision);
             // The log cannot apply across a missing slot, so the Decision waits buffered: the missing
             // slot's own Decision (ordinary reordering) applies in order and releases it through
-            // [#applyBufferedDecision]. Only a far gap or a slot that never arrives ends in snapshot
+            // [#releaseBufferedDecision]. Only a far gap or a slot that never arrives ends in snapshot
             // repair of the applied prefix. Quorum loss defers the request until resume drains this buffer.
             if (!state.isPaused()) {
                 awaitMissingSlot(decision);
@@ -3738,7 +3743,7 @@ public class RabiaEngine<C extends Command> {
 
     /// Releases the buffered Decision for the slot that has just become current, one per task so the
     /// apply order stays the executor's queue order. Older duplicates are dropped.
-    private void applyBufferedDecision() {
+    private void releaseBufferedDecision() {
         var state = engineState.get();
 
         if (state instanceof EngineState.Stopped || state instanceof EngineState.Syncing) {
@@ -3791,7 +3796,7 @@ public class RabiaEngine<C extends Command> {
                                             ? p
                                             : nextPhase);
         if (!bufferedDecisions.isEmpty()) {
-            safeExecute(this::applyBufferedDecision);
+            safeExecute(this::releaseBufferedDecision);
         }
 
         if (observerMode) {
