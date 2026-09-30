@@ -342,7 +342,7 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StorageConfig defaults) {
-        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults));
+        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults, List.of()));
     }
 
     /// #852 round 2: the boot decision `AetherNode` actually makes -- the config-map instances AND
@@ -366,7 +366,8 @@ public final class StorageFactory {
                                     nodeId,
                                     dhtClient,
                                     keyring,
-                                    StorageConfig.storageConfig());
+                                    StorageConfig.storageConfig(),
+                                    StoragePathsOverlap.streamsClaims(streams));
 
         results.add(armStreamStorage(streams));
 
@@ -388,10 +389,11 @@ public final class StorageFactory {
                                                             String nodeId,
                                                             Option<DHTClient> dhtClient,
                                                             Option<EncryptionKeyring> keyring,
-                                                            StorageConfig defaults) {
+                                                            StorageConfig defaults,
+                                                            List<StoragePathsOverlap.Claim> reserved) {
         var results = new ArrayList<Result<PendingSetup>>();
         var effective = effectiveConfigs(configs, defaults, keyring.isPresent());
-        var overlap = StoragePathsOverlap.find(effective);
+        var overlap = StoragePathsOverlap.find(effective, reserved);
         // #856: refused BEFORE any instance is built, so a refused boot opens no tier and stamps nothing.
         if (overlap.isPresent()) {
             results.add(overlap.unwrap().result());
@@ -459,19 +461,33 @@ public final class StorageFactory {
     /// instances and the paths; the recovery is to give each instance its own `disk_path` and
     /// `snapshot_path`. Paths of ONE instance may nest (its snapshots under its own disk directory).
     public record StoragePathsOverlap(String first, String firstPath, String second, String secondPath) implements Cause {
-        private record Claim(String instance, String kind, Path path) {}
+        record Claim(String instance, String kind, Path path) {}
 
         static Option<StoragePathsOverlap> find(Map<String, StorageConfig> configs) {
-            var claims = configs.entrySet()
-                                .stream()
-                                .flatMap(entry -> java.util.stream.Stream.of(claim(entry.getKey(),
-                                                                                   "disk_path",
-                                                                                   entry.getValue().diskPath()),
-                                                                             claim(entry.getKey(),
-                                                                                   "snapshot_path",
-                                                                                   entry.getValue().snapshotPath())))
-                                .sorted(java.util.Comparator.comparing(Claim::instance).thenComparing(Claim::kind))
-                                .toList();
+            return find(configs, List.of());
+        }
+
+        /// `reserved`: directories already owned by an instance built outside `configs` — the `streams` arm's segment,
+        /// snapshot and WAL directories (CodeRabbit on #1725: an instance whose `disk_path` is the streams segment
+        /// directory used to pass, and both tiers then opened one directory).
+        static Option<StoragePathsOverlap> find(Map<String, StorageConfig> configs, List<Claim> reserved) {
+            var claims = java.util.stream.Stream.concat(configs.entrySet()
+                                                               .stream()
+                                                               .flatMap(entry -> java.util.stream.Stream.of(claim(entry.getKey(),
+                                                                                                                  "disk_path",
+                                                                                                                  entry.getValue()
+                                                                                                                       .diskPath()),
+                                                                                                            claim(entry.getKey(),
+                                                                                                                  "snapshot_path",
+                                                                                                                  entry.getValue()
+                                                                                                                       .snapshotPath()))),
+                                                        reserved.stream()
+                                                                .map(claim -> new Claim(claim.instance(),
+                                                                                        claim.kind(),
+                                                                                        canonical(claim.path()))))
+                                                .sorted(java.util.Comparator.comparing(Claim::instance)
+                                                                            .thenComparing(Claim::kind))
+                                                .toList();
 
             return Option.from(claims.stream()
                                      .flatMap(a -> claims.stream()
@@ -486,10 +502,43 @@ public final class StorageFactory {
                                      .findFirst());
         }
 
+        static List<Claim> streamsClaims(StreamSetupRequest streams) {
+            var claims = new ArrayList<Claim>();
+
+            claims.add(new Claim(STREAMS_NAME,
+                                 "segments",
+                                 streams.streamDataDir().resolve("segments")));
+            claims.add(new Claim(STREAMS_NAME,
+                                 "snapshots",
+                                 streams.streamDataDir().resolve("snapshots")));
+            streams.logRoot().onPresent(root -> claims.add(new Claim(STREAMS_NAME, "wal", root)));
+
+            return List.copyOf(claims);
+        }
+
         private static Claim claim(String instance, String kind, String path) {
-            return new Claim(instance,
-                             kind,
-                             Path.of(path).toAbsolutePath().normalize());
+            return new Claim(instance, kind, canonical(Path.of(path)));
+        }
+
+        /// CodeRabbit on #1725: the tiers follow symlinked directories, so two symlink aliases of one directory are one
+        /// directory. The longest EXISTING prefix is resolved to its real path and the missing tail re-appended; a path
+        /// that does not exist at all is only normalised.
+        static Path canonical(Path path) {
+            var absolute = path.toAbsolutePath().normalize();
+            var existing = absolute;
+
+            while (existing != null && !Files.exists(existing)) {
+                existing = existing.getParent();
+            }
+
+            if (existing == null) {
+                return absolute;
+            }
+
+            var anchor = existing;
+            var real = Result.lift(Causes::fromThrowable, () -> anchor.toRealPath()).or(anchor);
+
+            return real.resolve(anchor.relativize(absolute));
         }
 
         private static boolean overlaps(Path a, Path b) {

@@ -69,6 +69,38 @@ class StorageFactoryPathOverlapTest {
         assertThat(createAll(configs).isFailure()).isTrue();
     }
 
+    /// CodeRabbit on #1725 — the `streams` arm's directories are claimed too: an instance whose `disk_path` is the
+    /// streams segment directory used to pass the check, and both tiers then opened one directory. Mutation that
+    /// reddens it: pass no reserved claims from the streams overload.
+    @Test
+    void instanceOnTheStreamsSegmentDirectory_isRefused() {
+        var streamData = tempDir.resolve("stream-data");
+        var configs = new java.util.HashMap<>(HermeticStorage.nodeStorageIn(tempDir, false));
+
+        configs.put("vault", at(streamData.resolve("segments"), tempDir.resolve("vault-snapshots")));
+
+        var result = StorageFactory.createAll(Map.copyOf(configs),
+                                              NODE_ID,
+                                              Option.none(),
+                                              Option.none(),
+                                              new StorageFactory.StreamSetupRequest(Option.none(), streamData, NODE_ID, Option.none()));
+
+        assertThat(result.isFailure()).as("an instance on the streams segment directory must not boot: %s", result).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("'streams'", "'vault'"));
+    }
+
+    /// CodeRabbit on #1725 — two symlink aliases of one directory are one directory: the tiers follow the link. Mutation
+    /// that reddens it: compare lexically normalised paths only (skip `toRealPath`).
+    @Test
+    void symlinkAliasOfAnotherInstancesDirectory_isRefused() throws java.io.IOException {
+        var real = java.nio.file.Files.createDirectories(tempDir.resolve("real"));
+        var alias = java.nio.file.Files.createSymbolicLink(tempDir.resolve("alias"), real);
+        var configs = Map.of("vault", at(real, tempDir.resolve("vault-snapshots")),
+                             "archive", at(alias, tempDir.resolve("archive-snapshots")));
+
+        assertThat(createAll(configs).isFailure()).as("an alias of vault's directory is vault's directory").isTrue();
+    }
+
     /// CONTROL — distinct directories per instance, one of them keeping its snapshots under its own disk
     /// directory (nesting WITHIN an instance is allowed), plus the synthesized `artifacts`/`content`, boot.
     @Test

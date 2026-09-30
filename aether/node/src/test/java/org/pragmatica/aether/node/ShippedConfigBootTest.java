@@ -52,6 +52,9 @@ class ShippedConfigBootTest {
     Path storageRoot;
 
     private String previousRoot;
+    /// Restore only what this test changed (CodeRabbit on #1725): a test that never set the property must not clear a
+    /// value someone else set.
+    private boolean rootChanged;
 
     @AfterEach
     void tearDown() {
@@ -67,10 +70,15 @@ class ShippedConfigBootTest {
 
     private void rootDefaultStorageInTempDir() {
         previousRoot = System.getProperty(StorageConfig.DEFAULT_ROOT_PROPERTY);
+        rootChanged = true;
         System.setProperty(StorageConfig.DEFAULT_ROOT_PROPERTY, storageRoot.toString());
     }
 
     private void restoreDefaultRoot() {
+        if (!rootChanged) {
+            return;
+        }
+
         if (previousRoot == null) {
             System.clearProperty(StorageConfig.DEFAULT_ROOT_PROPERTY);
         } else {
