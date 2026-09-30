@@ -32,6 +32,7 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -144,7 +145,10 @@ class StreamApiRoutesStreamInfoTest {
 
         isolated.streamInfo(NAMESPACE, STREAM, VERSION, "info")
                 .await()
-                .onSuccess(info -> fail("an unreachable owner must not render as totalEvents=" + info.totalEvents()));
+                .onSuccess(info -> fail("an unreachable owner must not render as totalEvents=" + info.totalEvents()))
+                .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(ManagementServerError.StreamInfoUnavailable.class,
+                                                                              unavailable -> assertThat(unavailable.httpStatus()).as("retryable, never a 500")
+                                                                                                                                  .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)));
     }
 
     @Test

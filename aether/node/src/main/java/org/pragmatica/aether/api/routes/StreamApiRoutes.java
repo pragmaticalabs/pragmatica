@@ -574,13 +574,18 @@ public final class StreamApiRoutes implements RouteSource {
                                       .toList());
     }
 
+    /// `firstFailureOf` surfaces the FIRST failure unwrapped: `allOf` would wrap it in a composite, whose
+    /// status is not the 503 the owner-unreachable cause carries.
     private static Promise<List<StreamRoutes.PartitionDetail>> allOrFirstFailure(List<Result<StreamRoutes.PartitionDetail>> results) {
-        return Result.allOf(results).async();
+        return Result.firstFailureOf(results).async();
     }
 
     private Promise<StreamRoutes.PartitionDetail> ownerPartitionDetail(String engineKey, int partition) {
         return streamReadRouter().bounds(engineKey, partition)
-                               .map(bounds -> StreamRoutes.PartitionDetail.fromBounds(partition, bounds));
+                               .map(bounds -> StreamRoutes.PartitionDetail.fromBounds(partition, bounds))
+                               .mapError(cause -> new ManagementServerError.StreamInfoUnavailable(engineKey,
+                                                                                                  partition,
+                                                                                                  cause));
     }
 
     private Promise<ReadEventsResponse> readEvents(String namespace,
