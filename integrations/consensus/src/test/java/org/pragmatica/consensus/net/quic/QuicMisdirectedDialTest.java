@@ -96,12 +96,12 @@ class QuicMisdirectedDialTest {
         var bLinkToA = bNet.activeConnectionForTests(a).unwrap();
         var aLinkToB = aNet.activeConnectionForTests(b).unwrap();
         var bAttachedBefore = bNet.quicMetrics().handshakeTotalCount();
-        var aFailuresBefore = aNet.quicMetrics().handshakeFailureCount();
+        var aDialFailuresBefore = aNet.quicMetrics().dialFailureCount();
 
         // A dials the recycled address: it names `ghost`, B answers.
         aNet.dialForTests(nodeInfo(ghost, bNet.boundPort().unwrap()), true);
-        awaitTrue(() -> aNet.quicMetrics().handshakeFailureCount() > aFailuresBefore,
-                  "arming: the ghost dial failed at the dialer");
+        awaitTrue(() -> aNet.quicMetrics().dialFailureCount() > aDialFailuresBefore,
+                  "arming: the ghost dial failed at the dialer (a dial failure since #1489; an identity mismatch is not a TLS handshake failure)");
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
 
         assertThat(bNet.activeConnectionForTests(a).unwrap())
