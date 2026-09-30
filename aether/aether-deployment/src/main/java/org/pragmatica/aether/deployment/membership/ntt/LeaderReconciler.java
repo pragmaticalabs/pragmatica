@@ -504,7 +504,6 @@ public final class LeaderReconciler {
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
-
         var unjoinedMints = unjoinedMintTimes(retained, currentMembers);
 
         for (var id : retained) {
@@ -512,7 +511,11 @@ public final class LeaderReconciler {
                 continue;
             }
 
-            inFlightProvisioning.putIfAbsent(id, inheritedEntry(id, nowNanos, ceiling, inheritedGeneration(id, unjoinedMints)));
+            inFlightProvisioning.putIfAbsent(id,
+                                             inheritedEntry(id,
+                                                            nowNanos,
+                                                            ceiling,
+                                                            inheritedGeneration(id, unjoinedMints)));
         }
 
         log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
@@ -543,7 +546,7 @@ public final class LeaderReconciler {
         return retained.stream()
                        .filter(id -> !currentMembers.contains(id))
                        .map(id -> mintedUlid(id).map(ULID::timestamp)
-                                                .or(-1L))
+                                            .or(-1L))
                        .filter(mint -> mint >= 0L)
                        .toList();
     }
@@ -559,8 +562,9 @@ public final class LeaderReconciler {
     /// converse (a substitute read as generation 0) needs the original evicted by its ceiling first, which is
     /// the bound's own window. Ids without a ULID are generation 0.
     private int inheritedGeneration(NodeId id, List<Long> unjoinedMints) {
-        return mintedUlid(id).map(ulid -> generationForMint(ulid.timestamp(), unjoinedMints))
-                             .or(0);
+        return mintedUlid(id).map(ulid -> generationForMint(ulid.timestamp(),
+                                                            unjoinedMints))
+                         .or(0);
     }
 
     private int generationForMint(long mintMs, List<Long> unjoinedMints) {

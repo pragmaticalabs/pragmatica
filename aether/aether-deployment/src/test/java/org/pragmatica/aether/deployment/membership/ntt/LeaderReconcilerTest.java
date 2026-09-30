@@ -127,6 +127,8 @@ class LeaderReconcilerTest {
     /// test sets another.
     private static final TimeSpan EXPECTED_POLL_INTERVAL = membershipConfig().splitTimeout();
     private static final TimeSpan DEFAULT_REPLACEMENT_CEILING = timeSpan(10).minutes();
+    /// Poll intervals (15s) that fit inside the default ten-minute ceiling window.
+    private static final int CEILING_WINDOW_INTERVALS = 40;
     /// #1049 round 3 — a never-listed replacement counts as deleted only after twelve consecutive successful
     /// listings omit it AND three minutes have passed since it became pollable (its create call resolved).
     private static final TimeSpan EXPECTED_FIRST_LISTING_FLOOR = timeSpan(3).minutes();
@@ -2069,17 +2071,27 @@ class LeaderReconcilerTest {
 
         @Test
         void inFlightEntry_stuckSlot_handoverEvery60s_substituteGenerationSurvives() {
-            assertThat(mintsWithHandovers(4, 42)).as("mints over ~630s, handover every 60s").isLessThanOrEqualTo(2);
+            assertThat(mintsWithHandovers(4, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 60s").isLessThanOrEqualTo(2);
         }
 
         @Test
         void inFlightEntry_stuckSlot_handoverEvery105s_substituteGenerationSurvives() {
-            assertThat(mintsWithHandovers(7, 42)).as("mints over ~630s, handover every 105s").isLessThanOrEqualTo(2);
+            assertThat(mintsWithHandovers(7, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 105s").isLessThanOrEqualTo(2);
         }
 
         @Test
         void inFlightEntry_stuckSlot_handoverEvery120s_substituteGenerationSurvives() {
-            assertThat(mintsWithHandovers(8, 42)).as("mints over ~630s, handover every 120s").isLessThanOrEqualTo(2);
+            assertThat(mintsWithHandovers(8, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 120s").isLessThanOrEqualTo(2);
+        }
+
+        /// #1786 — the residual the inference cannot close: once the ceiling has evicted the ORIGINAL (600s), a
+        /// handover leaves the substitute as a lone unjoined id, indistinguishable from a genuine first
+        /// replacement, so it reads as generation 0 and may be discounted and substituted once more. This is the
+        /// ceiling's own re-dispatch (the pre-#1786 behaviour at that point), bounded at one extra mint per
+        /// ceiling window; spend stays at most original + substitute + one ceiling re-dispatch.
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery60s_pastTheOriginalsCeiling_mayMintOneMore() {
+            assertThat(mintsWithHandovers(4, 42)).as("mints over ~630s, handover every 60s").isLessThanOrEqualTo(3);
         }
 
         /// #1786 — the documented misclassification of the handover inference: two genuinely missing slots whose
