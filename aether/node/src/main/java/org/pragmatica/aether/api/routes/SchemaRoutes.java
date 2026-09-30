@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -118,7 +119,8 @@ public final class SchemaRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_BASELINE)
                                          .withPath(aString())
-                                         .withQuery(QueryParameter.aString("version"))
+                                         .withQuery(QueryParameter.aString("version"),
+                                                    QueryParameter.aBoolean("force"))
                                          .to(this::baselineDatasource)
                                          .asJson(),
                          ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_RETRY)
@@ -310,20 +312,68 @@ public final class SchemaRoutes implements RouteSource {
     /// record's artifact coordinates and owning blueprint, and must fail rather than fabricate an
     /// unowned record for a datasource that has none.
     Promise<SchemaMigrateResponse> baselineDatasource(String datasource, Option<String> versionOpt) {
+        return baselineDatasource(datasource, versionOpt, Option.none());
+    }
+
+    /// #217: `force` overrides [#guardBaseline] only; it never bypasses the leader binding or the
+    /// manager's own `BaselineConflict` (history already applied past the requested version).
+    Promise<SchemaMigrateResponse> baselineDatasource(String datasource,
+                                                      Option<String> versionOpt,
+                                                      Option<Boolean> force) {
         return versionParameter(versionOpt, VERSION_PARAMETER, DEFAULT_BASELINE_VERSION).async()
-                               .flatMap(version -> baselineAtVersion(datasource, version));
+                               .flatMap(version -> baselineAtVersion(datasource,
+                                                                     version,
+                                                                     force.or(false)));
     }
 
     /// #543: this used to write a fabricated COMPLETED status directly, with zero database
     /// interaction — see `SchemaOrchestratorService.baseline`'s header. Same shape as
     /// [#undoToVersion]: existence check, leader-bind, real orchestrator call, re-read for the
     /// response.
-    private Promise<SchemaMigrateResponse> baselineAtVersion(String datasource, int version) {
-        return lookupSchemaVersion(datasource).flatMap(_ -> requireLeader(datasource, "baseline"))
+    private Promise<SchemaMigrateResponse> baselineAtVersion(String datasource, int version, boolean force) {
+        return lookupSchemaVersion(datasource).flatMap(current -> guardBaseline(current, datasource, version, force))
+                                  .flatMap(_ -> requireLeader(datasource, "baseline"))
                                   .flatMap(_ -> nodeSupplier.get()
                                                             .schemaOrchestrator()
-                                                            .baseline(datasource, version))
+                                                            .baseline(datasource, version, force))
                                   .flatMap(_ -> reportOutcome(datasource, "Baseline"));
+    }
+
+    /// #217: a baseline over a PENDING or MIGRATING record replaces the in-flight migration's record with
+    /// COMPLETED, and `migrateIfNeeded` (PENDING only) then never runs that migration: the operator's
+    /// baseline silently cancels it. The 2026-05-10 RC1 parallel-suite race was exactly this (a default
+    /// `version=1` baseline landing on a PENDING record). Refused with a 409 naming the status; an UNKNOWN
+    /// status is refused too, since this node cannot tell whether a migration is in flight. `?force=true`
+    /// overrides, and the override is written to the audit log with the status it overrode.
+    ///
+    /// Like [#activeSliceCount] this is a snapshot read with no lock spanning it and the orchestrator
+    /// call: a migration armed in between is not caught. It catches the common case, an operator
+    /// baselining over a migration that is visibly in flight; it is not a linearizable barrier.
+    private Promise<SchemaVersionValue> guardBaseline(SchemaVersionValue current,
+                                                      String datasource,
+                                                      int version,
+                                                      boolean force) {
+        var inFlight = switch (current.status()) {
+            case PENDING, MIGRATING, UNKNOWN -> true;
+            case COMPLETED, FAILED -> false;
+        };
+
+        if (!inFlight) {
+            return Promise.success(current);
+        }
+
+        if (force) {
+            AuditLog.schemaBaselineForced(datasource,
+                                          version,
+                                          current.status().name());
+
+            return Promise.success(current);
+        }
+
+        return SchemaError.BaselineOverInFlightMigration.baselineOverInFlightMigration(datasource,
+                                                                                       current.status(),
+                                                                                       "route check")
+                                                        .promise();
     }
 
     /// #543 condition 2: `SchemaOrchestratorServiceInstance`'s single-flight fence is an

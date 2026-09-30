@@ -83,6 +83,14 @@ public final class AuditLog {
         AUDIT.info("BLUEPRINT_DELETED blueprintId={}", blueprintId);
     }
 
+    /// #217: an operator baselined over a migration that was in flight, overriding the route's refusal.
+    public static void schemaBaselineForced(String datasource, int version, String overriddenStatus) {
+        AUDIT.warn("SCHEMA_BASELINE_FORCED datasource={} version={} overriddenStatus={}",
+                   datasource,
+                   version,
+                   overriddenStatus);
+    }
+
     public static void schemaManualRetry(String datasource) {
         AUDIT.info("SCHEMA_MANUAL_RETRY datasource={}", datasource);
     }

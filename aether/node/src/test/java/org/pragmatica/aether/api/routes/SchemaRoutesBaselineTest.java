@@ -19,6 +19,7 @@ import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.resource.artifact.ArtifactFile;
@@ -38,6 +39,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -104,6 +106,12 @@ class SchemaRoutesBaselineTest {
 
     private InMemoryKvStore store;
     private SchemaRoutes routes;
+    /// Runs inside the fake schema manager's baseline, i.e. under the orchestrator's fence, after the route's check.
+    private Runnable duringBaseline = () -> {};
+    /// Runs when the orchestrator writes its migration lock: under the fence, BEFORE the database is touched.
+    private Runnable onLockWrite = () -> {};
+    /// Counts the fake schema manager's baseline calls: the database work.
+    private final java.util.concurrent.atomic.AtomicInteger baselineCalls = new java.util.concurrent.atomic.AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -148,6 +156,90 @@ class SchemaRoutesBaselineTest {
             assertThat(recorded().currentVersion()).isEqualTo(7);
             assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
             assertThat(recorded().lastMigration()).isEqualTo("V007__baseline");
+        }
+    }
+
+    /// #217 — a baseline over an in-flight migration writes COMPLETED, and the orchestrator dispatches only
+    /// PENDING records, so the migration silently never runs (the RC1 parallel-suite race). Refused with a 409
+    /// unless `force=true`. The Preservation cases above (COMPLETED, FAILED) are the controls: those still
+    /// baseline. Mutation that reddens the refusals: make `guardBaseline` return the record unconditionally.
+    @Nested
+    class InFlightGuard {
+        @Test
+        void baselineDatasource_isRefused_whenMigrationIsPending() {
+            assertRefusedAndUntouched(SchemaStatus.PENDING);
+        }
+
+        @Test
+        void baselineDatasource_isRefused_whenMigrationIsMigrating() {
+            assertRefusedAndUntouched(SchemaStatus.MIGRATING);
+        }
+
+        @Test
+        void baselineDatasource_proceeds_whenForcedOverAPendingMigration() {
+            seed(SchemaStatus.PENDING);
+
+            routes.baselineDatasource(DATASOURCE, Option.some("7"), Option.some(true))
+                  .await()
+                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
+            assertThat(recorded().currentVersion()).isEqualTo(7);
+        }
+
+        /// #217 race (v1617): the route checks the status BEFORE the orchestrator's fence. A deploy that arms a
+        /// migration (writes PENDING) while the baseline runs used to be overwritten with COMPLETED, so that
+        /// migration never ran. The fake schema manager writes PENDING mid-baseline, after the route's check.
+        /// Mutation that reddens it: drop the re-check before `recordOutcome`.
+        @Test
+        void baselineDatasource_doesNotOverwrite_aMigrationArmedWhileTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            duringBaseline = () -> seed(SchemaStatus.PENDING);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("the fenced re-check must refuse: %s", result).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.BaselineOverInFlightMigration.class));
+            assertThat(recorded().status()).as("the armed migration's PENDING record survives").isEqualTo(SchemaStatus.PENDING);
+        }
+
+        /// v1617 NIT 2 — the FIRST fenced re-check: a migration armed after the route's check but before the database
+        /// work (here, the moment the orchestrator writes its lock) is refused BEFORE the database is touched. Mutation
+        /// that reddens it: drop that first re-check — the second still refuses, but only after the baseline ran.
+        @Test
+        void baselineDatasource_refusesBeforeTheDatabase_aMigrationArmedBeforeTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            onLockWrite = () -> seed(SchemaStatus.PENDING);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("the first fenced re-check must refuse: %s", result).isTrue();
+            assertThat(baselineCalls.get()).as("refused BEFORE the database baseline ran").isZero();
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.PENDING);
+        }
+
+        @Test
+        void baselineDatasource_forced_overwritesAMigrationArmedWhileTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            duringBaseline = () -> seed(SchemaStatus.PENDING);
+
+            routes.baselineDatasource(DATASOURCE, Option.some("7"), Option.some(true))
+                  .await()
+                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
+        }
+
+        private void assertRefusedAndUntouched(SchemaStatus inFlight) {
+            seed(inFlight);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("#217: baseline over %s must be refused: %s", inFlight, result).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.BaselineOverInFlightMigration.class)
+                                                       .satisfies(refusal -> assertThat(((HttpStatusAware) refusal).httpStatus()
+                                                                                                                   .code()).isEqualTo(409)));
+            assertThat(recorded().status()).as("the in-flight record is left as it was").isEqualTo(inFlight);
         }
     }
 
@@ -206,11 +298,14 @@ class SchemaRoutesBaselineTest {
     /// route → orchestrator → KV-write path, condition 3's evidence included (the written
     /// `currentVersion` comes from `SchemaResult.currentVersion()`, not the raw request parameter).
     private ManageableNode nodeOver(InMemoryKvStore kvStore) {
-        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(new PlainClusterNode(SELF, kvStore),
+        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(new PlainClusterNode(SELF, kvStore, () -> onLockWrite.run()),
                                                                                kvStore,
                                                                                artifactStoreServing(),
                                                                                noLocalRepository(),
-                                                                               new BaselineOnlySchemaManager(),
+                                                                               new BaselineOnlySchemaManager(() -> {
+                                                                                   baselineCalls.incrementAndGet();
+                                                                                   duringBaseline.run();
+                                                                               }),
                                                                                stubConnectionProvider(),
                                                                                SELF);
 
@@ -355,6 +450,12 @@ class SchemaRoutesBaselineTest {
     /// and `migrate` are never exercised by this file's tests and fail loudly if they ever are, so a
     /// wiring mistake shows up as a test failure instead of a silently wrong result.
     private static final class BaselineOnlySchemaManager implements AetherSchemaManager {
+        private final Runnable duringBaseline;
+
+        BaselineOnlySchemaManager(Runnable duringBaseline) {
+            this.duringBaseline = duringBaseline;
+        }
+
         @Override
         public Promise<SchemaResult> migrate(String datasource, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
             return Causes.cause("migrate() not exercised by SchemaRoutesBaselineTest").promise();
@@ -367,6 +468,8 @@ class SchemaRoutesBaselineTest {
 
         @Override
         public Promise<SchemaResult> baseline(String datasource, int baselineVersion, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
+            duringBaseline.run();
+
             return Promise.success(SchemaResult.schemaResult(scripts.size(), baselineVersion, 1L));
         }
     }
@@ -378,9 +481,12 @@ class SchemaRoutesBaselineTest {
         private final NodeId self;
         private final InMemoryKvStore kvStore;
 
-        PlainClusterNode(NodeId self, InMemoryKvStore kvStore) {
+        private final Runnable onLockWrite;
+
+        PlainClusterNode(NodeId self, InMemoryKvStore kvStore, Runnable onLockWrite) {
             this.self = self;
             this.kvStore = kvStore;
+            this.onLockWrite = onLockWrite;
         }
 
         @Override public NodeId self() {return self;}
@@ -393,6 +499,10 @@ class SchemaRoutesBaselineTest {
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             batch.forEach(kvStore::apply);
+            if (batch.stream().anyMatch(command -> command instanceof KVCommand.Put<?, ?> put
+                                                  && put.key() instanceof AetherKey.SchemaMigrationLockKey)) {
+                onLockWrite.run();
+            }
 
             return Promise.success(List.of());
         }

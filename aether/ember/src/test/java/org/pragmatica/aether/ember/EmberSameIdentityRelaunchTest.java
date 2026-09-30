@@ -182,12 +182,18 @@ class EmberSameIdentityRelaunchTest {
     }
 
     /// A hard kill resolves after a 1 s bound while the killed node may still hold its sockets; the
-    /// same-address relaunch waits until every port of btk-3's slot (slot 2) is free again.
+    /// same-address relaunch waits until every port of btk-3's slot (slot 2) is free again. It FAILS on its
+    /// deadline: since #1719 the QUIC bind is exclusive, so relaunching onto a still-held port fails with
+    /// BindFailed, and "the refused process never completes a start" would then pass for the wrong reason.
     private static void awaitSlotFree(int base, int slot) {
         var deadline = System.currentTimeMillis() + 60_000L;
 
         while (!EmberTestPorts.slotFree(PORTS, base, slot) && System.currentTimeMillis() < deadline) {
             sleep(250);
+        }
+        if (!EmberTestPorts.slotFree(PORTS, base, slot)) {
+            throw new AssertionError("slot " + slot + " of base port " + base + " is still held 60 s after the kill: a relaunch "
+                                     + "there would be refused by the bind (BindFailed), not by the boot token");
         }
     }
 }
