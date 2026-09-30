@@ -596,7 +596,7 @@ class DistributedDHTClientTest {
         }
 
         @Test
-        void get_isFound_whenHolderAnswersAfterAnotherOriginalDepartedAndReplacementWasEmpty() {
+        void get_isFound_whenHolderAnswersAfterAnotherOriginalDepartedAndReplacementWasEmpty() throws InterruptedException {
             useRing(4);
             var read = client.get(key("k1"), GRACE);
             var initial = requests();
@@ -606,6 +606,9 @@ class DistributedDHTClientTest {
             reply(initial.get(1), Option.none());
             // the replacement holds no copy yet: its empty answer is a failed slot, never a vote
             reply(replacement, Option.none());
+            // were the replacement's empty answer counted as a vote, B + replacement would be R=2 empties and the
+            // grace (400ms) would end the read as absent while the holder C is still owing its reply
+            Thread.sleep(800);
             assertThat(read.isResolved()).isFalse();
             reply(initial.get(2), Option.some(value("v1")));
 
@@ -616,8 +619,10 @@ class DistributedDHTClientTest {
 
         /// The opt-in is a per-call option on the SAME instance, never a derived client: pendingOps is per instance and
         /// the node routes replies only to the base client, so a derived client's reads would time out on every reply.
+        /// Replies here go to the very instance that issued the read; the pin is that the option does not move the read
+        /// onto another instance (routing it through `scoped(...)` makes this read never resolve).
         @Test
-        void get_withOption_resolvesFromRepliesRoutedToTheBaseClient() {
+        void get_withOption_resolvesFromRepliesDeliveredToTheIssuingInstance() {
             useRing(3);
             var read = client.get(key("k1"), GRACE);
             var initial = requests();
