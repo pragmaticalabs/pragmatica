@@ -3069,6 +3069,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .flatMap(_ -> durableWatermark(streamName, partition));
     }
 
+    /// Whether a held-but-unmaterialized partition of `streamName` is deferred for lack of off-heap budget (the same
+    /// test [#materializePaced] makes first) rather than merely paced; no reshuffle slot frees such a partition.
+    public boolean heldBudgetExhausted(String streamName) {
+        return option(streams.get(streamName)).filter(entry -> !isSystemStream(streamName))
+                     .map(entry -> availableBytes() < perPartitionFloorBytes(entry.config()))
+                     .or(false);
+    }
+
     private boolean isHeldWithoutRing(StreamEntry entry, String streamName, int partition) {
         return partition >= 0
                && partition < entry.declaredPartitions()

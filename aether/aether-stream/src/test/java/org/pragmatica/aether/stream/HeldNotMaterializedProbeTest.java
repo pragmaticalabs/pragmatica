@@ -344,4 +344,33 @@ class HeldNotMaterializedProbeTest {
 
         return extent;
     }
+
+    /// The reply says WHY: a partition deferred for off-heap budget is named as such (no slot frees it), a merely paced
+    /// one is not.
+    @Test
+    void heldReply_namesOffHeapBudgetExhaustion_onlyForABudgetDeferredPartition() {
+        var floor = 64L + 24L * 100 + Math.min(256 * 1024L, 64 * 1024L);
+        var tight = streamPartitionManager(floor);
+
+        try {
+            roles.clear();
+            tight.placementRoleSupplier((stream, _) -> roles.getOrDefault(stream, Role.NONE));
+            List.of(config("b1", 1), config("b2", 1)).forEach(config -> tight.onStreamConfigPut(configPut(config)));
+            roles.put("b1", Role.REPLICA);
+            roles.put("b2", Role.REPLICA);
+            tight.materializePartition("b1", 0).onFailure(_ -> fail("b1 fits the budget"));
+            tight.materializePartition("b2", 0).onSuccess(_ -> fail("b2 must be budget-deferred"));
+            var tightHandler = StreamForwardHandler.streamForwardHandler(SELF, tight, (_, message) -> record(message));
+
+            tightHandler.onReadForward(readForward(PEER, "corr", "b2", 0, 0L, PAGE, false, true));
+
+            assertThat(tight.heldBudgetExhausted("b2")).isTrue();
+            assertThat(StreamError.PartitionHeldNotMaterialized.isBudgetExhausted(new StreamForwardError.ReadForwardFailed(answers.getLast().errorMessage())))
+                .isTrue();
+            assertThat(manager.heldBudgetExhausted("fresh")).as("paced with budget to spare").isFalse();
+            assertThat(StreamError.PartitionHeldNotMaterialized.isBudgetExhausted(new StreamError.PartitionHeldNotMaterialized("s", 0, 1L))).isFalse();
+        } finally {
+            tight.close();
+        }
+    }
 }

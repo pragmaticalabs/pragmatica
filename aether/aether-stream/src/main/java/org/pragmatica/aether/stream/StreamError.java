@@ -212,14 +212,30 @@ public sealed interface StreamError extends Cause {
     /// message only, so the prober recovers `watermark` from the message ([#watermarkOf]), the way a
     /// `CursorExpired` refusal names the oldest available offset. Still a failure to a CATCH-UP pull, which has
     /// nothing to pull from a partition with no ring and redrives.
-    record PartitionHeldNotMaterialized(String streamName, int partition, long watermark) implements StreamError {
+    record PartitionHeldNotMaterialized(String streamName, int partition, long watermark, boolean budgetExhausted) implements StreamError {
+        private static final String BUDGET_SUFFIX = " (off-heap budget exhausted)";
+
         private static final Pattern DURABLE_WATERMARK = Pattern.compile("held but not materialized on this node, durable watermark (-?\\d+)");
+
+        /// A holder that is merely paced (`reshuffle_concurrency`).
+        public PartitionHeldNotMaterialized(String streamName, int partition, long watermark) {
+            this(streamName, partition, watermark, false);
+        }
 
         @Override
         public String message() {
-            return "Stream partition %s[%d] is held but not materialized on this node, durable watermark %d".formatted(streamName,
-                                                                                                                       partition,
-                                                                                                                       watermark);
+            return "Stream partition %s[%d] is held but not materialized on this node, durable watermark %d%s".formatted(streamName,
+                                                                                                                         partition,
+                                                                                                                         watermark,
+                                                                                                                         budgetExhausted
+                                                                                                                         ? BUDGET_SUFFIX
+                                                                                                                         : "");
+        }
+
+        /// Whether the peer said it is deferred because its off-heap budget is exhausted: no slot frees it, only budget does.
+        public static boolean isBudgetExhausted(Cause cause) {
+            return cause.message()
+                        .contains(BUDGET_SUFFIX);
         }
 
         /// The durable watermark a peer reported with this refusal, or none when `cause` is any other failure.

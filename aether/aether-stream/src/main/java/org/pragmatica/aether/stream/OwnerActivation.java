@@ -213,6 +213,23 @@ public final class OwnerActivation {
             }
         }
 
+        /// `peer` HOLDS the partition with durable data (`peerHead`) but has not materialized it because its off-heap
+        /// budget is exhausted, so no reshuffle slot will ever free it: the owner cannot verify or pull from it and
+        /// refuses to act as owner (`localHead` is what it holds). Safe, but appends stay refused until budget frees
+        /// on that node or an operator picks a source.
+        record HolderBudgetDeferred(String streamName, int partition, NodeId peer, long localHead, long peerHead) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] refused: %s holds durable data (head %d, local head %d) but has not "
+                       + "materialized the partition — off-heap budget exhausted on that node; appends stay refused until "
+                       + "its budget frees or an operator picks the source").formatted(streamName,
+                                                                                       partition,
+                                                                                       peer,
+                                                                                       peerHead,
+                                                                                       localHead);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -550,9 +567,25 @@ public final class OwnerActivation {
     /// Every responder that is not the catch-up source must agree with the local log where both hold records:
     /// a lower (or equal) peer that disagrees means the local tail, or the peer's, belongs to another lineage.
     private Promise<Unit> verifyAgreement(String stream, int partition, long local, List<PeerWatermark> others) {
-        return Promise.allOf(others.stream().map(peer -> verifyOverlap(stream, partition, local, peer)).toList())
+        return Promise.allOf(others.stream()
+                                   .map(peer -> verifyOverlap(stream, partition, local, peer).onFailure(cause -> flagBudgetHolder(stream,
+                                                                                                                                  partition,
+                                                                                                                                  local,
+                                                                                                                                  peer,
+                                                                                                                                  cause)))
+                                   .toList())
                       .flatMap(results -> Result.allOf(results).async())
                       .mapToUnit();
+    }
+
+    /// The refusal that names a peer deferred for off-heap budget is reported (once per distinct block) rather than
+    /// only debug-logged by the re-drive: a paced peer clears when a slot frees, a budget-deferred one does not.
+    @Contract
+    private void flagBudgetHolder(String stream, int partition, long local, PeerWatermark peer, Cause cause) {
+        if (StreamError.PartitionHeldNotMaterialized.isBudgetExhausted(cause)) {
+            report(PartitionKey.partitionKey(stream, partition),
+                   new ActivationBlock.HolderBudgetDeferred(stream, partition, peer.node(), local, peer.watermark()));
+        }
     }
 
     private Promise<Unit> catchUpFrom(String stream,
@@ -576,7 +609,8 @@ public final class OwnerActivation {
                                                                                                             local,
                                                                                                             highest,
                                                                                                             others))
-                                  .flatMap(_ -> pullSuffix(stream, partition, highest));
+                                  .flatMap(_ -> pullSuffix(stream, partition, highest))
+                                  .onFailure(cause -> flagBudgetHolder(stream, partition, local, highest, cause));
     }
 
     /// Pairwise agreement of the source with every other responder (v1555 on #1555). The local log covers only

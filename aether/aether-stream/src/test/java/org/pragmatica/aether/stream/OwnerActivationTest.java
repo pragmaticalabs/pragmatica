@@ -227,6 +227,31 @@ class OwnerActivationTest {
         assertThat(nonHolder.activate(STREAM, PARTITION).await().isSuccess()).as("genuine non-holder").isTrue();
     }
 
+    /// A peer that holds durable data but is deferred for off-heap BUDGET (no slot will free it) is reported, once, as a
+    /// block naming the partition, the peer and both offsets; a merely paced peer is not (its slot will free).
+    @Test
+    void gate_budgetDeferredPeerWithDurableData_raisesTheBlock_pacedPeerDoesNot() {
+        var budgetDeferred = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L, true).message()).promise());
+        var paced = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L, false).message()).promise());
+
+        members.set(List.of(SELF, PEER_A));
+
+        assertThat(paced.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
+        assertThat(alarms).as("a paced peer raises no budget block").isEmpty();
+        assertThat(budgetDeferred.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
+        assertThat(alarms).hasSize(1);
+        var block = alarms.getFirst();
+
+        assertThat(block).isInstanceOf(OwnerActivation.ActivationBlock.HolderBudgetDeferred.class);
+        assertThat(block.message()).contains(STREAM + "[" + PARTITION + "]", PEER_A.id(), "head 5", "local head 19", "off-heap budget exhausted");
+        assertThat(budgetDeferred.blockOf(STREAM, PARTITION)).isEqualTo(Option.some(block));
+
+        budgetDeferred.activate(STREAM, PARTITION).await();
+        assertThat(alarms).as("the same block is raised once").hasSize(1);
+    }
+
     private OwnerActivation gateThrough(OwnerPeerReads.PageRead peerRead) {
         return OwnerActivation.ownerActivation(SELF,
                                                (_, _) -> record.get(),
