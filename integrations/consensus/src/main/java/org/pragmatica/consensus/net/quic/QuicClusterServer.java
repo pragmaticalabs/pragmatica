@@ -38,6 +38,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoop;
@@ -579,7 +580,9 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                      hello.sender(),
                      hello.intendedPeer(),
                      selfId);
-            sendHelloResponse(ctx).addListener(_ -> ctx.channel().parent().close());
+            sendHelloResponse(ctx).addListener(_ -> ctx.channel()
+                                                       .parent()
+                                                       .close());
         }
 
         /// Answer a refused Hello with an explicit [NetworkMessage.HelloRefused] — in place of the Hello
@@ -610,9 +613,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                                                                         selfLabels,
                                                                         bootTokens.self(),
                                                                         Option.none()));
-
             var written = ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
-
             // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.
             quicMetrics.onBytesSent(helloBytes.length);
 
