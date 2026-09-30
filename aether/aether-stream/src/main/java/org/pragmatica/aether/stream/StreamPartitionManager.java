@@ -2468,9 +2468,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private boolean isHeldWithoutRing(StreamEntry entry, String streamName, int partition) {
-        return partition >= 0 && partition < entry.declaredPartitions() && entry.ringFor(partition)
-                                                                                .isEmpty() && placementRoleSupplier.roleFor(streamName,
-                                                                                                                            partition) != Role.NONE;
+        return partition >= 0
+               && partition < entry.declaredPartitions()
+               && entry.ringFor(partition)
+                       .isEmpty()
+               && placementRoleSupplier.roleFor(streamName, partition) != Role.NONE;
     }
 
     private Option<Long> durableWatermark(String streamName, int partition) {
