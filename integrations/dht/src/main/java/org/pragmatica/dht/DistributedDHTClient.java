@@ -130,7 +130,7 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         Promise<Option<byte[]>> promise = Promise.promise();
-        var collector = QuorumCollector.<byte[]> strictAbsenceCollector(quorum, targets.size(), promise);
+        var collector = QuorumCollector.<Option<byte[]>> quorumCollector(quorum, targets.size(), promise);
         var read = InFlightRead.inFlightRead(key, collector, readDeadlineNanos(), DEFAULT_READ_REISSUE_LIMIT);
         var unsubscribe = node.ring().onNodeRemoved(departed -> reissueAfterDeparture(read, departed));
 

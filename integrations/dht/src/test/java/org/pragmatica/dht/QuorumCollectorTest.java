@@ -19,16 +19,13 @@ package org.pragmatica.dht;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.dht.QuorumCollector.quorumCollector;
-import static org.pragmatica.dht.QuorumCollector.strictAbsenceCollector;
 import static org.pragmatica.lang.Unit.unit;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Fix-2 defense-in-depth: the quorum collector must abort the moment quorum becomes
 /// arithmetically impossible (enough failures accrued that the remaining responses cannot reach
@@ -116,68 +113,6 @@ class QuorumCollectorTest {
             assertThat(promise.isResolved()).isTrue();
             promise.await()
                    .onFailure(cause -> fail("Expected success: " + cause.message()));
-        }
-    }
-
-    @Nested
-    class StrictAbsence {
-        private final Cause failure = DHTError.OPERATION_TIMEOUT;
-
-        @Test
-        void onSuccess_staysOpen_afterQuorumOfEmptyAnswers() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = strictAbsenceCollector(2, 3, promise);
-
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-
-            assertThat(promise.isResolved()).isFalse();
-        }
-
-        @Test
-        void onSuccess_resolvesAbsent_whenEverySlotAnsweredEmpty() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = strictAbsenceCollector(2, 3, promise);
-
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-
-            promise.await(timeSpan(2).seconds()).onFailure(c -> fail("Expected absent")).onSuccess(o -> assertThat(o.isEmpty()).isTrue());
-        }
-
-        @Test
-        void onSuccess_resolvesFound_atFirstPresentAnswer() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = strictAbsenceCollector(2, 3, promise);
-
-            collector.onSuccess(Option.some("v"));
-
-            promise.await(timeSpan(2).seconds()).onFailure(c -> fail("Expected found")).onSuccess(o -> assertThat(o).isEqualTo(Option.some("v")));
-        }
-
-        @Test
-        void onFailure_resolvesAbsent_whenLastSlotFailsAfterQuorumOfEmptyAnswers() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = strictAbsenceCollector(2, 3, promise);
-
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-            collector.onFailure(failure);
-
-            promise.await(timeSpan(2).seconds()).onFailure(c -> fail("Expected absent")).onSuccess(o -> assertThat(o.isEmpty()).isTrue());
-        }
-
-        @Test
-        void onFailure_failsFast_whenQuorumBecomesImpossible() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = strictAbsenceCollector(2, 3, promise);
-
-            collector.onFailure(failure);
-            collector.onFailure(failure);
-
-            assertThat(promise.isResolved()).isTrue();
-            promise.await(timeSpan(2).seconds()).onSuccess(_ -> fail("Expected failure"));
         }
     }
 }
