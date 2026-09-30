@@ -55,8 +55,11 @@ public final class DistributedDHTClient implements DHTClient {
     private final DHTConfig config;
     private final OwnerEpochSource ownerEpochSource;
     private final ResolveFallbackObserver fallbackObserver;
-    /// Pending operations indexed by correlation ID.
-    private final ConcurrentHashMap<String, PendingOperation<?>> pendingOps = new ConcurrentHashMap<>();
+    /// Pending operations indexed by correlation ID. One map is shared by a base client and every instance
+    /// derived from it ([#scoped], [#withResolveFallbackObserver]): the node routes replies to a single
+    /// instance, and correlation IDs are globally unique, so a reply finds the collector that issued it
+    /// whichever instance receives it (#1776). Configuration stays per instance; only reply lookup is shared.
+    private final ConcurrentHashMap<String, PendingOperation<?>> pendingOps;
 
     private record PendingOperation<T>(QuorumCollector<T> collector) {}
 
@@ -64,12 +67,14 @@ public final class DistributedDHTClient implements DHTClient {
                                  DHTNetwork network,
                                  DHTConfig config,
                                  OwnerEpochSource ownerEpochSource,
-                                 ResolveFallbackObserver fallbackObserver) {
+                                 ResolveFallbackObserver fallbackObserver,
+                                 ConcurrentHashMap<String, PendingOperation<?>> pendingOps) {
         this.node = node;
         this.network = network;
         this.config = config;
         this.ownerEpochSource = ownerEpochSource;
         this.fallbackObserver = fallbackObserver;
+        this.pendingOps = pendingOps;
     }
 
     /// Create a distributed DHT client at the unfenced epoch floor ([OwnerEpochSource#zero]).
@@ -78,7 +83,12 @@ public final class DistributedDHTClient implements DHTClient {
     /// @param network DHT network for inter-node messaging
     /// @param config  DHT configuration (replication factor, quorum sizes)
     public static DistributedDHTClient distributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DistributedDHTClient(node, network, config, OwnerEpochSource.zero(), ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        config,
+                                        OwnerEpochSource.zero(),
+                                        ResolveFallbackObserver.noop(),
+                                        new ConcurrentHashMap<>());
     }
 
     /// Create a distributed DHT client that stamps every put with the node's current owner epoch
@@ -92,7 +102,12 @@ public final class DistributedDHTClient implements DHTClient {
                                                             DHTNetwork network,
                                                             DHTConfig config,
                                                             OwnerEpochSource ownerEpochSource) {
-        return new DistributedDHTClient(node, network, config, ownerEpochSource, ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        config,
+                                        ownerEpochSource,
+                                        ResolveFallbackObserver.noop(),
+                                        new ConcurrentHashMap<>());
     }
 
     /// Return a client that reports resolve-time alternate-target fallback outcomes (issue #428, C2)
@@ -102,12 +117,12 @@ public final class DistributedDHTClient implements DHTClient {
     ///
     /// @param observer sink for fallback-resolved and unresolved-after-fallback notifications
     public DistributedDHTClient withResolveFallbackObserver(ResolveFallbackObserver observer) {
-        return new DistributedDHTClient(node, network, config, ownerEpochSource, observer);
+        return new DistributedDHTClient(node, network, config, ownerEpochSource, observer, pendingOps);
     }
 
     @Override
     public DHTClient scoped(DHTConfig scopedConfig) {
-        return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource, fallbackObserver);
+        return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource, fallbackObserver, pendingOps);
     }
 
     @Override
