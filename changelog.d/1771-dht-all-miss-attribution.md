@@ -4,8 +4,12 @@
   empty); an R-set member filtered as not live; and a ring larger than the bounded probe reaches. On top of that
   `onUnresolvedAfterFallback` was never wired in production.
 - The all-miss report now carries the key hex and the counts (`rSetSize`, `rSetLive`, `rSetAnswered`, `probed`,
-  `probesFailed`, `unprobed`), and `AetherNode` logs it as a WARN with `verdict=lost` or `verdict=unreachable`. `lost` only
-  when every R-set member was targeted and answered, no probe failed and the probe covered the ring.
+  `probesFailed`, `unprobed`), and `AetherNode` logs it as a WARN with `verdict=absent-everywhere`, `unreachable` or
+  `late-value-discarded`. `absent-everywhere` only when no late reply carried a value, every R-set member was targeted and
+  answered, no probe failed and the probe covered the ring; it cannot tell a never-written key from a lost one.
+  `late-value-discarded` names the replica (`lateValueFrom=`) whose reply carried the value after the R2 quorum had already
+  resolved empty: a read-path false negative, reported, not changed. A ring no bigger than the R-set (3 nodes, FULL
+  replication) is now reported too, once every R-set reply has arrived, without delaying the read.
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTResolveFallbackTest.java`, `ResolveMissTest.java`]
 - **Every line now says how long the read took and how it ended**: the all-miss WARN carries `kind=quorum-empty|fallback-degraded`
   and `elapsedMs`; a metadata read the 15s resolve timeout cut (a target departed mid-read, so nothing reports an all-miss)
