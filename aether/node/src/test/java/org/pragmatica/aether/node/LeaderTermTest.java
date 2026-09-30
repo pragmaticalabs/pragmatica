@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -222,7 +223,7 @@ class LeaderTermTest {
 
     private ConsumerAssignmentWriter assignmentWriter(NodeId node) {
         return ConsumerAssignmentWriter.consumerAssignmentWriter(() -> node.equals(leader.get()),
-                                                                 terms.get(node)::current,
+                                                                 () -> Epoch.epoch(0L, terms.get(node).current(), 0L),
                                                                  HlcClock.hlcClock(node),
                                                                  (stream, partition, group) -> kvStore.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream,
                                                                                                                                                             partition,
@@ -232,7 +233,7 @@ class LeaderTermTest {
 
     private StreamPartitionOwnershipWriter ownershipWriter(NodeId node, NodeId owner) {
         return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> node.equals(leader.get()),
-                                                                             terms.get(node)::current,
+                                                                             () -> Epoch.epoch(0L, terms.get(node).current(), 0L),
                                                                              HlcClock.hlcClock(node),
                                                                              (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                              partition),

@@ -40,22 +40,30 @@ public final class WaveExecutor {
                                               ClusterBootstrapConfig stored,
                                               ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
+        var created = new CreatedNodes();
 
-        return executeAdditions(plan.additions(), desired).flatMap(added -> executeModifications(plan.modifications(),
-                                                                                                 stored,
-                                                                                                 desired).flatMap(modified -> executeRemovals(plan.removals(),
-                                                                                                                                              stored,
-                                                                                                                                              managementPort).map(removed -> applyResult(plan,
-                                                                                                                                                                                         added,
-                                                                                                                                                                                         removed,
-                                                                                                                                                                                         modified))));
+        return executeAdditions(plan.additions(),
+                                desired,
+                                created).flatMap(added -> executeModifications(plan.modifications(),
+                                                                               stored,
+                                                                               desired,
+                                                                               created).flatMap(modified -> executeRemovals(plan.removals(),
+                                                                                                                            stored,
+                                                                                                                            managementPort).map(removed -> applyResult(plan,
+                                                                                                                                                                       added,
+                                                                                                                                                                       removed,
+                                                                                                                                                                       modified))))
+                               .mapError(cause -> WaveNodeProvisioning.PartiallyProvisioned.partiallyProvisioned(created.snapshot(),
+                                                                                                                 cause));
     }
 
-    private static Result<Integer> executeAdditions(List<DiffAction> additions, ClusterBootstrapConfig desired) {
+    private static Result<Integer> executeAdditions(List<DiffAction> additions,
+                                                    ClusterBootstrapConfig desired,
+                                                    CreatedNodes created) {
         var totalAdded = 0;
 
         for (var action : additions) {
-            var result = executeAddition(action, desired);
+            var result = executeAddition(action, desired, created);
 
             if (result.isFailure()) {
                 return result;
@@ -67,11 +75,13 @@ public final class WaveExecutor {
         return success(totalAdded);
     }
 
-    private static Result<Integer> executeAddition(DiffAction action, ClusterBootstrapConfig desired) {
+    private static Result<Integer> executeAddition(DiffAction action,
+                                                   ClusterBootstrapConfig desired,
+                                                   CreatedNodes created) {
         return switch (action) {
             case DiffAction.AddSource a -> logNewSource(a.sourceName());
-            case DiffAction.AddRole a -> provisionRole(a.sourceName(), a.role(), a.count(), desired);
-            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(), a.role(), a.from(), a.to(), desired);
+            case DiffAction.AddRole a -> provisionRole(a.sourceName(), a.role(), a.count(), desired, created);
+            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(), a.role(), a.from(), a.to(), desired, created);
             default -> success(0);
         };
     }
@@ -85,13 +95,15 @@ public final class WaveExecutor {
     private static Result<Integer> provisionRole(SourceName sourceName,
                                                  NodeRole role,
                                                  int count,
-                                                 ClusterBootstrapConfig desired) {
+                                                 ClusterBootstrapConfig desired,
+                                                 CreatedNodes created) {
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> dispatchProvision(sourceName,
                                                                                    source,
                                                                                    role,
                                                                                    count,
-                                                                                   desired.cluster().name()))
+                                                                                   desired,
+                                                                                   created))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -104,16 +116,13 @@ public final class WaveExecutor {
                                                     NodeRole role,
                                                     int from,
                                                     int to,
-                                                    ClusterBootstrapConfig desired) {
+                                                    ClusterBootstrapConfig desired,
+                                                    CreatedNodes created) {
         var delta = to - from;
 
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> rejectSshScaleUp(source, sourceName))
-                           .flatMap(source -> dispatchProvision(sourceName,
-                                                                source,
-                                                                role,
-                                                                delta,
-                                                                desired.cluster().name()))
+                           .flatMap(source -> dispatchProvision(sourceName, source, role, delta, desired, created))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -132,26 +141,62 @@ public final class WaveExecutor {
                                                                    SourceProfile source,
                                                                    NodeRole role,
                                                                    int count,
-                                                                   ClusterName clusterName) {
+                                                                   ClusterBootstrapConfig desired,
+                                                                   CreatedNodes created) {
+        return provisionBySourceType(sourceName, source, role, count, desired).onSuccess(nodes -> created.record(nodes,
+                                                                                                                 source));
+    }
+
+    private static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
+                                                                       SourceProfile source,
+                                                                       NodeRole role,
+                                                                       int count,
+                                                                       ClusterBootstrapConfig desired) {
         return switch (source.type()) {
-            case CLOUD -> resolveCloudAndProvision(sourceName, source, role, count, clusterName);
-            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, clusterName);
+            case CLOUD -> resolveCloudAndProvision(source, role, count, desired);
+            case DOCKER -> resolveDockerAndProvision(sourceName,
+                                                     role,
+                                                     count,
+                                                     source,
+                                                     desired.cluster().name());
             case FORGE -> forgeProvisionPlaceholder(sourceName, role, count);
             case SSH -> sshProvisionPlaceholder(sourceName, role, source);
         };
     }
 
-    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceName sourceName,
-                                                                          SourceProfile source,
+    /// #1695 / #1027: a CLOUD node is provisioned through [WaveNodeProvisioning] — rendered user-data carrying the
+    /// cluster identity and live peers, a freshly minted unique node id, and a zone placement only when the source
+    /// names one — so it boots able to join.
+    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceProfile source,
                                                                           NodeRole role,
                                                                           int count,
-                                                                          ClusterName clusterName) {
-        return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionViaCompute(compute,
-                                                                                                   sourceName,
-                                                                                                   role,
-                                                                                                   count,
-                                                                                                   source,
-                                                                                                   clusterName));
+                                                                          ClusterBootstrapConfig desired) {
+        var clusterName = desired.cluster().name();
+
+        return WaveNodeProvisioning.resolveJoinInputs(clusterName).flatMap(inputs -> ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionCloudNodes(compute,
+                                                                                                                                                                         desired,
+                                                                                                                                                                         source,
+                                                                                                                                                                         role,
+                                                                                                                                                                         count,
+                                                                                                                                                                         inputs)));
+    }
+
+    /// The CLOUD wave provisioning itself, with the provider and the join inputs already resolved. Package-private
+    /// so a test drives the real composition — minted ids, rendered user-data, optional zone — against a fake
+    /// provider.
+    static Result<List<ProvisionedNode>> provisionCloudNodes(ComputeProvider compute,
+                                                             ClusterBootstrapConfig desired,
+                                                             SourceProfile source,
+                                                             NodeRole role,
+                                                             int count,
+                                                             WaveNodeProvisioning.JoinInputs inputs) {
+        return WaveNodeProvisioning.provisionCloud(compute,
+                                                   desired,
+                                                   source,
+                                                   role,
+                                                   count,
+                                                   inputs,
+                                                   WaveNodeProvisioning.mintedIds(desired.cluster().name()));
     }
 
     private static Result<List<ProvisionedNode>> resolveDockerAndProvision(SourceName sourceName,
@@ -247,11 +292,12 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeModifications(List<DiffAction> modifications,
                                                         ClusterBootstrapConfig stored,
-                                                        ClusterBootstrapConfig desired) {
+                                                        ClusterBootstrapConfig desired,
+                                                        CreatedNodes created) {
         var totalModified = 0;
 
         for (var action : modifications) {
-            var result = executeModification(action, stored, desired);
+            var result = executeModification(action, stored, desired, created);
 
             if (result.isFailure()) {
                 return result;
@@ -265,10 +311,11 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeModification(DiffAction action,
                                                        ClusterBootstrapConfig stored,
-                                                       ClusterBootstrapConfig desired) {
+                                                       ClusterBootstrapConfig desired,
+                                                       CreatedNodes created) {
         return switch (action) {
-            case DiffAction.RuntimeChange a -> executeRuntimeChange(a, stored, desired);
-            case DiffAction.SourceFieldChange a -> executeSourceFieldChange(a, stored, desired);
+            case DiffAction.RuntimeChange a -> executeRuntimeChange(a, stored, desired, created);
+            case DiffAction.SourceFieldChange a -> executeSourceFieldChange(a, stored, desired, created);
             case DiffAction.ClusterLevelChange a -> logClusterLevelChange(a);
             default -> logUnknownModification(action);
         };
@@ -276,7 +323,8 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeRuntimeChange(DiffAction.RuntimeChange change,
                                                         ClusterBootstrapConfig stored,
-                                                        ClusterBootstrapConfig desired) {
+                                                        ClusterBootstrapConfig desired,
+                                                        CreatedNodes created) {
         logAction("~",
                   change.sourceName()
                  + "." + change.role().value()
@@ -286,13 +334,15 @@ public final class WaveExecutor {
         return lookupSource(change.sourceName(), stored.sources()).flatMap(source -> rollingRestart(change.sourceName(),
                                                                                                     change.role(),
                                                                                                     source,
-                                                                                                    desired));
+                                                                                                    desired,
+                                                                                                    created));
     }
 
     private static Result<Integer> rollingRestart(SourceName sourceName,
                                                   NodeRole role,
                                                   SourceProfile source,
-                                                  ClusterBootstrapConfig desired) {
+                                                  ClusterBootstrapConfig desired,
+                                                  CreatedNodes created) {
         var managementPort = desired.operations().ports().management();
         var maxUnavailable = resolveMaxUnavailable(role, desired);
         var nodeCount = option(source.roles().get(role)).flatMap(RoleSubTable::count).or(0);
@@ -300,7 +350,14 @@ public final class WaveExecutor {
 
         for (int batch = 0; batch < nodeCount; batch += maxUnavailable) {
             var batchSize = Math.min(maxUnavailable, nodeCount - batch);
-            var result = rollingRestartBatch(sourceName, role, source, desired, managementPort, batch, batchSize);
+            var result = rollingRestartBatch(sourceName,
+                                             role,
+                                             source,
+                                             desired,
+                                             managementPort,
+                                             batch,
+                                             batchSize,
+                                             created);
 
             if (result.isFailure()) {
                 return result;
@@ -318,12 +375,13 @@ public final class WaveExecutor {
                                                        ClusterBootstrapConfig desired,
                                                        int managementPort,
                                                        int startIndex,
-                                                       int batchSize) {
+                                                       int batchSize,
+                                                       CreatedNodes created) {
         var modified = 0;
 
         for (int i = startIndex; i < startIndex + batchSize; i++) {
             var nodeId = sourceName.value() + "-" + role.value() + "-" + i;
-            var result = rollingRestartSingleNode(nodeId, sourceName, role, source, desired, managementPort);
+            var result = rollingRestartSingleNode(nodeId, sourceName, role, source, desired, managementPort, created);
 
             if (result.isFailure()) {
                 return result;
@@ -340,12 +398,14 @@ public final class WaveExecutor {
                                                             NodeRole role,
                                                             SourceProfile source,
                                                             ClusterBootstrapConfig desired,
-                                                            int managementPort) {
+                                                            int managementPort,
+                                                            CreatedNodes created) {
         logAction("~", "  draining " + nodeId + "...");
 
         return drainAndDestroyNode(nodeId, sourceName, role, source, managementPort).flatMap(_ -> reprovisionNode(sourceName,
                                                                                                                   role,
-                                                                                                                  desired))
+                                                                                                                  desired,
+                                                                                                                  created))
                                   .map(_ -> logAndCount("~", "  " + nodeId + " restarted with new runtime", 1));
     }
 
@@ -413,13 +473,15 @@ public final class WaveExecutor {
 
     private static Result<List<ProvisionedNode>> reprovisionNode(SourceName sourceName,
                                                                  NodeRole role,
-                                                                 ClusterBootstrapConfig desired) {
+                                                                 ClusterBootstrapConfig desired,
+                                                                 CreatedNodes created) {
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> dispatchProvision(sourceName,
                                                                                    source,
                                                                                    role,
                                                                                    1,
-                                                                                   desired.cluster().name()))
+                                                                                   desired,
+                                                                                   created))
                            .flatMap(nodes -> waitForNewNodes(nodes,
                                                              desired.operations().ports().management()));
     }
@@ -438,7 +500,8 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeSourceFieldChange(DiffAction.SourceFieldChange change,
                                                             ClusterBootstrapConfig stored,
-                                                            ClusterBootstrapConfig desired) {
+                                                            ClusterBootstrapConfig desired,
+                                                            CreatedNodes created) {
         logAction("~",
                   change.sourceName() + ": " + change.field() + " changed (replace-before-retire)");
 
@@ -446,13 +509,15 @@ public final class WaveExecutor {
                                                                                                      desired.sources()).flatMap(newSource -> replaceBeforeRetire(change.sourceName(),
                                                                                                                                                                  oldSource,
                                                                                                                                                                  newSource,
-                                                                                                                                                                 desired)));
+                                                                                                                                                                 desired,
+                                                                                                                                                                 created)));
     }
 
     private static Result<Integer> replaceBeforeRetire(SourceName sourceName,
                                                        SourceProfile oldSource,
                                                        SourceProfile newSource,
-                                                       ClusterBootstrapConfig desired) {
+                                                       ClusterBootstrapConfig desired,
+                                                       CreatedNodes created) {
         var managementPort = desired.operations().ports().management();
         var totalAffected = 0;
 
@@ -464,7 +529,7 @@ public final class WaveExecutor {
                 continue;
             }
 
-            var result = replaceBeforeRetireRole(sourceName, role, count, newSource, desired, managementPort);
+            var result = replaceBeforeRetireRole(sourceName, role, count, newSource, desired, managementPort, created);
 
             if (result.isFailure()) {
                 return result;
@@ -481,14 +546,12 @@ public final class WaveExecutor {
                                                            int count,
                                                            SourceProfile newSource,
                                                            ClusterBootstrapConfig desired,
-                                                           int managementPort) {
+                                                           int managementPort,
+                                                           CreatedNodes created) {
         logAction("~", "  provisioning " + count + " new " + role.value() + " node(s)...");
 
-        return dispatchProvision(sourceName,
-                                 newSource,
-                                 role,
-                                 count,
-                                 desired.cluster().name()).flatMap(nodes -> waitForNewNodes(nodes, managementPort))
+        return dispatchProvision(sourceName, newSource, role, count, desired, created).flatMap(nodes -> waitForNewNodes(nodes,
+                                                                                                                        managementPort))
                                 .flatMap(_ -> drainOldNodes(sourceName, role, count, desired))
                                 .map(count2 -> logAndCount("~",
                                                            "  " + sourceName
@@ -744,6 +807,29 @@ public final class WaveExecutor {
         }
 
         return Result.unitResult();
+    }
+
+    /// Every cloud VM one apply creates, recorded as it is created, so an apply that fails later — in any step — names
+    /// them all (#1695, CodeRabbit on #1716). The apply records nothing else about them: `ApplyState` holds no created
+    /// resources and `--rollback` does not see them.
+    ///
+    /// Only CLOUD sources are recorded, because only there did a provider create a billed VM. An SSH "node" is one of
+    /// the operator's own pre-existing hosts, so telling them to delete it would be harmful advice. A FORGE node is an
+    /// in-process placeholder. A DOCKER node is a local container, not billed and not reported.
+    static final class CreatedNodes {
+        private final List<WaveNodeProvisioning.CreatedNode> nodes = new ArrayList<>();
+
+        Unit record(List<ProvisionedNode> provisioned, SourceProfile source) {
+            if (source.type() == SourceType.CLOUD) {
+                nodes.addAll(WaveNodeProvisioning.created(provisioned, source));
+            }
+
+            return Unit.unit();
+        }
+
+        List<WaveNodeProvisioning.CreatedNode> snapshot() {
+            return List.copyOf(nodes);
+        }
     }
 
     private static Result<SourceProfile> lookupSource(SourceName sourceName, Map<String, SourceProfile> sources) {

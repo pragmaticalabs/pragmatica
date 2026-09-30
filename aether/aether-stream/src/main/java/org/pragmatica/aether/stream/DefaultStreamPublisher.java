@@ -92,9 +92,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
 
     /// Full overload. The EVENTUAL write is delegated whole to {@link StreamWriteRouter} (#1263), built here
     /// from the forward client, the owner rule ({@link StreamWriteRouter#hrwOwner} over the partition-aware
-    /// HRW resolver with the arg-less leader resolver as fallback) and the self identity. The min-sync
+    /// HRW resolver with the arg-less leader resolver as fallback) and the self identity. The confirmation
     /// barrier is no longer a constructor argument: the router reads the stream's committed
-    /// `min-sync-replicas` live on every publish.
+    /// `confirmation_factor` live on every publish.
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
                                                                 Serializer serializer,
                                                                 String streamName,
@@ -183,8 +183,8 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     }
 
     /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
-    /// the first event's partition) and each group uses the SAME owner authority and min-sync guards as single
-    /// {@link #publish} — local owner publish + replicate + min-sync await, or write-forward to the
+    /// the first event's partition) and each group uses the SAME owner authority and confirmation guards as single
+    /// {@link #publish} — local owner publish + replicate + confirmation await, or write-forward to the
     /// remote owner. This preserves key→partition affinity and gives the batch identical replication
     /// semantics to single publish (composes with #262), instead of the prior whole-batch misroute that
     /// also bypassed replication and failed `PARTITION_NOT_LOCAL` for any non-local partition. Groups run
@@ -256,7 +256,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
 
     /// EVENTUAL write: delegated whole to the ONE write operation, {@link StreamWriteRouter} (#1263) — owner
     /// routing by authority rather than ring presence (#1230), the committed-owner redirect, the bounded
-    /// forward retry (#485) and the min-sync barrier read live. STRONG takes the explicit consensus
+    /// forward retry (#485) and the confirmation barrier read live. STRONG takes the explicit consensus
     /// alternative in {@link #publishStrong}, never this path.
     private Promise<Long> publishEventual(int partition, byte[] bytes, long timestamp) {
         return writeRouter.publish(streamName, partition, bytes, timestamp);

@@ -51,6 +51,13 @@ class EmberGenesisRecoveryTest {
     private static final int FIRST_CANDIDATE_BASE = 44100;
     private static final int LAST_CANDIDATE_BASE = 44900;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long PENDING_SETTLE_MS = 5_000L;
@@ -70,7 +77,7 @@ class EmberGenesisRecoveryTest {
     @Test
     @Timeout(300)
     void stopEveryPendingCore_thenStartThemAll_formsGenesis() {
-        var base = freeBasePort();
+        var base = EmberTestPorts.freeBase(PORTS);
 
         stuckPending(base, "gra");
         stopCluster(base);
@@ -83,7 +90,7 @@ class EmberGenesisRecoveryTest {
     @Test
     @Timeout(300)
     void restartingOnePendingCoreWhileAnotherRuns_isRefusedAndExits() {
-        var base = freeBasePort();
+        var base = EmberTestPorts.freeBase(PORTS);
 
         stuckPending(base, "grb");
         assertThat(cluster.killNode("grb-1", false).await(STOP_BOUND).isSuccess()).isTrue();
@@ -109,7 +116,7 @@ class EmberGenesisRecoveryTest {
     @Test
     @Timeout(300)
     void stopEveryPendingCore_thenStartUnderFreshIdentities_formsGenesis() {
-        var base = freeBasePort();
+        var base = EmberTestPorts.freeBase(PORTS);
 
         stuckPending(base, "grc");
         stopCluster(base);
@@ -135,7 +142,7 @@ class EmberGenesisRecoveryTest {
     private void stopCluster(int base) {
         cluster.stop().await(STOP_BOUND);
         cluster = null;
-        awaitCondition("the stopped cluster's ports are free", () -> blockIsFree(base));
+        awaitCondition("the stopped cluster's ports are free", () -> EmberTestPorts.isFree(PORTS, base));
     }
 
     private boolean allFormed() {
@@ -170,52 +177,5 @@ class EmberGenesisRecoveryTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!slotFree(base, slot)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean slotFree(int base, int slot) {
-        return udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
-               && tcpFree(base + APP_HTTP_OFFSET + slot);
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
     }
 }

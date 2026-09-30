@@ -28,9 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Pins the picocli wiring of:
 ///   `aether streams create <name>` — #1224: REFUSED unconditionally; replaced by
 ///   `aether stream create <namespace:stream:version> [--partitions N]` (singular, catalog-addressed)
-///   `aether streams delete <name|address> [--force]` (catalog-form `STREAMS_DELETE` —
-///   bare name defaults client-side to `system:name:1.0.0`, see
-///   `AetherCli.StreamCommand#resolveStreamAddress`)
+///   `aether streams delete <address> [--force]` (catalog-form `STREAMS_DELETE` — a bare name
+///   is refused client-side (#1044), see `AetherCli.StreamCommand#resolveStreamAddress`)
 ///   `aether streams consumer-group join <group> <stream> --consumer-id <id> [--partitions N]`
 ///   `aether streams consumer-group leave <group> <stream> --consumer-id <id>`
 ///   `aether streams consumer-group status <group> [<stream>]`

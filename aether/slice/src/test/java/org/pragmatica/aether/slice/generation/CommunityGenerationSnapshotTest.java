@@ -19,8 +19,8 @@ class CommunityGenerationSnapshotTest {
     void communityGenerationSnapshot_allFieldsSet_populatesRecord() {
         var governor = NodeId.nodeId("gov-1").unwrap();
         var member = NodeId.nodeId("worker-1").unwrap();
-        var commEpoch = Epoch.epoch(1L, 3L);
-        var coreEpoch = Epoch.epoch(7L, 42L);
+        var commEpoch = Epoch.epoch(0L, 1L, 3L);
+        var coreEpoch = Epoch.epoch(0L, 7L, 42L);
         var hlc = new HlcTimestamp(1000L, new NodeId("gov-1"));
 
         var snapshot = CommunityGenerationSnapshot.communityGenerationSnapshot("pool-a",

@@ -47,6 +47,7 @@ import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
+import org.pragmatica.http.routing.RouteShapeSelector;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
@@ -80,6 +81,30 @@ public interface HttpRoutePublisher {
     Set<HttpNodeRouteKey> allLocalRoutes();
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
+
+    /// #1678: the router that serves `(httpMethod, path)`, resolved together with [#findLocalRoute]'s route so that
+    /// authorization and dispatch name the same (artifact, route). The default composes the two lookups, as a
+    /// publisher holding one route per prefix may.
+    default Option<SliceRouter> findServingRouter(String httpMethod, String path) {
+        return findLocalRoute(httpMethod, path).flatMap(route -> findLocalRouter(route.httpMethod(), route.pathPrefix()));
+    }
+
+    /// #1678 (v1670 R2-N4): the route a request is authorized against AND the router that serves it, from ONE
+    /// resolution -- two separate lookups could straddle an undeploy and pair a parent's policy with a child's router.
+    record LocalResolution(LocalRouteInfo route, Option<SliceRouter> router) {}
+
+    /// #1678 (C1): the sibling shape keys this node serves under a base, or EMPTY when the publisher cannot tell --
+    /// then the whole base is treated as local, as a publisher holding one route per prefix does.
+    default Option<Set<String>> localShapeKeys(String httpMethod, String pathPrefix) {
+        return Option.none();
+    }
+
+    /// The default composes the two lookups, as a publisher holding one route per prefix may; the production
+    /// publisher answers both from a single resolution.
+    default Option<LocalResolution> resolveLocal(String httpMethod, String path) {
+        return findLocalRoute(httpMethod, path).map(route -> new LocalResolution(route,
+                                                                                 findServingRouter(httpMethod, path)));
+    }
 
     /// #1659: the policy this node's committed security overrides assign to a route served elsewhere; empty when
     /// no committed override matches it. The default holds no overrides, as a publisher without an override set
@@ -467,7 +492,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                                                     routes.get(index)))
                                     .toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
-        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
+        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochIncarnation(),
+                                       snapshotSource.observedEpochRabiaTerm(),
+                                       0L);
         var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
 
@@ -485,7 +512,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                       effective.pathPrefix(),
                                       effective.sliceMethod(),
                                       effective.security().asString(),
-                                      declared.security().asString());
+                                      declared.security().asString(),
+                                      effective.pathArity(),
+                                      effective.spacers());
     }
 
     @Override
@@ -756,12 +785,131 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// `HttpRouteDefinition` normalizes every prefix to a trailing slash in its constructor.
     @Override
     public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
-        var normalizedPath = normalizePath(path);
         var overrides = activeOverrides.get();
 
-        return selectRoute(route -> route.httpMethod()
-                                         .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())).map(entry -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(entry.getValue(),
-                                                                                                                                                                                                          overrides)));
+        return resolveServed(httpMethod, path).map(served -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(served.definition(),
+                                                                                                                                 overrides)));
+    }
+
+    /// #1678: the router that SERVES `(httpMethod, path)` -- from the same single resolution as [#findLocalRoute], so
+    /// the route a request is authorized against and the slice it is dispatched to are one (artifact, route) pair.
+    @Override
+    public Option<SliceRouter> findServingRouter(String httpMethod, String path) {
+        return resolveServed(httpMethod, path).flatMap(served -> Option.option(sliceRouters.get(served.artifact())));
+    }
+
+    @Override
+    public Option<LocalResolution> resolveLocal(String httpMethod, String path) {
+        var overrides = activeOverrides.get();
+
+        return resolveServed(httpMethod, path).map(served -> new LocalResolution(LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(served.definition(),
+                                                                                                                                                     overrides)),
+                                                                                 Option.option(sliceRouters.get(served.artifact()))));
+    }
+
+    private record ServedRoute(Artifact artifact, HttpRouteDefinition definition) {}
+
+    /// #1678: ONE resolution to the (artifact, route) that serves a request. Sibling routes share a base path
+    /// (`GET /orders/{id}` and `GET /orders/{id}/admin` are both `/orders/`), and two slices may too, so the longest
+    /// matching prefix (#884) narrows to a base and the SHAPE decides among everything published under it -- through
+    /// [RouteShapeSelector], the rule each slice's own router dispatches by, over candidates ordered by artifact
+    /// coordinate (the #884 tie-break). Picking the artifact by prefix and the route by a separate router match could
+    /// authorize one slice's route and dispatch to another's; there is nothing here left to disagree.
+    ///
+    /// Header-mode versions publish the same shape once per version; the strictest of those governs, because the
+    /// version is chosen per request by a header this lookup does not see. When no local shape matches, there is NO
+    /// local route (CodeRabbit C1): the request falls through to the remote registry, where another node may serve the
+    /// sibling, and to 404 when nothing does -- never to a local sibling that would answer 404 in its place.
+    private Option<ServedRoute> resolveServed(String httpMethod, String path) {
+        var normalizedPath = normalizePath(path);
+        var candidates = publishedRoutes.entrySet()
+                                        .stream()
+                                        .flatMap(entry -> entry.getValue()
+                                                               .stream()
+                                                               .filter(route -> route.httpMethod()
+                                                                                     .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix()))
+                                                               .map(route -> new ServedRoute(entry.getKey(),
+                                                                                             route)))
+                                        .toList();
+        var longest = candidates.stream().mapToInt(served -> served.definition()
+                                                                   .pathPrefix()
+                                                                   .length()).max();
+
+        if (longest.isEmpty()) {
+            return Option.none();
+        }
+
+        var base = candidates.stream()
+                             .filter(served -> served.definition()
+                                                     .pathPrefix()
+                                                     .length() == longest.getAsInt())
+                             .sorted(Comparator.comparing(served -> served.definition()
+                                                                          .artifactCoord()))
+                             .toList();
+        var shapes = base.stream().map(ServedRoute::definition).toList();
+
+        return RouteShapeSelector.select(shapes,
+                                         routerPath(path))
+                                 .map(selected -> base.get(shapes.indexOf(selected)))
+                                 .map(served -> strictestOfItsShape(served, base));
+    }
+
+    /// #1678 (C1): the sibling shapes this node serves under `(httpMethod, pathPrefix)`, keyed as the registry keys
+    /// them, so the remote view drops only these and keeps a sibling served only elsewhere.
+    @Override
+    public Option<Set<String>> localShapeKeys(String httpMethod, String pathPrefix) {
+        return Option.some(publishedRoutes.values()
+                                          .stream()
+                                          .flatMap(List::stream)
+                                          .filter(route -> route.httpMethod()
+                                                                .equalsIgnoreCase(httpMethod) && route.pathPrefix()
+                                                                                                      .equals(pathPrefix))
+                                          .map(route -> HttpRouteRegistry.RouteInfo.shapeKeyOf(route.pathArity(),
+                                                                                               route.spacers()))
+                                          .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+    }
+
+    private static ServedRoute strictestOfItsShape(ServedRoute served, List<ServedRoute> base) {
+        var sameShape = base.stream()
+                            .filter(other -> other.artifact()
+                                                  .equals(served.artifact()) && sameShape(other.definition(),
+                                                                                          served.definition()))
+                            .map(other -> other.definition()
+                                               .security())
+                            .toList();
+
+        return new ServedRoute(served.artifact(),
+                               served.definition().withSecurity(strictest(sameShape).or(served.definition().security())));
+    }
+
+    private static boolean sameShape(HttpRouteDefinition left, HttpRouteDefinition right) {
+        return left.pathArity() == right.pathArity() && left.spacers()
+                                                            .equals(right.spacers());
+    }
+
+    /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
+    /// equal strengths are ordered by the canonical string so the answer is the same on every node.
+    private static Option<SecurityPolicy> strictest(List<SecurityPolicy> policies) {
+        return Option.from(policies.stream()
+                                   .max(Comparator.comparingInt(HttpRoutePublisherImpl::strictness).thenComparing(SecurityPolicy::asString)));
+    }
+
+    private static int strictness(SecurityPolicy policy) {
+        return switch (policy) {
+            case SecurityPolicy.Public _ -> 0;
+            case SecurityPolicy.Unspecified _ -> 1;
+            default -> policy.strength() + 2;
+        };
+    }
+
+    /// The router matches a request path as the client sent it; `findLocalRoute` callers pass the normalized
+    /// form, whose added trailing slash would read as an extra empty segment.
+    private static String routerPath(String path) {
+        var stripped = Option.option(path).map(String::strip).or("/");
+
+        return stripped.length() > 1 && stripped.endsWith("/")
+               ? stripped.substring(0, stripped.length() - 1)
+               : stripped;
     }
 
     private String normalizePath(String path) {

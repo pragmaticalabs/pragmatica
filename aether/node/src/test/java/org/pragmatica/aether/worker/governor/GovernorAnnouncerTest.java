@@ -109,7 +109,7 @@ class GovernorAnnouncerTest {
 
     private static GovernorAnnouncementValue authority(NodeId owner, long term) {
         return GovernorAnnouncementValue.governorAnnouncementValue(owner, List.of(SELF, PEER), "host:9000", 1,
-                                                                    term, Epoch.epoch(term, 0), Epoch.ZERO,
+                                                                    term, Epoch.epoch(0L, term, 0), Epoch.ZERO,
                                                                     HlcTimestamp.ZERO, false);
     }
 

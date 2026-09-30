@@ -33,6 +33,7 @@ class ClusterSyncPingTest {
         var ping = new ClusterSyncPing(SENDER,
                                        Map.of(),
                                        1L,
+                                       0L,
                                        1L,
                                        0L,
                                        Set.of(),
@@ -50,7 +51,7 @@ class ClusterSyncPingTest {
         var mutable = new HashSet<NodeId>();
 
         mutable.add(PEER_A);
-        var ping = new ClusterSyncPing(SENDER, Map.of(), 1L, 1L, 0L, Set.of(), mutable, Map.of(), Set.of(), true, true);
+        var ping = new ClusterSyncPing(SENDER, Map.of(), 1L, 0L, 1L, 0L, Set.of(), mutable, Map.of(), Set.of(), true, true);
 
         mutable.add(PEER_B);
         assertThat(ping.drainNodes()).containsExactly(PEER_A);
@@ -61,6 +62,7 @@ class ClusterSyncPingTest {
         var ping = new ClusterSyncPing(SENDER,
                                        Map.of(),
                                        1L,
+                                       0L,
                                        1L,
                                        0L,
                                        Set.of(),
@@ -84,6 +86,7 @@ class ClusterSyncPingTest {
         var original = new ClusterSyncPing(SENDER,
                                            Map.of(PEER_A, new MetricObservation(4L, 9L, 12345L, Map.of("cpu", 0.5))),
                                            7L,
+                                           0L,
                                            7L,
                                            3L,
                                            Set.of(PEER_A),
@@ -109,6 +112,7 @@ class ClusterSyncPingTest {
         var original = new ClusterSyncPing(SENDER,
                                            Map.of(),
                                            2L,
+                                           0L,
                                            2L,
                                            0L,
                                            Set.of(),

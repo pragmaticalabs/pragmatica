@@ -59,7 +59,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 class StreamConsumerRuntimeClusterCursorTest {
     private static final String GROUP = "group-1";
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
-    private static final Epoch EPOCH = Epoch.epoch(1L, 1L);
+    private static final Epoch EPOCH = Epoch.epoch(0L, 1L, 1L);
     private StreamPartitionManager manager;
 
     @BeforeEach

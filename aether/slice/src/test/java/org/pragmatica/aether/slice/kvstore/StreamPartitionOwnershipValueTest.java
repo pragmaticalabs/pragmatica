@@ -16,7 +16,7 @@ class StreamPartitionOwnershipValueTest {
     @Test
     void streamPartitionOwnershipValue_withAllFields_populatesRecord() {
         var owner = NodeId.nodeId("core-1").unwrap();
-        var epoch = Epoch.epoch(5L, 12L);
+        var epoch = Epoch.epoch(0L, 5L, 12L);
         var hlc = new HlcTimestamp(200L, new NodeId("core-1"));
 
         var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, epoch, 7L, hlc);
@@ -30,7 +30,7 @@ class StreamPartitionOwnershipValueTest {
     @Test
     void fenceEpoch_returnsOwnerEpoch() {
         var owner = NodeId.nodeId("core-1").unwrap();
-        var epoch = Epoch.epoch(9L, 3L);
+        var epoch = Epoch.epoch(0L, 9L, 3L);
 
         var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, epoch, 1L, HlcTimestamp.ZERO);
 

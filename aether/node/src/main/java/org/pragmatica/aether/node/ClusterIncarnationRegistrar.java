@@ -81,14 +81,19 @@ public final class ClusterIncarnationRegistrar {
     /// value.
     public static Supplier<Promise<Unit>> genesisLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return genesisLeg(kvStore, applier, ClusterIncarnationRegistrar::freshId);
+        return genesisLeg(kvStore,
+                          applier,
+                          ClusterIncarnationRegistrar::freshUlid,
+                          ClusterIncarnationRegistrar::freshUlid);
     }
 
     static Supplier<Promise<Unit>> genesisLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                              Supplier<String> freshId) {
+                                              Supplier<String> freshLineageId,
+                                              Supplier<String> freshIncarnationId) {
         return () -> ClusterIncarnation.genesisCommand(kvStore.get(),
-                                                       freshId)
+                                                       freshLineageId,
+                                                       freshIncarnationId)
                                        .fold(Promise::unitPromise,
                                              command -> mintAndConfirm(kvStore, applier, command));
     }
@@ -106,8 +111,7 @@ public final class ClusterIncarnationRegistrar {
                                  .or(NOT_YET_COMMITTED::promise);
     }
 
-    /// A fresh ULID: the genesis lineage and the genesis incarnation id each take one.
-    private static String freshId() {
+    private static String freshUlid() {
         return ULID.ulid().encoded();
     }
 

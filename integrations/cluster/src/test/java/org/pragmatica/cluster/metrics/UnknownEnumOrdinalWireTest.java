@@ -31,6 +31,7 @@ import static org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs;
 /// degrade into asserting something already known.
 class UnknownEnumOrdinalWireTest {
     private static final NodeId PEER = NodeId.nodeId("peer-a").unwrap();
+    private static final long INCARNATION = 3L;
     private static final long TERM = 7L;
     private static final long COUNTER = 11L;
     private static final long PRODUCED_AT = 1_700_000_000_000L;
@@ -53,6 +54,8 @@ class UnknownEnumOrdinalWireTest {
         SliceCodec.writeCompact(buf, HealthHintWireCodec.TAG);
         SliceCodec.writeCompact(buf, hintOrdinal);
         buf.writeByte(SliceCodec.TAG_LONG);
+        buf.writeLong(INCARNATION);
+        buf.writeByte(SliceCodec.TAG_LONG);
         buf.writeLong(TERM);
         buf.writeByte(SliceCodec.TAG_LONG);
         buf.writeLong(COUNTER);
@@ -72,6 +75,7 @@ class UnknownEnumOrdinalWireTest {
 
         assertThat(decoded.hint()).isEqualTo(HealthHintWire.SUSPECTED);
         assertThat(decoded.peerId()).isEqualTo(PEER);
+        assertThat(decoded.observedEpochIncarnation()).isEqualTo(INCARNATION);
         assertThat(decoded.observedEpochTerm()).isEqualTo(TERM);
     }
 
@@ -93,6 +97,7 @@ class UnknownEnumOrdinalWireTest {
         PeerHealthObservation decoded = codec().read(frameWithHintOrdinal(HealthHintWire.values().length));
 
         assertThat(decoded.peerId()).isEqualTo(PEER);
+        assertThat(decoded.observedEpochIncarnation()).isEqualTo(INCARNATION);
         assertThat(decoded.observedEpochTerm()).isEqualTo(TERM);
         assertThat(decoded.observedEpochCounter()).isEqualTo(COUNTER);
         assertThat(decoded.producedAtMs()).isEqualTo(PRODUCED_AT);

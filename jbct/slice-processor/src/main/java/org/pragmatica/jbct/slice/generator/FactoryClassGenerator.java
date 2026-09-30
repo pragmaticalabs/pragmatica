@@ -2031,7 +2031,8 @@ public class FactoryClassGenerator {
         REQUIRED_STRING_LIST,
         /// Value object with JBCT factory: requireString(section, key).flatMap(Type::factory)
         REQUIRED_VALUE_OBJECT,
-        /// Optional value object: Result.success(getString(section, key).map(s -> Type.factory(s).expect(...)))
+        /// Optional value object: getString(section, key).fold(() -> success(none), s -> Type.factory(s).map(Option::some)),
+        /// a Result<Option<T>> whose failure is the factory's own cause (#1429)
         OPTIONAL_VALUE_OBJECT
     }
 
@@ -2041,6 +2042,9 @@ public class FactoryClassGenerator {
                                     String facadeMethod,
                                     String valueObjectType,
                                     String valueObjectFactory) {
+        /// Fully qualified, so the emitted expression needs no import and cannot collide with a user `Option`.
+        private static final String OPTION_FQN = "org.pragmatica.lang.Option";
+
         static ConfigFieldParam fromParameter(javax.lang.model.element.VariableElement param,
                                               Elements elements,
                                               Types types,
@@ -2096,7 +2100,7 @@ public class FactoryClassGenerator {
                                             "",
                                             "");
             }
-            // Optional value object: Option<Url> → getString + map with factory unwrap
+            // Optional value object: Option<Url> → getString folded into Result<Option<Url>> via the factory
             var voInfo = findValueObjectFactory(innerTypeName, elements);
 
             if (voInfo != null) {
@@ -2245,7 +2249,9 @@ public class FactoryClassGenerator {
                                            ? "Result.success(" + configCall + ")"
                                            : configCall;
                 case REQUIRED_VALUE_OBJECT -> configCall + ".flatMap(" + valueObjectType + "::" + valueObjectFactory + ")";
-                case OPTIONAL_VALUE_OBJECT -> "Result.success(" + configCall + ".map(s -> " + valueObjectType + "." + valueObjectFactory + "(s).expect(\"optional " + valueObjectType + " value validated at config load time\")))";
+                // #1429: a present but invalid value fails the chain with the factory's own cause, as the
+                // typed get* readers do since #1098; nothing validates it earlier, so it must never be unwrapped.
+                case OPTIONAL_VALUE_OBJECT -> configCall + ".fold(() -> Result.<" + OPTION_FQN + "<" + valueObjectType + ">>success(" + OPTION_FQN + ".none()), s -> " + valueObjectType + "." + valueObjectFactory + "(s).map(" + OPTION_FQN + "::some))";
             };
         }
     }

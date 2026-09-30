@@ -778,6 +778,26 @@ class KvBackupServiceTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
 
+        /// #1625 meets #1532: the declared incarnation is a new incarnation, so it carries a fresh
+        /// incarnation id — reusing the superseded one would make incarnations 9 and 10 compare equal.
+        @Test
+        void declareGenesis_commitsAFreshIncarnationId_notTheSupersededOne() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, "id-another-cluster-3", 40));
+            var service = leaderService(Option.some(remote), 9);
+            var superseded = ClusterIncarnation.currentId(kvStore)
+                                               .unwrap();
+
+            settle(BackupGenesis.backupGenesis(service)
+                         .declare(commands -> applyAndNotify(service, commands)))
+                         .unwrap();
+
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(10);
+            assertThat(ClusterIncarnation.currentId(kvStore)
+                                         .unwrap()).isNotEqualTo(superseded);
+        }
+
         /// N3: the supersede is witnessed on the incarnation it read. A concurrent write landing first (a
         /// restore, another declaration) makes it refuse, and the concurrent value survives.
         @Test
@@ -786,7 +806,7 @@ class KvBackupServiceTest {
 
             seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote), 1);
-            var concurrent = ClusterIncarnationValue.clusterIncarnationValue("restored-lineage", 3, INCARNATION_ID);
+            var concurrent = ClusterIncarnationValue.clusterIncarnationValue("restored-lineage", 3, "id-restored-lineage-3");
 
             var refused = settle(BackupGenesis.backupGenesis(service)
                                        .declare(commands -> concurrentWriteThenApply(service, concurrent, commands)));

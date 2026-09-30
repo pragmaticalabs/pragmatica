@@ -82,9 +82,9 @@ class LinearizableTypedReadRoutingTest {
     void fetch_rejectsStaleEpochRead_whenCommittedEpochBelowHighWater() {
         publish("e0");
         markSelfCaughtUp(0L);
-        var highWater = highWaterAt(Epoch.epoch(5, 0));
+        var highWater = highWaterAt(Epoch.epoch(0L, 5, 0));
 
-        var access = linearizableAccess(hrwOwner(SELF), committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater), Option.none());
+        var access = linearizableAccess(hrwOwner(SELF), committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater), Option.none());
 
         access.fetch(PARTITION, 0, 10)
               .await()

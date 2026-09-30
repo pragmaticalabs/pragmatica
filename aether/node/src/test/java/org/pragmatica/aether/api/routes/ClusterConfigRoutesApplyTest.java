@@ -19,6 +19,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigResponse;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -211,6 +212,25 @@ class ClusterConfigRoutesApplyTest {
             assertThat(committed.clusterName()).isEqualTo("prod");
             assertThat(response.configVersion()).isEqualTo(1);
             assertThat(response.coreCount()).isEqualTo(3);
+        }
+
+        /// #1564 B1: `[replication.cluster_events] confirmation_factor` above the desired core count (3 here) is
+        /// refused at apply, typed, and nothing is committed — instead of committing a config the cluster-events
+        /// registrar can never satisfy.
+        @Test
+        void handleApplyConfig_clusterEventsConfirmationAboveCoreCount_isRefusedAndNothingCommits() {
+            var store = new TestKVStore();
+            var toml = OPERATOR_TOML + """
+
+                [replication.cluster_events]
+                confirmation_factor = 5
+                """;
+
+            var result = apply(store, new ApplyConfigRequest(toml, 0));
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterReplication.ClusterEventsFactorsRefused.class));
+            assertThat(store.get(ClusterConfigKey.CURRENT).isEmpty()).isTrue();
         }
 
         /// Defect 3. The first-time store used a bare `Put` and reported success unconditionally,

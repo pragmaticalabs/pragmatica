@@ -20,6 +20,10 @@ package org.pragmatica.dht;
 enum ZeroOwnerEpochSource implements OwnerEpochSource {
     INSTANCE;
     @Override
+    public long currentEpochIncarnation() {
+        return 0L;
+    }
+    @Override
     public long currentEpochTerm() {
         return 0L;
     }

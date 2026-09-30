@@ -190,15 +190,22 @@ public sealed interface ManagementApiResponses {
     /// Empty when every declaration bound. A slice using a rejected alias fails to load naming that
     /// alias; this is where the operator learns why, at the point where it is actionable. Rules whose
     /// violation leaves nothing to bind refuse the publish instead (`422`), so they never appear here.
+    /// #1564: `warnings` lists every deploy-time warning, each by `field`, `rule` and message; empty when none.
     record BlueprintResponse(String status,
                              String blueprint,
                              int targetInstances,
                              int activeInstances,
                              int failedInstances,
                              String statusUrl,
-                             List<RejectedStreamBinding> rejectedStreamBindings) {}
+                             List<RejectedStreamBinding> rejectedStreamBindings,
+                             List<DeployWarning> warnings) {}
 
     record RejectedStreamBinding(String field, String rule, String message) {}
+
+    /// #1564: a deploy-time warning — a stream validation warning, or a replication warning a stream, durable topic
+    /// or durable entity declaration raised (`replication-factor-below-three`, `confirmation-equals-replication-factor`,
+    /// `confirmation-factor-owner-only`) — by its TOML `field`, the `rule` (the warning's code) and the sentence.
+    record DeployWarning(String field, String rule, String message) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 
@@ -620,7 +627,7 @@ public sealed interface ManagementApiResponses {
                                      List<ClusterGenerationCommunity> communities,
                                      List<ClusterGenerationPartition> partitions) {}
 
-    record EpochInfo(long rabiaTerm, long localCounter) {}
+    record EpochInfo(long incarnation, long rabiaTerm, long localCounter) {}
 
     record ClusterGenerationCore(int desiredSize, List<ClusterGenerationMember> members) {}
 
@@ -656,6 +663,25 @@ public sealed interface ManagementApiResponses {
     record GovernorsResponse(List<GovernorInfo> governors) {}
 
     record GovernorInfo(String governorId, String community, int memberCount, List<String> members) {}
+
+    /// #1652 — `GET /cluster/communities`.
+    record CommunitiesResponse(List<CommunityInfo> communities) {}
+
+    /// #1652 — one community: the union of its committed `CommunityValue` (state, targetSize, role,
+    /// createdAt, dissolvedAt) and its committed roster (governorId, members, communityTerm). A half with
+    /// no committed record is `null`, never a fabricated default. `liveMembers` is the LEADER's
+    /// instantaneous observation, not committed state — `null` when the serving node cannot observe it.
+    record CommunityInfo(String communityId,
+                         Option<String> state,
+                         Option<Integer> targetSize,
+                         Option<String> role,
+                         Option<Long> createdAt,
+                         Option<Long> dissolvedAt,
+                         Option<String> governorId,
+                         List<String> members,
+                         int memberCount,
+                         Option<Long> communityTerm,
+                         Option<Integer> liveMembers) {}
 
     record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 

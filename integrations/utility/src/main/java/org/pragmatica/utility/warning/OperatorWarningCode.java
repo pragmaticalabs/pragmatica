@@ -35,6 +35,18 @@ public enum OperatorWarningCode {
     /// A replica failed to fsync an applied batch and is withholding its ack. The owner's durability
     /// barrier will not count this copy.
     REPLICA_FSYNC_FAILED("replica-fsync-failed", "stream-replication", WarningLevel.WARNING),
+    /// A stream, durable topic or durable entity was activated with a replication policy that carries a stated
+    /// risk (#1564): an explicitly declared replication factor below 3, a confirmation factor equal to the
+    /// replication factor, or a confirmation factor of 1.
+    REPLICATION_POLICY_WARNING("replication-policy-warning", "stream-replication", WarningLevel.WARNING),
+    /// A blueprint publish was accepted with a deploy-time warning (#1564): a declaration with a stated
+    /// replication risk, or a stream declaration the cluster accepted with a caveat.
+    DEPLOY_WARNING("deploy-warning", "deployment", WarningLevel.WARNING),
+    /// The replication policy refused the registration of `system:cluster-events` (#1564 B1). The node keeps
+    /// running, but cluster events are not recorded until the cluster config is corrected and re-applied.
+    CLUSTER_EVENTS_REGISTRATION_REFUSED("cluster-events-registration-refused",
+                                        "stream-replication",
+                                        WarningLevel.CRITICAL),
     /// A whole-cluster restore withheld the previous cluster's entity checkpoints; entity state restarts empty
     /// for the named partitions (#1533).
     BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED("backup-restore-entity-checkpoints-dropped",

@@ -64,6 +64,11 @@ class FencedDurableEntityFenceTest {
         }
 
         @Override
+        public long currentEpochIncarnation() {
+            return 0L;
+        }
+
+        @Override
         public long currentEpochTerm() {
             return term.get();
         }
@@ -147,7 +152,7 @@ class FencedDurableEntityFenceTest {
             entity.create("o-1", 7).await(AWAIT).onFailure(FencedDurableEntityFenceTest::failCause);
 
             // A new owner takes over the "core" arc at epoch 9:0; the high-water advances past 8:0.
-            newOwnerTakesOver(Epoch.epoch(9, 0));
+            newOwnerTakesOver(Epoch.epoch(0L, 9, 0));
             // This node is deposed but still believes it owns the arc at the old epoch 8:0.
             ownerEpoch.set(8L, 0L);
 
@@ -159,7 +164,7 @@ class FencedDurableEntityFenceTest {
 
         @Test
         void create_rejectedWithStaleOwner_afterHandover() {
-            newOwnerTakesOver(Epoch.epoch(9, 0));
+            newOwnerTakesOver(Epoch.epoch(0L, 9, 0));
             ownerEpoch.set(8L, 0L);
 
             entity.create("o-2", 1)
@@ -173,7 +178,7 @@ class FencedDurableEntityFenceTest {
             entity.create("o-1", 7).await(AWAIT).onFailure(FencedDurableEntityFenceTest::failCause);
 
             // New owner takes over at 9:0 and this node IS the new owner (stamps 9:0).
-            newOwnerTakesOver(Epoch.epoch(9, 0));
+            newOwnerTakesOver(Epoch.epoch(0L, 9, 0));
             ownerEpoch.set(9L, 0L);
 
             entity.update("o-1", new IntOp.Add(1))

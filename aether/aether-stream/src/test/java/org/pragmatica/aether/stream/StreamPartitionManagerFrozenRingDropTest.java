@@ -219,7 +219,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     // === helpers ===
 
     private static StreamConfig durableTopicConfig() {
-        var spec = DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
+        var spec = DurableTopicSpec.durableTopicSpec(1, new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), java.util.List.of()), DurableTopicSpec.DEFAULT_RETENTION).unwrap();
 
         return DurableTopicSubstrate.topicStreamConfig("orders-1233", spec);
     }
@@ -253,7 +253,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     }
 
     private static StreamConfig plainConfig() {
-        return StreamConfig.streamConfig("feed-1233", 1, RetentionPolicy.retentionPolicy(), "earliest");
+        return StreamConfig.streamConfig("feed-1233", 1, RetentionPolicy.retentionPolicy(), "earliest").withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 1));
     }
 
     /// A pool sized to exactly one partition floor: creation succeeds, every growth request is refused,

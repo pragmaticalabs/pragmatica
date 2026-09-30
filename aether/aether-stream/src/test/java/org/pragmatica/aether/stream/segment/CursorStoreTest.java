@@ -57,8 +57,10 @@ class CursorStoreTest {
     /// earlier tenure's cursor, which can be ahead of what the successor committed (skipping events).
     @Nested
     class AssignmentEpoch {
-        private static final Epoch FIRST_TENURE = Epoch.epoch(1L, 1L);
-        private static final Epoch SECOND_TENURE = Epoch.epoch(1L, 3L);
+        // Incarnation 1, as after a real genesis (#1529): at incarnation 0 a block that dropped the
+        // incarnation would still equal the tenure and every fenced fetch would pass for the wrong reason.
+        private static final Epoch FIRST_TENURE = Epoch.epoch(1L, 1L, 1L);
+        private static final Epoch SECOND_TENURE = Epoch.epoch(1L, 1L, 3L);
 
         @Test
         void fencedFetch_returnsTheCursor_forTheEpochItWasWrittenUnder() {
@@ -434,18 +436,19 @@ class CursorStoreTest {
         }
     }
 
-    /// #1333 (rev1369 MEDIUM-2) — the 40-byte block `offset | rabiaTerm | localCounter | rewindGeneration |
-    /// rewindSequence` is what lets a same-node restart resume under the rewind epoch the consumer committed
-    /// with. Every other test in this class goes through the offset-only or assignment-only `commit`/`fetch`,
-    /// so before these pins a decode that DROPPED the rewind epoch left the whole repo green (rev1369's
-    /// mutation M7'). Layout after the #1335 merge: 8 = unfenced (pull API), 24 = fenced without a rewind
-    /// epoch (#1271, written by rc4 builds between #1335 and #1333), 40 = fenced with one (every fenced
-    /// commit from #1333 on); anything else absent.
+    /// #1333 (rev1369 MEDIUM-2) — the rewound block `offset | incarnation | rabiaTerm | localCounter |
+    /// rewindIncarnation | rewindGeneration | rewindSequence` is what lets a same-node restart resume under
+    /// the rewind epoch the consumer committed with. Every other test in this class goes through the
+    /// offset-only or assignment-only `commit`/`fetch`, so before these pins a decode that DROPPED the rewind
+    /// epoch left the whole repo green (rev1369's mutation M7'). Layout since #1529: 8 = unfenced (pull API),
+    /// 32 = fenced without a rewind epoch, 56 = fenced with one (every fenced commit); the pre-#1529 24- and
+    /// 40-byte forms still decode, with incarnation 0; anything else absent. The fixtures run at incarnation
+    /// 1, as after a real genesis: at 0, an encoder that dropped the incarnation would round-trip unnoticed.
     @Nested
     class RewindEpochLayout {
-        private static final Epoch TENURE = Epoch.epoch(1L, 1L);
-        private static final Epoch OTHER_TENURE = Epoch.epoch(1L, 3L);
-        private static final RewindEpoch EPOCH = RewindEpoch.rewindEpoch(7L, 3L);
+        private static final Epoch TENURE = Epoch.epoch(1L, 1L, 1L);
+        private static final Epoch OTHER_TENURE = Epoch.epoch(1L, 1L, 3L);
+        private static final RewindEpoch EPOCH = RewindEpoch.rewindEpoch(1L, 7L, 3L);
 
         @Test
         void encodeRewoundCursor_decodeCursor_roundTrip_carriesBothEpochs() {
@@ -521,12 +524,43 @@ class CursorStoreTest {
                       .isEqualTo(Result.success(Option.none()));
         }
 
+        /// #1529: a pre-#1529 24-byte fenced block decodes with incarnation 0, so after a genesis (incarnation
+        /// 1) it belongs to no current tenure and the consumer resumes from the cluster checkpoint.
+        @Test
+        void legacyFencedBlock_decodesAtIncarnationZero_andIsNotTheCurrentTenure() {
+            var legacy = longs(99L, 1L, 1L);
+
+            assertThat(CursorStore.decodeCursor(legacy)).isEqualTo(Option.some(new CursorStore.StoredCursor(99L,
+                                                                                                            Option.some(Epoch.epoch(0L, 1L, 1L)),
+                                                                                                            RewindEpoch.NONE)));
+            storage.putRef(CursorStore.buildRefName(GROUP, STREAM, PARTITION), legacy).await();
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await()).isEqualTo(Result.success(Option.none()));
+        }
+
+        /// #1529: a pre-#1529 40-byte rewound block decodes with BOTH incarnations 0.
+        @Test
+        void legacyRewoundBlock_decodesWithBothIncarnationsZero() {
+            assertThat(CursorStore.decodeCursor(longs(99L, 1L, 1L, 7L, 3L))).isEqualTo(Option.some(new CursorStore.StoredCursor(99L,
+                                                                                                                                 Option.some(Epoch.epoch(0L, 1L, 1L)),
+                                                                                                                                 RewindEpoch.rewindEpoch(0L, 7L, 3L))));
+        }
+
+        private static byte[] longs(long... values) {
+            var buffer = ByteBuffer.allocate(values.length * Long.BYTES).order(ByteOrder.BIG_ENDIAN);
+
+            for (var value : values) {
+                buffer.putLong(value);
+            }
+
+            return buffer.array();
+        }
+
         /// A block of any other length is unreadable and reads as absent, never as a garbled cursor.
         @Test
         void blockOfAnUnknownLength_readsAsAbsent() {
             var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
 
-            storage.putRef(refName, new byte[4 * Long.BYTES]).await();
+            storage.putRef(refName, new byte[6 * Long.BYTES]).await();
             assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(Result.success(Option.none()));
             assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await()).isEqualTo(Result.success(Option.none()));
         }

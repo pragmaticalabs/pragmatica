@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.stream.LongStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -516,8 +517,12 @@ class ReplicaCatchupTierFallbackTest {
     }
 
     /// Sealing runs off the appending thread (#1234); the tier holds the offset only once its seal is indexed.
+    /// The sink indexes a segment BEFORE the sealer releases it, so for a moment an offset is both indexed and
+    /// still in flight, and a catch-up read in that moment is answered `SealInFlight` (#1682). Wait for the
+    /// release too — the same predicate the read path asks first.
     private void awaitSealedThrough(long offset) {
-        awaitCondition(() -> index.lastSealedOffset(STREAM, PARTITION) >= offset);
+        awaitCondition(() -> index.lastSealedOffset(STREAM, PARTITION) >= offset
+                             && LongStream.rangeClosed(0, offset).noneMatch(held -> owner.sealInFlight(STREAM, PARTITION, held)));
         assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("sealed through %d", offset).isGreaterThanOrEqualTo(offset);
     }
 

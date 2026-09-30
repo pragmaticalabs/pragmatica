@@ -70,7 +70,7 @@ class TransientClassificationTest {
             new CapacityDenied("not capacity"),
             new DatabaseConnectorError.ConstraintViolation("pk", "dup"),
             new HttpClientError.RequestFailed(500, "boom"),
-            new DHTError.StaleEpochWrite(1, 1),
+            new DHTError.StaleEpochWrite(0, 1, 1),
         };
 
         for (var cause : unclassified) {

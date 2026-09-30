@@ -44,7 +44,7 @@ public sealed interface DHTMessage extends ProtocolMessage {
 
     /// Request to put a value.
     ///
-    /// Carries the writer's current owner epoch as two primitive `long`s (`epochTerm`,
+    /// Carries the writer's current owner epoch as three primitive `long`s (`epochIncarnation`, `epochTerm`,
     /// `epochCounter`) — the fencing token each replica enforces against its per-partition
     /// high-water (#345 piece 1c). The `Epoch` type that mints these lives in the BSL-1.1
     /// `aether/slice` module, so only the primitives cross this Apache-2.0 wire.
@@ -53,6 +53,7 @@ public sealed interface DHTMessage extends ProtocolMessage {
                       byte[] key,
                       byte[] value,
                       long version,
+                      long epochIncarnation,
                       long epochTerm,
                       long epochCounter) implements DHTMessage {
         public PutRequest {
@@ -85,9 +86,9 @@ public sealed interface DHTMessage extends ProtocolMessage {
     record ExistsResponse(String requestId, NodeId sender, boolean exists) implements DHTMessage {}
 
     /// A key-value pair with version used in migration data transfers. Carries the owner epoch as
-    /// two primitive `long`s (`epochTerm`, `epochCounter`) so migrated entries preserve their
+    /// three primitive `long`s (`epochIncarnation`, `epochTerm`, `epochCounter`) so migrated entries preserve their
     /// fencing token across transfer (#345 piece 1c).
-    record KeyValue(byte[] key, byte[] value, long version, long epochTerm, long epochCounter) {
+    record KeyValue(byte[] key, byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {
         public KeyValue {
             key = key.clone();
             value = value.clone();

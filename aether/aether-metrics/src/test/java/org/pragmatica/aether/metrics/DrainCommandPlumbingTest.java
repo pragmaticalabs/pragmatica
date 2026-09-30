@@ -88,7 +88,7 @@ class DrainCommandPlumbingTest {
             var network = new RecordingNetwork();
             var ctx = buildContext(network, () -> Set.of(PEER_A));
 
-            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
+            ctx.broadcastPing(Epoch.epoch(0L, 1L, 0L), 1L);
             assertThat(network.sentPings).hasSize(1);
             assertThat(network.sentPings.get(0).drainNodes()).containsExactly(PEER_A);
             assertThat(network.broadcastPings).as("role-scoped unicast — no global metrics broadcast").isEmpty();
@@ -99,7 +99,7 @@ class DrainCommandPlumbingTest {
             var network = new RecordingNetwork();
             var ctx = buildContext(network, Set::of);
 
-            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
+            ctx.broadcastPing(Epoch.epoch(0L, 1L, 0L), 1L);
             assertThat(network.sentPings).hasSize(1);
             assertThat(network.sentPings.get(0).drainNodes()).isEmpty();
         }
@@ -109,7 +109,7 @@ class DrainCommandPlumbingTest {
             var network = new RecordingNetwork();
             var ctx = buildContextDefault(network);
 
-            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
+            ctx.broadcastPing(Epoch.epoch(0L, 1L, 0L), 1L);
             assertThat(network.sentPings).hasSize(1);
             assertThat(network.sentPings.get(0).drainNodes()).isEmpty();
         }
@@ -176,12 +176,13 @@ class DrainCommandPlumbingTest {
     }
 
     private static ClusterSyncPing drainPing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of(SELF), Map.of(), Set.of(), true, true);
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, 0L, Set.of(), Set.of(SELF), Map.of(), Set.of(), true, true);
     }
 
     private static ClusterSyncPing otherDrainPing() {
         return new ClusterSyncPing(LEADER,
                                    Map.of(),
+                                   0L,
                                    0L,
                                    0L,
                                    0L,
@@ -194,7 +195,7 @@ class DrainCommandPlumbingTest {
     }
 
     private static ClusterSyncPing nonePing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of(), Map.of(), Set.of(), true, true);
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, 0L, Set.of(), Set.of(), Map.of(), Set.of(), true, true);
     }
 
     private static ClusterSyncContext buildContext(ClusterNetwork network, Supplier<Set<NodeId>> drainTargets) {
@@ -207,7 +208,7 @@ class DrainCommandPlumbingTest {
                                              TimeSpan.timeSpan(1).hours(),
                                              () -> 1L,
                                              3,
-                                             () -> Epoch.epoch(1L, 0L),
+                                             () -> Epoch.epoch(0L, 1L, 0L),
                                              PeerObservationStore.peerObservationStore(),
                                              PeriodicObservationConfig.defaultConfig(),
                                              () -> true,
@@ -233,7 +234,7 @@ class DrainCommandPlumbingTest {
                                              TimeSpan.timeSpan(1).hours(),
                                              () -> 1L,
                                              3,
-                                             () -> Epoch.epoch(1L, 0L),
+                                             () -> Epoch.epoch(0L, 1L, 0L),
                                              PeerObservationStore.peerObservationStore());
 
             ctxRef.set(ctx);
