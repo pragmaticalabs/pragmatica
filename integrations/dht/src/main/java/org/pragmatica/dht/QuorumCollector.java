@@ -23,6 +23,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 /// Collects responses from multiple nodes and resolves a promise when quorum is reached.
@@ -38,6 +39,8 @@ public final class QuorumCollector<T> {
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
     private final long createdNanos = System.nanoTime();
+    private final AtomicReference<String> valueSource = new AtomicReference<>();
+    private final Promise<Unit> allReplied = Promise.promise();
 
     private QuorumCollector(int quorum, int total, Promise<T> promise, UnaryOperator<T> valueMerger) {
         this.quorum = quorum;
@@ -68,10 +71,27 @@ public final class QuorumCollector<T> {
     /// Record a successful response. Resolves promise when quorum reached.
     @Contract
     public void onSuccess(T value) {
+        onSuccess(value, "");
+    }
+
+    /// Record a successful response and who sent it. The first replica whose reply carried a PRESENT value is
+    /// remembered by [#valueSource]: when the quorum resolved empty, a value that arrives afterwards is a late
+    /// value the read discarded, and this names the replica that held it. Attribution only; the resolved value
+    /// is chosen exactly as before.
+    @Contract
+    public void onSuccess(T value, String source) {
         bestValue.accumulateAndGet(value, this::selectBest);
-        if (successCount.incrementAndGet() >= quorum) {
+        if (value instanceof Option<?> option && option.isPresent()) {
+            valueSource.compareAndSet(null, source);
+        }
+
+        var successes = successCount.incrementAndGet();
+
+        if (successes >= quorum) {
             promise.succeed(bestValue.get());
         }
+
+        settleIfAllReplied(successes, failureCount.get());
     }
 
     /// Record a failed response. Fails promise when quorum becomes arithmetically impossible —
@@ -87,6 +107,26 @@ public final class QuorumCollector<T> {
         if (total - failures < quorum) {
             promise.fail(DHTError.quorumNotReached(quorum, successCount.get()));
         }
+
+        settleIfAllReplied(successCount.get(), failures);
+    }
+
+    private void settleIfAllReplied(int successes, int failures) {
+        if (successes + failures >= total) {
+            allReplied.succeed(Unit.unit());
+        }
+    }
+
+    /// Resolves once every expected reply (success or failure) has arrived. Never resolves if a target never
+    /// answers, so callers bound it with their own timeout.
+    public Promise<Unit> allReplied() {
+        return allReplied;
+    }
+
+    /// The replica whose reply carried a present value, if any did. After a read resolved EMPTY this is a late
+    /// value the read discarded.
+    public Option<String> valueSource() {
+        return Option.option(valueSource.get());
     }
 
     /// Milliseconds since this collector was created, i.e. since the read it serves began.

@@ -106,7 +106,7 @@ class DHTResolveFallbackTest {
     }
 
     @Test
-    void get_allMiss_healthyCluster_reportsLostWithKeyAndCounts() {
+    void get_allMiss_healthyCluster_reportsAbsentEverywhereWithKeyAndCounts() {
         var observer = new RecordingResolveFallbackObserver();
         var fabric = fabric(CONFIG, observer, 5);
         var absentKey = key("absent-key");
@@ -121,7 +121,7 @@ class DHTResolveFallbackTest {
         assertThat(miss.rSetAnswered()).isEqualTo(3);
         assertThat(miss.probesFailed()).isZero();
         assertThat(miss.unprobed()).isZero();
-        assertThat(miss.verdict()).isEqualTo("lost");
+        assertThat(miss.verdict()).isEqualTo("absent-everywhere");
         assertThat(miss.kind()).isEqualTo("quorum-empty");
     }
 
@@ -206,7 +206,7 @@ class DHTResolveFallbackTest {
     }
 
     @Test
-    void get_fullReplication_noFallbackTargets_noOp() {
+    void get_fullReplication_noFallbackTargets_reportsRSetOnlyMiss() {
         var observer = new RecordingResolveFallbackObserver();
         var fabric = fabric(FULL, observer, 5);
         var fullKey = key("full-key");
@@ -217,9 +217,45 @@ class DHTResolveFallbackTest {
               .onFailure(cause -> Assertions.fail(cause.message()))
               .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
 
-        // FULL replication: R-set spans every node, so there is no fallback candidate — a natural no-op.
+        // FULL replication: no fallback candidate, so nothing is probed, but the empty is still reported.
         assertThat(observer.resolvedCount()).isZero();
-        assertThat(observer.unresolvedCount()).isZero();
+        assertThat(observer.unresolvedCount()).isEqualTo(1);
+        assertThat(observer.lastMiss().probed()).isZero();
+        assertThat(observer.lastMiss().rSetSize()).isEqualTo(5);
+        assertThat(observer.lastMiss().verdict()).isEqualTo("absent-everywhere");
+    }
+
+    @Test
+    void get_threeNodeCluster_allMiss_isReported() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 3);
+        var absentKey = key("absent-key");
+
+        fabric.anyClient().get(absentKey).await();
+
+        assertThat(observer.unresolvedCount()).isEqualTo(1);
+        assertThat(observer.lastMiss().probed()).isZero();
+        assertThat(observer.lastMiss().verdict()).isEqualTo("absent-everywhere");
+    }
+
+    @Test
+    void get_valueOnlyOnThirdRSetReplica_returnsEmptyButReportsLateValueDiscarded() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 5);
+        var lateKey = key("late-key");
+        var rSet = fabric.rSetFor(lateKey);
+        var holder = rSet.getLast();
+        fabric.seedOnly(holder, lateKey, value("payload"));
+
+        // read semantics are unchanged: the quorum resolved on two empties, so the read is empty
+        fabric.client(rSet.getFirst())
+              .get(lateKey)
+              .await()
+              .onFailure(cause -> Assertions.fail(cause.message()))
+              .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+
+        assertThat(observer.lastMiss().verdict()).isEqualTo("late-value-discarded");
+        assertThat(observer.lastMiss().lateValueFrom()).isEqualTo(holder.id());
     }
 
     private DhtFabric fabric(DHTConfig config, ResolveFallbackObserver observer, int nodeCount) {

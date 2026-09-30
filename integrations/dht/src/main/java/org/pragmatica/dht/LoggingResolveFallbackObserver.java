@@ -55,6 +55,10 @@ public final class LoggingResolveFallbackObserver implements ResolveFallbackObse
              + " verdict=" + miss.verdict()
              + " kind=" + miss.kind()
              + " elapsedMs=" + miss.elapsedMillis()
+             + " lateValueFrom=" + (miss.lateValueFrom()
+                                        .isEmpty()
+                                    ? "none"
+                                    : miss.lateValueFrom())
              + " rSetAnswered=" + miss.rSetAnswered()
              + " rSetLive=" + miss.rSetLive()
              + " rSetSize=" + miss.rSetSize()

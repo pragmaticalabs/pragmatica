@@ -257,7 +257,9 @@ public final class DistributedDHTClient implements DHTClient {
     /// Handle a get response from a remote node.
     @Contract
     public void onGetResponse(DHTMessage.GetResponse response) {
-        removePending(response.requestId()).onPresent(op -> castCollector(op, Option.class).onSuccess(response.value()));
+        removePending(response.requestId()).onPresent(op -> castCollector(op, Option.class).onSuccess(response.value(),
+                                                                                                      response.sender()
+                                                                                                              .id()));
     }
 
     /// Handle a put response from a remote node.
@@ -355,8 +357,25 @@ public final class DistributedDHTClient implements DHTClient {
         var fallbackTargets = fallbackTargets(key);
 
         return fallbackTargets.isEmpty()
-               ? Promise.success(Option.none())
+               ? reportAfterRSetSettles(key, rSetCollector, rSetLive)
                : probeAndRepair(key, fallbackTargets, rSetCollector, rSetLive);
+    }
+
+    /// The ring is no bigger than the R-set (a 3-node cluster, or FULL replication): there is nothing to probe, so
+    /// the read's empty rests on the R-set alone. Report it once every R-set reply has arrived (or the operation
+    /// timeout passes), WITHOUT delaying the caller: the read returns empty now and the line follows.
+    private Promise<Option<byte[]>> reportAfterRSetSettles(byte[] key,
+                                                           QuorumCollector<Option<byte[]>> rSetCollector,
+                                                           int rSetLive) {
+        var _ = rSetCollector.allReplied()
+                             .timeout(config.operationTimeout())
+                             .onResultRun(() -> fallbackObserver.onUnresolvedAfterFallback(missReport(key,
+                                                                                                      rSetCollector,
+                                                                                                      rSetLive,
+                                                                                                      0,
+                                                                                                      0)));
+
+        return Promise.success(Option.none());
     }
 
     /// Bounded ring-probe candidates: every ring member MINUS the R-set already read by the quorum
@@ -409,7 +428,8 @@ public final class DistributedDHTClient implements DHTClient {
                                        probed,
                                        probesFailed,
                                        Math.max(0, candidates - probed),
-                                       rSetCollector.elapsedMillis());
+                                       rSetCollector.elapsedMillis(),
+                                       rSetCollector.valueSource().or(""));
     }
 
     private List<Promise<Option<byte[]>>> probeAll(byte[] key,
@@ -510,7 +530,10 @@ public final class DistributedDHTClient implements DHTClient {
     /// observed by the success/failure callbacks below; the Promise handle itself is intentionally
     /// not retained (the collector owns resolution of the outer per-op promise).
     private void handleLocalGet(byte[] key, QuorumCollector<Option<byte[]>> collector) {
-        var _ = node.getLocal(key).onSuccess(collector::onSuccess).onFailure(collector::onFailure);
+        var _ = node.getLocal(key)
+                    .onSuccess(value -> collector.onSuccess(value,
+                                                            node.nodeId().id()))
+                    .onFailure(collector::onFailure);
     }
 
     private void handleLocalPut(byte[] key,
