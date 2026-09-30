@@ -306,7 +306,8 @@ numeric detail. The opaque message stays the user-facing detail string.
   (the cause is not `HttpStatusAware`) with
   `detail = "Total off-heap memory limit exceeded"`. (An APP route maps the same cause through
   `ErrorMapper`, which since #1737 answers **503** because `STREAM_MEMORY_EXCEEDED` is
-  `isTransient()`; the Management path does not use `ErrorMapper`.) **No route change
+  `isTransient()`; the Management path does not use `ErrorMapper`.) A 503 here means "transient, retry
+  later", not "not executed"; see `slice-developers/getting-started.md` for the retry-safety caveat. **No route change
   needed** for publish; the create-floor failure now reaches here instead of being masked.
 - *App/resource stream provisioning:* change `StreamPublisherFactory.ensureStreamExists`
   (`StreamPublisherFactory.java:74-76`) and `StreamAccessFactory.ensureStreamExists`

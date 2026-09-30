@@ -724,12 +724,22 @@ Error responses follow the pattern mapping:
 | `UnsupportedLanguage` | 400 | `*Unsupported*` |
 | Everything else | 500 | `default` |
 
-A cause that implements `Cause.Transient` (a refusal that passes when retried — e.g. a stream partition
-not yet promoted on this node) and that no explicit mapping claims answers **503** instead of the
-`default` 500, so a client can tell a retryable refusal from a server fault (#1737). No `Retry-After`
-header is set. A cause you map explicitly keeps its configured status, and a failure that is not
-classified transient — including `PublishOutcomeUnknown`, which is not retry-safe without a message ID —
-stays 500.
+A cause that implements `Cause.Transient` and that no explicit mapping claims answers **503** instead of
+the `default` 500, so a client can tell a retryable condition from a server fault (#1737). No
+`Retry-After` header is set.
+
+**503 means "transient, retry later" — it does NOT mean "not executed".** `Cause.Transient` covers
+refusals that happen before execution (e.g. a stream partition not yet promoted on this node) and also
+timeouts where the call may already have run: a slice invocation `TimeoutError`, an `HttpClient` or JDBC
+timeout, `CoreError.Timeout`. A client that retries a 503 on a **non-idempotent** operation can repeat
+its effect. Retry such calls only with an idempotency key or server-side dedup, or only for refusals the
+API documents as pre-execution. `PublishOutcomeUnknown` stays 500 precisely because its outcome is
+unknown and it is not retry-safe without a message ID.
+
+Which mapping wins: an explicit mapping to a status **other than 500** is kept. An explicit `500`
+mapping of a transient cause still answers 503, because the runtime cannot tell an explicit 500 from the
+generated `default` 500. A failure that is not classified transient (including a transient cause hidden
+under a non-transient wrapper) stays 500.
 
 ### Inheriting Common Configuration
 
