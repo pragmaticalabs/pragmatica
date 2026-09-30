@@ -142,8 +142,10 @@ pick_publish_endpoint() {
 
 # Retry policy (the shared stream_publish_status in lib/cluster.sh cannot be reused: it drives the
 # management route, this drives the app route on a sticky per-node endpoint):
-#   - an ANSWERED 503 whose body is a before-write refusal (ManagementServerError.PublishRetryable:
-#     "not yet promoted", "refused before writing", "Remote publish retryable") is retried on the SAME
+#   - an ANSWERED 503 whose body is a before-write refusal (the app route's producers: StreamError.OwnerNotActivated "is not yet
+#     promoted on this node", StreamForwardError "Remote publish retryable"; test-02y-publish-retry.sh
+#     reads both sources so a reworded producer reddens it. "refused before writing" is the MANAGEMENT
+#     route's wording (ManagementServerError) and is deliberately absent here) is retried on the SAME
 #     endpoint, PUBLISH_503_DELAY_S doubling up to PUBLISH_503_MAX_DELAY_S, for PUBLISH_503_BUDGET_S.
 #     Nothing was written, so a resend cannot duplicate. 30s because s29's 37/40 saw a >=18s refusal
 #     (a zombie link to a p0 holder, #1762) and the budget must cover one link TTL plus the 5s reconcile.
@@ -178,7 +180,7 @@ publish_marker() {
             return 0
         fi
 
-        if [ "$status" = "503" ] && printf '%s' "$body" | grep -qiE 'not yet promoted|refused before writing|Remote publish retryable'; then
+        if [ "$status" = "503" ] && printf '%s' "$body" | grep -qiE 'is not yet promoted on this node|Remote publish retryable'; then
             [ -n "$first503" ] || first503="$SECONDS"
             if [ "$SECONDS" -lt "$deadline" ]; then
                 retries=$((retries + 1))
