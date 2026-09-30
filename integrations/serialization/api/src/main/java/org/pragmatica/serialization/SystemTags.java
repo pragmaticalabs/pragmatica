@@ -558,6 +558,10 @@ public interface SystemTags {
         pin(table, 1715, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryState");
         pin(table, 1716, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReason");
         pin(table, 1717, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind");
+        // restore decision marker (#1533); 1711–1717 are claimed by #1638, so #1533 takes 1718–1720
+        pin(table, 1718, "org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey");
+        pin(table, 1719, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue");
+        pin(table, 1720, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome");
         // community lifecycle cluster events (#1652) — claimed range from 1740
         pin(table, 1740, "org.pragmatica.aether.api.ClusterEvent.CommunityMinted");
         pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");

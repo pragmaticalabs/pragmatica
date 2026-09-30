@@ -72,7 +72,7 @@
 
 Source of truth for leader, blueprint, target, generation, governor, and ownership atoms. `KVStore` is a `StateMachine<KVCommand>` driven by leaderless Rabia.
 
-- **`kv.write` (Put)** — *linearizable write order*. Every Put goes through the single total Rabia log and is applied deterministically on every replica; the ack returns only after quorum-commit **and** local apply (`KVStore.handlePut` `KVStore.java:76`; `RabiaEngine` apply `:1536-1538`). Durability is **quorum-replicated in memory** — **not** fsync-durable. Persistence is **snapshot-only** at lifecycle events via `GitBackedPersistence` (default in-memory), so a simultaneous **full-cluster crash loses everything since the last snapshot**.
+- **`kv.write` (Put)** — *linearizable write order*. Every Put goes through the single total Rabia log and is applied deterministically on every replica; the ack returns only after quorum-commit **and** local apply (`KVStore.handlePut` `KVStore.java:76`; `RabiaEngine` apply `:1536-1538`). Durability is **quorum-replicated in memory** — **not** fsync-durable. Cluster state (ClusterStateKey types) survives a simultaneous **full-cluster loss** only through the opt-in change-triggered KV backup (§1a): it loses the changes after the last backup push, and without `[backup]` it loses everything; runtime state is rebuilt, never restored.
 - **`kv.read`** — **not linearizable.** Reads are served from the local applied `ConcurrentHashMap` (`KVStore.get` `:240`), which can trail the committed frontier (`isPendingCatchUp`). This is the ZooKeeper-default-read shape: fast, sequential per node, possibly stale, with **no `sync()` / no linearizable read path** in production.
 - **`epoch.fence`** — the #345 correctness fence. The applier rejects a `Put` carrying a strictly-older owner epoch or a stale leader token (`staleEpochWrite` `:116`, `staleLeaderWrite` `:101`), identically on every replica → genuine **monotonic single-writer per ownership key**. The rejection is **silent** (returns the stored value, no notification).
 - **`kv.delete` (Remove)** — ⚠ total-ordered but **NOT fenced** (`handleRemove` `:131` has no `staleWrite` guard). A deposed owner's Remove **is applied**. See Known Gaps.
@@ -86,54 +86,63 @@ Source of truth for leader, blueprint, target, generation, governor, and ownersh
 
 There are **50** `AetherKey` record types (not ~40 as originally estimated), each a distinct KV keyspace under Store-A/Store-B. This section states, per type, what's classified as ephemeral vs. declared, what's dead, what's earned with a gap, and how the underlying persistence actually works — current behavior only, no judgment on whether the declared-state model is sufficient overall.
 
-**Backup / snapshot persistence — real mechanism, off by default; it is the only backup surface.**
-- **Gate:** `[backup] enabled` defaults `false` (`ConfigLoader.java:375`). Turning it on additionally requires a non-blank `[backup] path` — the actual gate is `Main.resolveBackup` (`Main.java:316-321`), which filters on `BackupConfig::enabled` **and** non-blank `path` before `AetherNodeConfig` ever sees a `Some(BackupConfig)`; `AetherNode.resolvePersistence`'s own `path`-blank filter (`AetherNode.java:596-601`) is a redundant downstream check, not the real switch. `enabled=true` with no `path` set silently stays in-memory — no warning logged.
-- **When active:** `RabiaPersistence.gitBacked(...)` (`AetherNode.createGitBackedPersistence`, `AetherNode.java:604-610`) backs Store-A's KV.
-- **Triggers — lifecycle only, never on commit:** `persistence.save(...)` is called from exactly three engine transitions in `RabiaEngine.java` — quorum-loss pause (`doPauseForQuorumLoss`, `:526`), membership reconfigure (`reconfigure`, `:604` — this save writes an **empty state at `Phase.ZERO`**, not a snapshot of the pre-reconfigure state), and graceful stop (`shutdownAndReset`, `:634`) — plus a re-persist immediately after a restore-from-disk (`applyRestoredState`, `:1297`), which is an echo of a load, not an independent trigger.
-- **Payload is not structured/diffable TOML.** `feature-catalog.md:122` currently claims "Cluster metadata serialized to TOML file... Git provides versioning, history, diffs." In fact `AetherNode::snapshotToBase64`/`::base64ToSnapshot` are wired as the `snapshotToToml`/`tomlToSnapshot` hooks (`AetherNode.java:613-620`), so the on-disk file is `"# Phase: N\n" + Base64(rawBytes)` (`GitBackedPersistence.save`), and the raw bytes come from a generic `serializer.encode(new HashMap<>(storage))` (`KVStore.makeSnapshot`, `integrations/cluster/.../KVStore.java:210-212`) — a per-key structured dump never happens on this path. An opaque base64 blob is not meaningfully diffable; `feature-catalog.md` (row 206, `KV-Store durable backup`) already states this correction — no outstanding sync between the two docs.
-- **There is no backup API or CLI (#676).** `POST|GET /api/v1/backups` and the `backup`/`backups` command trees were wired to `BackupService.disabled()` at both node-construction sites, and no other implementation of that interface ever existed (`git log -S'implements BackupService'` finds only the introducing commit `1dc452bf0`, whose sole implementor is the disabled record) — every call returned `backup-disabled` in every configuration. The surface was removed rather than wired: a real service needs leader-coordinated snapshot/restore against live consensus (#660 territory), not a route. The on-disk snapshot is written to a sibling temp file, fsynced and renamed over `state.toml`, so an interrupted save leaves the previous snapshot intact (`GitBackedPersistenceTest`); the git history in `[backup] path` is the list of backups.
-- **The old path's read side RESTORES — it is not detect-only.** With `[backup]` set, a restarting node
-  installs a whole consensus snapshot at boot through sync adoption: the most advanced state among its
-  sync responders, or — when every responder is behind it — its OWN persisted snapshot
-  (`RabiaEngine.adoptCollectedState` → `activateWithoutAdoption` → `restoreOwnState`, #1020). Only the
-  boot future-history check (§6.4) is detect-only. `[verified: ApiKeyFullRestartForgeTest]` — a minted
-  API key survives a full graceful restart on every node, including the one whose snapshot was ahead of
-  its responders.
-- **Interim hazards of the old path, removed by #1533 with the path itself** `[mechanism: read from code]`:
-  - it restores the WHOLE KV, runtime keys included (for example `StreamPartitionOwnershipKey`),
-    contrary to the #1530 classification and the OQ-25 reversal;
-  - it restores `ClusterIncarnationKey` as it was and never advances it, so an incarnation increase on
-    cold restart is NOT guaranteed until #1533;
-  - it ignores `[backup] enabled` (only a non-blank path selects it; Ember passes `enabled = false`
-    with a path), and `[backup] interval` has no reader;
-  - (d) a cold restart restored from an OLDER snapshot comes back with the same lineage and incarnation
-    and a lower revision than the change-triggered backup head. While the head is ahead nothing is backed
-    up and the head is never written over; the only signal is one `BACKUP_HEAD_AHEAD` warning per episode
-    once the stall outlasts 30 s. Once this cluster's revision overtakes the head's, its state is written
-    OVER the newer head — replaced, not merely delayed — and git history keeps the replaced commit; the
-    replacement raises `BACKUP_HEAD_REPLACED` (WARN, naming the replaced revision), never an all-clear
-    `[verified: KvBackupServiceTest.Lineage#afterAnOldPathRestart_theStallIsWarned_andTheOvertakingStateReplacesTheHead]`
-    (unit level, real git; no multi-node run).
+**Backup and restore — the change-triggered KV backup is the only persistence of cluster state (#1532, #1533).**
+Consensus runs in memory on every node; the old per-node consensus snapshot (`GitBackedPersistence`,
+`state.toml`) was removed by #1533, so hazards (a)–(d) of that interim path no longer apply.
+- **Gate:** `[backup] enabled = true` with a non-blank `path` (`Main.resolveBackup`, `AetherNode.enabledBackup`).
+- **Whole-cluster restart = a regular start of FRESH cores, then the restore** (owner ruling 2026-09-28).
+  The leader decides once (`BackupRestoreCoordinator`) and commits the decision as the runtime marker
+  `BackupRestoreKey`; a restore applies the backup head in leader transactions and moves the incarnation to
+  `max(restored, highest recorded for the lineage) + 1` `[verified: ApiKeyFullRestartForgeTest — fresh
+  cores restore; the key is accepted on every node; the incarnation rises; the slice and every stream owner
+  are rebuilt on the fresh nodes; restore = "fresh" refuses the key]`. Restarting the same NodeIds with empty
+  state is not a restart mode (#1543).
+- **Restore gate:** until the decision commits, each backup-enabled node refuses writes to backed-up keys on
+  its consensus submit path (`RestoreGate`, installed on `RabiaEngine.submitCommands`, which both local
+  applies and forwarded worker submissions reach); the restore's own transactions and runtime writes pass
+  `[verified: EmberKvBackupRestoreTest]`. Bypass list: none on the submit path; KV snapshot adoption
+  (`restoreCommittedSnapshot`) installs already-committed state and is not a submission. A mixed `[backup]`
+  configuration across cores is unsupported — a leader without it commits DISABLED.
+- **Unreadable backup:** the gate stays closed and `BACKUP_RESTORE_BLOCKED` names the exits; never a
+  silent fresh boot `[verified: BackupRestoreCoordinatorTest.Blocked, EmberKvBackupRestoreTest]`.
+- **Normalised on restore** (`BackupRestoreCoordinator.normalised`, the only place): community
+  ACTIVE/DEGRADED → FORMING; IN_PROGRESS deployment outcomes and entity checkpoint pointers are not
+  restored; schema MIGRATING → PENDING `[verified: BackupRestoreCoordinatorTest, unit level]`.
+- **RPO:** changes after the last successful push; with the remote unreachable, the leader's local queue.
+- **Data-plane limits:** entity state restarts empty (checkpoints withheld, `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED`);
+  stream records that lived only in the old nodes' WAL/ring are lost `[unverified: whether sealed
+  segments in a surviving remote tier are re-read by a fresh cluster — not tested]`.
+- **No remote:** the restore reads only the deciding leader's local repository `[unverified: picking the
+  newest head across nodes is not implemented]`; `BACKUP_RESTORE_SOURCE_LOCAL` warns at startup.
+- **The #1625 residual:** an incarnation that ran but whose key never reached the backup before a crash is
+  invisible to the restore floor and can be reused `[unverified]`; #1532 narrows the window by flushing an
+  incarnation change immediately. Two clusters restored from the same head AT ONCE both land on the same
+  incarnation, because neither has recorded its own yet. They are told apart by the incarnation id
+  (below).
 - **The change-triggered backup (#1532)** is a separate, leader-only git repository at
   `<path>/kv-backup`, written only when `[backup] enabled = true`; it backs up cluster-state keys only
-  and nothing reads it back until #1533 `[design intent — unverified]`. **The remote's lineage changes
+  `[mechanism: sealed AetherKey = ClusterStateKey | RuntimeKey]`. **The remote's lineage changes
   only by an operator declaration** (`aether backup declare-genesis`, which commits a declaration for
   exactly this cluster's lineage and incarnation): a head of any other lineage is gated, whatever the
-  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. A head of this cluster's own lineage that is ahead of its state is never written over while it is
+  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. **A head of this cluster's own lineage and incarnation written under ANOTHER incarnation id is never
+  written over** (`BACKUP_FORKED`, gated until `declare-genesis` or a restore moves this cluster to a new
+  incarnation) `[mechanism: BackupDecision — the incarnation id, minted with every incarnation, must match;
+  verified: KvBackupServiceTest.Fork]`. Detection is on the second writer only: the cluster whose head it
+  is sees nothing and keeps writing. A head of this cluster's own lineage that is ahead of its state is never written over while it is
   ahead; routine lag after a leader change resolves by itself, and a stall longer than 30 s (monotonic
   clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`
   `[unverified: a false-positive BACKUP_HEAD_AHEAD WARN needs >30 s apply lag in a newly elected leader;
   election catch-up criterion not checked]`.
-  `declare-genesis` never moves this cluster's incarnation backwards (it commits `max(own, head) + 1`,
-  witnessed on the incarnation it read, so a concurrent write makes it refuse instead of being
-  overwritten) and is safe to re-run after any push failure `[verified: KvBackupServiceTest.Genesis]`. The release does not cut with
-  both paths live: #1533 deletes the old one.
+  `declare-genesis` never moves this cluster's incarnation backwards and never reuses one the backup has
+  recorded for its lineage (it commits `max(own, head, highest recorded for its lineage) + 1` — the restore
+  floor — witnessed on the incarnation it read, so a concurrent write makes it refuse instead of being
+  overwritten) and is safe to re-run after any push failure `[verified: KvBackupServiceTest.Genesis]`.
 
-**Declared vs. derivable — the type system is the authoritative split (#1530).** Every `AetherKey` is either `AetherKey.ClusterStateKey` (cluster state, carried in a KV backup for a whole-cluster cold restart) or `AetherKey.RuntimeKey` (rebuilt by the running cluster, never backed up); `AetherKey` permits nothing else, so a new key cannot skip the choice `[mechanism: sealed interface AetherKey permits ClusterStateKey, RuntimeKey]`. `ConfigKey` backs up only its cluster-wide rows (`ConfigKey.isBackedUp()` is false for node-scoped overrides). The backup format is `BackupEntryCodec` (#1531). The earlier hand-maintained `EphemeralKeys` set and the TOML `KVStoreSerializer` it served are deleted — neither had a production caller. The split is pinned by `BackupKeyClassificationTest` (no backed-up key or value may reach a `NodeId` outside a commented allowlist), which is a unit-level pin, not a live-path verification: no restore path consumes a backup yet `[design intent — unverified]`.
+**Declared vs. derivable — the type system is the authoritative split (#1530).** Every `AetherKey` is either `AetherKey.ClusterStateKey` (cluster state, carried in a KV backup for a whole-cluster cold restart) or `AetherKey.RuntimeKey` (rebuilt by the running cluster, never backed up); `AetherKey` permits nothing else, so a new key cannot skip the choice `[mechanism: sealed interface AetherKey permits ClusterStateKey, RuntimeKey]`. `ConfigKey` backs up only its cluster-wide rows (`ConfigKey.isBackedUp()` is false for node-scoped overrides). The backup format is `BackupEntryCodec` (#1531). The earlier hand-maintained `EphemeralKeys` set and the TOML `KVStoreSerializer` it served are deleted — neither had a production caller. The split is pinned by `BackupKeyClassificationTest` (no backed-up key or value may reach a `NodeId` outside a commented allowlist), which is a unit-level pin. On the live path, the restore (#1533) brings back no reference to a node of the old cluster: after a restart onto fresh cores the restored slice and every stream partition owner sit on the fresh nodes only `[verified: ApiKeyFullRestartForgeTest]`.
 
 **Dead key types, deleted (#1530):** `StorageBlockKey`, `StorageRefKey`, `CloudCredentialsKey`, `StreamMetadataKey`, `AbTestRoutingKey`, with their value records — no production writer or reader. Their wire tags stay pinned as RETIRED in `SystemTags` so they are never reused. `StreamPartitionAssignmentKey` was removed earlier by #1271.
 
-**Wired end to end: `GossipKeyRotationKey` (#683).** An emergency rotation is operator-triggered: `POST /cluster/gossip-key/rotate` (`GossipKeyRoutes.rotate`; CLI `aether cluster rotate-gossip-key`) writes the key through consensus and confirms that the committed record is the one it wrote. Every node applies it through the `GossipKeyRotationKey` subscription to `GossipKeyRotationHandler::onGossipKeyRotationPut` in `AetherNode`, the sole delivery path (a late joiner receives the current rotation as a replayed put). For backups it is runtime state (#1530): the change-triggered backup excludes it, so a restore from that backup (#1533) reverts an emergency rotation and the gossip key is regenerated `[design intent — unverified]`. Until #1533 removes it, the old consensus-snapshot path still restores it with the whole KV.
+**Wired end to end: `GossipKeyRotationKey` (#683).** An emergency rotation is operator-triggered: `POST /cluster/gossip-key/rotate` (`GossipKeyRoutes.rotate`; CLI `aether cluster rotate-gossip-key`) writes the key through consensus and confirms that the committed record is the one it wrote. Every node applies it through the `GossipKeyRotationKey` subscription to `GossipKeyRotationHandler::onGossipKeyRotationPut` in `AetherNode`, the sole delivery path (a late joiner receives the current rotation as a replayed put). For backups it is runtime state (#1530): the change-triggered backup excludes it, so a restore from that backup (#1533) reverts an emergency rotation and the gossip key is regenerated `[design intent — unverified]`.
 
 **Earned key types, spot-checked:**
 - `StreamCursorCheckpointKey` — resolved via `ClusterCursorStore` (see §4 row 19); the ticket's original "may not be durable" guess is superseded. Since #1271 it is `AssignmentGuarded`: the applier admits a write only from the committed `ConsumerAssignmentKey` assignee at that record's epoch (`KVStore.unassignedWrite`).

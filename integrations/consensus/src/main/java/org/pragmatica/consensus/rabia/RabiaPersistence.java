@@ -15,13 +15,11 @@
  */
 package org.pragmatica.consensus.rabia;
 
-import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
@@ -29,7 +27,6 @@ import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Codec;
 
 
@@ -56,23 +53,6 @@ public interface RabiaPersistence<C extends Command> {
 
     /// Load the persisted state.
     Option<SavedState<C>> load();
-
-    /// Create a git-backed persistence implementation with default timeout.
-    static <C extends Command> RabiaPersistence<C> gitBacked(Path backupDir,
-                                                             Option<String> remote,
-                                                             Function<byte[], Result<String>> snapshotToToml,
-                                                             Function<String, Result<byte[]>> tomlToSnapshot) {
-        return new GitBackedPersistence<>(backupDir, remote, snapshotToToml, tomlToSnapshot);
-    }
-
-    /// Create a git-backed persistence implementation with configurable timeout.
-    static <C extends Command> RabiaPersistence<C> gitBacked(Path backupDir,
-                                                             Option<String> remote,
-                                                             Function<byte[], Result<String>> snapshotToToml,
-                                                             Function<String, Result<byte[]>> tomlToSnapshot,
-                                                             TimeSpan gitTimeout) {
-        return new GitBackedPersistence<>(backupDir, remote, snapshotToToml, tomlToSnapshot, gitTimeout);
-    }
 
     /// Create an in-memory persistence implementation (for testing or single-session use).
     static <C extends Command> RabiaPersistence<C> inMemory() {

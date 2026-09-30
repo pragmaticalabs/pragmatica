@@ -159,9 +159,9 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Full-cluster restart (in-memory state)
 
 - **Symptom:** after a **simultaneous** full-cluster restart, KV + DHT + un-sealed stream state since the last snapshot is gone.
-- **Automatic response:** KV restores from its most recent lifecycle snapshot (`GitBackedPersistence`, default in-memory); DHT system maps rebuild as nodes re-register their slices/routes/endpoints on activation.
+- **Automatic response:** a whole-cluster restart is a regular start of fresh cores; with `[backup]` enabled the leader restores the cluster state from the change-triggered KV backup before any cluster-state write is admitted (#1533), and placement is rebuilt on the fresh nodes. DHT system maps rebuild as nodes re-register their slices/routes/endpoints on activation.
 - **Budget:** n/a (bounded by restart + re-registration).
-- **Degraded / at risk:** everything since the last lifecycle snapshot (KV); all DHT system-map state (self-heals by rebuild); un-sealed stream data. A **rolling** restart is safe — this applies only to losing the whole cluster at once.
+- **Degraded / at risk:** cluster-state changes after the last backup push (KV); entity state (checkpoints are not restored); stream records held only by the old nodes; all DHT system-map state (self-heals by rebuild). Without `[backup]`, all cluster state. A **rolling** restart is safe — this applies only to losing the whole cluster at once.
 - **Operator action:** treat the rc-series as non-durable across a full-cluster crash; durable tiers are tracked under [#349](https://github.com/pragmaticalabs/pragmatica/issues/349) / #383.
 - **Proof anchor:** guarantees.md §1–§2; [known-limitations.md](known-limitations.md). Forge `StreamCrashDurabilityTest` proves a **single owner's** WAL survives restart. **Partial** — full durable persistence pending #349.
 

@@ -49,7 +49,18 @@ public enum OperatorWarningCode {
     /// running, but cluster events are not recorded until the cluster config is corrected and re-applied.
     CLUSTER_EVENTS_REGISTRATION_REFUSED("cluster-events-registration-refused",
                                         "stream-replication",
-                                        WarningLevel.CRITICAL);
+                                        WarningLevel.CRITICAL),
+    /// A whole-cluster restore withheld the previous cluster's entity checkpoints; entity state restarts empty
+    /// for the named partitions (#1533).
+    BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED("backup-restore-entity-checkpoints-dropped",
+                                              "kv-backup",
+                                              WarningLevel.WARNING),
+    /// A cold start cannot read the KV backup (unreachable, undecodable); cluster-state writes stay refused
+    /// until it can, or until a restart with `[backup] restore = "fresh"` (#1533).
+    BACKUP_RESTORE_BLOCKED("backup-restore-blocked", "kv-backup", WarningLevel.CRITICAL),
+    /// Another cluster holds the backup head at this cluster's own lineage and incarnation (a different
+    /// incarnation id); this cluster backs up nothing until an operator resolves the fork (#1533).
+    BACKUP_FORKED("backup-forked", "kv-backup", WarningLevel.CRITICAL);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
