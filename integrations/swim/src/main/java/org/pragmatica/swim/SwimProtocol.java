@@ -2171,7 +2171,11 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
+        var member = SwimMember.swimMember(update.nodeId(),
+                                           update.state(),
+                                           update.incarnation(),
+                                           update.address(),
+                                           update.labels());
 
         if (!storeScopedMember(update.nodeId(), member)) {
             return;
@@ -2312,6 +2316,9 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (isReAdmitTowardAlive(existing, update) && blockedByTombstone(update.nodeId(), update.incarnation())) {
             return;
         }
+        // Labels are identity, not state: a resident member that has none yet adopts the labels this
+        // update carries, even when the update is otherwise a same-state rebroadcast.
+        var resident = adoptGossipedLabels(existing, update);
         // Same-state same-incarnation: gossip rebroadcast, not a state event.
         // Canonical SWIM: ignore. Otherwise repeated gossip would re-fire listener
         // notifications and reset suspect timers, preventing FAULTY transition.
@@ -2323,13 +2330,41 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var updated = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
+        var updated = SwimMember.swimMember(update.nodeId(),
+                                            update.state(),
+                                            update.incarnation(),
+                                            update.address(),
+                                            resident.labels());
 
         if (!storeScopedMember(update.nodeId(), updated)) {
             return;
         }
 
         notifyStateChange(existing.state(), updated, accuser);
+    }
+
+    /// First-non-blank-wins label adoption from gossip: a resident member with NO labels takes the
+    /// labels a `MembershipUpdate` carries; a member that already has labels keeps them (an
+    /// ANNOUNCE-supplied or earlier-gossiped role is never overwritten by later hearsay). On adoption
+    /// the newly known identity is re-emitted as `MemberDiscovered` so the membership layer learns the
+    /// role now rather than at the next ALIVE edge; a FAULTY member is not re-emitted (it must not
+    /// re-enter the QUIC dial set). Returns the resident member as stored after the call.
+    private SwimMember adoptGossipedLabels(SwimMember existing, MembershipUpdate update) {
+        if (!existing.labels().isEmpty() || update.labels().isEmpty()) {
+            return existing;
+        }
+
+        var adopted = existing.withLabels(update.labels());
+
+        if (!storeScopedMember(adopted.nodeId(), adopted)) {
+            return existing;
+        }
+
+        if (adopted.state() != MemberState.FAULTY) {
+            deliverObservation(new SwimObservation.MemberDiscovered(dialInfoFor(adopted), adopted.incarnation()));
+        }
+
+        return adopted;
     }
 
     /// A re-admit toward ALIVE: the resident member is currently FAULTY or SUSPECT and
@@ -2479,7 +2514,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                     member.state(),
                                                                     member.incarnation(),
                                                                     member.address(),
-                                                                    bootTokenOf(member.nodeId())));
+                                                                    bootTokenOf(member.nodeId()),
+                                                                    member.labels()));
     }
 
     private void addMemberUpdate(MembershipUpdate update) {

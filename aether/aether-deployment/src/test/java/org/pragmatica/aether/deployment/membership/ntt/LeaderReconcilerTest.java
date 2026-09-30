@@ -62,8 +62,18 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
+import org.pragmatica.swim.SwimMember;
+import org.pragmatica.swim.SwimMember.MemberState;
+import org.pragmatica.swim.SwimMembershipListener;
+import org.pragmatica.swim.SwimMessage;
+import org.pragmatica.swim.SwimMessage.MembershipUpdate;
+import org.pragmatica.swim.SwimMessage.Ping;
+import org.pragmatica.swim.SwimObservation;
+import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.utility.ULID;
 
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -94,6 +104,7 @@ import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.l
 import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.swim.SwimConfig.swimConfig;
 
 
 /// Unit tests for [`LeaderReconciler`] (E2 Phase 1.6) — state-derived
@@ -2380,6 +2391,133 @@ class LeaderReconcilerTest {
             assertThat(ctm.drainNodeCalls()).isEmpty();
             assertThat(ctm.provisionReplacementCalls()).isEmpty();
         }
+    }
+
+    /// Two replacement cores minted by DIFFERENT leaders, each learned by the others ONLY through a gossiped
+    /// `MembershipUpdate` (never an ANNOUNCE, never a Hello). The reconciler must count that replacement as a
+    /// core: present, healthy and `role=core`, so it neither hides a real deficit's size nor manufactures a
+    /// phantom one. The replacement here arrives through a REAL `SwimProtocol`, so what reaches the FSM is
+    /// whatever SWIM's gossip path actually carries; the observation routing mirrors
+    /// `AetherNode.routeSwimEdgeToMembershipFsm` (which the node module's own test drives directly).
+    @Nested
+    class GossipLearnedCore {
+        private static final NodeId REPLACEMENT = NodeId.randomNodeId();
+        private static final NodeId GOSSIPER = NodeId.randomNodeId();
+        private static final InetSocketAddress SWIM_SELF = new InetSocketAddress("127.0.0.1", 9600);
+        private static final InetSocketAddress SWIM_GOSSIPER = new InetSocketAddress("127.0.0.1", 9601);
+        private static final InetSocketAddress SWIM_REPLACEMENT = new InetSocketAddress("127.0.0.1", 9602);
+
+        /// Target 5, cores SELF + A..D plus the gossip-learned replacement R (six live cores: the target is
+        /// exceeded by one, as in the cloud run), then one of A..D dies. Counting R, five cores remain for a
+        /// target of five: nothing to provision. Not counting R (the defect) it reads four and provisions.
+        @Test
+        void gossipLearnedCoreCountsAndOneDeathLeavesTargetMet_provisionsNothing() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            seedGossipLearnedCore(REPLACEMENT);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            advancePastProvisioningGates();
+            removePeers(PEER_D);
+            listener.clear();
+            triggerAndFireReconcile();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(membershipFsm.coreCountedMembers()).contains(REPLACEMENT);
+            assertThat(listener.events().getLast().clusterMembershipCount()).isEqualTo(5);
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+
+        /// Target 5, SELF + A..C + R = five live cores after D died: the real deficit is ZERO, so a
+        /// leader that counts R provisions nothing. A leader that does not (four counted) provisions one
+        /// replacement for a core that is already running, the over-provisioning of the cloud run.
+        @Test
+        void gossipLearnedCoreFillsTheSlotOfADeadCore_provisionsNothing() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            advancePastProvisioningGates();
+            removePeers(PEER_D);
+            seedGossipLearnedCore(REPLACEMENT);
+            listener.clear();
+            triggerAndFireReconcile();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(listener.events().getLast().clusterMembershipCount()).isEqualTo(5);
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+
+        /// Learn `id` as a healthy core exactly the way a node that never saw its ANNOUNCE does: a
+        /// gossiped ALIVE update from a peer, delivered to a real `SwimProtocol` whose observations feed
+        /// the fixture FSM. The role label is whatever that gossip carries.
+        private void seedGossipLearnedCore(NodeId id) {
+            var protocol = SwimProtocol.swimProtocol(swimConfig(), new NullSwimTransport(), new NullSwimListener(), SELF, SWIM_SELF)
+                                       .unwrap();
+
+            protocol.addObservationListener(this::routeToFsm);
+            protocol.onMessage(SWIM_GOSSIPER, new Ping(GOSSIPER, 1L, List.of(gossipedAlive(id))));
+            health.markHealthy(id);
+            sampler.sample();
+            agePastDrainSafetyGrace();
+        }
+
+        /// What the gossiping core stored about `id` and disseminates: address, ALIVE, and the labels of
+        /// a core replacement (`role=core`, `source=replacement`).
+        private MembershipUpdate gossipedAlive(NodeId id) {
+            return MembershipUpdate.membershipUpdate(id,
+                                                     MemberState.ALIVE,
+                                                     0L,
+                                                     SWIM_REPLACEMENT,
+                                                     0L,
+                                                     Map.of(NodeInfo.LABEL_ROLE, "core", NodeInfo.LABEL_SOURCE, "replacement"));
+        }
+
+        private void routeToFsm(SwimObservation observation) {
+            switch (observation) {
+                case SwimObservation.MemberDiscovered discovered -> membershipFsm.onMemberDescriptor(discovered.nodeInfo());
+                case SwimObservation.JoinAnnounced joined -> membershipFsm.onMemberDescriptor(joined.nodeInfo());
+                case SwimObservation.HealthyObserved healthy -> membershipFsm.onSwimHealthy(healthy.peer(), healthy.incarnation());
+                default -> {}
+            }
+        }
+    }
+
+    private static final class NullSwimTransport implements SwimTransport {
+        @Override
+        public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+            return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<Unit> start(int port, SwimMessageHandler handler) {
+            return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.success(unit());
+        }
+    }
+
+    private static final class NullSwimListener implements SwimMembershipListener {
+        @Override
+        public void onMemberJoined(SwimMember member) {}
+
+        @Override
+        public void onMemberSuspect(SwimMember member) {}
+
+        @Override
+        public void onMemberFaulty(SwimMember member, boolean firstHand) {}
+
+        @Override
+        public void onMemberLeft(NodeId nodeId) {}
     }
 
     /// Cold-start grace + deficit-debounce gates on the PROVISIONING decision (the convergence

@@ -4686,20 +4686,19 @@ public interface AetherNode extends ManageableNode {
         // absent from `topologyForSwim`, so the legacy NodeId-only path produced a SWIM
         // `PeerConnected(id, none())` that the FSM's `resolveSwimAddress` could not
         // resolve — leaving the peer permanently UNKNOWN and rejected by the gate.
-        // Wave 2 role-reach (cluster-topology-overhaul): the QUIC transport now supplies the
-        // Hello NodeInfo for ALL peers (known + unknown), so feed it to the membership FSM's
-        // descriptor FIRST — every node a worker dials (workers dial all cores, always
-        // including the leader) learns the worker's self-asserted role/source on the first
-        // handshake, independent of SWIM seed lists or label-less gossip MembershipUpdate.
+        // Wave 2 role-reach (cluster-topology-overhaul): the QUIC transport supplies the
+        // Hello NodeInfo for every peer that is topology-unknown OR presented labels, so feed it to
+        // the membership FSM's descriptor FIRST — every node a worker dials (workers dial all
+        // cores, always including the leader) learns the worker's self-asserted role/source on the
+        // first handshake, independent of SWIM seed lists or the labels carried by gossip.
         // The descriptor upsert is blank-downgrade-guarded, so a label-less Hello never
         // erases a known role. Runs on the router dispatch thread like the SWIM feed below;
         // `onMemberDescriptor` is thread-safe (concurrent map + per-member monitor).
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
-                                                 connection -> connection.nodeInfo()
-                                                                         .onPresent(membershipFsm::onMemberDescriptor)
-                                                                         .orElse(() -> topologyForSwim.get(connection.nodeId()))
-                                                                         .onPresent(swimHealthDetector::onNodeConnected)
-                                                                         .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
+                                                 connection -> routeConnectionEstablished(connection,
+                                                                                          topologyForSwim,
+                                                                                          membershipFsm,
+                                                                                          swimHealthDetector)));
         Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
         // Membership-FSM unification (Wave D, consumer #4): the cluster-quiescence gate's health
         // source is the authoritative MembershipFsm (healthHints()). The SwimHintsRegistry tap stays
@@ -7065,12 +7064,28 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// Feed a QUIC `ConnectionEstablished` to the membership FSM and the SWIM health detector. The transport
+    /// attaches the Hello `NodeInfo` for a topology-unknown peer AND for a known peer that supplied labels, so
+    /// the FSM descriptor upsert sees the role either way. The SWIM feed keeps its established source order:
+    /// the topology's own `NodeInfo` first, the Hello's only when topology does not know the peer.
+    @Contract
+    private static void routeConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connection,
+                                                   TopologyManager topologyForSwim,
+                                                   MembershipFsm membershipFsm,
+                                                   CoreSwimHealthDetector swimHealthDetector) {
+        connection.nodeInfo().onPresent(membershipFsm::onMemberDescriptor);
+        topologyForSwim.get(connection.nodeId())
+                       .orElse(connection::nodeInfo)
+                       .onPresent(swimHealthDetector::onNodeConnected)
+                       .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()));
+    }
+
     /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /
     /// FAULTY / DEPARTED / UNKNOWN map to the matching `onSwim*` ingress; JoinAnnounced /
     /// MemberDiscovered are ignored (the FSM tracks liveness transitions, not discovery). The FSM
     /// drives the per-member lifecycle and, on the DEAD edge, hard-evicts from NTT — the membership-
     /// death authority. Leader-gating happens inside the FSM.
-    private static void routeSwimEdgeToMembershipFsm(SwimObservation observation, MembershipFsm membershipFsm) {
+    static void routeSwimEdgeToMembershipFsm(SwimObservation observation, MembershipFsm membershipFsm) {
         switch (observation) {
             case SwimObservation.HealthyObserved healthy -> membershipFsm.onSwimHealthy(healthy.peer(),
                                                                                         healthy.incarnation());

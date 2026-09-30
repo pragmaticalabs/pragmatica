@@ -1523,6 +1523,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         Option<NodeInfo> unknownNodeInfo = topologyManager.get(peerId).isEmpty()
                                            ? buildUnknownNodeInfo(peerId, peerAddress, peerLabels)
                                            : Option.empty();
+        // The Hello's labels are the peer's own statement of its role/source, so they are forwarded upward
+        // for a topology-KNOWN peer too whenever it supplied any: a peer introduced earlier by label-less
+        // gossip must still have its role reach the membership layer (a core counts only with `role=core`).
+        // `unknownNodeInfo` stays the sole trigger of topology discovery below.
+        var announcedNodeInfo = unknownNodeInfo.orElse(() -> labelledNodeInfo(peerId, peerAddress, peerLabels));
         var state = getOrCreatePeer(peerId);
 
         if (state.phase() == PeerState.Phase.REMOVED && inboundReadmitAllowed(peerId, state)) {
@@ -1624,7 +1629,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         registerCloseListener(peerId, connection);
         drainOfflineBufferInto(state, connection);
         if (isReconnect) {
-            finalizeReconnect(peerId, unknownNodeInfo);
+            finalizeReconnect(peerId, announcedNodeInfo);
 
             return;
         }
@@ -1637,7 +1642,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // P1 fix: forward `unknownNodeInfo` so SWIM can learn the peer's full identity
         // (id + address) without falling back to a stale static-topology lookup. This
         // closes the QUIC eviction storm under topology-forgot-peer reconnects.
-        router.route(new NetworkServiceMessage.ConnectionEstablished(peerId, unknownNodeInfo));
+        router.route(new NetworkServiceMessage.ConnectionEstablished(peerId, announcedNodeInfo));
         // Initiate topology discovery only for unknown nodes
         unknownNodeInfo.onPresent(_ -> router.route(new NetworkServiceMessage.Send(peerId,
                                                                                    new NetworkMessage.DiscoverNodes(self.id()))));
@@ -1665,6 +1670,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.info("Unknown node {} connected via QUIC Hello with address {}", peerId, peerAddress.asString());
 
         return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerLabels));
+    }
+
+    /// NodeInfo of a topology-known peer, built from its Hello data only when the Hello carried labels;
+    /// empty otherwise, so a label-less Hello for a known peer adds nothing upstream.
+    private static Option<NodeInfo> labelledNodeInfo(NodeId peerId, NodeAddress peerAddress, Map<String, String> peerLabels) {
+        return peerLabels.isEmpty()
+               ? Option.empty()
+               : Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerLabels));
     }
 
     /// Finalize a RECONNECTED attach. The RECONNECT view-change (duplicate-ADD suppression)

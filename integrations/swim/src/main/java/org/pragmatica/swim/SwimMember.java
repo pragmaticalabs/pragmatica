@@ -29,9 +29,9 @@ import org.pragmatica.serialization.Codec;
 /// @param incarnation monotonically increasing counter used to refute suspicions
 /// @param address     network address for sending probes
 /// @param labels      descriptor labels (e.g. role/source) learned from the member's
-///                    ANNOUNCE `NodeInfo`. Empty when the member was learned only via
-///                    transitive piggyback (back-compat default). Never on the SWIM wire —
-///                    `SwimMember` is not a `SwimMessage` variant.
+///                    ANNOUNCE `NodeInfo` or from the labels a peer gossips in a
+///                    `SwimMessage.MembershipUpdate`. Empty when no source supplied any
+///                    (back-compat default). `SwimMember` itself is not a `SwimMessage` variant.
 @Codec
 public record SwimMember(NodeId nodeId,
                          MemberState state,
@@ -93,6 +93,11 @@ public record SwimMember(NodeId nodeId,
     /// Return a copy with the given incarnation, preserving labels.
     public SwimMember withIncarnation(long newIncarnation) {
         return new SwimMember(nodeId, state, newIncarnation, address, labels);
+    }
+
+    /// Return a copy with the given labels, preserving identity/state/incarnation/address.
+    public SwimMember withLabels(Map<String, String> newLabels) {
+        return new SwimMember(nodeId, state, incarnation, address, newLabels);
     }
 
     /// Return a copy with the given probe address, preserving identity/state/incarnation/labels
