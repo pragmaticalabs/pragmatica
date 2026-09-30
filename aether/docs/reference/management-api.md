@@ -1365,9 +1365,17 @@ Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consens
 Get transport-layer metrics. **Scope: node-local** — a flat map of **node-level** QUIC counters
 (the answering node's own totals; there is no per-peer attribution): `quic_messages_sent_total` /
 `quic_messages_received_total` (protocol-message counts), `quic_bytes_sent_total` /
-`quic_bytes_received_total` (#726), `quic_active_connections`, handshake totals/failures,
-backpressure and write-failure indicators, stream-zombie heal counters. All counters are monotonic;
-consumers difference them over their own window.
+`quic_bytes_received_total` (#726), `quic_active_connections`, handshake totals/failures, dial
+failures, backpressure and write-failure indicators, stream-zombie heal counters. All counters are
+monotonic; consumers difference them over their own window.
+
+**`quic_handshake_failures_total` / `quic_dial_failures_total` (#1489).** `quic_handshake_failures_total`
+counts only outbound QUIC connects that failed in their TLS handshake. `quic_dial_failures_total` counts
+every failed outbound dial, whatever the stage: unreachable, refused, timed out, identity or boot-token
+rejection, TLS. A server that refuses **this node's** certificate closes the connection before answering
+the Hello; that counts as a dial failure only, not a handshake failure. Before #1489,
+`quic_handshake_failures_total` counted every failed dial, so a ratio built on it measured churn rather
+than TLS health.
 
 **`quic_bytes_sent_total` / `quic_bytes_received_total` (#726)** count PAYLOAD bytes at the lane
 boundary — the serialized frame handed to the channel on send, and the frame decoded from the
@@ -5162,6 +5170,16 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/info
 }
 ```
 
+- `totalEvents`: sum of the per-partition `eventCount` values, each reported by the partition's ring holder
+  (the answering node's own ring when it holds one, otherwise the owner). Reflects visible events only.
+- `partitionDetails[]`: `headOffset` is the owner's visible head and `eventCount` the span from `tailOffset` to it,
+  as the partition OWNER reports them — never a replica ring on the answering node, which may not have
+  backfilled yet. An empty partition reads `-1 / -1 / 0`.
+- `totalBytes`: the answering node's allocation — NOT a stream total. Bytes are not forwarded from owners,
+  so on a node that holds no ring for the stream this is small or zero while `totalEvents` is complete.
+- `503`: a partition owner could not answer (unreachable, still materializing). Retry; the response never
+  substitutes an empty partition, so a zero `totalEvents` is a measured zero.
+
 ### Partition Details
 
 ```
@@ -5898,9 +5916,13 @@ dispatch]` That `400` is the single publish; the batch form reports the same con
 A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
 for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
 registers only after its config commits (the default `confirmation_factor` is 2 since #1564) — answers
-**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. The batch form
-reports the item `OUTCOME_UNKNOWN` with the cause. `[mechanism: ManagementServerError.PublishRetryable; pinned by
-StreamApiRoutesPublishPartitionTest]`
+**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. This holds on the
+partition's owner and on a non-owner that forwards the publish: the owner answers the forward as retryable, so the
+forwarder bounded-retries and then answers 503 too. The batch form reports the item `OUTCOME_UNKNOWN` with the cause —
+conservative, since nothing was written, but a batch item does not distinguish a refusal before the append from an
+unknown outcome after it; a retry with the same message ID is safe either way.
+`[mechanism: ManagementServerError.PublishRetryable, StreamForwardHandler retryable floor refusal; pinned by
+StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest]`
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE

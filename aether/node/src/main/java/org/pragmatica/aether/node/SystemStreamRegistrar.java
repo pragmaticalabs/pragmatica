@@ -89,6 +89,7 @@ public final class SystemStreamRegistrar {
     private final Supplier<Result<?>> bootstrapLeg;
     private final RetryScheduler scheduler;
     private final Consumer<Cause> refusalSink;
+    private final Runnable recoverySink;
     private final AtomicLong activationEpoch = new AtomicLong();
     private final AtomicBoolean executing = new AtomicBoolean();
     private final AtomicBoolean leader = new AtomicBoolean(false);
@@ -96,6 +97,8 @@ public final class SystemStreamRegistrar {
     private final AtomicBoolean bootstrapDone = new AtomicBoolean(false);
     private final AtomicBoolean createStreamRefused = new AtomicBoolean(false);
     private final AtomicBoolean bootstrapRefused = new AtomicBoolean(false);
+    private final AtomicBoolean createStreamRecovering = new AtomicBoolean(false);
+    private final AtomicBoolean bootstrapRecovering = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
 
@@ -109,19 +112,28 @@ public final class SystemStreamRegistrar {
     private SystemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
                                   Supplier<Result<?>> bootstrapLeg,
                                   RetryScheduler scheduler,
-                                  Consumer<Cause> refusalSink) {
+                                  Consumer<Cause> refusalSink,
+                                  Runnable recoverySink) {
         this.createStreamLeg = createStreamLeg;
         this.bootstrapLeg = bootstrapLeg;
         this.scheduler = scheduler;
         this.refusalSink = refusalSink;
+        this.recoverySink = recoverySink;
     }
 
     /// Production factory bound to the process-wide [`SharedScheduler`]. `refusalSink` receives each
-    /// replication-policy refusal once, when it latches (#1564 B1).
+    /// replication-policy refusal once, when it latches (#1564 B1); `recoverySink` clears the operator-visible refusal
+    /// on this node — once when a refused leg commits after a corrected cluster config re-armed it, and when this node
+    /// loses leadership while a refusal is latched (its report is leader-local).
     public static SystemStreamRegistrar systemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
                                                               Supplier<Result<?>> bootstrapLeg,
-                                                              Consumer<Cause> refusalSink) {
-        return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, SharedScheduler::schedule, refusalSink);
+                                                              Consumer<Cause> refusalSink,
+                                                              Runnable recoverySink) {
+        return new SystemStreamRegistrar(createStreamLeg,
+                                         bootstrapLeg,
+                                         SharedScheduler::schedule,
+                                         refusalSink,
+                                         recoverySink);
     }
 
     /// Test factory accepting an explicit scheduler seam.
@@ -139,7 +151,20 @@ public final class SystemStreamRegistrar {
                                                        Supplier<Result<?>> bootstrapLeg,
                                                        RetryScheduler scheduler,
                                                        Consumer<Cause> refusalSink) {
-        return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, scheduler, refusalSink);
+        return systemStreamRegistrar(createStreamLeg,
+                                     bootstrapLeg,
+                                     scheduler,
+                                     refusalSink,
+                                     () -> {});
+    }
+
+    /// Test factory accepting an explicit scheduler seam, refusal sink and recovery sink.
+    static SystemStreamRegistrar systemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
+                                                       Supplier<Result<?>> bootstrapLeg,
+                                                       RetryScheduler scheduler,
+                                                       Consumer<Cause> refusalSink,
+                                                       Runnable recoverySink) {
+        return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, scheduler, refusalSink, recoverySink);
     }
 
     /// `LeaderChange` route hook. On leader-gain arm the retry loop and hand the first pass to the
@@ -176,8 +201,9 @@ public final class SystemStreamRegistrar {
     /// it re-arms every REFUSED leg (never a committed one) and, on the leader, schedules a pass at once.
     @Contract
     public synchronized void onClusterConfigChanged() {
-        var rearmed = rearmIfRefused(createStreamRefused, createStreamDone) | rearmIfRefused(bootstrapRefused,
-                                                                                             bootstrapDone);
+        var rearmed = rearmIfRefused(createStreamRefused, createStreamDone, createStreamRecovering) | rearmIfRefused(bootstrapRefused,
+                                                                                                                     bootstrapDone,
+                                                                                                                     bootstrapRecovering);
 
         if (rearmed) {
             nextBackoff.set(INITIAL_BACKOFF);
@@ -185,11 +211,12 @@ public final class SystemStreamRegistrar {
         }
     }
 
-    private static boolean rearmIfRefused(AtomicBoolean refused, AtomicBoolean done) {
+    private static boolean rearmIfRefused(AtomicBoolean refused, AtomicBoolean done, AtomicBoolean recovering) {
         if (!refused.compareAndSet(true, false)) {
             return false;
         }
 
+        recovering.set(true);
         done.set(false);
 
         return true;
@@ -203,6 +230,24 @@ public final class SystemStreamRegistrar {
 
         activationEpoch.incrementAndGet();
         cancelPendingRetry();
+        releaseRefusal(createStreamRefused, createStreamDone, createStreamRecovering);
+        releaseRefusal(bootstrapRefused, bootstrapDone, bootstrapRecovering);
+    }
+
+    /// #1564 (v1735): a refusal is reported by the LEADER (its alert is leader-local), so a node that loses leadership
+    /// clears its own report and un-latches the leg: the next leader attempts the registration itself and reports a
+    /// refusal that still holds, and this node re-attempts if it regains leadership. Without this a former leader kept
+    /// a stale CRITICAL alert, and a re-elected one stayed silent over a still-refused leg.
+    /// A refusal is outstanding while it is latched (`refused`) AND while a re-armed leg has not yet committed
+    /// (`recovering`, e.g. its pass is failing transiently) — the alert is up in both, so both are released (v1735 r3).
+    private void releaseRefusal(AtomicBoolean refused, AtomicBoolean done, AtomicBoolean recovering) {
+        var wasRefused = refused.getAndSet(false);
+        var wasRecovering = recovering.getAndSet(false);
+
+        if (wasRefused || wasRecovering) {
+            done.set(false);
+            recoverySink.run();
+        }
     }
 
     /// Observability — both legs committed/terminal (no further work).
@@ -225,14 +270,18 @@ public final class SystemStreamRegistrar {
             return;
         }
 
-        attemptLeg("system:cluster-events createStream", createStreamLeg, createStreamDone, createStreamRefused);
+        attemptLeg("system:cluster-events createStream",
+                   createStreamLeg,
+                   createStreamDone,
+                   createStreamRefused,
+                   createStreamRecovering);
         if (!isCurrent(epoch)) {
             finishPass();
 
             return;
         }
 
-        attemptLeg("system-stream bootstrap", bootstrapLeg, bootstrapDone, bootstrapRefused);
+        attemptLeg("system-stream bootstrap", bootstrapLeg, bootstrapDone, bootstrapRefused, bootstrapRecovering);
         if (isComplete()) {
             LOG.info("SystemStreamRegistrar: all system streams registered");
             finishPass();
@@ -246,7 +295,11 @@ public final class SystemStreamRegistrar {
     /// Attempt one leg if it is not already DONE. Latches DONE on success or a TERMINAL (config) cause;
     /// leaves it pending on a TRANSIENT (commit-timeout / not-quorate) cause so the next pass retries.
     @Contract
-    private void attemptLeg(String name, Supplier<Result<?>> leg, AtomicBoolean done, AtomicBoolean refused) {
+    private void attemptLeg(String name,
+                            Supplier<Result<?>> leg,
+                            AtomicBoolean done,
+                            AtomicBoolean refused,
+                            AtomicBoolean recovering) {
         // Re-check leadership immediately before the consensus write: deactivate() may land on the
         // dispatch thread between runPass's leader.get() and here. The residual check-then-write window
         // is irreducible without a lock, but at most yields one idempotent (STREAM_ALREADY_EXISTS) Put,
@@ -256,19 +309,33 @@ public final class SystemStreamRegistrar {
         }
 
         leg.get()
-           .onSuccess(_ -> latchSuccess(name, done))
-           .onFailure(cause -> classifyFailure(name, cause, done, refused));
+           .onSuccess(_ -> latchSuccess(name, done, recovering))
+           .onFailure(cause -> classifyFailure(name, cause, done, refused, recovering));
     }
 
     @Contract
-    private void latchSuccess(String name, AtomicBoolean done) {
+    private void latchSuccess(String name, AtomicBoolean done, AtomicBoolean recovering) {
         if (done.compareAndSet(false, true)) {
             LOG.info("SystemStreamRegistrar: {} committed", name);
+        }
+
+        recovered(recovering);
+    }
+
+    /// #1564: a leg the policy refused, re-armed by a corrected config, is now committed — clear the refusal once.
+    @Contract
+    private void recovered(AtomicBoolean recovering) {
+        if (recovering.compareAndSet(true, false)) {
+            recoverySink.run();
         }
     }
 
     @Contract
-    private void classifyFailure(String name, Cause cause, AtomicBoolean done, AtomicBoolean refused) {
+    private void classifyFailure(String name,
+                                 Cause cause,
+                                 AtomicBoolean done,
+                                 AtomicBoolean refused,
+                                 AtomicBoolean recovering) {
         if (isReplicationRefusal(cause)) {
             refuse(name, cause, done, refused);
 
@@ -280,6 +347,9 @@ public final class SystemStreamRegistrar {
                      name,
                      cause.message());
             done.set(true);
+            if (cause == StreamError.General.STREAM_ALREADY_EXISTS) {
+                recovered(recovering);
+            }
 
             return;
         }

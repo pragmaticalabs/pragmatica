@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
@@ -41,6 +42,7 @@ import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -135,14 +137,17 @@ public final class StreamApiRoutes implements RouteSource {
                                          long maxAgeMs,
                                          long registeredAtEpochMs,
                                          String registeredBy) {
-        static StreamMetadataResponse fromEntry(StreamRegistryEntry entry) {
+        /// #1478: `partitionCount` is the stream's DECLARED count, read by the caller from the committed
+        /// stream config — the registry entry does not carry it, and a constant here reported 4 for a
+        /// stream created with 1.
+        static StreamMetadataResponse fromEntry(StreamRegistryEntry entry, int partitionCount) {
             var retention = entry.retention();
 
             return new StreamMetadataResponse(entry.address().namespace().value(),
                                               entry.address().name().value(),
                                               entry.address().version().asString(),
                                               entry.refCount(),
-                                              defaultPartitionCount(),
+                                              partitionCount,
                                               retention.maxCount(),
                                               retention.maxBytes(),
                                               retention.maxAgeMs(),
@@ -270,7 +275,7 @@ public final class StreamApiRoutes implements RouteSource {
                                   PathParameter.aString(),
                                   PathParameter.aString(),
                                   PathParameter.spacer("info"))
-                        .toResult(this::streamInfo)
+                        .to(this::streamInfo)
                         .asJson(),
                          ManagementRoutes.<PartitionDetail> route(ManagementRoute.STREAM_PARTITION)
                                          .withPath(PathParameter.aString(),
@@ -455,14 +460,43 @@ public final class StreamApiRoutes implements RouteSource {
         return namespacesService.resolve(namespace,
                                          stream,
                                          StreamVersionSpec.latest())
-                                .map(StreamMetadataResponse::fromEntry);
+                                .flatMap(this::toMetadataResponse);
     }
 
-    private Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
+    Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
                               .flatMap(addr -> namespacesService.lookup(addr)
                                                                 .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
-                              .map(StreamMetadataResponse::fromEntry);
+                              .flatMap(this::toMetadataResponse);
+    }
+
+    private Result<StreamMetadataResponse> toMetadataResponse(StreamRegistryEntry entry) {
+        return declaredPartitions(StreamManager.engineKey(entry.address())).map(partitions -> StreamMetadataResponse.fromEntry(entry,
+                                                                                                                               partitions));
+    }
+
+    /// #1478: the declared partition count comes from the COMMITTED stream config, the same record
+    /// `ensureStreamExists` adopts. A stream registered but not yet config-committed falls back to the
+    /// count this node's manager materialized; when neither knows it, the answer is a refusal rather than
+    /// a fabricated default.
+    private Result<Integer> declaredPartitions(String engineKey) {
+        return committedPartitions(engineKey).orElse(() -> localPartitions(engineKey))
+                                  .toResult(new ManagementServerError.StreamUnavailable(engineKey,
+                                                                                        "declared partition count is not known"));
+    }
+
+    private Option<Integer> committedPartitions(String engineKey) {
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(StreamConfigKey.streamConfigKey(engineKey),
+                                     StreamConfigValue.class)
+                           .map(value -> value.config()
+                                              .partitions());
+    }
+
+    private Option<Integer> localPartitions(String engineKey) {
+        return streamManager().streamInfo(engineKey)
+                            .map(StreamPartitionManager.StreamInfo::partitions);
     }
 
     /// `partitionsLiteral` binds the interleaved `spacer("partitions")` trailing segment
@@ -503,25 +537,56 @@ public final class StreamApiRoutes implements RouteSource {
     /// so the response shape has one definition, the same reuse pattern as [#replicaDetail] via
     /// [StreamRoutes#toReplicasResponse]. `infoLiteral` binds the trailing `spacer("info")` segment —
     /// see [#partitionDetail]'s `partitionsLiteral` javadoc.
-    private Result<StreamRoutes.StreamInfoResponse> streamInfo(String namespace,
-                                                               String stream,
-                                                               String version,
-                                                               String infoLiteral) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
+    Promise<StreamRoutes.StreamInfoResponse> streamInfo(String namespace,
+                                                        String stream,
+                                                        String version,
+                                                        String infoLiteral) {
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .async()
+                              .flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
     }
 
-    private Result<StreamRoutes.StreamInfoResponse> buildStreamInfoResponse(String engineKey) {
+    /// #1478: STREAM_GET is delegate-routed (`taskGroup(STREAMING)`), so the answering node is arbitrary
+    /// and usually holds no ring — summing its OWN rings reported `totalEvents: 0` for a stream whose
+    /// owner held every event (the defect #1039 fixed for STREAM_REPLICAS). Each partition is therefore
+    /// asked through [StreamReadRouter#ownerBounds]: this node's ring only when it IS the owner, else the
+    /// resolved owner over the read-forward path — a replica ring that has not backfilled is never authoritative.
+    /// `totalBytes` stays this node's own allocation — bytes have no forwarded form — so it is meaningful only on a node that holds the rings. A partition whose owner
+    /// cannot answer FAILS the request; it is never rendered as an empty partition.
+    private Promise<StreamRoutes.StreamInfoResponse> buildStreamInfoResponse(String engineKey) {
         return streamManager().streamInfo(engineKey)
-                            .toResult(STREAM_NOT_FOUND)
-                            .flatMap(info -> streamManager().allPartitionInfo(engineKey)
-                                                          .map(partitions -> partitions.stream()
-                                                                                       .map(StreamRoutes.PartitionDetail::fromPartitionInfo)
-                                                                                       .toList())
-                                                          .map(details -> new StreamRoutes.StreamInfoResponse(info.name(),
-                                                                                                              info.partitions(),
-                                                                                                              info.totalEvents(),
-                                                                                                              info.totalBytes(),
-                                                                                                              details)));
+                            .async(STREAM_NOT_FOUND)
+                            .flatMap(info -> withOwnerDetails(engineKey, info));
+    }
+
+    private Promise<StreamRoutes.StreamInfoResponse> withOwnerDetails(String engineKey,
+                                                                      StreamPartitionManager.StreamInfo info) {
+        return ownerPartitionDetails(engineKey, info.partitions()).map(details -> StreamRoutes.StreamInfoResponse.streamInfoResponse(info,
+                                                                                                                                     details));
+    }
+
+    private Promise<List<StreamRoutes.PartitionDetail>> ownerPartitionDetails(String engineKey, int partitions) {
+        return askOwners(engineKey, partitions).flatMap(StreamApiRoutes::allOrFirstFailure);
+    }
+
+    private Promise<List<Result<StreamRoutes.PartitionDetail>>> askOwners(String engineKey, int partitions) {
+        return Promise.allOf(IntStream.range(0, partitions)
+                                      .mapToObj(partition -> ownerPartitionDetail(engineKey, partition))
+                                      .toList());
+    }
+
+    /// `firstFailureOf` surfaces the FIRST failure unwrapped: `allOf` would wrap it in a composite, whose
+    /// status is not the 503 the owner-unreachable cause carries.
+    private static Promise<List<StreamRoutes.PartitionDetail>> allOrFirstFailure(List<Result<StreamRoutes.PartitionDetail>> results) {
+        return Result.firstFailureOf(results).async();
+    }
+
+    private Promise<StreamRoutes.PartitionDetail> ownerPartitionDetail(String engineKey, int partition) {
+        return streamReadRouter().ownerBounds(engineKey, partition)
+                               .map(bounds -> StreamRoutes.PartitionDetail.fromBounds(partition, bounds))
+                               .mapError(cause -> new ManagementServerError.StreamInfoUnavailable(engineKey,
+                                                                                                  partition,
+                                                                                                  cause));
     }
 
     private Promise<ReadEventsResponse> readEvents(String namespace,
@@ -780,9 +845,11 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     /// #1564: a single publish refused before the append for want of registered peers answers 503 (retryable), not
-    /// a 500. The batch form reports it per item already (`OUTCOME_UNKNOWN` with the cause).
-    private static Cause retryableRefusal(String streamName, Cause cause) {
-        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS
+    /// a 500 — whether this node is the owner (`NOT_ENOUGH_REPLICAS`) or forwarded to it and the owner answered
+    /// retryable (`RemotePublishRetryable`, which the owner sends only for a pre-append refusal). The batch form
+    /// reports it per item already (`OUTCOME_UNKNOWN` with the cause).
+    static Cause retryableRefusal(String streamName, Cause cause) {
+        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || cause instanceof StreamForwardError.RemotePublishRetryable
                ? new ManagementServerError.PublishRetryable(streamName, cause)
                : cause;
     }
@@ -1100,9 +1167,5 @@ public final class StreamApiRoutes implements RouteSource {
     private StreamWriteRouter streamWriteRouter() {
         return nodeSupplier.get()
                            .streamWriteRouter();
-    }
-
-    private static int defaultPartitionCount() {
-        return DEFAULT_PARTITIONS;
     }
 }

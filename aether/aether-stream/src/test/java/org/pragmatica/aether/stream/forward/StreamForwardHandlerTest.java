@@ -361,6 +361,24 @@ class StreamForwardHandlerTest {
             assertThat(response.correlationId()).isEqualTo(CORRELATION_ID);
         }
 
+        /// #1564 (v1680 N-r3-4): the owner's pre-append floor refusal (`NOT_ENOUGH_REPLICAS`) crosses the forward as
+        /// RETRYABLE, not as a permanent failure: nothing was appended, and it passes once the replica set registers.
+        /// The forwarder then bounded-retries, and the Management API answers 503 instead of 500.
+        @Test
+        void onPublishForward_replicaFloorNotMet_respondsRetryable_andAppendsNothing() {
+            var handler = handlerFor(2);
+
+            handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.retryable()).as("a pre-append floor refusal is retryable: " + response.errorMessage())
+                                            .isTrue();
+            assertThat(response.outcomeUnknown()).isFalse();
+            assertThat(barrierManager.nextExpectedOffset(STREAM, PARTITION)).as("refused before the append").isZero();
+        }
+
         @Test
         void onPublishForward_minSyncOne_acksWithoutAwaitingReplication() {
             var handler = handlerFor(1);

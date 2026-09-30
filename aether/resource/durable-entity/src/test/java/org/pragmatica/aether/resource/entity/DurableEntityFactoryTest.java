@@ -401,8 +401,11 @@ class DurableEntityFactoryTest {
             }
 
             assertThat(events).hasSize(3)
-                              .allSatisfy(event -> assertThat(event.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING))
                               .allSatisfy(event -> assertThat(event.subject()).isEqualTo("entity keyspace '" + KEYSPACE + "'"));
+            assertThat(events.stream().map(org.pragmatica.utility.warning.OperatorWarning::code))
+                .containsExactlyInAnyOrder(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING);
         }
 
         @Test

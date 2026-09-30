@@ -5,19 +5,30 @@
 
 package org.pragmatica.aether.stream.replication;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.RecoveryResult;
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.failoverRecovery;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
@@ -33,6 +44,8 @@ class FailoverRecoveryTest {
     private static final byte[] EVENT_2 = "event-2".getBytes();
     private static final long TS_1 = 1000L;
     private static final long TS_2 = 2000L;
+    private static final Epoch E1 = Epoch.epoch(0,1, 0);
+    private static final Epoch E2 = Epoch.epoch(0,2, 0);
 
     private ReplicaRegistry registry;
     private List<CapturedRequest> capturedRequests;
@@ -48,7 +61,7 @@ class FailoverRecoveryTest {
         recoveredEvents = new ArrayList<>();
         eventCounter.set(0);
 
-        recovery = failoverRecovery(registry, this::handleRecoveredEvent, this::handleCatchupRequest, NO_DURABILITY_BARRIER);
+        recovery = failoverRecovery(registry, AlignedRecovery.appendOnly(this::handleRecoveredEvent), this::handleCatchupRequest, NO_DURABILITY_BARRIER);
     }
 
     private Promise<ReplicationMessage.CatchupResponse> handleCatchupRequest(NodeId target,
@@ -68,6 +81,71 @@ class FailoverRecoveryTest {
         return promise.await()
                       .onFailure(_ -> Assertions.fail("Expected success"))
                       .or(RecoveryResult.recoveryResult(0));
+    }
+
+    /// #1638 F4: catch-up failover recovery into a WAL-backed replica. The page's apply fails at offset 4 after the
+    /// source's slice (e1@0, e2@4) was installed; e2@4 lies above head 3 and is dropped, so the retry installs
+    /// cleanly and the copy is never ranked by e2. Red under "the recovery applies outside the seam's settlement".
+    @Nested
+    class WalBackedReplica {
+        @TempDir
+        Path walDir;
+
+        private StreamPartitionManager replica;
+
+        @BeforeEach
+        void openReplica() {
+            replica = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+            replica.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> Assertions.fail(cause.message()));
+            for (var offset = 0; offset < 3; offset++) {
+                replica.appendRecovered(STREAM, 0, offset, EVENT_1, TS_1, E1).onFailure(cause -> Assertions.fail(cause.message()));
+            }
+            registry.registerReplica(STREAM, 0, REPLICA_A);
+            registry.updateWatermark(STREAM, 0, REPLICA_A, 2L);
+        }
+
+        @AfterEach
+        void closeReplica() {
+            replica.close();
+        }
+
+        @Test
+        void failedApply_isTrimmed_andTheRetryInstallsTheSlice() {
+            var real = replica.alignedRecovery();
+            var failing = AlignedRecovery.alignedRecovery((stream, partition, offset, payload, timestamp) -> offset == 4
+                                                                                                          ? Causes.cause("injected apply failure").<Long> result()
+                                                                                                          : real.appendRecovered(stream, partition, offset, payload, timestamp),
+                                                          real::applyAttributed,
+                                                          real::applyUnattributed);
+
+            assertThat(failoverRecovery(registry, failing, this::sevenRecordsFromThree, NO_DURABILITY_BARRIER).recover(STREAM, 1)
+                                                                                                             .await()
+                                                                                                             .isFailure()).isTrue();
+            assertThat(replica.nextExpectedOffset(STREAM, 0)).isEqualTo(4L);
+            assertThat(replica.epochHistory(STREAM, 0).unwrap()).as("e2@4 trimmed").containsExactly(at(E1, 0));
+
+            failoverRecovery(registry, real, this::sevenRecordsFromThree, NO_DURABILITY_BARRIER).recover(STREAM, 1)
+                                                                                               .await()
+                                                                                               .onFailure(cause -> Assertions.fail("the retry: " + cause.message()));
+
+            assertThat(replica.epochHistory(STREAM, 0).unwrap()).containsExactly(at(E1, 0), at(E2, 4));
+        }
+
+        private Promise<ReplicationMessage.CatchupResponse> sevenRecordsFromThree(NodeId target,
+                                                                                 ReplicationMessage.CatchupRequest request) {
+            return Promise.success(catchupResponse(target,
+                                                   request.streamName(),
+                                                   request.partition(),
+                                                   3,
+                                                   9,
+                                                   Collections.nCopies(7, EVENT_2),
+                                                   Collections.nCopies(7, TS_2),
+                                                   List.of(at(E1, 0), at(E2, 4))));
+        }
+
+        private static ProvenanceEntry at(Epoch epoch, long start) {
+            return ProvenanceEntry.provenanceEntry(epoch, Option.none(), start);
+        }
     }
 
     @Nested

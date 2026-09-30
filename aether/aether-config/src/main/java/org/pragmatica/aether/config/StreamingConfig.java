@@ -68,6 +68,14 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// staggered survivor several probe cycles to converge before symmetry is broken.
     public static final int BACKFILL_SOURCE_WAIT_PROBE_CYCLES = 10;
 
+    /// Multiplier applied to {@link #readForwardTimeout()} to derive how long one partition backfill may go WITHOUT
+    /// PROGRESS and keep its single-flight slot (#1638 N1, B2). Progress is a catch-up page received or a record
+    /// applied. Between two progress points a live backfill performs at most one watermark-probe round (parallel, each
+    /// probe bounded by {@link #readForwardTimeout()}) and one catch-up page read (bounded by it too), plus local work
+    /// (apply, durability sync); 3 covers those two network legs with one leg of slack for the local work. A judgement
+    /// from the leg structure, not a measurement.
+    public static final int BACKFILL_FLIGHT_IDLE_READ_TIMEOUTS = 3;
+
     public static StreamingConfig streamingConfig() {
         return new StreamingConfig(timeSpan(5).seconds(),
                                    timeSpan(2).seconds(),
@@ -160,5 +168,11 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// from {@link #readForwardTimeout()} so it scales with the configured transport latency budget.
     public TimeSpan backfillSourceWaitBound() {
         return readForwardTimeout.plus(readForwardTimeout.nanos() * (BACKFILL_SOURCE_WAIT_PROBE_CYCLES - 1L));
+    }
+
+    /// How long one partition backfill may go without progress and keep its single-flight slot (#1638 N1, B2):
+    /// {@link #readForwardTimeout()} times {@link #BACKFILL_FLIGHT_IDLE_READ_TIMEOUTS}.
+    public TimeSpan backfillFlightIdleBound() {
+        return readForwardTimeout.plus(readForwardTimeout.nanos() * (BACKFILL_FLIGHT_IDLE_READ_TIMEOUTS - 1L));
     }
 }

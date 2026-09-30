@@ -58,44 +58,30 @@ test_publish_and_verify_count() {
     rm -f "$publish_errfile"
     assert_eq "$success" "$publish_count" "All ${publish_count} publishes succeeded"
 
-    # Replication settle window — stream_info is read from the governor, which
-    # observes the partition's totalEvents counter advanced by the local writer.
-    # 2s is the same budget the prior test used; we keep it so the only behavior
-    # change here is the strictness of the assertions.
+    # Replication settle window — /info now reports the partition OWNERS' heads (#1478), so the total
+    # is meaningful from any node once the writes are visible. 2s is the same budget the prior test
+    # used; we keep it so the only behavior change here is the strictness of the assertions.
     sleep 2
 
-    local info
-    info=$(stream_info "$STREAM_NAME") || {
-        log_fail "stream_info ${STREAM_NAME} failed (exit non-zero)"
+    # totalEvents comes from /info (stream_status), NOT the metadata route stream_info hits: that
+    # body has no such field, and an absent field must fail loudly rather than read as a measured 0.
+    local msg_count
+    msg_count=$(stream_total_events "$STREAM_NAME") || {
+        log_fail "totalEvents unavailable for ${STREAM_NAME} (field absent or /info failed — see the line above)"
         return 1
     }
-    if [ -z "$info" ]; then
-        log_fail "stream_info ${STREAM_NAME} returned empty body"
-        return 1
-    fi
-
-    # Endpoint may return flat object or {streams:[...]} array — match either.
-    local msg_count
-    msg_count=$(json_value "$info" "totalEvents")
-    if [ -z "$msg_count" ] && echo "$info" | grep -q "\"streams\""; then
-        msg_count=$(echo "$info" | grep -o "\"totalEvents\"[[:space:]]*:[[:space:]]*[0-9]*" | head -1 | sed 's/.*:[[:space:]]*//')
-    fi
-    msg_count="${msg_count:-0}"
 
     assert_ge "$msg_count" "$publish_count" "totalEvents (${msg_count}) >= published (${publish_count})"
 }
 
 test_stream_metadata() {
-    local info
-    info=$(stream_info "$STREAM_NAME")
-    assert_ne "$info" "" "Stream metadata retrievable"
+    # The metadata route names the stream in `stream`; there is no `name` field (#1478).
     local name
-    name=$(json_value "$info" "name")
-    if [ -z "$name" ] && echo "$info" | grep -q "\"streams\""; then
-        # Extract first name from streams array
-        name=$(echo "$info" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-    fi
-    assert_ne "$name" "" "Stream name in metadata"
+    name=$(stream_declared_name "$STREAM_NAME") || {
+        log_fail "Stream metadata for ${STREAM_NAME} unavailable (stream field absent or request failed — see the line above)"
+        return 1
+    }
+    assert_eq "$name" "$STREAM_NAME" "Stream name in metadata"
 }
 
 test_multiple_streams_isolation() {
