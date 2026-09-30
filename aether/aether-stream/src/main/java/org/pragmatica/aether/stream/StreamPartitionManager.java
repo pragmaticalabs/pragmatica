@@ -222,6 +222,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// sidecar fsyncs (#1638 N2). Lock order: a partition's list → its log's write lock, never the reverse. One list per
     /// partition that ever caught up here, kept for the manager's lifetime.
     private final Map<PartitionRef, List<InstalledSlice>> pendingInstalls = new ConcurrentHashMap<>();
+
+    private static final long DURABLE_WATERMARK_TTL_NANOS = 10_000_000_000L;
+
+    private final Map<PartitionRef, CachedWatermark> durableWatermarks = new ConcurrentHashMap<>();
+    /// Bumped on every ring install and release; a watermark read that started before a bump is never cached, so a
+    /// slow read cannot put a pre-install value back after the drop.
+    private final AtomicLong watermarkGeneration = new AtomicLong();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -446,6 +453,22 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());
+    }
+
+    /// Test seam: a manager whose partition logs are opened (and inspected) through `logs`, so a test can hold an
+    /// inspect at a chosen point.
+    static StreamPartitionManager streamPartitionManagerOverLogs(long maxTotalBytes,
+                                                                 Option<AppendLog.Opener> logs,
+                                                                 LastSealedOffsetSource lastSealedOffset) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          EvictionListener.NOOP,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          logs,
+                                          lastSealedOffset,
+                                          DurableSealedOffsetSource.same(lastSealedOffset));
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -2366,17 +2389,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                             partition,
                             payload,
                             ownerEpoch,
-                            provenanceAdmits(streamName, partition, provenance)).flatMap(buffer -> buffer.appendOrderedAt(offset,
-                                                                                                                          payload,
-                                                                                                                          timestamp,
-                                                                                                                          new PartitionQuarantine(streamName,
-                                                                                                                                                  partition),
-                                                                                                                          assigned -> success(logReplicated(streamName,
-                                                                                                                                                            partition,
-                                                                                                                                                            assigned,
-                                                                                                                                                            payload,
-                                                                                                                                                            timestamp,
-                                                                                                                                                            provenance))))
+                            provenanceAdmits(streamName, partition, provenance),
+                            offset == 0L).flatMap(buffer -> buffer.appendOrderedAt(offset,
+                                                                                   payload,
+                                                                                   timestamp,
+                                                                                   new PartitionQuarantine(streamName,
+                                                                                                           partition),
+                                                                                   assigned -> success(logReplicated(streamName,
+                                                                                                                     partition,
+                                                                                                                     assigned,
+                                                                                                                     payload,
+                                                                                                                     timestamp,
+                                                                                                                     provenance))))
                            .onSuccess(_ -> entry.updateActivity());
     }
 
@@ -2594,9 +2618,21 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                    byte[] payload,
                                                    Epoch ownerEpoch,
                                                    Result<Unit> admission) {
+        return appendTarget(entry, streamName, partition, payload, ownerEpoch, admission, false);
+    }
+
+    /// As above; `startsEmptyPartition` marks a replicate append at offset 0, which may materialize an EMPTY
+    /// partition outside reshuffle pacing ([#materializeIfHeld]).
+    private Result<OffHeapRingBuffer> appendTarget(StreamEntry entry,
+                                                   String streamName,
+                                                   int partition,
+                                                   byte[] payload,
+                                                   Epoch ownerEpoch,
+                                                   Result<Unit> admission,
+                                                   boolean startsEmptyPartition) {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
                              .flatMap(_ -> checkEventSize(entry, payload))
-                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry));
+                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry, startsEmptyPartition));
     }
 
     /// Resolve the ring to append into, materializing it lazily on the OWNER/REPLICA path (#265 increment
@@ -2607,20 +2643,43 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// read router forwards on an absent local buffer, the write routers route by owner (#1230) — spec §8). The
     /// READ path never materializes — it forwards.
     private Result<OffHeapRingBuffer> resolveAppendTarget(String streamName, int partition, StreamEntry entry) {
+        return resolveAppendTarget(streamName, partition, entry, false);
+    }
+
+    private Result<OffHeapRingBuffer> resolveAppendTarget(String streamName,
+                                                          int partition,
+                                                          StreamEntry entry,
+                                                          boolean startsEmptyPartition) {
         if (partition < 0 || partition >= entry.declaredPartitions()) {
             return new StreamError.PartitionOutOfRange(streamName, partition, entry.declaredPartitions()).result();
         }
 
         return entry.ringFor(partition)
-                    .fold(() -> materializeIfHeld(streamName, partition, entry),
+                    .fold(() -> materializeIfHeld(streamName, partition, entry, startsEmptyPartition),
                           buffer -> success(buffer));
     }
 
-    private Result<OffHeapRingBuffer> materializeIfHeld(String streamName, int partition, StreamEntry entry) {
+    /// F1f: a REPLICA's first replicate append at offset 0 for a partition with NOTHING durable (no WAL record, no
+    /// sealed segment) materializes outside `reshuffle_concurrency` pacing. Pacing bounds the cost of a history
+    /// backfill, and an empty partition has none; pacing it only made a `confirmation_factor` 2 publish to a new
+    /// stream time out while the slots were legitimately busy. A partition with data, or whose log cannot be
+    /// inspected, stays paced. The budget check still applies.
+    private Result<OffHeapRingBuffer> materializeIfHeld(String streamName,
+                                                        int partition,
+                                                        StreamEntry entry,
+                                                        boolean startsEmptyPartition) {
         return switch (placementRoleSupplier.roleFor(streamName, partition)) {
-            case OWNER, REPLICA -> buildAndInstall(entry, partition);
+            case OWNER -> buildAndInstall(entry, partition);
+            case REPLICA -> startsEmptyPartition && hasNothingDurable(streamName, partition)
+                            ? materializeNow(entry, partition, false)
+                            : buildAndInstall(entry, partition);
             case NONE -> StreamError.General.PARTITION_NOT_LOCAL.result();
         };
+    }
+
+    private boolean hasNothingDurable(String streamName, int partition) {
+        return durableWatermark(streamName, partition).filter(watermark -> watermark < 0)
+                               .isPresent();
     }
 
     /// #1596: an append attributed to `provenance` is refused BEFORE the ordered section when this partition's log
@@ -2997,6 +3056,84 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  .stream()
                                  .map(ReplicaDescriptor::nodeId)
                                  .anyMatch(nodeId::equals);
+    }
+
+    /// The durable watermark of a partition this node HOLDS (placement makes it owner or replica) but has not
+    /// materialized — paced or budget-deferred — so a replication-class read has no ring to answer from. The
+    /// higher of the WAL head and the sealed bound, `-1` when it holds nothing durable, read without opening the
+    /// log ([AppendLog.Opener#inspect]). None when the partition is materialized, is not held here, is out of
+    /// range, or the log cannot be inspected: an unknown watermark is not reported as an empty one, and the
+    /// caller answers `PARTITION_NOT_LOCAL` as before.
+    public Option<Long> heldNotMaterializedWatermark(String streamName, int partition) {
+        return option(streams.get(streamName)).filter(entry -> isHeldWithoutRing(entry, streamName, partition))
+                     .flatMap(_ -> durableWatermark(streamName, partition));
+    }
+
+    /// Whether a held-but-unmaterialized partition of `streamName` is deferred for lack of off-heap budget (the same
+    /// test [#materializePaced] makes first) rather than merely paced; no reshuffle slot frees such a partition.
+    public boolean heldBudgetExhausted(String streamName) {
+        return option(streams.get(streamName)).filter(entry -> !isSystemStream(streamName))
+                     .map(entry -> availableBytes() < perPartitionFloorBytes(entry.config()))
+                     .or(false);
+    }
+
+    private boolean isHeldWithoutRing(StreamEntry entry, String streamName, int partition) {
+        return partition >= 0
+               && partition < entry.declaredPartitions()
+               && entry.ringFor(partition)
+                       .isEmpty()
+               && placementRoleSupplier.roleFor(streamName, partition) != Role.NONE;
+    }
+
+    /// The WAL head is read by scanning the whole log (~0.1-0.25 s and a file-sized buffer at 260 MiB, measured
+    /// 2026-09-30), so an unmaterialized partition's answer is kept for [#DURABLE_WATERMARK_TTL_NANOS]: probes arrive
+    /// every few seconds, and nothing writes an unmaterialized partition's log. Dropped when the ring is installed.
+    private Option<Long> durableWatermark(String streamName, int partition) {
+        var ref = new PartitionRef(streamName, partition);
+        var now = System.nanoTime();
+        var cached = durableWatermarks.get(ref);
+
+        if (cached != null && now - cached.atNanos() < DURABLE_WATERMARK_TTL_NANOS) {
+            return Option.some(cached.watermark());
+        }
+
+        var generation = watermarkGeneration.get();
+
+        return readDurableWatermark(streamName, partition).onPresent(watermark -> cacheUnlessSuperseded(ref,
+                                                                                                        new CachedWatermark(watermark,
+                                                                                                                            now),
+                                                                                                        generation));
+    }
+
+    /// Atomic per key against [#dropDurableWatermark]: the drop bumps the generation BEFORE removing, so a put that
+    /// runs after the removal sees the bump and does nothing, and one that ran before it is removed.
+    @Contract
+    private void cacheUnlessSuperseded(PartitionRef ref, CachedWatermark value, long generation) {
+        durableWatermarks.compute(ref,
+                                  (_, current) -> watermarkGeneration.get() == generation
+                                                  ? value
+                                                  : current);
+    }
+
+    @Contract
+    private void dropDurableWatermark(PartitionRef ref) {
+        watermarkGeneration.incrementAndGet();
+        durableWatermarks.remove(ref);
+    }
+
+    private record CachedWatermark(long watermark, long atNanos) {}
+
+    private Option<Long> readDurableWatermark(String streamName, int partition) {
+        return logs.fold(() -> Option.some(lastSealedOffset.lastSealedOffset(streamName, partition)),
+                         opener -> walHead(opener, streamName, partition).map(head -> Math.max(head,
+                                                                                               lastSealedOffset.lastSealedOffset(streamName,
+                                                                                                                                 partition))));
+    }
+
+    private static Option<Long> walHead(AppendLog.Opener opener, String streamName, int partition) {
+        return opener.inspect(StreamEntry.logName(streamName, partition))
+                     .map(AppendLog.LogExtent::headOffset)
+                     .option();
     }
 
     /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
@@ -3893,6 +4030,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         releaseCandidacy.remove(ref);
         freeReshuffleSlot(ref);
+        dropDurableWatermark(ref);
         releasedSinceBoot.incrementAndGet();
         log.info("Released stream partition {}[{}] on role loss — ring + {} control floor bytes freed, WAL retained on disk",
                  ref.streamName(),
@@ -3988,6 +4126,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                long floorBytes) {
         var winner = entry.installPartition(partition, candidate);
 
+        dropDurableWatermark(new PartitionRef(entry.config().name(),
+                                              partition));
         if (winner != candidate) {
             release(floorBytes);
             candidate.closeWithoutRelease();
@@ -4731,7 +4871,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// The log `<stream>/<partition>`: under the storage instance's log root in production, which keeps
         /// the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal`.
         private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, String streamName, int partition) {
-            return opener.open(streamName + "/" + partition);
+            return opener.open(logName(streamName, partition));
+        }
+
+        /// The log `<stream>/<partition>` names, shared by the open and the read-only inspect of it.
+        static String logName(String streamName, int partition) {
+            return streamName + "/" + partition;
         }
 
         private static List<Option<AppendLog>> noWals(int count) {

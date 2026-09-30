@@ -156,6 +156,48 @@ class OwnerActivationTest {
         assertThat(activation.admit(STREAM, PARTITION).isSuccess()).isTrue();
     }
 
+    /// F1e: a failed attempt is re-driven by the gate itself. The peer fails the probe on the first attempt and then
+    /// answers; with NO further demand the partition is activated within the backoff, where before it stayed refused
+    /// until something else demanded it (cloud run 1: ~25 s).
+    @Test
+    void admit_firstAttemptFails_redrivesWithoutAnotherDemand() {
+        record.set(Option.some(ownedBy(SELF, 1)));
+        members.set(List.of(SELF, PEER_A));
+        unreachable.add(PEER_A);
+
+        assertThat(activation.admit(STREAM, PARTITION).isFailure()).isTrue();
+        LockSupport.parkNanos(50_000_000L);
+        unreachable.remove(PEER_A);
+
+        assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven with no further demand").isTrue();
+    }
+
+    /// The re-drive stops once ownership has left the node: after the attempt that finds another node named, no
+    /// further consensus round is ordered. (With the stop ignored the loop keeps running rounds every backoff.)
+    @Test
+    void admit_ownershipLeaves_redriveStops() {
+        record.set(Option.some(ownedBy(SELF, 1)));
+        members.set(List.of(SELF, PEER_A));
+        unreachable.add(PEER_A);
+
+        activation.admit(STREAM, PARTITION);
+        record.set(Option.some(ownedBy(PEER_B, 2)));
+        LockSupport.parkNanos(1_500_000_000L);
+
+        assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
+        assertThat(rounds.get()).as("first attempt, then one re-drive that finds ownership gone").isEqualTo(2);
+    }
+
+    private boolean eventuallyActivatedWithin(long millis) {
+        var deadline = System.nanoTime() + millis * 1_000_000L;
+
+        while (System.nanoTime() < deadline && !activation.isActivated(STREAM, PARTITION)) {
+            LockSupport.parkNanos(10_000_000L);
+        }
+
+        return activation.isActivated(STREAM, PARTITION);
+    }
+
     /// Fresh-view gate: the round applies a newer committed record naming another node; the re-read after the
     /// round must see it and refuse, so a node whose committed view was stale never activates on it.
     @Test
@@ -166,6 +208,65 @@ class OwnerActivationTest {
         assertThat(activate()).isFalse();
         assertThat(rounds).hasValue(1);
         assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
+    }
+
+    /// Observation: the gate's probe and overlap reads go through the real [OwnerPeerReads] against a peer that
+    /// HOLDS the partition unmaterialized (paced) with durable data BELOW self. Pre-F1a that peer answered
+    /// `PARTITION_NOT_LOCAL`, read as `-1`, and was skipped; now it reports 5, its overlap window is read, the read is
+    /// refused (no ring), and activation is refused until the peer materializes.
+    @Test
+    void gate_pacedLowerPeerWithDurableData_refusesActivation_whileANonHolderDoesNot() {
+        var heldAtFive = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L).message()).promise());
+        var nonHolder = gateThrough((_, _, _, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            StreamError.General.PARTITION_NOT_LOCAL.message()).promise());
+
+        members.set(List.of(SELF, PEER_A));
+
+        assertThat(heldAtFive.activate(STREAM, PARTITION).await().isSuccess()).as("paced lower peer").isFalse();
+        assertThat(nonHolder.activate(STREAM, PARTITION).await().isSuccess()).as("genuine non-holder").isTrue();
+    }
+
+    /// A peer that holds durable data but is deferred for off-heap BUDGET (no slot will free it) is reported, once, as a
+    /// block naming the partition, the peer and both offsets; a merely paced peer is not (its slot will free).
+    @Test
+    void gate_budgetDeferredPeerWithDurableData_raisesTheBlock_pacedPeerDoesNot() {
+        var budgetDeferred = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L, true).message()).promise());
+        var paced = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L, false).message()).promise());
+
+        members.set(List.of(SELF, PEER_A));
+
+        assertThat(paced.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
+        assertThat(alarms).as("a paced peer raises no budget block").isEmpty();
+        assertThat(budgetDeferred.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
+        assertThat(alarms).hasSize(1);
+        var block = alarms.getFirst();
+
+        assertThat(block).isInstanceOf(OwnerActivation.ActivationBlock.HolderBudgetDeferred.class);
+        assertThat(block.message()).contains(STREAM + "[" + PARTITION + "]", PEER_A.id(), "head 5", "local head 19", "off-heap budget exhausted");
+        assertThat(budgetDeferred.blockOf(STREAM, PARTITION)).isEqualTo(Option.some(block));
+
+        budgetDeferred.activate(STREAM, PARTITION).await();
+        assertThat(alarms).as("the same block is raised once").hasSize(1);
+    }
+
+    private OwnerActivation gateThrough(OwnerPeerReads.PageRead peerRead) {
+        return OwnerActivation.ownerActivation(SELF,
+                                               (_, _) -> record.get(),
+                                               (_, _) -> placementOwner.get(),
+                                               Option.some(this::round),
+                                               members::get,
+                                               (peer, stream, partition) -> OwnerPeerReads.appendedWatermark(peerRead, peer, stream, partition, 16),
+                                               (_, _) -> localWatermark.get(),
+                                               this::catchUp,
+                                               consensusActive::get,
+                                               (node, stream, partition, from, to) -> node.equals(SELF)
+                                                                                     ? range(node, stream, partition, from, to)
+                                                                                     : OwnerPeerReads.appendedRange(peerRead, node, stream, partition, from, to, 16),
+                                               this::raise,
+                                               PromotionTestRanges.NEVER_ALARM);
     }
 
     /// Catch-up gate: a live member ahead of self is caught up from — the HIGHEST one — before activation.

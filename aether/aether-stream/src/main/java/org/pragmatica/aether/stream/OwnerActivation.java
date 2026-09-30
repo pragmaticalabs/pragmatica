@@ -27,6 +27,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -212,6 +213,23 @@ public final class OwnerActivation {
             }
         }
 
+        /// `peer` HOLDS the partition with durable data (`peerHead`) but has not materialized it because its off-heap
+        /// budget is exhausted, so no reshuffle slot will ever free it: the owner cannot verify or pull from it and
+        /// refuses to act as owner (`localHead` is what it holds). Safe, but appends stay refused until budget frees
+        /// on that node or an operator picks a source.
+        record HolderBudgetDeferred(String streamName, int partition, NodeId peer, long localHead, long peerHead) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] refused: %s holds durable data (head %d, local head %d) but has not "
+                       + "materialized the partition — off-heap budget exhausted on that node; appends stay refused until "
+                       + "its budget frees or an operator picks the source").formatted(streamName,
+                                                                                       partition,
+                                                                                       peer,
+                                                                                       peerHead,
+                                                                                       localHead);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -231,6 +249,8 @@ public final class OwnerActivation {
     /// How many of the most recent offsets two nodes both hold are compared before one is trusted or promoted
     /// over the other. A named constant, not a derived bound — see the class comment.
     public static final int OVERLAP_WINDOW = 1024;
+    static final TimeSpan REDRIVE_INITIAL_BACKOFF = TimeSpan.timeSpan(250).millis();
+    static final TimeSpan REDRIVE_MAX_BACKOFF = TimeSpan.timeSpan(2).seconds();
 
     private record PeerWatermark(NodeId node, long watermark) {}
 
@@ -251,6 +271,8 @@ public final class OwnerActivation {
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
 
     private final Set<PartitionKey> inFlight = ConcurrentHashMap.newKeySet();
+    /// Partitions with a re-drive already scheduled.
+    private final Set<PartitionKey> redriving = ConcurrentHashMap.newKeySet();
     /// The block currently reported for each partition; the alarm fires when it first appears or changes.
     private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
@@ -327,14 +349,46 @@ public final class OwnerActivation {
         if (isActivated(stream, partition)) {
             return Result.unitResult();
         }
-        // FER: the refused action is retried by its caller, and every later demand re-runs the gate, so an
-        // activation attempt that fails here is logged and superseded, never relied upon.
-        activate(stream, partition).onFailure(cause -> log.debug("Owner activation of {}[{}] pending: {}",
-                                                                 stream,
-                                                                 partition,
-                                                                 cause.message()));
+
+        attempt(stream, partition, REDRIVE_INITIAL_BACKOFF);
 
         return new StreamError.OwnerNotActivated(stream, partition).result();
+    }
+
+    /// One activation attempt. A failed attempt is re-driven here, with a doubling backoff, while this node still
+    /// claims the partition and is not activated: without it a failure (a peer that has not applied the stream's
+    /// config yet, a probe that timed out) waited for the next demand, and a partition nobody demanded again stayed
+    /// refused until something else happened to probe it (cloud run 1: ~25 s).
+    ///
+    /// FER: the failure itself is not surfaced to the refused caller, which is told `OwnerNotActivated` and retries;
+    /// this loop only guarantees an attempt is made again. Stops when the node is activated, ownership left it
+    /// (`NOT_OWNER`), or consensus is inactive; a demand starts a fresh loop, and one loop runs per partition.
+    private void attempt(String stream, int partition, TimeSpan backoff) {
+        activate(stream, partition).onFailure(cause -> redrive(stream, partition, backoff, cause));
+    }
+
+    private void redrive(String stream, int partition, TimeSpan backoff, Cause cause) {
+        log.debug("Owner activation of {}[{}] pending: {}", stream, partition, cause.message());
+        if (cause == ActivationError.IN_PROGRESS || cause == ActivationError.NOT_OWNER || !consensusActive.getAsBoolean()) {
+            return;
+        }
+
+        if (redriving.add(PartitionKey.partitionKey(stream, partition))) {
+            SharedScheduler.schedule(() -> redriveAfterBackoff(stream, partition, backoff), backoff);
+        }
+    }
+
+    private void redriveAfterBackoff(String stream, int partition, TimeSpan backoff) {
+        redriving.remove(PartitionKey.partitionKey(stream, partition));
+        if (!isActivated(stream, partition)) {
+            attempt(stream, partition, nextBackoff(backoff));
+        }
+    }
+
+    private static TimeSpan nextBackoff(TimeSpan backoff) {
+        return backoff.millis() * 2 >= REDRIVE_MAX_BACKOFF.millis()
+               ? REDRIVE_MAX_BACKOFF
+               : TimeSpan.timeSpan(backoff.millis() * 2).millis();
     }
 
     /// Run the promotion gate for `(stream, partition)` once; concurrent demands share nothing and are told an
@@ -513,9 +567,25 @@ public final class OwnerActivation {
     /// Every responder that is not the catch-up source must agree with the local log where both hold records:
     /// a lower (or equal) peer that disagrees means the local tail, or the peer's, belongs to another lineage.
     private Promise<Unit> verifyAgreement(String stream, int partition, long local, List<PeerWatermark> others) {
-        return Promise.allOf(others.stream().map(peer -> verifyOverlap(stream, partition, local, peer)).toList())
+        return Promise.allOf(others.stream()
+                                   .map(peer -> verifyOverlap(stream, partition, local, peer).onFailure(cause -> flagBudgetHolder(stream,
+                                                                                                                                  partition,
+                                                                                                                                  local,
+                                                                                                                                  peer,
+                                                                                                                                  cause)))
+                                   .toList())
                       .flatMap(results -> Result.allOf(results).async())
                       .mapToUnit();
+    }
+
+    /// The refusal that names a peer deferred for off-heap budget is reported (once per distinct block) rather than
+    /// only debug-logged by the re-drive: a paced peer clears when a slot frees, a budget-deferred one does not.
+    @Contract
+    private void flagBudgetHolder(String stream, int partition, long local, PeerWatermark peer, Cause cause) {
+        if (StreamError.PartitionHeldNotMaterialized.isBudgetExhausted(cause)) {
+            report(PartitionKey.partitionKey(stream, partition),
+                   new ActivationBlock.HolderBudgetDeferred(stream, partition, peer.node(), local, peer.watermark()));
+        }
     }
 
     private Promise<Unit> catchUpFrom(String stream,
@@ -539,7 +609,8 @@ public final class OwnerActivation {
                                                                                                             local,
                                                                                                             highest,
                                                                                                             others))
-                                  .flatMap(_ -> pullSuffix(stream, partition, highest));
+                                  .flatMap(_ -> pullSuffix(stream, partition, highest))
+                                  .onFailure(cause -> flagBudgetHolder(stream, partition, local, highest, cause));
     }
 
     /// Pairwise agreement of the source with every other responder (v1555 on #1555). The local log covers only

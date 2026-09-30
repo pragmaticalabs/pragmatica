@@ -14,6 +14,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -30,6 +31,10 @@ import org.pragmatica.lang.Promise;
 /// nothing, and the gate trusted a source it had not checked.
 ///
 /// Every other failure propagates, so the gate fails closed on it.
+///
+/// The backfill's own watermark probe ([#replicaWatermark]) reads the same way, so a peer that HOLDS a partition
+/// it has not materialized (paced by `reshuffle_concurrency`, or budget-deferred) answers with its durable
+/// watermark and is REACHABLE, where a plain read answered `PARTITION_NOT_LOCAL` and was read as unreachable.
 public sealed interface OwnerPeerReads {
     /// One page of a peer's partition read over the catch-up class.
     @FunctionalInterface
@@ -88,9 +93,24 @@ public sealed interface OwnerPeerReads {
     }
 
     /// The peer's appended head; `-1` when the peer holds no ring for the partition (it answers
-    /// PARTITION_NOT_LOCAL, so there is nothing to catch up from), or holds an empty one.
+    /// PARTITION_NOT_LOCAL, so there is nothing to catch up from), or holds an empty one; its durable watermark
+    /// when it holds the partition unmaterialized ([StreamError.PartitionHeldNotMaterialized]).
     static Promise<Long> appendedWatermark(PageRead read, NodeId target, String streamName, int partition, int page) {
-        return pageWatermark(read, target, streamName, partition, 0L, page);
+        return pageWatermark(read, target, streamName, partition, 0L, page, OwnerPeerReads::settleForGate);
+    }
+
+    /// A REACHABLE replica's watermark for the backfill's cold-start and owner-catch-up probes
+    /// ([org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe]), over the same catch-up read class as
+    /// [#appendedWatermark]: the peer's appended head, `-1` when it holds an empty ring, and — for a partition it
+    /// HOLDS but has not materialized (paced or budget-deferred) — its durable watermark, reported with
+    /// [StreamError.PartitionHeldNotMaterialized]. That refusal is an answer from a reachable peer, so a paced
+    /// replica no longer reads as unreachable and holds a promotion for the whole source wait. A peer that
+    /// answers `PARTITION_NOT_LOCAL` is NOT settled here, unlike the gate's probe: this probe has no committed
+    /// replica set to say the peer is meant to hold the partition, so a genuine non-holder stays a failure (no
+    /// information) and self does not promote past it. Every other failure propagates, and so does a transport
+    /// failure.
+    static Promise<Long> replicaWatermark(PageRead read, NodeId target, String streamName, int partition, int page) {
+        return pageWatermark(read, target, streamName, partition, 0L, page, OwnerPeerReads::settleForReplica);
     }
 
     /// The peer's appended records `from .. to`, starting at the peer's oldest available offset when that is
@@ -110,7 +130,8 @@ public sealed interface OwnerPeerReads {
                                                String streamName,
                                                int partition,
                                                long cursor,
-                                               int page) {
+                                               int page,
+                                               Fn1<Option<Long>, Cause> settle) {
         return read.read(target, streamName, partition, cursor, page)
                    .fold(result -> result.fold(cause -> watermarkRefused(read,
                                                                          target,
@@ -118,6 +139,7 @@ public sealed interface OwnerPeerReads {
                                                                          partition,
                                                                          cursor,
                                                                          page,
+                                                                         settle,
                                                                          cause),
                                                answer -> continueWatermark(read,
                                                                            target,
@@ -125,20 +147,42 @@ public sealed interface OwnerPeerReads {
                                                                            partition,
                                                                            cursor,
                                                                            page,
+                                                                           settle,
                                                                            answer)));
     }
 
+    /// A refusal the probe's `settle` policy turns into a watermark ends the probe there; a `CursorExpired`
+    /// resumes at the peer's oldest offset; any other refusal fails the probe.
     private static Promise<Long> watermarkRefused(PageRead read,
                                                   NodeId target,
                                                   String streamName,
                                                   int partition,
                                                   long cursor,
                                                   int page,
+                                                  Fn1<Option<Long>, Cause> settle,
                                                   Cause cause) {
+        return settle.apply(cause)
+                     .fold(() -> resumeAt(cause, cursor).fold(cause::<Long> promise,
+                                                              oldest -> pageWatermark(read,
+                                                                                      target,
+                                                                                      streamName,
+                                                                                      partition,
+                                                                                      oldest,
+                                                                                      page,
+                                                                                      settle)),
+                           Promise::success);
+    }
+
+    /// The gate's probe: a peer that holds no ring at all has nothing to catch up from (`-1`), and one that
+    /// holds the partition unmaterialized reports its durable watermark.
+    private static Option<Long> settleForGate(Cause cause) {
         return isNotHeld(cause)
-               ? Promise.success(-1L)
-               : resumeAt(cause, cursor).fold(cause::<Long> promise,
-                                              oldest -> pageWatermark(read, target, streamName, partition, oldest, page));
+               ? Option.some(-1L)
+               : StreamError.PartitionHeldNotMaterialized.watermarkOf(cause);
+    }
+
+    private static Option<Long> settleForReplica(Cause cause) {
+        return StreamError.PartitionHeldNotMaterialized.watermarkOf(cause);
     }
 
     private static Promise<Long> continueWatermark(PageRead read,
@@ -147,6 +191,7 @@ public sealed interface OwnerPeerReads {
                                                    int partition,
                                                    long cursor,
                                                    int page,
+                                                   Fn1<Option<Long>, Cause> settle,
                                                    StreamForwardClient.ReadForwardResult answer) {
         var events = answer.events();
 
@@ -157,7 +202,7 @@ public sealed interface OwnerPeerReads {
         var lastOffset = events.getLast().offset();
 
         return events.size() >= page
-               ? pageWatermark(read, target, streamName, partition, lastOffset + 1, page)
+               ? pageWatermark(read, target, streamName, partition, lastOffset + 1, page, settle)
                : Promise.success(lastOffset);
     }
 
@@ -245,6 +290,10 @@ public sealed interface OwnerPeerReads {
                            all);
     }
 
+    /// Only `PARTITION_NOT_LOCAL` means "holds nothing". `Stream not found` stays UNREACHABLE on purpose: after a cold
+    /// restart a same-id peer that has not yet applied the stream's config still holds its data on disk, so reading
+    /// "not found" as `-1` could let the owner promote past durable records. The owner gate's re-drive covers the
+    /// transient case (config not applied yet) safely.
     private static boolean isNotHeld(Cause cause) {
         return cause.message()
                     .contains(StreamError.General.PARTITION_NOT_LOCAL.message());

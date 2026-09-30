@@ -250,7 +250,25 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                         request.streamName(),
                                         request.partition(),
                                         request.fromOffset(),
-                                        request.maxEvents());
+                                        request.maxEvents())
+                          .mapError(cause -> nameHeldPartition(request, cause));
+    }
+
+    /// A replication-class refusal is translated, never absorbed: a partition this node holds but has not
+    /// materialized (paced, budget-deferred) is REACHABLE, and says so with its durable watermark
+    /// ([StreamError.PartitionHeldNotMaterialized]) instead of the `PARTITION_NOT_LOCAL` of a genuine non-holder,
+    /// which a prober must read as no information. Only replication-class reads are refined: a consumer read
+    /// keeps `PARTITION_NOT_LOCAL`, the identity the read routers forward on.
+    private Cause nameHeldPartition(ReadForward request, Cause cause) {
+        return cause == StreamError.General.PARTITION_NOT_LOCAL
+               ? partitionManager.heldNotMaterializedWatermark(request.streamName(),
+                                                               request.partition())
+                                 .<Cause> map(watermark -> new StreamError.PartitionHeldNotMaterialized(request.streamName(),
+                                                                                                        request.partition(),
+                                                                                                        watermark,
+                                                                                                        partitionManager.heldBudgetExhausted(request.streamName())))
+                                 .or(cause)
+               : cause;
     }
 
     /// A forwarded client read (#1555): an owner that has not completed promotion refuses rather than answering
@@ -271,7 +289,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                           request.partition(),
                                           request.fromOffset(),
                                           request.maxEvents())
-                               .async();
+                               .async()
+                               .mapError(cause -> nameHeldPartition(request, cause));
     }
 
     @Contract

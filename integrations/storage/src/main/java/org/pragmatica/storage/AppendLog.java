@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
@@ -217,10 +218,84 @@ public final class AppendLog implements AutoCloseable {
 
     /// What a log file holds, read without opening, recovering or writing it (#1569 A3/A4): the lowest and
     /// highest valid offsets (`-1` for none), the bytes of the valid prefix, and the file's size -- a larger
-    /// size means a torn tail that the next [#open] would cut. The inventory probe reads this from a volume
+    /// size means a torn tail that the next [#open] would cut. A log that was never created holds nothing:
+    /// [LogExtent#EMPTY], not a failure. The inventory probe reads this from a volume
     /// it may not end up owning, so it must leave the volume byte-identical.
+    ///
+    /// The file is scanned in a fixed [#INSPECT_BUFFER_BYTES] buffer, never held whole: a probe of several large logs
+    /// at once must not allocate their sizes (the whole-file read was 262 MiB for a 262 MiB log). Same validity rules
+    /// as recovery's scan (length frame, then CRC-32 over `offset || timestamp || payload`).
     public static Result<LogExtent> inspect(Path file) {
-        return FileOps.readBytes(file).map(AppendLog::extentOf);
+        return inspect(file, INSPECT_BUFFER_BYTES);
+    }
+
+    /// [#inspect] with an explicit scan buffer size (test seam for the bounded-memory pin).
+    static Result<LogExtent> inspect(Path file, int bufferBytes) {
+        return Files.exists(file)
+               ? Result.lift(t -> new WalError.OpenFailed(file,
+                                                          String.valueOf(t.getMessage())),
+                             () -> scanExtent(file, bufferBytes))
+               : Result.success(LogExtent.EMPTY);
+    }
+
+    static final int INSPECT_BUFFER_BYTES = 64 * 1024;
+
+    /// Streaming scan: one reusable buffer, CRC updated chunk by chunk. Imperative I/O leaf, as [#writeSynced].
+    @SuppressWarnings("JBCT-EX-01")
+    private static LogExtent scanExtent(Path file, int bufferBytes) throws IOException {
+        var size = Files.size(file);
+        var chunk = new byte[Math.max(bufferBytes, HEADER_BYTES)];
+        var header = ByteBuffer.wrap(chunk, 0, HEADER_BYTES).order(ByteOrder.BIG_ENDIAN);
+        var low = -1L;
+        var last = -1L;
+        var validEnd = 0L;
+
+        try (var in = Files.newInputStream(file)) {
+            while (size - validEnd >= HEADER_BYTES && in.readNBytes(chunk, 0, HEADER_BYTES) == HEADER_BYTES) {
+                header.clear();
+                var payloadLen = header.getInt();
+                var offset = header.getLong();
+                var timestamp = header.getLong();
+                var storedCrc = header.getInt();
+
+                if (payloadLen < 0 || payloadLen > size - validEnd - HEADER_BYTES) {
+                    break;
+                }
+
+                var crc = new CRC32();
+
+                crc.update(chunk, 4, CRC_HEADER_BYTES);
+                if (!crcOfPayload(in, payloadLen, chunk, crc) || (int) crc.getValue() != storedCrc) {
+                    break;
+                }
+
+                validEnd += HEADER_BYTES + payloadLen;
+                last = offset;
+                low = low == -1L
+                      ? offset
+                      : low;
+            }
+        }
+
+        return new LogExtent(low, last, validEnd, size);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static boolean crcOfPayload(InputStream in, int payloadLen, byte[] chunk, CRC32 crc) throws IOException {
+        var remaining = payloadLen;
+
+        while (remaining > 0) {
+            var read = in.readNBytes(chunk, 0, Math.min(remaining, chunk.length));
+
+            if (read <= 0) {
+                return false;
+            }
+
+            crc.update(chunk, 0, read);
+            remaining -= read;
+        }
+
+        return true;
     }
 
     private static LogExtent extentOf(byte[] bytes) {
@@ -874,10 +949,33 @@ public final class AppendLog implements AutoCloseable {
     public interface Opener {
         Result<AppendLog> open(String name);
 
+        /// The extent of log `name`, READ-ONLY ([AppendLog#inspect]): nothing is opened, recovered or cut,
+        /// so it is safe beside a materialization of the same log. An opener with no way to look refuses,
+        /// and the caller must treat that as "unknown", never as an empty log.
+        default Result<LogExtent> inspect(String name) {
+            return StorageError.InspectUnsupported.inspectUnsupported(name).result();
+        }
+
+        /// An opener that can also inspect, over the same log names.
+        static Opener opener(Fn1<Result<AppendLog>, String> open, Fn1<Result<LogExtent>, String> inspect) {
+            return new Opener() {
+                @Override
+                public Result<AppendLog> open(String name) {
+                    return open.apply(name);
+                }
+
+                @Override
+                public Result<LogExtent> inspect(String name) {
+                    return inspect.apply(name);
+                }
+            };
+        }
+
         /// A standalone opener laying logs out as `<root>/<name>.wal` -- the layout of
         /// [StorageInstance#openLog] -- for wiring that has no storage instance (tests, tools).
         static Opener directory(Path root) {
-            return name -> AppendLog.open(root.resolve(name + ".wal"));
+            return opener(name -> AppendLog.open(root.resolve(name + ".wal")),
+                          name -> AppendLog.inspect(root.resolve(name + ".wal")));
         }
     }
 
@@ -907,7 +1005,10 @@ public final class AppendLog implements AutoCloseable {
     }
 
     /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
-    public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {}
+    public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {
+        /// The extent of a log that does not exist: no valid record, no bytes.
+        public static final LogExtent EMPTY = new LogExtent(-1L, -1L, 0L, 0L);
+    }
 
     /// A torn tail cut by recovery: bytes `[validEnd, fileBytes)` of `file` were discarded, and
     /// `lastValidOffset` (`-1` for none) is the last record kept.
