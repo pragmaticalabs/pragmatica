@@ -127,13 +127,30 @@ create_entity() {
     # connection reset). Counting that as failure UNDER-counts acks, which is what made the first
     # run report 4/40. The durability assertion re-reads the value, so a wrong guess here cannot
     # manufacture a pass.
-    if body=$(entity_post_any "/api/entity/create" "$payload" \
-                              '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
-        return 0
-    fi
+    # A create refused with an ALLOW-LISTED TRANSIENT failureType is retried with backoff until
+    # ENTITY_CREATE_RETRY_DEADLINE_S (a post-failover owner that is not ready yet answers "retry", and the one
+    # attempt this used to make read as "the cluster does not accept creates"). Anything else fails at once:
+    # never ForwardRefused or StorageFailed (a genuine storage fault must not be retried into silence), and an
+    # empty answer (no node reachable) is not a transient refusal either. The FULL body is logged: a 200-byte
+    # cut deleted the inner cause ("... for k") that decides which failure it was.
+    local deadline=$((SECONDS + ENTITY_CREATE_RETRY_DEADLINE_S)) delay="$ENTITY_CREATE_RETRY_BACKOFF_S" ft
+    while :; do
+        if body=$(entity_post_any "/api/entity/create" "$payload" \
+                                  '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
+            return 0
+        fi
+        ft=$(transient_failure_type "$body") || break
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            log_warn "create ${key}: still refused with transient ${ft} at the ${ENTITY_CREATE_RETRY_DEADLINE_S}s retry deadline; last body: ${body}" >&2
+            return 1
+        fi
+        log_warn "create ${key}: transient ${ft}; retrying in ${delay}s" >&2
+        sleep "$delay"
+        delay=$(( delay * 2 > 5 ? 5 : delay * 2 ))
+    done
 
     if [ -n "$body" ]; then
-        log_warn "create ${key}: no node accepted; last body: $(printf '%s' "$body" | head -c 200)" >&2
+        log_warn "create ${key}: no node accepted (not a transient type; not retried); last body: ${body}" >&2
     fi
     return 1
 }
@@ -162,7 +179,10 @@ create_range_recording_acks() {
 # clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it
 # may serve reads (EntityLogError.java). An EXPLICIT allow-list, so an unknown failure type is never
 # retried into silence. Space-separated; extend only with a failureType the product marks transient.
-ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress}"
+ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress OwnershipNotYetCommitted LinearizableUnavailable}"
+# The same allow-list bounds the CREATE retry (create_entity): ~30s, 1s doubling to 5s.
+ENTITY_CREATE_RETRY_DEADLINE_S="${ENTITY_CREATE_RETRY_DEADLINE_S:-30}"
+ENTITY_CREATE_RETRY_BACKOFF_S="${ENTITY_CREATE_RETRY_BACKOFF_S:-1}"
 # Per-key bound on retrying a transient refusal. s27 cluster B (2026-09-25): three keys refused
 # FoldInProgress in the pre-kill readback and read back exactly ~20s later.
 TRANSIENT_READ_DEADLINE_S="${TRANSIENT_READ_DEADLINE_S:-60}"
@@ -223,16 +243,16 @@ read_amount() {
         ft=$(transient_failure_type "$body") || break
         last_transient="$body"
         if [ "$SECONDS" -ge "$deadline" ]; then
-            log_warn "read ${key}: a node answered transient ${ft} until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: $(printf '%s' "$body" | head -c 200)" >&2
+            log_warn "read ${key}: a node answered transient ${ft} until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: ${body}" >&2
             return 5
         fi
         sleep "$TRANSIENT_READ_BACKOFF_S"
     done
 
     if [ -n "$body" ]; then
-        log_warn "read ${key}: a node answered, but not found/absent (not a transient type); last body: $(printf '%s' "$body" | head -c 200)" >&2
+        log_warn "read ${key}: a node answered, but not found/absent (not a transient type); last body: ${body}" >&2
     elif [ -n "$last_transient" ]; then
-        log_warn "read ${key}: no node answered this attempt (every endpoint failed at transport or non-2xx); the previous attempt WAS answered with a transient refusal: $(printf '%s' "$last_transient" | head -c 200)" >&2
+        log_warn "read ${key}: no node answered this attempt (every endpoint failed at transport or non-2xx); the previous attempt WAS answered with a transient refusal: ${last_transient}" >&2
     else
         log_warn "read ${key}: no node answered (every endpoint failed at transport or non-2xx)" >&2
     fi
@@ -602,7 +622,7 @@ test_checkpoint_driver_is_alive() {
 
 test_post_crash_liveness() {
     if ! create_entity 9999; then
-        log_fail "cluster does not accept new entity creates after the crash"
+        log_fail "the post-crash create was not accepted (transient refusals are retried for ${ENTITY_CREATE_RETRY_DEADLINE_S}s; the refusal body is in the warning above)"
         return 1
     fi
 
