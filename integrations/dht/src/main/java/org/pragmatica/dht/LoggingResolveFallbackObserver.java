@@ -17,6 +17,8 @@ package org.pragmatica.dht;
 
 import java.util.function.Consumer;
 
+import org.pragmatica.lang.Contract;
+
 
 /// [ResolveFallbackObserver] that turns each outcome into one greppable line. An all-miss is a WARN carrying the
 /// key hex, the verdict (`lost` or `unreachable`, see [ResolveMiss#verdict]) and the counts behind it; a fallback
@@ -37,11 +39,13 @@ public final class LoggingResolveFallbackObserver implements ResolveFallbackObse
     }
 
     @Override
+    @Contract
     public void onResolvedViaFallback(String keyHex, int probed) {
         info.accept("DHT resolve via fallback key=" + keyHex + " probed=" + probed);
     }
 
     @Override
+    @Contract
     public void onUnresolvedAfterFallback(ResolveMiss miss) {
         warn.accept(describe(miss));
     }
