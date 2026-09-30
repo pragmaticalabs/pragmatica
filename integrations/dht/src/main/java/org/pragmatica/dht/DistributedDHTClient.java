@@ -84,7 +84,12 @@ public final class DistributedDHTClient implements DHTClient {
     /// @param network DHT network for inter-node messaging
     /// @param config  DHT configuration (replication factor, quorum sizes)
     public static DistributedDHTClient distributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DistributedDHTClient(node, network, config, OwnerEpochSource.zero(), ResolveFallbackObserver.noop(), new ConcurrentHashMap<>());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        config,
+                                        OwnerEpochSource.zero(),
+                                        ResolveFallbackObserver.noop(),
+                                        new ConcurrentHashMap<>());
     }
 
     /// Create a distributed DHT client that stamps every put with the node's current owner epoch
@@ -98,7 +103,12 @@ public final class DistributedDHTClient implements DHTClient {
                                                             DHTNetwork network,
                                                             DHTConfig config,
                                                             OwnerEpochSource ownerEpochSource) {
-        return new DistributedDHTClient(node, network, config, ownerEpochSource, ResolveFallbackObserver.noop(), new ConcurrentHashMap<>());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        config,
+                                        ownerEpochSource,
+                                        ResolveFallbackObserver.noop(),
+                                        new ConcurrentHashMap<>());
     }
 
     /// Return a client that reports resolve-time alternate-target fallback outcomes (issue #428, C2)
