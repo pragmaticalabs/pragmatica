@@ -397,7 +397,8 @@ Common failure scenarios:
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| `Artifact not found` | JAR not in any repository | Check repository configuration |
+| `Artifact not found` | Every repository answered "absent" | Check repository configuration |
+| `Artifact unavailable, not every repository answered` | At least one repository could not answer (timeout, network, write failure); the message lists each repository's outcome in lookup order | Not evidence of loss: read the per-repository outcomes, restore the unreachable repository, and expect the deployment to retry |
 | `Manifest not found` | Missing MANIFEST.MF | Ensure slice JAR is properly built |
 | `Missing Slice-Artifact` | Incomplete manifest | Add required manifest attributes |
 | `Circular dependency` | A→B→A | Restructure slice dependencies |

@@ -72,6 +72,19 @@ class SliceStoreLocateTest {
     }
 
     @Test
+    void loadSlice_unavailable_whenEveryRepositoryTimesOut() {
+        Repository first = _ -> new CoreError.Timeout("first").promise();
+        Repository second = _ -> new CoreError.Timeout("second").promise();
+
+        var cause = loadFailure(List.of(first, second));
+
+        assertThat(cause).isInstanceOf(ArtifactUnavailable.class);
+        assertThat(cause.message()).contains("repository #0 unavailable: ")
+                                   .contains("repository #1 unavailable: ")
+                                   .doesNotContain("absent:");
+    }
+
+    @Test
     void loadSlice_artifactNotFound_whenEveryRepositoryAbsent() {
         Repository first = _ -> new TestAbsent("first").promise();
         Repository second = _ -> new TestAbsent("second").promise();
