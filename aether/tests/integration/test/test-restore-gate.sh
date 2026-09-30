@@ -5,7 +5,7 @@
 #          in-flight shape: 4 core members counted, 1 replacement in flight, deficit 0 — the
 #          product's `effective` includes the in-flight replacement, so deficit alone passes
 #          it. R1 is the positive control (a whole cluster must pass).
-#   C1-C5  capture_node_logs' cloud branch (run-tests.sh): logs per VM with rc recorded, a
+#   C1-C5  capture_node_logs' cloud branch (lib/capture.sh): logs per VM with rc recorded, a
 #          time window, and an explicit statement when nothing was captured.
 #   F1-F2  cloud_partition_node (lib/cluster.sh): the partition firewall carries the cluster
 #          under `aether-chaos-cluster` — NEVER `aether-cluster`, which the Hetzner provider reads
@@ -64,14 +64,14 @@ expect_gate "R4 not leader (zeroed snapshot)"                            fail "$
 expect_gate "R5 deficit 10 (a leading 0 is not deficit 0)"               fail "$(snapshot 5 5 10 true)"
 
 # --- C: capture_node_logs cloud branch ----------------------------------------------------
-awk '/^capture_node_logs\(\) \{/,/^\}/' "${INTEG_DIR}/run-tests.sh" > "${WORK}/cap_fn.sh"
+awk '/^capture_node_logs\(\) \{/,/^\}/' "${INTEG_DIR}/lib/capture.sh" > "${WORK}/cap_fn.sh"
 if ! grep -q '^        cloud)' "${WORK}/cap_fn.sh"; then
     fail "C0 capture_node_logs has no cloud branch (extraction examined NOTHING)"
 fi
 capture() {  # mode vms enum_rc -> runs a capture for cluster b into $WORK/<mode>
     local dir="${WORK}/$1"; mkdir -p "$dir"
     ( set -euo pipefail
-      SCRIPT_DIR="$dir"; ENV_TYPE=cloud; CLUSTER_A_NAME=test-a; CLUSTER_B_NAME=test-b
+      AETHER_FAILURE_LOGS_DIR="$dir/failure-logs"; ENV_TYPE=cloud; CLUSTER_A_NAME=test-a; CLUSTER_B_NAME=test-b
       AETHER_SSH_KEY=/dev/null; SSH_OPTS=(-o ConnectTimeout=1); CAP_MODE="$1"
       log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }
       _run_with_timeout() { shift; "$@"; }
@@ -82,6 +82,7 @@ capture() {  # mode vms enum_rc -> runs a capture for cluster b into $WORK/<mode
               *) echo "node-log ${*: -1}" ;;
           esac
       }
+      _failcap_root() { echo "$AETHER_FAILURE_LOGS_DIR"; }
       source "${WORK}/cap_fn.sh"
       _cloud_running_vm_ips() { [ "$1" = test-b ] || return 1; [ "$CAP_ENUM_RC" -eq 0 ] || return "$CAP_ENUM_RC"; printf '%s' "$CAP_VMS"; }
       CAP_VMS="$2" CAP_ENUM_RC="$3" capture_node_logs "13-edge-cases" b 1700000000 ) > "${dir}/out.txt" 2>&1
