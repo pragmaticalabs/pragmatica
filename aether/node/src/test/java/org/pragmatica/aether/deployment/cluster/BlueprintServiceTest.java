@@ -167,9 +167,14 @@ class BlueprintServiceTest {
             assertThat(published.warnings()).as("the publish answer carries the warning").isNotEmpty();
             assertThat(warnings).as("every deploy warning is raised as an operator warning")
                                 .hasSize(published.warnings().size());
-            assertThat(warnings.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.DEPLOY_WARNING);
-            assertThat(warnings.getFirst().subject()).isEqualTo("org.example:warn-app:1.0.0");
-            assertThat(warnings).anySatisfy(warning -> assertThat(warning.message()).contains("replication-factor-below-three"));
+            assertThat(warnings).allSatisfy(warning -> assertThat(warning.subject()).isEqualTo("org.example:warn-app:1.0.0"));
+            // The LOUD warning is CRITICAL at deploy as at activation (v1735); the others are deploy-warning.
+            assertThat(warnings).filteredOn(warning -> warning.message().contains("replication-factor-below-three"))
+                                .singleElement()
+                                .satisfies(warning -> assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE));
+            assertThat(warnings).filteredOn(warning -> !warning.message().contains("replication-factor-below-three"))
+                                .isNotEmpty()
+                                .allSatisfy(warning -> assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.DEPLOY_WARNING));
         }
 
         private Path writeSliceJarDeclaringFactorOne() throws IOException {

@@ -196,6 +196,20 @@ class StreamApiRoutesPublishPartitionTest {
         }
     }
 
+    /// #1564 (v1680 N-r3-4): on a NON-owner the owner's pre-append refusal comes back over the forward as
+    /// `RemotePublishRetryable` (the owner answers the floor refusal retryable); it answers 503 like the owner-local
+    /// case. A permanent forward failure keeps its own cause, so this mapping does not widen 503 to real errors.
+    @Test
+    void retryableRefusal_forwardedRetryable_is503_permanentForwardFailureIsNot() {
+        var forwarded = StreamApiRoutes.retryableRefusal(STREAM_ADDRESS,
+                                                         new org.pragmatica.aether.stream.forward.StreamForwardError.RemotePublishRetryable("Not enough replicas available for requested acknowledgment count"));
+        var permanent = new org.pragmatica.aether.stream.forward.StreamForwardError.RemotePublishFailed("boom");
+
+        assertThat(forwarded).isInstanceOf(ManagementServerError.PublishRetryable.class);
+        assertThat(((ManagementServerError.PublishRetryable) forwarded).httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, permanent)).isSameAs(permanent);
+    }
+
     private static RetentionPolicy retention() {
         return RetentionPolicy.retentionPolicy();
     }
