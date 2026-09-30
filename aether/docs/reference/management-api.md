@@ -1365,9 +1365,17 @@ Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consens
 Get transport-layer metrics. **Scope: node-local** — a flat map of **node-level** QUIC counters
 (the answering node's own totals; there is no per-peer attribution): `quic_messages_sent_total` /
 `quic_messages_received_total` (protocol-message counts), `quic_bytes_sent_total` /
-`quic_bytes_received_total` (#726), `quic_active_connections`, handshake totals/failures,
-backpressure and write-failure indicators, stream-zombie heal counters. All counters are monotonic;
-consumers difference them over their own window.
+`quic_bytes_received_total` (#726), `quic_active_connections`, handshake totals/failures, dial
+failures, backpressure and write-failure indicators, stream-zombie heal counters. All counters are
+monotonic; consumers difference them over their own window.
+
+**`quic_handshake_failures_total` / `quic_dial_failures_total` (#1489).** `quic_handshake_failures_total`
+counts only outbound QUIC connects that failed in their TLS handshake. `quic_dial_failures_total` counts
+every failed outbound dial, whatever the stage: unreachable, refused, timed out, identity or boot-token
+rejection, TLS. A server that refuses **this node's** certificate closes the connection before answering
+the Hello; that counts as a dial failure only, not a handshake failure. Before #1489,
+`quic_handshake_failures_total` counted every failed dial, so a ratio built on it measured churn rather
+than TLS health.
 
 **`quic_bytes_sent_total` / `quic_bytes_received_total` (#726)** count PAYLOAD bytes at the lane
 boundary — the serialized frame handed to the channel on send, and the frame decoded from the
