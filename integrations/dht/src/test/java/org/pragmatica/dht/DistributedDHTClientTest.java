@@ -617,10 +617,11 @@ class DistributedDHTClientTest {
                 .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
         }
 
-        /// The opt-in is a per-call option on the SAME instance, never a derived client: pendingOps is per instance and
-        /// the node routes replies only to the base client, so a derived client's reads would time out on every reply.
-        /// Replies here go to the very instance that issued the read; the pin is that the option does not move the read
-        /// onto another instance (routing it through `scoped(...)` makes this read never resolve).
+        /// The opt-in is a per-call option on the SAME instance rather than a derived client, so the read is issued
+        /// and answered by one instance. Since #1776 derived instances share `pendingOps`, so a derived client would
+        /// also resolve from replies routed to the base (pinned in `DistributedDHTClientDerivedReplyTest`); this test
+        /// no longer guards against a derived-client timeout, only that the option read resolves from replies
+        /// delivered to the instance that issued it.
         @Test
         void get_withOption_resolvesFromRepliesDeliveredToTheIssuingInstance() {
             useRing(3);
@@ -630,7 +631,7 @@ class DistributedDHTClientTest {
             initial.forEach(m -> reply(m, Option.some(value("v1"))));
 
             read.await(timeSpan(2).seconds())
-                .onFailure(c -> fail("Expected the read to resolve through the base client's reply path: " + c.message()))
+                .onFailure(c -> fail("Expected the option read to resolve from the issuing instance's replies: " + c.message()))
                 .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
         }
 
