@@ -133,14 +133,29 @@ capture_node_logs() {
     log_info "${suite_name}: node logs captured to ${out_dir}"
 }
 
+# The capture writes NOTHING to stdout or stderr. log_fail is called inside callers' command substitutions,
+# including `$(fn 2>&1)`, so any line the capture printed there would land in that caller's data. Its own output
+# goes to one notes file per suite, and to the controlling terminal when there is one (a terminal write cannot be
+# captured by a substitution). FAILCAP_NO_TTY=1 turns the terminal write off (stub suites).
+_failcap_notes_file() {
+    local f="$(_failcap_root)/${SUITE_TAG:-no-suite}/failtime-capture-notes.txt"
+    mkdir -p "$(dirname "$f")" 2>/dev/null || true
+    echo "$f"
+}
+_failcap_note() {
+    printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$(_failcap_notes_file)" 2>/dev/null || true
+    [ -z "${FAILCAP_NO_TTY:-}" ] && { printf '%s\n' "$1" > /dev/tty; } 2>/dev/null
+    return 0
+}
+
 # Cap on pre-destructive captures per suite: restore paths call restart_all_nodes from every cleanup, and a
 # cloud capture costs up to CLOUD_CAPTURE_SSH_TIMEOUT_S per VM.
 FAILCAP_MAX_PRE_DESTRUCTIVE="${FAILCAP_MAX_PRE_DESTRUCTIVE:-4}"
 # Cap on first-fail captures per suite: a broken cluster fails every later test, and each would capture again.
 FAILCAP_MAX_FIRST_FAIL="${FAILCAP_MAX_FIRST_FAIL:-6}"
 
-# _failcap_capture <reason> — one capture into a fresh timestamped per-test directory. Output goes to
-# stderr (log_fail is often called inside $( ... ), whose stdout is data) and nothing here can fail the caller.
+# _failcap_capture <reason> — one capture into a fresh timestamped per-test directory. Output goes to the notes
+# file (see above) and nothing here can fail the caller.
 _failcap_capture() {
     local reason="$1" suite test dir
     suite="${SUITE_TAG:-no-suite}"
@@ -153,13 +168,13 @@ _failcap_capture() {
         export CLOUD_CAPTURE_SSH_TIMEOUT_S="${FAILCAP_SSH_TIMEOUT_S:-30}" CLOUD_CAPTURE_REMOTE_TIMEOUT_S="${FAILCAP_REMOTE_TIMEOUT_S:-25}" \
                CLOUD_CAPTURE_DOCKER_TIMEOUT_S="${FAILCAP_DOCKER_TIMEOUT_S:-30}"
         capture_node_logs "$suite" "${CLUSTER_ID:-a}" "${SUITE_START_EPOCH:-$(( $(date +%s) - 3600 ))}" "$dir"
-    ) >&2 2>&1 || true
+    ) >> "$(_failcap_notes_file)" 2>&1 || true
     # A capture directory with no node logs (manifest only) must read as a failure to capture, not as a capture.
     if [ -z "$(find "$dir" -name '*.log' -size +0 2>/dev/null | head -1)" ]; then
-        echo "[WARN]  fail-time capture (${reason}) produced NO node logs in ${dir} — see capture-manifest.txt there" >&2
+        _failcap_note "[WARN]  fail-time capture (${reason}) produced NO node logs in ${dir} — see capture-manifest.txt there"
         return 0
     fi
-    echo "[INFO]  fail-time capture (${reason}) -> ${dir}" >&2
+    _failcap_note "[INFO]  fail-time capture (${reason}) -> ${dir}"
 }
 
 _failcap_armed() { [ -n "${SUITE_FAILCAP_DIR:-}" ] && [ -d "${SUITE_FAILCAP_DIR}" ] && [ -z "${_FAILCAP_ACTIVE:-}" ]; }
@@ -172,7 +187,7 @@ _failcap_on_fail() {
     n=$(ls -d "${SUITE_FAILCAP_DIR}"/first-fail-* 2>/dev/null | wc -l | tr -d ' ')
     if [ "${n:-0}" -ge "$FAILCAP_MAX_FIRST_FAIL" ]; then
         mkdir "${SUITE_FAILCAP_DIR}/cap-warned" 2>/dev/null \
-            && echo "[WARN]  fail-time capture: cap of ${FAILCAP_MAX_FIRST_FAIL} first-fail captures reached for this suite — later failing tests are not captured" >&2
+            && _failcap_note "[WARN]  fail-time capture: cap of ${FAILCAP_MAX_FIRST_FAIL} first-fail captures reached for this suite — later failing tests are not captured"
         return 0
     fi
     # mkdir is the atomic once-per-test latch and, unlike a shell variable, holds across subshells.
@@ -188,7 +203,7 @@ capture_before_destructive() {
     [ -f "${SUITE_FAILCAP_DIR}/suite-has-fail" ] || [ "${TEST_FAIL_COUNT:-0}" -gt 0 ] || return 0
     n=$(ls -d "${SUITE_FAILCAP_DIR}"/pre-* 2>/dev/null | wc -l | tr -d ' ')
     if [ "${n:-0}" -ge "$FAILCAP_MAX_PRE_DESTRUCTIVE" ]; then
-        echo "[WARN]  capture_before_destructive(${step}): cap of ${FAILCAP_MAX_PRE_DESTRUCTIVE} pre-destructive captures reached for this suite — not capturing" >&2
+        _failcap_note "[WARN]  capture_before_destructive(${step}): cap of ${FAILCAP_MAX_PRE_DESTRUCTIVE} pre-destructive captures reached for this suite — not capturing"
         return 0
     fi
     mkdir "${SUITE_FAILCAP_DIR}/pre-$((n + 1))-${step}" 2>/dev/null || return 0

@@ -17,6 +17,7 @@
 #   T9  the CLOUD branch from an env -i child holding only what run_suite exports writes a log per VM.
 #   T10 FAILCAP_MAX_FIRST_FAIL bounds first-fail captures per suite, with one WARN.
 #   T11 a capture that ends with no node logs is a WARN, not an INFO.
+#   T12 a caller's $(fn 2>&1) around log_fail receives the same data with the capture armed as without.
 #   INTEG_DIR_UNDER_TEST=<path> selects another copy of aether/tests/integration (used for the mutation probes).
 #   bash aether/tests/integration/test/test-failtime-capture.sh
 set -uo pipefail
@@ -38,7 +39,7 @@ scenario() {
     local name="$1" body="$2"; shift 2
     local d="${WORK}/${name}"; mkdir -p "$d"
     : > "${d}/events"
-    ( export TARGET_HOST=localhost ENV_TYPE=docker CLOUD_MODE=false EV="${d}/events" \
+    ( export FAILCAP_NO_TTY=1 TARGET_HOST=localhost ENV_TYPE=docker CLOUD_MODE=false EV="${d}/events" \
         AETHER_FAILURE_LOGS_DIR="${d}/failure-logs" SUITE_TAG=02-chaos CLUSTER_ID=a \
         CLUSTER_NAME=aether-b-node- COMPOSE_FILE="${WORK}/compose.yml" "$@"
       source "${INTEG_DIR}/lib/common.sh" > /dev/null 2>&1 || echo "SOURCE-FAILED common.sh" >> "$EV"
@@ -127,9 +128,9 @@ body_cap() {
     rm -rf "$SUITE_FAILCAP_DIR"
 }
 scenario cap body_cap FAILCAP_MAX_PRE_DESTRUCTIVE=1
-if [ "$(cat "${WORK}/cap/events.pre")" = "1" ] && grep -q 'cap of 1 pre-destructive' "${WORK}/cap/out"; then
+if [ "$(cat "${WORK}/cap/events.pre")" = "1" ] && grep -q 'cap of 1 pre-destructive' "${WORK}/cap/failure-logs/02-chaos/failtime-capture-notes.txt"; then
     ok "T7 FAILCAP_MAX_PRE_DESTRUCTIVE=1: one pre-destructive capture, the second is skipped with a WARN"
-else fail "T7 pre=$(cat "${WORK}/cap/events.pre" 2>/dev/null) out=$(grep -c 'cap of' "${WORK}/cap/out")"; fi
+else fail "T7 pre=$(cat "${WORK}/cap/events.pre" 2>/dev/null) notes=$(grep -c 'cap of' "${WORK}/cap/failure-logs/02-chaos/failtime-capture-notes.txt" 2>/dev/null)"; fi
 
 # T6 ---------------------------------------------------------------------------------------------------------------
 body_unarmed() { TEST_TAG=t; log_fail "not under run-tests.sh" > /dev/null; restart_all_nodes > /dev/null; }
@@ -175,7 +176,7 @@ else fail "T9a run-tests.sh no longer exports BOOTSTRAP_CLUSTER_NAME"; fi
 mkdir -p "${WORK}/cloud"; : > "${WORK}/cloud/events"
 env -i PATH="$PATH" HOME="$WORK" TARGET_HOST=localhost CLOUD_MODE=true CLOUD_RUNTIME=container CLUSTER_ID=b \
     BOOTSTRAP_CLUSTER_NAME=test-b AETHER_SSH_KEY=/dev/null SUITE_TAG=02-chaos SUITE_START_EPOCH=1700000000 \
-    SUITE_FAILCAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")" AETHER_FAILURE_LOGS_DIR="${WORK}/cloud/failure-logs" \
+    SUITE_FAILCAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")" AETHER_FAILURE_LOGS_DIR="${WORK}/cloud/failure-logs" FAILCAP_NO_TTY=1 \
     INTEG_DIR="$INTEG_DIR" bash -c '
         set -euo pipefail
         source "$INTEG_DIR/lib/common.sh" > /dev/null 2>&1; source "$INTEG_DIR/lib/cluster.sh" > /dev/null 2>&1
@@ -200,9 +201,9 @@ body_first_cap() {
 }
 scenario firstcap body_first_cap FAILCAP_MAX_FIRST_FAIL=2
 if [ "$(cat "${WORK}/firstcap/events.ff")" = "2" ] && [ "$(count_events firstcap docker-logs)" -eq 4 ] \
-   && [ "$(grep -c 'cap of 2 first-fail' "${WORK}/firstcap/out")" -eq 1 ]; then
+   && [ "$(grep -c 'cap of 2 first-fail' "${WORK}/firstcap/failure-logs/02-chaos/failtime-capture-notes.txt")" -eq 1 ]; then
     ok "T10 FAILCAP_MAX_FIRST_FAIL=2: two captures for three failing tests, one WARN"
-else fail "T10 ff=$(cat "${WORK}/firstcap/events.ff") reads=$(count_events firstcap docker-logs) warns=$(grep -c 'cap of 2 first-fail' "${WORK}/firstcap/out")"; fi
+else fail "T10 ff=$(cat "${WORK}/firstcap/events.ff") reads=$(count_events firstcap docker-logs) warns=$(grep -c 'cap of 2 first-fail' "${WORK}/firstcap/failure-logs/02-chaos/failtime-capture-notes.txt" 2>/dev/null)"; fi
 
 # T11 --------------------------------------------------------------------------------------------------------------
 body_empty() {
@@ -212,9 +213,26 @@ body_empty() {
     rm -rf "$SUITE_FAILCAP_DIR"
 }
 scenario empty body_empty
-grep -q 'produced NO node logs' "${WORK}/empty/out" && ! grep -q 'fail-time capture (first-fail) ->' "${WORK}/empty/out" \
+grep -q 'produced NO node logs' "${WORK}/empty/failure-logs/02-chaos/failtime-capture-notes.txt" && ! grep -q 'fail-time capture (first-fail) ->' "${WORK}/empty/failure-logs/02-chaos/failtime-capture-notes.txt" \
     && ok "T11 a capture with no node logs is a WARN naming the directory, not an INFO capture line" \
-    || fail "T11 empty capture: $(tr '\n' '|' < "${WORK}/empty/out" | head -c 300)"
+    || fail "T11 empty capture: $(tr '\n' '|' < "${WORK}/empty/failure-logs/02-chaos/failtime-capture-notes.txt" | head -c 300)"
+
+# T12 --------------------------------------------------------------------------------------------------------------
+# A caller that wraps code hitting log_fail in $(fn 2>&1) must get the same data with the capture armed as without.
+body_subst() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")
+    TEST_TAG=t; helper() { log_fail "inside the helper"; echo "helper-result"; }
+    armed=$(helper 2>&1)
+    unset SUITE_FAILCAP_DIR
+    TEST_TAG=t2; unarmed=$(helper 2>&1)
+    printf '%s\n' "$armed" | sed 's#02-chaos/t2*]#02-chaos/T]#' > "${EV}.armed"; printf '%s\n' "$unarmed" | sed 's#02-chaos/t2*]#02-chaos/T]#' > "${EV}.unarmed"
+    rm -rf "$SUITE_FAILCAP_DIR"
+}
+scenario subst body_subst
+if [ -s "${WORK}/subst/events.armed" ] && cmp -s "${WORK}/subst/events.armed" "${WORK}/subst/events.unarmed" \
+   && [ "$(count_events subst docker-logs)" -eq 2 ] && ! grep -q 'fail-time capture' "${WORK}/subst/events.armed"; then
+    ok "T12 \$(fn 2>&1) around log_fail: data identical armed vs unarmed (capture ran: 2 node-log reads), no capture line in it"
+else fail "T12 armed=[$(tr '\n' '|' < "${WORK}/subst/events.armed")] unarmed=[$(tr '\n' '|' < "${WORK}/subst/events.unarmed")] reads=$(count_events subst docker-logs)"; fi
 
 echo ""
 echo "  ----"
