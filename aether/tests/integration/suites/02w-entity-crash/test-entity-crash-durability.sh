@@ -109,15 +109,37 @@ entity_post_any() {
     return 1
 }
 
-# Like entity_post_any, but KEEPS the status and body of a non-2xx answer. `_api_call` prints a body only for a
-# 2xx, so once app routes answer 503 for a `Cause.Transient` (#1737/#1765) a transient refusal would read here as
-# "no node answered" and never be retried. Output is the body followed by a `__ENTITY_HTTP_STATUS:NNN__` line;
-# rc 0 iff the answer is a 2xx that matches, rc 1 otherwise. A TRANSPORT failure (no HTTP status: curl error,
-# timeout) moves to the next endpoint exactly as entity_post_any does; any node that ANSWERED, whatever the
-# status, is authoritative (the product forwards a create to its owner, so reaching any live node is enough)
-# and its answer is returned. Nothing reachable prints nothing and returns 1.
+# How to treat a refusal (status + body) from one node, shared by the sweep below and by create_entity/read_amount:
+#   "retry" — try the next node, and keep retrying until the caller's deadline:
+#             * no HTTP status at all (000: curl failure, timeout),
+#             * 502 / 504 (a gateway to a dead node) and 404 (the slice is not on that node yet) — the post-kill
+#               window: a survivor answering these must not be authoritative, the old `|| continue` moved on,
+#             * 503 (the product's answer for a Cause.Transient, #1737/#1765),
+#             * an allow-listed transient failureType, whether the answer is a 2xx outcome:refused or a non-2xx.
+#   "fatal" — authoritative, fail at once with the full body: a 500, and any other refusal (StorageFailed,
+#             ForwardRefused, any failureType off the allow-list, a 2xx outcome that is neither wanted nor transient).
+entity_refusal_class() {
+    local status="$1" body="$2"
+    if transient_failure_type "$body" >/dev/null; then
+        printf 'retry'
+        return 0
+    fi
+    case "${status:-000}" in
+        000|502|503|504|404) printf 'retry' ;;
+        *) printf 'fatal' ;;
+    esac
+}
+
+# Like entity_post_any, but KEEPS the status and body of a non-2xx answer (`_api_call` prints a body only for a
+# 2xx, so a 503 transient refusal would otherwise read as "no node answered"). Output is the body followed by a
+# `__ENTITY_HTTP_STATUS:NNN__` line; rc 0 iff a node answered 2xx with a body matching `matcher`, rc 1 otherwise.
+# One call sweeps the endpoints (two passes, re-resolving between): a node whose refusal is class "retry" is
+# skipped for the next one, so the first node to answer is NOT authoritative for a 502/504/404/503 or a transient
+# type, exactly as entity_post_any's `|| continue` moved on from any non-2xx. A "fatal" refusal returns at once.
+# When every node was skipped, the LAST refusal is printed (rc 1) so the caller can retry until its deadline and
+# then report the full body; when nothing answered at all nothing is printed.
 entity_post_status() {
-    local path="$1" payload="$2" matcher="$3" pass ep out status body
+    local path="$1" payload="$2" matcher="$3" pass ep out status body last=""
 
     [ -n "$ENTITY_APP_ENDPOINTS" ] || refresh_app_endpoints || return 1
 
@@ -128,15 +150,25 @@ entity_post_status() {
             status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
             case "${status:-000}" in 000) continue ;; esac
             body=$(printf '%s' "$out" | sed '$d')
-            printf '%s\n__ENTITY_HTTP_STATUS:%s__' "$body" "$status"
             case "$status" in
-                2*) printf '%s' "$body" | grep -qE "$matcher" && return 0 ;;
+                2*) if printf '%s' "$body" | grep -qE "$matcher"; then
+                        printf '%s\n__ENTITY_HTTP_STATUS:%s__' "$body" "$status"
+                        return 0
+                    fi ;;
             esac
-            return 1
+            last=$(printf '%s\n__ENTITY_HTTP_STATUS:%s__' "$body" "$status")
+            if [ "$(entity_refusal_class "$status" "$body")" = "fatal" ]; then
+                printf '%s' "$last"
+                return 1
+            fi
         done <<< "$ENTITY_APP_ENDPOINTS"
+        # Pass 2 (re-resolve the endpoints) only when NOTHING answered: a kill landing mid-sweep. A node that
+        # answered with a retry-class refusal is the caller's retry loop's business, not a reason to re-ask.
+        [ -n "$last" ] && break
         [ "$pass" -eq 1 ] && refresh_app_endpoints >/dev/null 2>&1
     done
 
+    [ -n "$last" ] && printf '%s' "$last"
     return 1
 }
 
@@ -176,17 +208,15 @@ create_entity() {
         fi
         status=$(printf '%s' "$out" | grep -oE '__ENTITY_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__ENTITY_HTTP_STATUS://;s/__//')
         body=$(printf '%s' "$out" | sed '$d')
-        # Retry a 503 (the product's answer for a Cause.Transient) or an allow-listed failureType; nothing
-        # else, and not an empty answer (no HTTP status: no node was reachable).
+        # Retry per entity_refusal_class (503, 502/504/404, no answer, an allow-listed failureType) until the
+        # deadline; a fatal refusal ends the loop at once with its full body.
         ft=$(transient_failure_type "$body") || ft=""
-        if [ -z "$status" ] || { [ "$status" != "503" ] && [ -z "$ft" ]; }; then
-            break
-        fi
+        [ "$(entity_refusal_class "$status" "$body")" = "fatal" ] && break
         if [ "$SECONDS" -ge "$deadline" ]; then
-            log_warn "create ${key}: still refused (HTTP ${status}${ft:+, ${ft}}) at the ${ENTITY_CREATE_RETRY_DEADLINE_S}s retry deadline; last body: ${body}" >&2
+            log_warn "create ${key}: still refused (HTTP ${status:-none}${ft:+, ${ft}}) at the ${ENTITY_CREATE_RETRY_DEADLINE_S}s retry deadline; last body: ${body:-<no node answered>}" >&2
             return 1
         fi
-        log_warn "create ${key}: transient refusal (HTTP ${status}${ft:+, ${ft}}); retrying in ${delay}s" >&2
+        log_warn "create ${key}: refusal to retry (HTTP ${status:-none}${ft:+, ${ft}}); retrying in ${delay}s" >&2
         sleep "$delay"
         delay=$(( delay * 2 > 5 ? 5 : delay * 2 ))
     done
@@ -291,22 +321,23 @@ read_amount() {
         fi
         status=$(printf '%s' "$out" | grep -oE '__ENTITY_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__ENTITY_HTTP_STATUS://;s/__//')
         body=$(printf '%s' "$out" | sed '$d')
-        # Retry a 503 or an allow-listed failureType until the deadline; anything else (an answer that is
-        # neither found/absent nor transient, or no HTTP status at all) ends the loop with the full body.
+        # Retry per entity_refusal_class (503, 502/504/404, no answer, an allow-listed failureType) until the
+        # deadline; anything else (a 500, a refusal off the allow-list) ends the loop with the full body.
         ft=$(transient_failure_type "$body") || ft=""
-        if [ -z "$status" ] || { [ "$status" != "503" ] && [ -z "$ft" ]; }; then
-            break
-        fi
-        last_transient="$body"
+        [ "$(entity_refusal_class "$status" "$body")" = "fatal" ] && break
+        [ -n "$body" ] && last_transient="$body"
         if [ "$SECONDS" -ge "$deadline" ]; then
-            log_warn "read ${key}: a node answered transient (HTTP ${status}${ft:+, ${ft}}) until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: ${body}" >&2
-            return 5
+            if [ "$status" = "503" ] || [ -n "$ft" ]; then
+                log_warn "read ${key}: a node answered transient (HTTP ${status}${ft:+, ${ft}}) until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: ${body}" >&2
+                return 5
+            fi
+            break
         fi
         sleep "$TRANSIENT_READ_BACKOFF_S"
     done
 
     if [ -n "$body" ]; then
-        log_warn "read ${key}: a node answered, but not found/absent (not a transient type); last body: ${body}" >&2
+        log_warn "read ${key}: a node answered, but not found/absent (HTTP ${status:-none}; not a transient type, or unresolved at the deadline); last body: ${body}" >&2
     elif [ -n "$last_transient" ]; then
         log_warn "read ${key}: no node answered this attempt (every endpoint failed at transport or non-2xx); the previous attempt WAS answered with a transient refusal: ${last_transient}" >&2
     else

@@ -472,13 +472,13 @@ W_WORK="$(mktemp -d)"
 w_defs() {
     grep -E '^(KEY_PREFIX|ENTITY_TRANSIENT_FAILURE_TYPES|TRANSIENT_READ_DEADLINE_S|TRANSIENT_READ_BACKOFF_S)=' "$W02"
     local fn
-    for fn in key_for amount_for entity_post_any entity_post_status transient_failure_type read_amount \
+    for fn in key_for amount_for entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount \
               test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
         awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$W02"
     done
 }
 w_defs > "${W_WORK}/defs.sh"
-for fn in entity_post_any entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+for fn in entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
     grep -q "^${fn}() {" "${W_WORK}/defs.sh" || fail "W0 ${fn} not extracted from the 02w suite (examined NOTHING)"
 done
 w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; stderr -> $W_WORK/err
@@ -524,7 +524,7 @@ got=$(w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" '{"outcome":"absent","orde
 [ "$got" = "rc=3 out= calls=2" ] \
     && ok "W4 genuine loss stays detectable: FoldInProgress then ABSENT is rc 3" \
     || fail "W4 absent after transient: got '${got}'"
-got=$(w_run 'read_amount ENTDUR-00003-Z' __DOWN__ __DOWN__)
+got=$(W_DEADLINE=0 w_run 'read_amount ENTDUR-00003-Z' __DOWN__ __DOWN__)
 [ "$got" = "rc=4 out= calls=2" ] && grep -q 'no node answered' "${W_WORK}/err" \
     && ok "W5 transport failure on every endpoint is still rc 4 'no node answered'" \
     || fail "W5 no answer: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
@@ -560,8 +560,11 @@ for ft in FoldInProgressX XFoldInProgress foldinprogress; do
 done
 [ -z "$w11" ] && ok "W11 the allow-list matches by exact name (FoldInProgressX, XFoldInProgress, foldinprogress are not retried)" \
     || fail "W11 allow-list exactness: ${w11}"
-got=$(w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" __DOWN__ __DOWN__)
-[ "$got" = "rc=4 out= calls=3" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
+# A no-answer attempt is now swept until the deadline instead of ending the read at once (the post-kill
+# window), so the call count is timing-dependent: assert rc 4 and the report, not calls.
+got=$(W_DEADLINE=1 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" __DOWN__ __DOWN__)
+case "$got" in "rc=4 out= calls="*) true ;; *) got="BAD:${got}" ;; esac
+[ "${got#BAD:}" = "$got" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
     && ok "W12 transient refusal then no answer: rc 4, and the report names the earlier transient answer" \
     || fail "W12 transient then down: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
 got=$(w_run 'read_amount ENTDUR-00003-Z' '{"outcome":"failed","failureType":"FoldInProgress","failure":"x","failureType":"Other"}' "$FOUND3")

@@ -12,7 +12,11 @@
 #   E2  500 + StorageFailed                                            -> fails at once, 1 request, FULL body logged
 #   E3  500 + ForwardRefused                                           -> fails at once, 1 request
 #   E4  503 forever                                                    -> fails at the deadline, full body logged
-#   E5  no answer (status 000)                                         -> fails, no retry loop (2 = the sweep passes)
+#   E5  no answer anywhere (status 000)                                -> swept until the deadline, then fails
+#   Two-endpoint cases (a survivor's refusal must not be authoritative; rule in entity_refusal_class):
+#   N1  A=502, B=200 created/found  -> success   N2  A=404, B=200 -> success   N3  A=504, B=200 -> success
+#   N4  A=500 StorageFailed, B=200  -> FAILS at once (authoritative), 1 request
+#   N5  every node 504              -> swept until the deadline, fails with the last full body
 #   E6  200 + EntityAlreadyExists                                      -> succeeds, 1 request (our own lost ack)
 #   E7  200 + StorageFailed (a refusal carried in a 2xx body)          -> fails at once
 #   R1  READ: 503 + FoldInProgress twice, then found            -> the amount, after 3 requests
@@ -20,7 +24,7 @@
 #   R3  READ: 200 + FoldInProgress twice, then found            -> the amount (the pre-#1765 shape still works)
 #   R4  READ: 503 forever                                       -> rc 5 at TRANSIENT_READ_DEADLINE_S, full body logged
 #   R5  READ: 500 + StorageFailed                               -> rc 4 after 1 request, full body logged
-#   R6  READ: no answer                                         -> rc 4, no retry loop (2 = the sweep passes)
+#   R6  READ: no answer                                         -> rc 4 "no node answered" once the deadline passes
 #   R7  READ: 200 absent                                        -> rc 3
 #   The readiness probe (wait_for ... entity_post_any) is deliberately left on entity_post_any: it measures "is the
 #   service answering yet", so a non-2xx must read as not-ready and be re-polled by wait_for itself.
@@ -44,7 +48,7 @@ extract() { sed -n "/^$2() {/,/^}/p" "$1"; }
 cat <<'STUB'
 log_warn() { echo "WARN $*" >&2; }
 KEY_PREFIX=ENTDUR
-ENTITY_APP_ENDPOINTS="http://n1:8070"
+ENTITY_APP_ENDPOINTS="${EPS:-http://n1:8070}"
 refresh_app_endpoints() { return 1; }
 # Request n answers STATUS_<n>/BODY_<n>, else STATUS/BODY. `want_status` ($4) is honoured like the real _api_call;
 # without it a non-2xx prints NOTHING (the real behaviour that hid 503 bodies).
@@ -62,7 +66,7 @@ _api_call() {
 }
 STUB
 grep -E '^(ENTITY_TRANSIENT_FAILURE_TYPES|ENTITY_CREATE_RETRY_[A-Z_]*|TRANSIENT_READ_[A-Z_]*)=' "$SUT"
-for f in key_for amount_for transient_failure_type entity_post_any entity_post_status create_entity read_amount; do extract "$SUT" "$f"; done
+for f in key_for amount_for transient_failure_type entity_refusal_class entity_post_any entity_post_status create_entity read_amount; do extract "$SUT" "$f"; done
 } > "$WORK/fns.sh"
 
 run() {  # <label> [VAR=value ...]
@@ -104,10 +108,9 @@ if [ "$(cat "$WORK/rc.e4")" = "1" ] && [ "$(calls e4)" -ge 2 ] && grep -q 'retry
 else fail "E4 rc=$(cat "$WORK/rc.e4") calls=$(calls e4) err=$(tail -1 "$WORK/err.e4" | cut -c1-120)"; fi
 
 run e5 STATUS=000 BODY='curl: (7) Failed to connect'
-# two requests = entity_post_status's own two sweep passes over the endpoints, exactly as entity_post_any did;
-# create_entity adds no retry loop on top ("retrying" never logged).
-if [ "$(cat "$WORK/rc.e5")" = "1" ] && [ "$(calls e5)" = "2" ] && ! grep -q 'retrying' "$WORK/err.e5"; then ok "E5 no answer (transport failure) is not retried by create_entity (only the two endpoint sweep passes)"
-else fail "E5 rc=$(cat "$WORK/rc.e5") calls=$(calls e5)"; fi
+# no HTTP status anywhere: keep sweeping until the deadline (the post-kill window), then fail; not fatal.
+if [ "$(cat "$WORK/rc.e5")" = "1" ] && [ "$(calls e5)" -ge 3 ] && grep -q 'retry deadline; last body: <no node answered>' "$WORK/err.e5"; then ok "E5 no answer anywhere is swept until the deadline ($(calls e5) requests), then fails"
+else fail "E5 rc=$(cat "$WORK/rc.e5") calls=$(calls e5) err=$(tail -1 "$WORK/err.e5" | cut -c1-120)"; fi
 
 run e6 STATUS=200 BODY='{"outcome":"refused","failureType":"EntityAlreadyExists"}'
 if [ "$(cat "$WORK/rc.e6")" = "0" ] && [ "$(calls e6)" = "1" ]; then ok "E6 EntityAlreadyExists counts as our create having landed (1 request)"
@@ -148,13 +151,40 @@ run_read r5 STATUS=500 BODY="$STORAGE"
 if [ "$(cat "$WORK/rc.r5")" = "4" ] && [ "$(calls r5)" = "1" ] && grep -q 'TAIL-MARKER' "$WORK/err.r5"; then ok "R5 read: 500 StorageFailed returns rc 4 after 1 request with the FULL body logged"
 else fail "R5 rc=$(cat "$WORK/rc.r5") calls=$(calls r5) tail-logged=$(grep -c TAIL-MARKER "$WORK/err.r5")"; fi
 
-run_read r6 STATUS=000 BODY='curl: (7) Failed to connect'
-if [ "$(cat "$WORK/rc.r6")" = "4" ] && [ "$(calls r6)" = "2" ] && ! grep -q 'transient' "$WORK/err.r6"; then ok "R6 read: no answer returns rc 4 without a retry loop (only the two sweep passes)"
+run_read r6 STATUS=000 BODY='curl: (7) Failed to connect' TRANSIENT_READ_DEADLINE_S=0
+if [ "$(cat "$WORK/rc.r6")" = "4" ] && [ "$(calls r6)" = "2" ] && grep -q 'no node answered' "$WORK/err.r6"; then ok "R6 read: no answer at the deadline returns rc 4 'no node answered' (sweeps first)"
 else fail "R6 rc=$(cat "$WORK/rc.r6") calls=$(calls r6)"; fi
 
 run_read r7 STATUS=200 BODY='{"outcome":"absent"}'
 if [ "$(cat "$WORK/rc.r7")" = "3" ] && [ "$(calls r7)" = "1" ]; then ok "R7 read: absent returns rc 3"
 else fail "R7 rc=$(cat "$WORK/rc.r7") calls=$(calls r7)"; fi
+
+# ---- two endpoints: a survivor's refusal is not authoritative unless it is fatal ---------------------
+TWO=$'http://a:8070\nhttp://b:8070'
+run e_n1 EPS="$TWO" STATUS_1=502 BODY_1='{"title":"Bad Gateway"}' STATUS_2=200 BODY_2="$CREATED"
+run e_n2 EPS="$TWO" STATUS_1=404 BODY_1='{"title":"Not Found"}' STATUS_2=200 BODY_2="$CREATED"
+run e_n3 EPS="$TWO" STATUS_1=504 BODY_1='{"title":"Gateway Timeout"}' STATUS_2=200 BODY_2="$CREATED"
+if [ "$(cat "$WORK/rc.e_n1")" = "0" ] && [ "$(calls e_n1)" = "2" ] && [ "$(cat "$WORK/rc.e_n2")" = "0" ] && [ "$(calls e_n2)" = "2" ] \
+   && [ "$(cat "$WORK/rc.e_n3")" = "0" ] && [ "$(calls e_n3)" = "2" ]; then ok "N1-N3 create: A=502 / 404 / 504, B=200 created -> success on the second node (1 sweep, 2 requests)"
+else fail "N1-N3 create: rc/calls 502=$(cat "$WORK/rc.e_n1")/$(calls e_n1) 404=$(cat "$WORK/rc.e_n2")/$(calls e_n2) 504=$(cat "$WORK/rc.e_n3")/$(calls e_n3)"; fi
+run e_n4 EPS="$TWO" STATUS_1=500 BODY_1="$STORAGE" STATUS_2=200 BODY_2="$CREATED"
+if [ "$(cat "$WORK/rc.e_n4")" = "1" ] && [ "$(calls e_n4)" = "1" ] && grep -q 'TAIL-MARKER' "$WORK/err.e_n4"; then ok "N4 create: A=500 StorageFailed, B=200 -> fails at once (authoritative), full body logged"
+else fail "N4 rc=$(cat "$WORK/rc.e_n4") calls=$(calls e_n4)"; fi
+run e_n5 EPS="$TWO" STATUS=504 BODY='{"title":"Gateway Timeout","detail":"GW-TAIL"}'
+if [ "$(cat "$WORK/rc.e_n5")" = "1" ] && [ "$(calls e_n5)" -ge 4 ] && grep -q 'retry deadline; last body: {.*GW-TAIL' "$WORK/err.e_n5"; then ok "N5 create: every node 504 -> swept until the deadline ($(calls e_n5) requests), fails with the last full body"
+else fail "N5 rc=$(cat "$WORK/rc.e_n5") calls=$(calls e_n5) err=$(tail -1 "$WORK/err.e_n5" | cut -c1-100)"; fi
+
+run_read rn1 EPS="$TWO" STATUS_1=502 BODY_1='{"title":"Bad Gateway"}' STATUS_2=200 BODY_2="$FOUND"
+run_read rn2 EPS="$TWO" STATUS_1=404 BODY_1='{"title":"Not Found"}' STATUS_2=200 BODY_2="$FOUND"
+if [ "$(cat "$WORK/rc.rn1")" = "0" ] && [ "$(cat "$WORK/out.rn1")" = "73" ] && [ "$(calls rn1)" = "2" ] \
+   && [ "$(cat "$WORK/rc.rn2")" = "0" ] && [ "$(cat "$WORK/out.rn2")" = "73" ] && [ "$(calls rn2)" = "2" ]; then ok "N6 read: A=502 / A=404, B=200 found -> the amount from the second node"
+else fail "N6 read: 502=$(cat "$WORK/rc.rn1")/$(cat "$WORK/out.rn1")/$(calls rn1) 404=$(cat "$WORK/rc.rn2")/$(cat "$WORK/out.rn2")/$(calls rn2)"; fi
+run_read rn4 EPS="$TWO" STATUS_1=500 BODY_1="$STORAGE" STATUS_2=200 BODY_2="$FOUND"
+if [ "$(cat "$WORK/rc.rn4")" = "4" ] && [ "$(calls rn4)" = "1" ] && grep -q 'TAIL-MARKER' "$WORK/err.rn4"; then ok "N7 read: A=500 StorageFailed, B=200 found -> rc 4 at once (authoritative), full body logged"
+else fail "N7 rc=$(cat "$WORK/rc.rn4") calls=$(calls rn4)"; fi
+run_read rn5 EPS="$TWO" STATUS=504 BODY='{"title":"Gateway Timeout","detail":"GW-TAIL"}'
+if [ "$(cat "$WORK/rc.rn5")" = "4" ] && [ "$(calls rn5)" -ge 4 ] && grep -q 'GW-TAIL' "$WORK/err.rn5"; then ok "N8 read: every node 504 -> swept until the deadline ($(calls rn5) requests), rc 4 with the last full body"
+else fail "N8 rc=$(cat "$WORK/rc.rn5") calls=$(calls rn5)"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"

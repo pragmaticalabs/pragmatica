@@ -15,3 +15,8 @@
   [verified: `aether/tests/integration/test/test-entity-create-retry.sh` (16 stub tests on the real functions, creates and reads);
   no retry reddens 4, dropping the non-2xx body capture reddens the 503 tests, allow-listing `StorageFailed`
   reddens 2. No cloud run.]
+- **Refusal rule for 02w creates and reads (`entity_refusal_class`):** a node's refusal is retried on the next node and
+  until the deadline when it is a 503, a 502/504/404 (a gateway to a dead node; the slice not there yet), no HTTP
+  status, or an allow-listed transient `failureType` (2xx `outcome:refused` or non-2xx); a 500 or any other refusal
+  (`StorageFailed`, `ForwardRefused`, an unlisted `failureType`) is authoritative and fails at once with the full
+  body. This keeps the old `|| continue` behaviour for a survivor's 502/504/404 in the post-kill window.
