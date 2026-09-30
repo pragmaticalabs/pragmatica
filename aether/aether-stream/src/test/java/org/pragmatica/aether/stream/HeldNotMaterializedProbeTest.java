@@ -52,6 +52,7 @@ class HeldNotMaterializedProbeTest {
     @TempDir
     Path walDir;
 
+    private final ConcurrentHashMap<String, Role> roles = new ConcurrentHashMap<>();
     private StreamPartitionManager manager;
     private StreamForwardHandler handler;
     private final List<ReadForwardResponse> answers = new CopyOnWriteArrayList<>();
@@ -79,8 +80,6 @@ class HeldNotMaterializedProbeTest {
     void startNodeWithBothSlotsBusy() {
         writeThreeEventsInAPreviousRun();
         manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), LastSealedOffsetSource.none());
-
-        var roles = new ConcurrentHashMap<String, Role>();
 
         manager.placementRoleSupplier((stream, _) -> roles.getOrDefault(stream, Role.NONE));
         List.of(config("busy", 2), config("fresh", 1), config("restarted", 1), config("elsewhere", 1))
@@ -195,5 +194,30 @@ class HeldNotMaterializedProbeTest {
 
         assertThat(applied.isFailure()).isTrue();
         applied.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReshufflePaced.class));
+    }
+
+    /// The held watermark is cached because reading it scans the log. The cache is dropped when the ring is installed:
+    /// `restarted[0]` is answered (2, cached), then materialized and appended to (WAL head 3), then released (WAL kept);
+    /// the next answer must be the WAL's 3, not the cached 2.
+    @Test
+    void heldNotMaterializedWatermark_afterRingInstallAndRelease_isNotTheCachedValue() {
+        assertThat(manager.heldNotMaterializedWatermark("restarted", 0)).isEqualTo(Option.some(2L));
+
+        manager.replicaCatchupSource((stream, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(Integer.MAX_VALUE,
+                                                                                                             true));
+        manager.clusterSizeSupplier(() -> 3);
+        manager.ownerReleaseGuard((_, _) -> true);
+        manager.reconcileReshuffle();
+        assertThat(manager.partitionBuffer("restarted", 0).isPresent()).as("drained from the queue").isTrue();
+        manager.appendRecovered("restarted", 0, 3L, "fourth".getBytes(), 1003L).onFailure(cause -> fail(cause.message()));
+
+        roles.put("restarted", Role.NONE);
+        for (var tick = 0; tick < 4; tick++) {
+            manager.reconcileReshuffle();
+        }
+        assertThat(manager.partitionBuffer("restarted", 0).isPresent()).as("ring released, WAL kept").isFalse();
+        roles.put("restarted", Role.REPLICA);
+
+        assertThat(manager.heldNotMaterializedWatermark("restarted", 0)).isEqualTo(Option.some(3L));
     }
 }

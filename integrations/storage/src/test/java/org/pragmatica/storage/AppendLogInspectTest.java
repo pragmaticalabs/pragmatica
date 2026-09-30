@@ -51,4 +51,49 @@ class AppendLogInspectTest {
 
         assertThat(openOnly.inspect("restarted/0").isFailure()).isTrue();
     }
+
+    /// The look never holds the file: on a ~32 MiB log the scan allocates a small constant, not the file's size, and
+    /// agrees with what recovery's whole-file scan reports (head, low, valid bytes).
+    @Test
+    void inspect_largeLog_allocatesBoundedMemory_andAgreesWithTheFile() throws Exception {
+        var file = root.resolve("big/0.wal");
+        var log = AppendLog.open(file).unwrap();
+        var payload = new byte[4096];
+
+        for (var offset = 0L; offset < 8_192; offset++) {
+            log.write(offset, payload, 1L).unwrap();
+        }
+        log.commit(0).await();
+        log.close();
+
+        var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        var before = threads.getThreadAllocatedBytes(Thread.currentThread().threadId());
+        var extent = AppendLog.inspect(file, 16 * 1024).unwrap();
+        var allocated = threads.getThreadAllocatedBytes(Thread.currentThread().threadId()) - before;
+
+        assertThat(extent.fileBytes()).isGreaterThan(32L * 1024 * 1024);
+        assertThat(extent.headOffset()).isEqualTo(8_191L);
+        assertThat(extent.lowOffset()).isZero();
+        assertThat(extent.validBytes()).isEqualTo(extent.fileBytes());
+        assertThat(allocated).as("bytes allocated by inspect of a %d byte log", extent.fileBytes()).isLessThan(1024L * 1024);
+    }
+
+    /// A torn tail (a partial trailing frame) is reported, not counted as valid.
+    @Test
+    void inspect_tornTail_reportsValidPrefixOnly() throws Exception {
+        var file = root.resolve("torn/0.wal");
+        var log = AppendLog.open(file).unwrap();
+
+        for (var offset = 0L; offset < 3; offset++) {
+            log.write(offset, ("e" + offset).getBytes(), 1L).unwrap();
+        }
+        log.commit(0).await();
+        log.close();
+        Files.write(file, new byte[] {0, 0, 0, 9, 1, 2}, java.nio.file.StandardOpenOption.APPEND);
+
+        var extent = AppendLog.inspect(file).unwrap();
+
+        assertThat(extent.headOffset()).isEqualTo(2L);
+        assertThat(extent.fileBytes() - extent.validBytes()).isEqualTo(6L);
+    }
 }
