@@ -101,8 +101,8 @@ class ReplicationBatcherTest {
 
         @Test
         void add_eventOfANewEpoch_flushesTheOpenBatchFirst_andEachBatchCarriesItsOwnEpoch() {
-            var e1 = Epoch.epoch(1, 0);
-            var e2 = Epoch.epoch(2, 0);
+            var e1 = Epoch.epoch(0,1, 0);
+            var e2 = Epoch.epoch(0,2, 0);
             batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 100, TimeSpan.timeSpan(10).seconds());
 
             batcher.add(STREAM, PARTITION, 10L, "a".getBytes(), TIMESTAMP, e1);

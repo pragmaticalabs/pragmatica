@@ -26,7 +26,9 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// the last real epoch before it. A real epoch follows a synthetic one when it is at least the floor (the
 /// owner of the floor may keep writing after it); nothing follows an entry whose rank is higher.
 ///
-/// Log key tokens: `o.<term>.<counter>[.<ulid>]`, `u.<d>.<term>.<counter>`, `b.<d>.<term>.<counter>`. A token
+/// Log key tokens: `o.<incarnation>.<term>.<counter>[.<ulid>]`, `u.<d>.<incarnation>.<term>.<counter>`,
+/// `b.<d>.<incarnation>.<term>.<counter>` (the incarnation since #1635; pre-GA, a history in the older 2-component
+/// form does not decode). A token
 /// must carry EVERY component of [Epoch] -- a component missing from it makes two different epochs one key --
 /// which `ProvenanceEntryTest` pins against the record's declared components.
 ///
@@ -120,29 +122,29 @@ public sealed interface ProvenanceEpoch {
     }
 
     private static String epochToken(Epoch epoch) {
-        return epoch.rabiaTerm() + SEPARATOR + epoch.localCounter();
+        return epoch.incarnation() + SEPARATOR + epoch.rabiaTerm() + SEPARATOR + epoch.localCounter();
     }
 
     private static Result<ProvenanceEpoch> ownedFrom(EpochKey key, String[] parts) {
-        return parts.length < 3 || parts.length > 4
+        return parts.length < 4 || parts.length > 5
                ? notAKey(key)
-               : epochFrom(parts[1], parts[2]).map(epoch -> new Owned(epoch, ulidOf(parts)));
+               : epochFrom(parts[1], parts[2], parts[3]).map(epoch -> new Owned(epoch, ulidOf(parts)));
     }
 
     private static Result<Epoch> syntheticFrom(EpochKey key, String[] parts) {
-        return parts.length != 4
+        return parts.length != 5
                ? notAKey(key)
-               : epochFrom(parts[2], parts[3]);
+               : epochFrom(parts[2], parts[3], parts[4]);
     }
 
     private static Option<String> ulidOf(String[] parts) {
-        return parts.length == 4
-               ? some(parts[3])
+        return parts.length == 5
+               ? some(parts[4])
                : none();
     }
 
-    private static Result<Epoch> epochFrom(String term, String counter) {
-        return Result.all(number(term), number(counter)).map(Epoch::epoch);
+    private static Result<Epoch> epochFrom(String incarnation, String term, String counter) {
+        return Result.all(number(incarnation), number(term), number(counter)).map(Epoch::epoch);
     }
 
     private static Result<Long> number(String field) {

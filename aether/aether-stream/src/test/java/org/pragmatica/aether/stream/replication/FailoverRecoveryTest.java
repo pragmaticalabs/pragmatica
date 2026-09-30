@@ -44,8 +44,8 @@ class FailoverRecoveryTest {
     private static final byte[] EVENT_2 = "event-2".getBytes();
     private static final long TS_1 = 1000L;
     private static final long TS_2 = 2000L;
-    private static final Epoch E1 = Epoch.epoch(1, 0);
-    private static final Epoch E2 = Epoch.epoch(2, 0);
+    private static final Epoch E1 = Epoch.epoch(0,1, 0);
+    private static final Epoch E2 = Epoch.epoch(0,2, 0);
 
     private ReplicaRegistry registry;
     private List<CapturedRequest> capturedRequests;

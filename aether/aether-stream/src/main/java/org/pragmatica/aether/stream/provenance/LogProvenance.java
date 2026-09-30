@@ -18,7 +18,7 @@ import org.pragmatica.lang.Option;
 /// (#1596's gate) alike.
 public record LogProvenance(long base, long low, long head, List<ProvenanceEntry> history) {
     /// Below every epoch a history can hold, so a copy without history ranks last.
-    private static final Epoch NO_HISTORY = Epoch.epoch(Long.MIN_VALUE, Long.MIN_VALUE);
+    private static final Epoch NO_HISTORY = Epoch.epoch(Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE);
 
     /// Candidate order for choosing a catch-up source among NON-divergent copies: the later last epoch, then
     /// the higher head -- never the head alone (rev1569 F1: a deposed owner's longer unacked tail must not

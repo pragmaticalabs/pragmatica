@@ -19,8 +19,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 class ProvenanceEntryTest {
     @Test
     void key_roundTripsThroughTheLog_withAndWithoutTheIncarnationUlid() {
-        var plain = ProvenanceEntry.provenanceEntry(Epoch.epoch(7, 3), Option.none(), 40);
-        var withUlid = ProvenanceEntry.provenanceEntry(Epoch.epoch(7, 3), Option.some("01J9ZQ3V8K2M4N6P8R0T2V4X6Z"), 40);
+        var plain = ProvenanceEntry.provenanceEntry(Epoch.epoch(0,7, 3), Option.none(), 40);
+        var withUlid = ProvenanceEntry.provenanceEntry(Epoch.epoch(0,7, 3), Option.some("01J9ZQ3V8K2M4N6P8R0T2V4X6Z"), 40);
 
         assertThat(decoded(plain)).isEqualTo(plain);
         assertThat(decoded(withUlid)).isEqualTo(withUlid);
@@ -29,8 +29,8 @@ class ProvenanceEntryTest {
 
     @Test
     void order_acceptsOnlyAStrictlyLaterEpoch() {
-        var e1 = key(Epoch.epoch(1, 0), Option.none());
-        var e2 = key(Epoch.epoch(1, 1), Option.none());
+        var e1 = key(Epoch.epoch(0,1, 0), Option.none());
+        var e2 = key(Epoch.epoch(0,1, 1), Option.none());
 
         assertThat(ProvenanceEntry.ORDER.follows(e2, e1)).isTrue();
         assertThat(ProvenanceEntry.ORDER.follows(e1, e2)).isFalse();
@@ -41,8 +41,8 @@ class ProvenanceEntryTest {
     /// hold both, and the two compare unequal as provenance.
     @Test
     void sameEpochDifferentUlid_followsNeitherWay_andIsNotTheSameEpoch() {
-        var a = ProvenanceEntry.provenanceEntry(Epoch.epoch(4, 0), Option.some("A"), 0);
-        var b = ProvenanceEntry.provenanceEntry(Epoch.epoch(4, 0), Option.some("B"), 0);
+        var a = ProvenanceEntry.provenanceEntry(Epoch.epoch(0,4, 0), Option.some("A"), 0);
+        var b = ProvenanceEntry.provenanceEntry(Epoch.epoch(0,4, 0), Option.some("B"), 0);
 
         assertThat(ProvenanceEntry.ORDER.follows(a.key().unwrap(), b.key().unwrap())).isFalse();
         assertThat(ProvenanceEntry.ORDER.follows(b.key().unwrap(), a.key().unwrap())).isFalse();
@@ -51,8 +51,8 @@ class ProvenanceEntryTest {
 
     @Test
     void syntheticKinds_roundTripThroughTheLog() {
-        var unknown = ProvenanceEntry.provenanceEntry(ProvenanceEpoch.unknown(Epoch.epoch(2, 0)), 30);
-        var base = ProvenanceEntry.provenanceEntry(new ProvenanceEpoch.Base("01J9ZQ3V8K2M4N6P8R0T2V4X6Z", Epoch.epoch(1, 4)), 500);
+        var unknown = ProvenanceEntry.provenanceEntry(ProvenanceEpoch.unknown(Epoch.epoch(0,2, 0)), 30);
+        var base = ProvenanceEntry.provenanceEntry(new ProvenanceEpoch.Base("01J9ZQ3V8K2M4N6P8R0T2V4X6Z", Epoch.epoch(0,1, 4)), 500);
 
         assertThat(decoded(unknown)).isEqualTo(unknown);
         assertThat(decoded(base)).isEqualTo(base);
@@ -64,16 +64,16 @@ class ProvenanceEntryTest {
     /// may follow it; nothing older than the floor may. Two fresh unknown ranges are never the same epoch.
     @Test
     void syntheticKinds_orderByTheirFloor() {
-        var e1 = ProvenanceEpoch.owned(Epoch.epoch(1, 0));
-        var e2 = ProvenanceEpoch.owned(Epoch.epoch(2, 0));
-        var unknownAfterE2 = ProvenanceEpoch.unknown(Epoch.epoch(2, 0));
+        var e1 = ProvenanceEpoch.owned(Epoch.epoch(0,1, 0));
+        var e2 = ProvenanceEpoch.owned(Epoch.epoch(0,2, 0));
+        var unknownAfterE2 = ProvenanceEpoch.unknown(Epoch.epoch(0,2, 0));
 
         assertThat(ProvenanceEpoch.follows(unknownAfterE2, e2)).isTrue();
         assertThat(ProvenanceEpoch.follows(e2, unknownAfterE2)).as("the floor's owner keeps writing").isTrue();
         assertThat(ProvenanceEpoch.follows(e1, unknownAfterE2)).as("older than the floor").isFalse();
-        assertThat(ProvenanceEpoch.follows(ProvenanceEpoch.unknown(Epoch.epoch(1, 0)), e2)).isFalse();
+        assertThat(ProvenanceEpoch.follows(ProvenanceEpoch.unknown(Epoch.epoch(0,1, 0)), e2)).isFalse();
         assertThat(ProvenanceEpoch.follows(unknownAfterE2, unknownAfterE2)).isFalse();
-        assertThat(ProvenanceEpoch.unknown(Epoch.epoch(2, 0))).isNotEqualTo(unknownAfterE2);
+        assertThat(ProvenanceEpoch.unknown(Epoch.epoch(0,2, 0))).isNotEqualTo(unknownAfterE2);
     }
 
     @Test
@@ -82,10 +82,9 @@ class ProvenanceEntryTest {
                        .onSuccess(_ -> fail("a foreign key must not decode as an epoch"));
     }
 
-    /// TRIPWIRE: the key must carry EVERY component of [Epoch]. If #1529 part 2 adds `incarnation` to Epoch and the
-    /// token is not extended, two epochs that differ only in it become ONE key, and two histories of different
-    /// lineages compare equal -- a false CONSISTENT. When this fails, add the new component to
-    /// `ProvenanceEntry.token`/`decode`, then update the expected list here.
+    /// TRIPWIRE: the key must carry EVERY component of [Epoch]. A component missing from the token makes two epochs
+    /// that differ only in it ONE key, and two histories of different lineages compare equal -- a false CONSISTENT.
+    /// When this fails, add the new component to `ProvenanceEpoch.token`/`fromKey`, then update the expected list here.
     @Test
     void key_carriesEveryEpochComponent() {
         var components = Arrays.stream(Epoch.class.getRecordComponents())
@@ -93,7 +92,23 @@ class ProvenanceEntryTest {
                                .toList();
 
         assertThat(components).as("Epoch changed shape: extend ProvenanceEntry's key token to cover it")
-                              .containsExactly("rabiaTerm", "localCounter");
+                              .containsExactly("incarnation", "rabiaTerm", "localCounter");
+    }
+
+    /// #1635 made the incarnation part of [Epoch]: two epochs that differ ONLY in it are two keys, each round-trips
+    /// through the log, and the later incarnation follows the earlier one. Red under "the token omits the incarnation".
+    @Test
+    void key_distinguishesIncarnations_andOrdersByThem() {
+        var first = ProvenanceEntry.provenanceEntry(Epoch.epoch(1, 7, 3), Option.none(), 40);
+        var second = ProvenanceEntry.provenanceEntry(Epoch.epoch(2, 7, 3), Option.none(), 40);
+        var unknown = ProvenanceEntry.provenanceEntry(new ProvenanceEpoch.Unknown("D", Epoch.epoch(2, 7, 3)), 41);
+
+        assertThat(first.key().unwrap()).isNotEqualTo(second.key().unwrap());
+        assertThat(decoded(first)).isEqualTo(first);
+        assertThat(decoded(second)).isEqualTo(second);
+        assertThat(decoded(unknown)).isEqualTo(unknown);
+        assertThat(ProvenanceEntry.ORDER.follows(second.key().unwrap(), first.key().unwrap())).isTrue();
+        assertThat(ProvenanceEntry.ORDER.follows(first.key().unwrap(), second.key().unwrap())).isFalse();
     }
 
     private static ProvenanceEntry decoded(ProvenanceEntry entry) {

@@ -54,8 +54,8 @@ class CatchUpProvenanceTest {
     private static final int PARTITION = 0;
     private static final NodeId OWNER = NodeId.randomNodeId();
     private static final NodeId NEW_PEER = NodeId.randomNodeId();
-    private static final Epoch E1 = Epoch.epoch(1, 0);
-    private static final Epoch E2 = Epoch.epoch(2, 0);
+    private static final Epoch E1 = Epoch.epoch(0,1, 0);
+    private static final Epoch E2 = Epoch.epoch(0,2, 0);
 
     @TempDir
     Path ownerWal;

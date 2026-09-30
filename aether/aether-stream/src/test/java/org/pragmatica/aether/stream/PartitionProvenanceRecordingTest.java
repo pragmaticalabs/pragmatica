@@ -39,9 +39,9 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 class PartitionProvenanceRecordingTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
-    private static final Epoch E1 = Epoch.epoch(1, 0);
-    private static final Epoch E2 = Epoch.epoch(2, 0);
-    private static final Epoch E3 = Epoch.epoch(3, 0);
+    private static final Epoch E1 = Epoch.epoch(0,1, 0);
+    private static final Epoch E2 = Epoch.epoch(0,2, 0);
+    private static final Epoch E3 = Epoch.epoch(0,3, 0);
     private static final byte[] PAYLOAD = "e".getBytes(UTF_8);
 
     @TempDir

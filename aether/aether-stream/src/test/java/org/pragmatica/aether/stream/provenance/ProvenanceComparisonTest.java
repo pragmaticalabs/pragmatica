@@ -18,9 +18,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #1596: the divergence rule of spec #1569 §7.5.2 over the reviewer's T7 sequences (rev1569). Each test names the
 /// mutation of `ProvenanceComparison` that turns it red.
 class ProvenanceComparisonTest {
-    private static final Epoch E1 = Epoch.epoch(1, 0);
-    private static final Epoch E2 = Epoch.epoch(2, 0);
-    private static final Epoch E3 = Epoch.epoch(3, 0);
+    private static final Epoch E1 = Epoch.epoch(0,1, 0);
+    private static final Epoch E2 = Epoch.epoch(0,2, 0);
+    private static final Epoch E3 = Epoch.epoch(0,3, 0);
 
     @Nested
     class Divergence {

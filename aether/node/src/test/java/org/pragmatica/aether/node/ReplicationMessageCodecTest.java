@@ -88,8 +88,8 @@ class ReplicationMessageCodecTest {
 
     @Test
     void catchupResponse_roundTrips_withPayloads() {
-        var history = List.of(ProvenanceEntry.provenanceEntry(Epoch.epoch(1, 0), Option.none(), 0),
-                              ProvenanceEntry.provenanceEntry(Epoch.epoch(2, 3), Option.some("01J9ZQ3V8K2M4N6P8R0T2V4X6Z"), 1));
+        var history = List.of(ProvenanceEntry.provenanceEntry(Epoch.epoch(0,1, 0), Option.none(), 0),
+                              ProvenanceEntry.provenanceEntry(Epoch.epoch(0,2, 3), Option.some("01J9ZQ3V8K2M4N6P8R0T2V4X6Z"), 1));
         var original = new CatchupResponse(GOVERNOR, "app:orders:2.1.0", 1, 0L, 2L,
                                            List.of(new byte[]{7}, new byte[]{8, 8}),
                                            List.of(11L, 22L),

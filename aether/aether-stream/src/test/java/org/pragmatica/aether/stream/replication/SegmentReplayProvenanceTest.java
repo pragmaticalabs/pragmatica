@@ -55,9 +55,9 @@ class SegmentReplayProvenanceTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final long ONE_GB = 1024 * 1024 * 1024L;
-    private static final Epoch E1 = Epoch.epoch(1, 0);
-    private static final Epoch E2 = Epoch.epoch(2, 0);
-    private static final Epoch E3 = Epoch.epoch(3, 0);
+    private static final Epoch E1 = Epoch.epoch(0,1, 0);
+    private static final Epoch E2 = Epoch.epoch(0,2, 0);
+    private static final Epoch E3 = Epoch.epoch(0,3, 0);
     private static final List<ProvenanceEntry> OWNER_HISTORY = List.of(at(E1, 0), at(E2, 5), at(E3, 10));
     private static final LogProvenance OWNER = LogProvenance.logProvenance(0, 0, 14, OWNER_HISTORY);
     private static final LogProvenance DEPOSED_Q = LogProvenance.logProvenance(0, 0, 16, List.of(at(E1, 0), at(E2, 5)));
