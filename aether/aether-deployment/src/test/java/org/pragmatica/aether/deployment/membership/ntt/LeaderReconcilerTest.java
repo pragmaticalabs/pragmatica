@@ -1765,10 +1765,10 @@ class LeaderReconcilerTest {
             var minted = dispatchOneReplacement();
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
-            advancePollIntervals(12);
+            advancePollIntervals(5);
 
             assertThat(ctm.provisionReplacementCalls())
-                .as("three minutes in (4x the old 45s expiry) a replacement the provider reports booting is not minted twice")
+                .as("75s in (past the old 45s expiry, inside the 90s join grace) a replacement the provider reports booting is not minted twice")
                 .hasSize(1);
             assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(minted);
             assertThat(ctm.instanceStateQueries())
@@ -1817,7 +1817,7 @@ class LeaderReconcilerTest {
             pendingProvision.succeed(ProvisionDisposition.dispatched());
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
-            advancePollIntervals(EXPECTED_ABSENT_LISTINGS + 2);
+            advancePollIntervals(1);
 
             assertThat(ctm.provisionReplacementCalls())
                 .as("one lagged listing after a slow create is not a deletion")
@@ -1936,11 +1936,13 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void inFlightEntry_pastHardCeiling_isReDispatched_evenWhileProviderReportsBooting() {
+        void inFlightEntry_pastHardCeiling_isReDispatched_whileTheProviderNeverConfirmsIt() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var minted = dispatchOneReplacement();
 
-            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            // UNKNOWN keeps the entry unconfirmed, so only the ceiling bounds it (a CONFIRMED one is discounted by
+            // the join grace first — see inFlightEntry_confirmedButNeverJoins_deficitReappearsAfterJoinGrace_beforeCeiling).
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
             advancePollIntervals(8);
 
             assertThat(ctm.provisionReplacementCalls())
@@ -1952,7 +1954,7 @@ class LeaderReconcilerTest {
 
             assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
             assertThat(ctm.provisionReplacementCalls())
-                .as("the per-source ceiling re-dispatches although the provider still reports booting")
+                .as("the per-source ceiling re-dispatches although the provider never said the instance is gone")
                 .hasSize(2);
         }
 
@@ -1981,9 +1983,6 @@ class LeaderReconcilerTest {
             assertThat(reconciler.inFlightProvisioningKeys())
                 .as("the unjoined instance is kept for adoption, only its count is withdrawn")
                 .contains(minted);
-            assertThat(timeSource.nanoTime() / 1_000_000L)
-                .as("the re-dispatch landed well inside the replacement ceiling")
-                .isLessThan(DEFAULT_REPLACEMENT_CEILING.millis() + EXPECTED_GRACE_WINDOW.millis() * 10);
         }
 
         /// #1783 — the discounted replacement then joins late, after its substitute was dispatched. The cluster
@@ -2077,10 +2076,10 @@ class LeaderReconcilerTest {
         void newLeader_inheritedEntryProviderReportsBooting_isNotReDispatched() {
             var inherited = inheritOneReplacement(ReplacementInstanceState.PRESENT);
 
-            advancePollIntervals(12);
+            advancePollIntervals(5);
 
             assertThat(ctm.provisionReplacementCalls())
-                .as("a new leader keeps an inherited replacement the provider reports booting — no duplicate mint")
+                .as("a new leader keeps an inherited replacement the provider reports booting, inside the join grace — no duplicate mint")
                 .isEmpty();
             assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(inherited);
             assertThat(ctm.instanceStateQueries())
@@ -2204,7 +2203,7 @@ class LeaderReconcilerTest {
         void newLeader_inheritedIdWithoutUlid_restartsCeilingAtInheritance() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var inherited = inheritReplacement(NodeId.nodeId("aether-test-cluster-node-5").unwrap(),
-                                               ReplacementInstanceState.PRESENT);
+                                               ReplacementInstanceState.UNKNOWN);
 
             advancePollIntervals(8);
 
@@ -2225,7 +2224,7 @@ class LeaderReconcilerTest {
         void newLeader_inheritedIdMintedInTheFuture_isClampedToNow() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() + timeSpan(1).hours().millis()),
-                                               ReplacementInstanceState.PRESENT);
+                                               ReplacementInstanceState.UNKNOWN);
 
             advancePollIntervals(8);
 
