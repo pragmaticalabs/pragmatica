@@ -7,6 +7,9 @@ package org.pragmatica.aether.stream.replication;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -18,11 +21,13 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.aether.stream.replication.BackfillError.General.FLIGHT_TIMED_OUT;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.INCOMPLETE_BACKFILL;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.MALFORMED_RESPONSE;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NOT_HIGHEST_WATERMARK;
@@ -133,7 +138,7 @@ public final class PartitionBackfill {
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
-    private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs;
 
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
@@ -144,7 +149,7 @@ public final class PartitionBackfill {
     /// value recorded here, so the re-verify backfill (one owner pull) fires once per genuinely-new stale
     /// offset and becomes a no-op once the replica reaches the owner's true tail — never a per-tick probe.
     /// A failed re-verify leaves `confirmedOffset` unchanged AND unrecorded, so the next tick retries.
-    private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset;
 
     /// Per-partition wall-clock instant (ms) of the last owner re-verify for a CAUGHT_UP non-owner replica
     /// (#333 write-idle residual). Sibling of {@link #firstNoSourceMs}: it quiesces the periodic re-verify so
@@ -155,7 +160,22 @@ public final class PartitionBackfill {
     /// re-verify by definition, so a freshly-promoted CAUGHT_UP replica is quiesced for a full interval. The
     /// null ⇒ elapsed default therefore fires only for rows that became CAUGHT_UP WITHOUT a pull (restart-
     /// loaded / cold-start self-promote), which earn one re-verify.
-    private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs;
+    /// #1638 F1: the backfill in flight per partition ([#backfill]'s single-flight).
+    private final ConcurrentHashMap<PartitionKey, Flight> inFlight;
+    /// #1638 N1, B2: how long a flight may go WITHOUT PROGRESS and keep its partition's slot -- an idle bound, not a
+    /// cap on the total duration. Progress is each catch-up page received and each record applied ([#progress]), so a
+    /// long catch-up that keeps moving keeps its slot and no overlapping pull starts. A backfill that stalls this long
+    /// fails ([BackfillError.General#FLIGHT_TIMED_OUT], never a success) and releases the slot, so it cannot make every
+    /// later trigger join it forever; the stalled run is not cancelled, and if it ever settles its install is still
+    /// settled correctly by the provenance seam. [Option#none] (test factories only) leaves flights unbounded.
+    private final Option<TimeSpan> flightBound;
+    /// #1638 late side effects: whether this instance's run may still act on the cluster. The shared instance answers
+    /// true; each run executes on a per-run view ([#forRun]) whose gate answers true only while the run's flight is the
+    /// partition's current, unresolved flight. A run that settles after its flight timed out -- whether the slot is
+    /// empty or a NEXT flight holds it -- therefore updates no replica row, promotes nothing and acks nothing
+    /// ([#updateWatermark], [#ackBackfillToOwner]).
+    private final BooleanSupplier current;
 
     private PartitionBackfill(ReplicaRegistry registry,
                               AlignedRecovery partitionRecovery,
@@ -169,7 +189,8 @@ public final class PartitionBackfill {
                               Supplier<List<NodeId>> membersSupplier,
                               CommittedStreamOwnerSource committedOwnerSource,
                               ReplicationReceiveHandler.ReplicaDurability durability,
-                              QuarantineView quarantine) {
+                              QuarantineView quarantine,
+                              Option<TimeSpan> flightBound) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
@@ -183,6 +204,37 @@ public final class PartitionBackfill {
         this.committedOwnerSource = committedOwnerSource;
         this.durability = durability;
         this.quarantine = quarantine;
+        this.flightBound = flightBound;
+        this.firstNoSourceMs = new ConcurrentHashMap<>();
+        this.reverifiedAtOffset = new ConcurrentHashMap<>();
+        this.lastReverifyMs = new ConcurrentHashMap<>();
+        this.inFlight = new ConcurrentHashMap<>();
+        this.current = () -> true;
+    }
+
+    /// A per-run view of `shared` (#1638 late side effects): the same collaborators and the same cross-call state,
+    /// with its side effects gated by `current`.
+    private PartitionBackfill(PartitionBackfill shared, BooleanSupplier current) {
+        this.registry = shared.registry;
+        this.partitionRecovery = shared.partitionRecovery;
+        this.transport = shared.transport;
+        this.replicationTransport = shared.replicationTransport;
+        this.probe = shared.probe;
+        this.selfWatermark = shared.selfWatermark;
+        this.self = shared.self;
+        this.sourceWaitBound = shared.sourceWaitBound;
+        this.clock = shared.clock;
+        this.membersSupplier = shared.membersSupplier;
+        this.committedOwnerSource = shared.committedOwnerSource;
+        this.durability = shared.durability;
+        this.quarantine = shared.quarantine;
+        this.flightBound = shared.flightBound;
+        this.firstNoSourceMs = shared.firstNoSourceMs;
+        this.reverifiedAtOffset = shared.reverifiedAtOffset;
+        this.lastReverifyMs = shared.lastReverifyMs;
+        this.inFlight = shared.inFlight;
+        this.ownerResolver = shared.ownerResolver;
+        this.current = current;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -204,7 +256,41 @@ public final class PartitionBackfill {
                                      List::of,
                                      CommittedStreamOwnerSource.none(),
                                      ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
-                                     QuarantineView.NONE);
+                                     QuarantineView.NONE,
+                                     Option.none());
+    }
+
+    /// The backward-compatible factory with a single-flight idle `flightBound` (#1638 N1, B2), for tests of the bound.
+    static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                               AlignedRecovery partitionRecovery,
+                                               CatchupTransport transport,
+                                               NodeId self,
+                                               TimeSpan flightBound) {
+        return partitionBackfill(registry, partitionRecovery, transport, ReplicationTransport.NOOP, self, flightBound);
+    }
+
+    /// The bounded test factory with a `replicationTransport`, so a test can observe the backfill's ack to the owner
+    /// (#1638 late side effects).
+    static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                               AlignedRecovery partitionRecovery,
+                                               CatchupTransport transport,
+                                               ReplicationTransport replicationTransport,
+                                               NodeId self,
+                                               TimeSpan flightBound) {
+        return new PartitionBackfill(registry,
+                                     partitionRecovery,
+                                     transport,
+                                     replicationTransport,
+                                     (_, _, _) -> NO_SOURCE_REPLICA.promise(),
+                                     (_, _) -> - 1L,
+                                     self,
+                                     TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
+                                     System::currentTimeMillis,
+                                     List::of,
+                                     CommittedStreamOwnerSource.none(),
+                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                     QuarantineView.NONE,
+                                     Option.some(flightBound));
     }
 
     /// Cold-start-aware factory: after `sourceWaitBound` elapses with no caught-up source, the
@@ -239,9 +325,8 @@ public final class PartitionBackfill {
                                  QuarantineView.NONE);
     }
 
-    /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
-    /// barrier a completed backfill run commits through before promoting self (see [#durability]), and the
-    /// `quarantine` record that refuses every self-promotion of a partition holding a divergent entry (#1505 F2).
+    /// The production factory below without a flight bound (#1638 N1): single-flight flights never time out. For
+    /// tests that drive the durability barrier and quarantine; production binds the bounded factory.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                       AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
@@ -254,6 +339,39 @@ public final class PartitionBackfill {
                                                       CommittedStreamOwnerSource committedOwnerSource,
                                                       ReplicationReceiveHandler.ReplicaDurability durability,
                                                       QuarantineView quarantine) {
+        return partitionBackfill(registry,
+                                 partitionRecovery,
+                                 transport,
+                                 replicationTransport,
+                                 probe,
+                                 selfWatermark,
+                                 self,
+                                 sourceWaitBound,
+                                 membersSupplier,
+                                 committedOwnerSource,
+                                 durability,
+                                 quarantine,
+                                 Option.none());
+    }
+
+    /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
+    /// barrier a completed backfill run commits through before promoting self (see [#durability]), the
+    /// `quarantine` record that refuses every self-promotion of a partition holding a divergent entry (#1505 F2),
+    /// and the `flightBound`: how long a backfill may go without progress before it releases its partition's
+    /// single-flight slot, failed (#1638 N1, B2, see [#flightBound]).
+    public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                                      AlignedRecovery partitionRecovery,
+                                                      CatchupTransport transport,
+                                                      ReplicationTransport replicationTransport,
+                                                      ReplicaWatermarkProbe probe,
+                                                      SelfWatermark selfWatermark,
+                                                      NodeId self,
+                                                      TimeSpan sourceWaitBound,
+                                                      Supplier<List<NodeId>> membersSupplier,
+                                                      CommittedStreamOwnerSource committedOwnerSource,
+                                                      ReplicationReceiveHandler.ReplicaDurability durability,
+                                                      QuarantineView quarantine,
+                                                      Option<TimeSpan> flightBound) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -266,7 +384,8 @@ public final class PartitionBackfill {
                                      membersSupplier,
                                      committedOwnerSource,
                                      durability,
-                                     quarantine);
+                                     quarantine,
+                                     flightBound);
     }
 
     /// Test factory: injects a deterministic clock so the bounded wait can be exercised without sleeping.
@@ -340,7 +459,8 @@ public final class PartitionBackfill {
                                      membersSupplier,
                                      committedOwnerSource,
                                      ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
-                                     QuarantineView.NONE);
+                                     QuarantineView.NONE,
+                                     Option.none());
     }
 
     /// Backfill `(streamName, partition)` onto self. Resolves with the number of events applied on
@@ -362,7 +482,151 @@ public final class PartitionBackfill {
     ///      false `CAUGHT_UP@-1`,
     ///   3. owner unknown (bootstrap window, empty member view) → the registry `CAUGHT_UP` source / the
     ///      cold-start deadlock-break path, unchanged.
+    ///
+    /// ## Single-flight (#1638 F1)
+    /// At most one backfill of a partition runs at a time: a call made while one is in flight -- the periodic redrive,
+    /// the gap trigger and materialize-on-reconcile all call here -- joins it and resolves with its result, and pulls
+    /// nothing itself. Two concurrent catch-ups of one partition would interleave their installs and applies; the
+    /// provenance seam settles each install correctly regardless ([AlignedRecovery#applyAttributed]), and this keeps
+    /// the pulls themselves from racing. The in-flight entry is removed before its result is delivered, so a caller
+    /// reacting to that result starts a fresh run. A flight that makes no progress for [#flightBound] fails and
+    /// releases the slot (#1638 N1, B2), so one backfill that never settles cannot wedge the partition's catch-up,
+    /// while one that keeps progressing keeps its slot however long it runs.
     public Promise<Long> backfill(String streamName, int partition) {
+        var key = partitionKey(streamName, partition);
+        var flight = Flight.flight();
+
+        return Option.option(inFlight.putIfAbsent(key, flight))
+                     .map(Flight::result)
+                     .or(() -> fly(key, flight, streamName, partition));
+    }
+
+    private Promise<Long> fly(PartitionKey key, Flight flight, String streamName, int partition) {
+        forRun(key, flight).runBackfill(streamName, partition).onResult(result -> land(key, flight, result));
+        flightBound.onPresent(bound -> watch(key, flight, bound, bound));
+
+        return flight.result();
+    }
+
+    /// #1638 B2: wakes after `delay` and fails the flight if it has made no progress for `bound`; otherwise sleeps
+    /// again until `bound` after its last progress.
+    @Contract
+    private void watch(PartitionKey key, Flight flight, TimeSpan bound, TimeSpan delay) {
+        Promise.<Unit> promise(delay, Result::unitResult).onResult(_ -> checkIdle(key, flight, bound));
+    }
+
+    @Contract
+    private void checkIdle(PartitionKey key, Flight flight, TimeSpan bound) {
+        if (flight.result().isResolved()) {
+            return;
+        }
+
+        var idle = flight.inLocalBarrier()
+                   ? 0L
+                   : flight.idleNanos();
+
+        if (idle >= bound.nanos()) {
+            land(key, flight, FLIGHT_TIMED_OUT.result());
+        } else {
+            watch(key,
+                  flight,
+                  bound,
+                  TimeSpan.timeSpan(bound.nanos() - idle).nanos());
+        }
+    }
+
+    /// The run's view: its side effects happen only while `flight` is the partition's current, unresolved flight.
+    private PartitionBackfill forRun(PartitionKey key, Flight flight) {
+        return new PartitionBackfill(this, () -> isCurrent(key, flight));
+    }
+
+    private boolean isCurrent(PartitionKey key, Flight flight) {
+        return inFlight.get(key) == flight && !flight.result()
+                                                     .isResolved();
+    }
+
+    /// #1638 late side effects: this run's replica-row write, dropped once its flight is no longer current.
+    @Contract
+    private void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset) {
+        if (current.getAsBoolean()) {
+            registry.updateWatermark(streamName, partition, nodeId, confirmedOffset);
+        }
+    }
+
+    @Contract
+    private void updateWatermark(String streamName,
+                                 int partition,
+                                 NodeId nodeId,
+                                 long confirmedOffset,
+                                 ReplicationState state) {
+        if (current.getAsBoolean()) {
+            registry.updateWatermark(streamName, partition, nodeId, confirmedOffset, state);
+        }
+    }
+
+    /// The first of the run's result and the bound's failure resolves the flight; the later one changes nothing. The
+    /// removal is conditional (#1638 B1): a run that lands after its flight timed out must not evict the NEXT flight
+    /// of the partition from the slot.
+    @Contract
+    private void land(PartitionKey key, Flight flight, Result<Long> result) {
+        inFlight.remove(key, flight);
+        flight.result().resolve(result);
+    }
+
+    /// #1638 B2: the partition's backfill made progress -- a catch-up page arrived or a record was applied -- so its
+    /// flight's idle bound restarts. Keyed by partition: a timed-out run that is still progressing keeps the NEXT
+    /// flight's slot too, which is harmless (work is happening on the partition) and never starts a pull.
+    @Contract
+    private void progress(String streamName, int partition) {
+        Option.option(inFlight.get(partitionKey(streamName, partition))).onPresent(Flight::touch);
+    }
+
+    /// #1638 D1: a local barrier -- the durability sync and the promotion after it -- is in progress for the partition's
+    /// flight, which does not idle out meanwhile: a slow disk must not time out a run that applied everything, which
+    /// would suppress its promotion on every retry. Progress is reported on both sides of the barrier.
+    private <T> Promise<T> localBarrier(String streamName, int partition, Supplier<Promise<T>> barrier) {
+        var flight = Option.option(inFlight.get(partitionKey(streamName, partition)));
+
+        flight.onPresent(Flight::enterLocal);
+
+        return barrier.get()
+                      .onResult(_ -> flight.onPresent(Flight::exitLocal));
+    }
+
+    /// One backfill of a partition: its result, shared by every caller that joined it, when it last progressed, and
+    /// how many local barriers it is inside.
+    private record Flight(Promise<Long> result, AtomicLong lastProgressNanos, AtomicInteger localBarriers) {
+        static Flight flight() {
+            return new Flight(Promise.promise(), new AtomicLong(System.nanoTime()), new AtomicInteger());
+        }
+
+        boolean inLocalBarrier() {
+            return localBarriers.get() > 0;
+        }
+
+        @Contract
+        void enterLocal() {
+            touch();
+            localBarriers.incrementAndGet();
+        }
+
+        @Contract
+        void exitLocal() {
+            localBarriers.decrementAndGet();
+            touch();
+        }
+
+        long idleNanos() {
+            return System.nanoTime() - lastProgressNanos.get();
+        }
+
+        @Contract
+        void touch() {
+            lastProgressNanos.set(System.nanoTime());
+        }
+    }
+
+    private Promise<Long> runBackfill(String streamName, int partition) {
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
@@ -396,11 +660,11 @@ public final class PartitionBackfill {
     private void holdSyncingBelow(String streamName, int partition, long divergedAt) {
         var replicas = registry.replicasFor(streamName, partition);
 
-        registry.updateWatermark(streamName,
-                                 partition,
-                                 self,
-                                 Math.min(selfConfirmedOffset(replicas), divergedAt - 1),
-                                 ReplicationState.SYNCING);
+        updateWatermark(streamName,
+                        partition,
+                        self,
+                        Math.min(selfConfirmedOffset(replicas), divergedAt - 1),
+                        ReplicationState.SYNCING);
         log.debug("Backfill {}[{}]: quarantined at offset {} — self held SYNCING, no pull, no promotion",
                   streamName,
                   partition,
@@ -671,7 +935,9 @@ public final class PartitionBackfill {
                   owner,
                   fromOffset);
 
-        return transport.requestCatchup(owner, request)
+        return transport.requestCatchup(owner,
+                                        request,
+                                        () -> progress(streamName, partition))
                         .flatMap(response -> applyOwnerResponse(streamName,
                                                                 partition,
                                                                 owner,
@@ -743,7 +1009,8 @@ public final class PartitionBackfill {
                   source.confirmedOffset());
 
         return transport.requestCatchup(source.nodeId(),
-                                        request)
+                                        request,
+                                        () -> progress(streamName, partition))
                         .flatMap(response -> applyAndPromote(streamName,
                                                              partition,
                                                              source.confirmedOffset(),
@@ -773,6 +1040,16 @@ public final class PartitionBackfill {
                                             long fromOffset,
                                             long watermark,
                                             long applied) {
+        return localBarrier(streamName,
+                            partition,
+                            () -> syncThenPromote(streamName, partition, fromOffset, watermark, applied));
+    }
+
+    private Promise<Long> syncThenPromote(String streamName,
+                                          int partition,
+                                          long fromOffset,
+                                          long watermark,
+                                          long applied) {
         return durability.sync(streamName, partition)
                          .onFailure(cause -> log.warn("Backfill {}[{}] applied {} events but could not make them durable: {}"
                                                      + " — staying SYNCING",
@@ -816,7 +1093,7 @@ public final class PartitionBackfill {
             return INCOMPLETE_BACKFILL.promise();
         }
 
-        registry.updateWatermark(streamName, partition, self, watermark);
+        updateWatermark(streamName, partition, self, watermark);
         ackBackfillToOwner(streamName, partition, watermark);
         reverifiedAtOffset.put(partitionKey(streamName, partition), watermark);
         // A successful owner/source pull IS a re-verify by definition: the replica now holds the source's
@@ -845,7 +1122,7 @@ public final class PartitionBackfill {
     /// nothing is sent. Idempotent under redrive: a re-completed backfill re-acks the same tail, a no-op on
     /// the owner.
     private void ackBackfillToOwner(String streamName, int partition, long watermark) {
-        hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
+        hrwOwner(streamName, partition).filter(owner -> !owner.equals(self) && current.getAsBoolean())
                 .onPresent(owner -> replicationTransport.send(owner,
                                                               replicateAck(self, streamName, partition, watermark)));
     }
@@ -877,12 +1154,31 @@ public final class PartitionBackfill {
             return MALFORMED_RESPONSE.result();
         }
 
+        return partitionRecovery.applyAttributed(streamName,
+                                                 partition,
+                                                 response.fromOffset(),
+                                                 response.toOffset(),
+                                                 response.history(),
+                                                 () -> applyPayloads(streamName,
+                                                                     partition,
+                                                                     response.fromOffset(),
+                                                                     payloads,
+                                                                     timestamps));
+    }
+
+    /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded ([#applyEvents]); a failure
+    /// here settles that install by trimming it (#1638 B1).
+    private Result<Long> applyPayloads(String streamName,
+                                       int partition,
+                                       long fromOffset,
+                                       List<byte[]> payloads,
+                                       List<Long> timestamps) {
         var applied = 0L;
 
         for (var i = 0; i < payloads.size(); i++) {
             var result = partitionRecovery.appendRecovered(streamName,
                                                            partition,
-                                                           response.fromOffset() + i,
+                                                           fromOffset + i,
                                                            payloads.get(i),
                                                            timestamps.get(i));
 
@@ -892,6 +1188,7 @@ public final class PartitionBackfill {
             }
 
             applied++;
+            progress(streamName, partition);
         }
 
         return Result.success(applied);
@@ -918,6 +1215,7 @@ public final class PartitionBackfill {
         return switch (cause) {
             case StreamError.ReplicaEntryConflict conflict -> Option.some(conflict.offset());
             case StreamError.ReplicaQuarantined quarantined -> Option.some(quarantined.divergedAt());
+            case StreamError.ProvenanceMismatch mismatch -> Option.some(mismatch.offset());
             default -> Option.none();
         };
     }
@@ -1087,7 +1385,7 @@ public final class PartitionBackfill {
                                                    NodeId survivorNode,
                                                    long survivorTail,
                                                    long localWatermark) {
-        registry.updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
+        updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
         var fromOffset = localWatermark + 1;
         var request = catchupRequest(survivorNode, streamName, partition, fromOffset);
 
@@ -1099,7 +1397,9 @@ public final class PartitionBackfill {
                  localWatermark,
                  survivorTail);
 
-        return transport.requestCatchup(survivorNode, request)
+        return transport.requestCatchup(survivorNode,
+                                        request,
+                                        () -> progress(streamName, partition))
                         .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
                         .onSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
     }
@@ -1118,7 +1418,7 @@ public final class PartitionBackfill {
     /// row already carries `survivorTail`).
     private void recordSurvivorConfirmed(String streamName, int partition, NodeId survivorNode, long survivorTail) {
         if (survivorTail > recordedOffset(streamName, partition, survivorNode)) {
-            registry.updateWatermark(streamName, partition, survivorNode, survivorTail);
+            updateWatermark(streamName, partition, survivorNode, survivorTail);
         }
     }
 
@@ -1274,7 +1574,7 @@ public final class PartitionBackfill {
                  streamName,
                  partition,
                  watermark);
-        registry.updateWatermark(streamName, partition, self, watermark);
+        updateWatermark(streamName, partition, self, watermark);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
         return Promise.success(0L);
@@ -1486,7 +1786,7 @@ public final class PartitionBackfill {
                  selfWm,
                  peers.size(),
                  maxPeerWatermark);
-        registry.updateWatermark(streamName, partition, self, selfWm);
+        updateWatermark(streamName, partition, self, selfWm);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
         return Promise.success(0L);
@@ -1570,7 +1870,7 @@ public final class PartitionBackfill {
                   partition,
                   ownerWatermark,
                   selfConfirmed);
-        registry.updateWatermark(streamName, partition, self, selfConfirmed);
+        updateWatermark(streamName, partition, self, selfConfirmed);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
         return Promise.success(0L);

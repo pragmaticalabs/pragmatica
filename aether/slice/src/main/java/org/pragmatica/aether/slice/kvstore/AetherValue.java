@@ -5,7 +5,9 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -1190,6 +1192,80 @@ public sealed interface AetherValue {
         public BackupRestoreValue restored() {
             return new BackupRestoreValue(BackupRestoreOutcome.RESTORED, lineageId, incarnation, revision, commit);
         }
+    }
+
+    /// The recovery record of one stream partition, under [AetherKey.StreamPartitionRecoveryKey] (#1596, spec #1569
+    /// §7.5.3): `state` and the SET of `reasons` it was flagged for. A flagged partition has no CAUGHT_UP row, no
+    /// owner and no reads until operator resolution (AD14) clears it.
+    ///
+    /// Raising is idempotent (R7-2): [#raised] makes `old ∪ {reason}` and moves CONSISTENT or RESOLVED to FLAGGED,
+    /// and when the result equals the committed value nothing is written -- so the same evidence always yields the
+    /// same record and the same digest, and a flapping raiser leaves it unchanged, while a NEW reason or storage
+    /// changes it, as the operator must see new evidence. [LeaderAuthorized]: only a leader-witnessed transaction
+    /// with the exact previous value may write it, so two concurrent raises cannot lose each other's reason.
+    /// Candidates, source and resolution (AD7/AD14) extend this record; clearing it is AD14's.
+    record StreamPartitionRecoveryValue(PartitionRecoveryState state, Set<PartitionRecoveryReason> reasons) implements AetherValue, LeaderAuthorized {
+        public StreamPartitionRecoveryValue {
+            reasons = Set.copyOf(reasons);
+        }
+
+        public static StreamPartitionRecoveryValue streamPartitionRecoveryValue(PartitionRecoveryState state,
+                                                                                Set<PartitionRecoveryReason> reasons) {
+            return new StreamPartitionRecoveryValue(state, reasons);
+        }
+
+        /// The record after raising `reason` over `committed` (absent: never flagged).
+        public static StreamPartitionRecoveryValue raised(Option<StreamPartitionRecoveryValue> committed,
+                                                          PartitionRecoveryReason reason) {
+            return committed.map(value -> value.with(reason))
+                            .or(() -> new StreamPartitionRecoveryValue(PartitionRecoveryState.FLAGGED,
+                                                                       Set.of(reason)));
+        }
+
+        private StreamPartitionRecoveryValue with(PartitionRecoveryReason reason) {
+            var union = new HashSet<>(reasons);
+
+            union.add(reason);
+
+            return new StreamPartitionRecoveryValue(PartitionRecoveryState.FLAGGED, union);
+        }
+    }
+
+    /// Where a partition's recovery stands (spec #1569 §7.5.3).
+    @Codec
+    enum PartitionRecoveryState {
+        CONSISTENT,
+        FLAGGED,
+        RESOLVED,
+        UNKNOWN
+    }
+
+    /// One reason a partition is flagged (spec #1569 §7.5.3): its `kind`, the copy it concerns when it concerns one
+    /// (`storageId`: the node id until storage ULID identity exists), and the `evidence` -- deterministic facts
+    /// (an offset, a pair of epochs), never a time, so the same evidence raises the same reason.
+    @Codec
+    record PartitionRecoveryReason(PartitionRecoveryReasonKind kind, Option<String> storageId, String evidence) {
+        public static PartitionRecoveryReason partitionRecoveryReason(PartitionRecoveryReasonKind kind,
+                                                                      Option<String> storageId,
+                                                                      String evidence) {
+            return new PartitionRecoveryReason(kind, storageId, evidence);
+        }
+    }
+
+    /// The reasons of spec #1569 §7.5.3.
+    @Codec
+    enum PartitionRecoveryReasonKind {
+        NO_CANDIDATE,
+        HISTORY_MISSING,
+        HISTORY_INCOMPLETE,
+        MARKED_DIVERGED,
+        DIVERGED,
+        LOSS_BUDGET,
+        CONTESTED,
+        CARRIED_OVER,
+        LOCAL_MISMATCH,
+        DIVERGED_LATE_JOINER,
+        UNKNOWN
     }
 
     /// Durable record of the operator's cluster-wide auto-heal enable/disable flag (#685), keyed by

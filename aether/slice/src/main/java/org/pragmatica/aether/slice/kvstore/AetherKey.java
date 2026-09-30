@@ -1875,6 +1875,49 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> STREAM_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-partition-ownership key format: %s");
 
+    /// Cluster state (#1596, spec #1569 §7.5.3): the recovery record of one stream partition -- the durable flag a
+    /// divergence, an incomplete history or a provenance mismatch raises, and that only operator resolution (AD14)
+    /// clears. Backed up, so a flagged partition stays flagged across a whole-cluster cold restart. The partition
+    /// is the trailing path segment, as in [StreamPartitionOwnershipKey].
+    record StreamPartitionRecoveryKey(String stream, int partition) implements ClusterStateKey {
+        private static final String PREFIX = "stream-partition-recovery/";
+
+        @Override
+        public String asString() {
+            return PREFIX + stream + "/" + partition;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static StreamPartitionRecoveryKey streamPartitionRecoveryKey(String stream, int partition) {
+            return new StreamPartitionRecoveryKey(stream, partition);
+        }
+
+        public static Result<StreamPartitionRecoveryKey> streamPartitionRecoveryKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_PARTITION_RECOVERY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.lastIndexOf('/');
+
+            if (slashIndex <= 0 || slashIndex == content.length() - 1) {
+                return STREAM_PARTITION_RECOVERY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var stream = content.substring(0, slashIndex);
+
+            return Number.parseInt(content.substring(slashIndex + 1))
+                         .mapError(_ -> STREAM_PARTITION_RECOVERY_KEY_FORMAT_ERROR.apply(key))
+                         .map(partition -> new StreamPartitionRecoveryKey(stream, partition));
+        }
+    }
+
+    Fn1<Cause, String> STREAM_PARTITION_RECOVERY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-partition-recovery key format: %s");
+
     Fn1<Cause, String> SPOKESMAN_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid spokesman key format: %s");
 
     Fn1<Cause, String> PROVISIONING_SLOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid provisioning-slot key format: %s");

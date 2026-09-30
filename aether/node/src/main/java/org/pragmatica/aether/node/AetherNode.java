@@ -223,6 +223,7 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
+import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
@@ -4865,6 +4866,10 @@ public interface AetherNode extends ManageableNode {
                                                                                    DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 
         streamPartitionManagerRef.set(streamPartitionManager);
+        // #1596: provenance failures this node detects (an N13 mismatch at catch-up, a log holding records with no
+        // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
+        // gate and cold-restart detection raise and read.
+        streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
         // pool wholesale. Until 2026-08-16 this bound was a compile-time constant while the paced-materialize
         // error message named it as a config key, so an operator whose backfills were starving had nothing to
@@ -4968,13 +4973,11 @@ public interface AetherNode extends ManageableNode {
         // instead of being rejected at the Epoch.ZERO floor (0:0 < 1:N). Cold-start/unowned arcs read
         // Epoch.ZERO == the fence's ZERO default (equal → passes), so fresh-stream recovery is not regressed.
         // The fence itself is untouched — this is a truthful stamp, not a wholesale exemption.
-        AlignedRecovery streamAlignedRecovery = (s, p, offset, payload, ts) -> streamPartitionManager.appendRecovered(s,
-                                                                                                                      p,
-                                                                                                                      offset,
-                                                                                                                      payload,
-                                                                                                                      ts,
-                                                                                                                      streamOwnerEpochSource.currentOwnerEpoch(s,
-                                                                                                                                                               p));
+        // #1596: that stamp FENCES the append and never attributes it — a caught-up record may predate the
+        // current epoch. Its provenance is the source's owner-epoch slice, which the same seam checks (N13)
+        // and records before the page is applied (StreamPartitionManager.alignedRecovery, the fence epoch read
+        // from this same streamOwnerEpochSource).
+        AlignedRecovery streamAlignedRecovery = streamPartitionManager.alignedRecovery();
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     streamAlignedRecovery,
                                                                                     streamPartitionManager::syncReplicated);
@@ -5104,7 +5107,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                        placementMembers),
                                                                           streamCommittedOwnerSource,
                                                                           streamPartitionManager::syncReplicated,
-                                                                          streamPartitionManager.quarantineView());
+                                                                          streamPartitionManager.quarantineView(),
+                                                                          Option.some(streamingConfig.backfillFlightIdleBound()));
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry

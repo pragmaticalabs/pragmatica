@@ -29,6 +29,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
@@ -130,9 +131,14 @@ final class DeploymentManagerImpl implements DeploymentManager {
                             .flatMap(this::applyCompleteRouting);
     }
 
+    /// A terminal deployment (`COMPLETED`, `ROLLED_BACK`, `FAILED`) stays in the KV as a committed
+    /// `DeploymentKey` but is never held in the map after `activate()` (`restoreDeployment` skips it),
+    /// so the map alone answers 404 for it after any STRATEGIES reassignment. The committed record is
+    /// therefore the fallback: read-only reconstruction, nothing is cached. Every other reader of the
+    /// map (`list`, `activeRouting`, `checkNoActiveDeployment`) keeps filtering `isActive`.
     @Override
     public Option<Deployment> status(String deploymentId) {
-        return option(activeDeployments.get(deploymentId));
+        return option(activeDeployments.get(deploymentId)).orElse(() -> committedDeployment(deploymentId));
     }
 
     @Override
@@ -522,43 +528,62 @@ final class DeploymentManagerImpl implements DeploymentManager {
         }
     }
 
+    private Option<Deployment> committedDeployment(String deploymentId) {
+        return kvStore.get(DeploymentKey.deploymentKey(deploymentId))
+                      .filter(DeploymentValue.class::isInstance)
+                      .map(DeploymentValue.class::cast)
+                      .flatMap(this::reconstructDeployment);
+    }
+
     @SuppressWarnings("JBCT-RET-01")
     private void restoreDeployment(DeploymentValue dv) {
-        var state = DeploymentState.valueOf(dv.state());
+        reconstructDeployment(dv).filter(Deployment::isActive)
+                             .onPresent(deployment -> activeDeployments.put(deployment.deploymentId(),
+                                                                            deployment));
+    }
 
-        if (state.isTerminal()) {
-            return;
-        }
+    private record StoredNames(DeploymentState state, DeploymentStrategy strategy, CleanupPolicy cleanupPolicy) {}
 
-        var strategy = DeploymentStrategy.valueOf(dv.strategy());
+    /// A stored enum name that no longer parses is corrupt data, not a caller error: it is absent here
+    /// (`status` answers 404, `activate()` skips the one record) exactly like an unparsable version or
+    /// routing, instead of throwing out of the request or aborting the whole restore.
+    private Result<StoredNames> parseStoredNames(DeploymentValue dv) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> new StoredNames(DeploymentState.valueOf(dv.state()),
+                                                 DeploymentStrategy.valueOf(dv.strategy()),
+                                                 CleanupPolicy.valueOf(dv.cleanupPolicy())));
+    }
+
+    private Option<Deployment> reconstructDeployment(DeploymentValue dv) {
+        var names = parseStoredNames(dv);
         var routing = VersionRouting.versionRouting(dv.routing());
         var version = Version.version(dv.oldVersion());
         var newVersion = Version.version(dv.newVersion());
 
-        if (routing.isFailure() || version.isFailure() || newVersion.isFailure()) {
+        if (names.isFailure() || routing.isFailure() || version.isFailure() || newVersion.isFailure()) {
             log.warn("Failed to restore deployment {}: invalid stored data", dv.deploymentId());
 
-            return;
+            return none();
         }
 
+        var stored = names.unwrap();
         var artifacts = parseArtifacts(dv.artifacts());
         var thresholds = parseThresholds(dv.thresholds());
-        var deployment = new Deployment(dv.deploymentId(),
-                                        dv.blueprintId(),
-                                        version.unwrap(),
-                                        newVersion.unwrap(),
-                                        state,
-                                        strategy,
-                                        parseStrategyConfig(strategy, dv.strategyConfig()),
-                                        routing.unwrap(),
-                                        thresholds,
-                                        CleanupPolicy.valueOf(dv.cleanupPolicy()),
-                                        artifacts,
-                                        dv.newInstances(),
-                                        dv.createdAt(),
-                                        dv.updatedAt());
 
-        activeDeployments.put(deployment.deploymentId(), deployment);
+        return Option.some(new Deployment(dv.deploymentId(),
+                                          dv.blueprintId(),
+                                          version.unwrap(),
+                                          newVersion.unwrap(),
+                                          stored.state(),
+                                          stored.strategy(),
+                                          parseStrategyConfig(stored.strategy(), dv.strategyConfig()),
+                                          routing.unwrap(),
+                                          thresholds,
+                                          stored.cleanupPolicy(),
+                                          artifacts,
+                                          dv.newInstances(),
+                                          dv.createdAt(),
+                                          dv.updatedAt()));
     }
 
     private List<ArtifactBase> parseArtifacts(String artifactsStr) {
