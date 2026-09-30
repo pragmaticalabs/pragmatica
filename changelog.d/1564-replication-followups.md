@@ -21,7 +21,8 @@
   write-refused after one core loss (#1732). `guarantees.md` §4/§4a now say so; the Forge acceptance for the recovery half
   is an enabled tripwire beside the disabled real assertion.
   [refuted on Ember: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamConfirmationEqualsFactorAvailabilityTest.java`]
+  [evidence: driver stdout summary; raw logs lost with cloudbb-2 at 01:17Z]
 - **Stale #1550 owner-failover statements in `failure-almanac.md` are corrected**: since #1555 ownership moves to a
   surviving replica and the new owner serves every replicated event; what remains open is refilling the lost replica
   slot (#1732).
-  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`, 2/2 on cloudbb-2]
+  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`, 2/2 on cloudbb-d1 at 53b168eb0]
