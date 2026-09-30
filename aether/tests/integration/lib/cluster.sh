@@ -4028,6 +4028,53 @@ restore_cluster_baseline_or_flag() {
     return 0
 }
 
+# The core node ids the topology read lists as active (the `coreNodes` array cluster_active_core_count
+# counts), one per line. Empty when the read fails or the array is absent.
+_active_core_ids() {
+    api_get "/api/v1/cluster/topology" 2>/dev/null \
+        | grep -oE '"coreNodes"[[:space:]]*:[[:space:]]*\[[^]]*\]' \
+        | head -1 \
+        | grep -oE '"[^"]+"' \
+        | grep -v '^"coreNodes"$' \
+        | tr -d '"' || true
+}
+
+# The leader's countedCoreMembers from the provisioning snapshot; empty when unreadable.
+_leader_counted_core_members() {
+    provisioning_snapshot 2>/dev/null \
+        | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | head -1 || true
+}
+
+# Terminal agreement gate for restore_cluster_baseline: the harness's active core count (topology
+# coreNodes, no role filter) and the LEADER's countedCoreMembers (role-filtered, what its reconciler
+# acts on) must BOTH equal the target. They diverge when a present, healthy core is not counted by the
+# leader (blank role label — the phantom-core defect): the leader then provisions a replacement for it
+# and the cluster ends up with too many real cores. cluster_no_deficit alone cannot see this: it needs
+# counted >= target and passes with 5 counted beside 6 active.
+# Waits (bounded, $SECONDS-based like the READY barrier; budget AETHER_RESTORE_COUNTED_TIMEOUT base,
+# default 60s, x TIMEOUT_SCALE) because a surplus node can be mid-drain; on a miss it FAILS loudly and
+# never passes. The counted ids are not exposed by /api/v1/cluster/provisioning, so the message lists
+# the active ids: the uncounted node is among them.
+_restore_active_counted_gate() {
+    local target="$1"
+    local budget=$(( ${AETHER_RESTORE_COUNTED_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
+    local poll="${AETHER_RESTORE_COUNTED_POLL:-5}"
+    local deadline=$(( SECONDS + budget ))
+    local active counted
+    while :; do
+        active=$(cluster_active_core_count)
+        counted=$(_leader_counted_core_members)
+        if [ "${active:-x}" = "$target" ] && [ "${counted:-x}" = "$target" ]; then
+            log_info "restore_cluster_baseline: active=${active} == leader counted=${counted} == target=${target}"
+            return 0
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "$poll"
+    done
+    log_fail "restore_cluster_baseline: active core count and the leader's counted core members do not both equal the target ${target} after ${budget}s: active=${active:-<unreadable>} counted=${counted:-<unreadable>}. Active core ids (the leader does not count at least one of them when active > counted; counted ids are not exposed by /api/v1/cluster/provisioning): $(_active_core_ids | tr '\n' ' ')"
+    return 1
+}
+
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"
@@ -4287,6 +4334,10 @@ restore_cluster_baseline() {
     _pc=$(printf '%s' "$_passed_snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
     _pe=$(printf '%s' "$_passed_snap" | grep -oE '"effective"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
     _pd=$(printf '%s' "$_passed_snap" | grep -oE '"deficit"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    # 9. ACTIVE == COUNTED == TARGET. Step 8 passes on counted >= target, which cannot see a present
+    # core the leader does not count (active 6, counted 5); wait bounded for agreement, else FAIL.
+    _restore_active_counted_gate "$target" || return 1
+
     log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
 }
