@@ -9,8 +9,6 @@ import java.nio.file.Path;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -53,7 +51,7 @@ public interface LocalRepository extends Repository {
                 var jarPath = resolvePath(artifact, classifier);
 
                 if (!exists(jarPath)) {
-                    return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath).result();
+                    return new NotInLocalRepository(artifact.asString() + " at " + jarPath).result();
                 }
 
                 return Result.lift(Causes::fromThrowable,
@@ -71,10 +69,15 @@ public interface LocalRepository extends Repository {
                                 .resolve(version.withQualifier())
                                 .resolve(artifactId + "-" + version.withQualifier() + classifier + ".jar");
             }
-
-            private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = Causes.forOneValue("Artifact not found in local repository: %s");
         }
 
         return new repository(localRepo, locateTimeout);
+    }
+
+    record NotInLocalRepository(String detail) implements Absent {
+        @Override
+        public String message() {
+            return "Artifact not found in local repository: " + detail;
+        }
     }
 }

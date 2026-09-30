@@ -109,6 +109,10 @@ public interface RemoteRepository extends Repository {
     }
 
     private static Promise<byte[]> handleJarResponse(HttpResult<byte[]> result, String jarUrl, Artifact artifact) {
+        if (result.statusCode() == HTTP_NOT_FOUND) {
+            return new RemoteRepositoryError.NotOnRemote(jarUrl).promise();
+        }
+
         if (result.statusCode() != 200) {
             return new RemoteRepositoryError.DownloadFailed(jarUrl,
                                                             new RemoteDownloadException(jarUrl, result.statusCode())).promise();
@@ -288,8 +292,18 @@ public interface RemoteRepository extends Repository {
     }
 
     Fn1<Cause, String> LOCATION_ERROR = Causes.forOneValue("Failed to create location for artifact %s");
+    int HTTP_NOT_FOUND = 404;
 
     sealed interface RemoteRepositoryError extends Cause {
+        /// The remote ANSWERED 404 for the jar: an "absent" answer, unlike every other non-200
+        /// status, which is a [DownloadFailed] (the remote could not serve it).
+        record NotOnRemote(String url) implements RemoteRepositoryError, Absent {
+            @Override
+            public String message() {
+                return "Artifact not found on remote: HTTP 404 from " + url;
+            }
+        }
+
         record DownloadFailed(String url, Throwable cause) implements RemoteRepositoryError {
             @Override
             public String message() {

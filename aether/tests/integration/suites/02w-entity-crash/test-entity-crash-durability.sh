@@ -76,6 +76,10 @@ refresh_app_endpoints() {
     [ -n "$ENTITY_APP_ENDPOINTS" ]
 }
 
+# NOTE: create_entity and read_amount use entity_post_status below (it keeps a non-2xx answer's status and body).
+# entity_post_any remains for the READINESS PROBE only (wait_for ... entity_post_any get __probe__): it measures
+# "is the entity service answering yet", so a non-2xx (including a 503) SHOULD read as not-ready and be re-polled
+# by wait_for itself; retrying inside it would change what the probe measures.
 # POST to the FIRST REACHABLE endpoint and treat ITS answer as authoritative (#596 acceptance
 # form). The pre-#596 shape swept every node until `matcher` matched the body — harness-side
 # owner-finding that masked the product's missing owner-forwarding, which is exactly what #596
@@ -105,6 +109,69 @@ entity_post_any() {
     return 1
 }
 
+# How to treat a refusal (status + body) from one node, shared by the sweep below and by create_entity/read_amount:
+#   "retry" — try the next node, and keep retrying until the caller's deadline:
+#             * no HTTP status at all (000: curl failure, timeout),
+#             * 502 / 504 (a gateway to a dead node) and 404 (the slice is not on that node yet) — the post-kill
+#               window: a survivor answering these must not be authoritative, the old `|| continue` moved on,
+#             * 503 (the product's answer for a Cause.Transient, #1737/#1765),
+#             * an allow-listed transient failureType, whether the answer is a 2xx outcome:refused or a non-2xx.
+#   "fatal" — authoritative, fail at once with the full body: a 500, and any other refusal (StorageFailed,
+#             ForwardRefused, any failureType off the allow-list, a 2xx outcome that is neither wanted nor transient).
+entity_refusal_class() {
+    local status="$1" body="$2"
+    if transient_failure_type "$body" >/dev/null; then
+        printf 'retry'
+        return 0
+    fi
+    case "${status:-000}" in
+        000|502|503|504|404) printf 'retry' ;;
+        *) printf 'fatal' ;;
+    esac
+}
+
+# Like entity_post_any, but KEEPS the status and body of a non-2xx answer (`_api_call` prints a body only for a
+# 2xx, so a 503 transient refusal would otherwise read as "no node answered"). Output is the body followed by a
+# `__ENTITY_HTTP_STATUS:NNN__` line; rc 0 iff a node answered 2xx with a body matching `matcher`, rc 1 otherwise.
+# One call sweeps the endpoints (two passes, re-resolving between): a node whose refusal is class "retry" is
+# skipped for the next one, so the first node to answer is NOT authoritative for a 502/504/404/503 or a transient
+# type, exactly as entity_post_any's `|| continue` moved on from any non-2xx. A "fatal" refusal returns at once.
+# When every node was skipped, the LAST refusal is printed (rc 1) so the caller can retry until its deadline and
+# then report the full body; when nothing answered at all nothing is printed.
+entity_post_status() {
+    local path="$1" payload="$2" matcher="$3" pass ep out status body last=""
+
+    [ -n "$ENTITY_APP_ENDPOINTS" ] || refresh_app_endpoints || return 1
+
+    for pass in 1 2; do
+        while IFS= read -r ep; do
+            [ -z "$ep" ] && continue
+            out=$(_api_call POST "${ep}${path}" "$payload" 1 2>/dev/null) || true
+            status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+            case "${status:-000}" in 000) continue ;; esac
+            body=$(printf '%s' "$out" | sed '$d')
+            case "$status" in
+                2*) if printf '%s' "$body" | grep -qE "$matcher"; then
+                        printf '%s\n__ENTITY_HTTP_STATUS:%s__' "$body" "$status"
+                        return 0
+                    fi ;;
+            esac
+            last=$(printf '%s\n__ENTITY_HTTP_STATUS:%s__' "$body" "$status")
+            if [ "$(entity_refusal_class "$status" "$body")" = "fatal" ]; then
+                printf '%s' "$last"
+                return 1
+            fi
+        done <<< "$ENTITY_APP_ENDPOINTS"
+        # Pass 2 (re-resolve the endpoints) only when NOTHING answered: a kill landing mid-sweep. A node that
+        # answered with a retry-class refusal is the caller's retry loop's business, not a reason to re-ask.
+        [ -n "$last" ] && break
+        [ "$pass" -eq 1 ] && refresh_app_endpoints >/dev/null 2>&1
+    done
+
+    [ -n "$last" ] && printf '%s' "$last"
+    return 1
+}
+
 # Rotates over every node so a key's committed owner is actually reached. Two passes:
 # ownership can commit between them, and a node killed mid-suite simply fails its leg.
 #
@@ -127,13 +194,35 @@ create_entity() {
     # connection reset). Counting that as failure UNDER-counts acks, which is what made the first
     # run report 4/40. The durability assertion re-reads the value, so a wrong guess here cannot
     # manufacture a pass.
-    if body=$(entity_post_any "/api/entity/create" "$payload" \
-                              '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
-        return 0
-    fi
+    # A create refused with an ALLOW-LISTED TRANSIENT failureType, or answered 503, is retried with backoff until
+    # ENTITY_CREATE_RETRY_DEADLINE_S (a post-failover owner that is not ready yet answers "retry", and the one
+    # attempt this used to make read as "the cluster does not accept creates"). Anything else fails at once:
+    # never ForwardRefused or StorageFailed (a genuine storage fault must not be retried into silence), and an
+    # empty answer (no node reachable) is not a transient refusal either. The FULL body is logged: a 200-byte
+    # cut deleted the inner cause ("... for k") that decides which failure it was.
+    local deadline=$((SECONDS + ENTITY_CREATE_RETRY_DEADLINE_S)) delay="$ENTITY_CREATE_RETRY_BACKOFF_S" ft out status
+    while :; do
+        if out=$(entity_post_status "/api/entity/create" "$payload" \
+                                    '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
+            return 0
+        fi
+        status=$(printf '%s' "$out" | grep -oE '__ENTITY_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__ENTITY_HTTP_STATUS://;s/__//')
+        body=$(printf '%s' "$out" | sed '$d')
+        # Retry per entity_refusal_class (503, 502/504/404, no answer, an allow-listed failureType) until the
+        # deadline; a fatal refusal ends the loop at once with its full body.
+        ft=$(transient_failure_type "$body") || ft=""
+        [ "$(entity_refusal_class "$status" "$body")" = "fatal" ] && break
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            log_warn "create ${key}: still refused (HTTP ${status:-none}${ft:+, ${ft}}) at the ${ENTITY_CREATE_RETRY_DEADLINE_S}s retry deadline; last body: ${body:-<no node answered>}" >&2
+            return 1
+        fi
+        log_warn "create ${key}: refusal to retry (HTTP ${status:-none}${ft:+, ${ft}}); retrying in ${delay}s" >&2
+        sleep "$delay"
+        delay=$(( delay * 2 > 5 ? 5 : delay * 2 ))
+    done
 
-    if [ -n "$body" ]; then
-        log_warn "create ${key}: no node accepted; last body: $(printf '%s' "$body" | head -c 200)" >&2
+    if [ -n "$status" ]; then
+        log_warn "create ${key}: no node accepted (HTTP ${status}, not a transient refusal; not retried); last body: ${body}" >&2
     fi
     return 1
 }
@@ -158,11 +247,16 @@ create_range_recording_acks() {
     done
 }
 
+# `StorageUnavailable` (EntityError.StorageUnavailable, #1766) is the append boundary's transient refusal that
+# used to be flattened into StorageFailed/ForwardRefused; those two stay OFF this list on purpose.
 # Refusals that mean "retry", never "no" (#1501). Each is a `Cause.Transient` in the product and
 # clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it
 # may serve reads (EntityLogError.java). An EXPLICIT allow-list, so an unknown failure type is never
 # retried into silence. Space-separated; extend only with a failureType the product marks transient.
-ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress}"
+ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress OwnershipNotYetCommitted LinearizableUnavailable StorageUnavailable}"
+# The same allow-list bounds the CREATE retry (create_entity): ~30s, 1s doubling to 5s.
+ENTITY_CREATE_RETRY_DEADLINE_S="${ENTITY_CREATE_RETRY_DEADLINE_S:-30}"
+ENTITY_CREATE_RETRY_BACKOFF_S="${ENTITY_CREATE_RETRY_BACKOFF_S:-1}"
 # Per-key bound on retrying a transient refusal. s27 cluster B (2026-09-25): three keys refused
 # FoldInProgress in the pre-kill readback and read back exactly ~20s later.
 TRANSIENT_READ_DEADLINE_S="${TRANSIENT_READ_DEADLINE_S:-60}"
@@ -211,28 +305,41 @@ read_amount() {
     # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
     # diagnostics must be redirected or they silently corrupt the compared value.
     deadline=$((SECONDS + TRANSIENT_READ_DEADLINE_S))
+    local out status
     while :; do
-        if body=$(entity_post_any "/api/entity/get" "{\"orderId\":\"${key}\"}" \
-                                  '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
+        # The status and body of a non-2xx answer are KEPT (entity_post_status): app routes answer 503 for a
+        # Cause.Transient (#1737/#1765) and `_api_call` prints a body only for a 2xx, so through entity_post_any a
+        # transient refusal read as "no node answered" and was never retried.
+        if out=$(entity_post_status "/api/entity/get" "{\"orderId\":\"${key}\"}" \
+                                    '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
+            body=$(printf '%s' "$out" | sed '$d')
             if printf '%s' "$body" | grep -qE '"outcome"[[:space:]]*:[[:space:]]*"found"'; then
                 printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
                 return 0
             fi
             return 3
         fi
-        ft=$(transient_failure_type "$body") || break
-        last_transient="$body"
+        status=$(printf '%s' "$out" | grep -oE '__ENTITY_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__ENTITY_HTTP_STATUS://;s/__//')
+        body=$(printf '%s' "$out" | sed '$d')
+        # Retry per entity_refusal_class (503, 502/504/404, no answer, an allow-listed failureType) until the
+        # deadline; anything else (a 500, a refusal off the allow-list) ends the loop with the full body.
+        ft=$(transient_failure_type "$body") || ft=""
+        [ "$(entity_refusal_class "$status" "$body")" = "fatal" ] && break
+        [ -n "$body" ] && last_transient="$body"
         if [ "$SECONDS" -ge "$deadline" ]; then
-            log_warn "read ${key}: a node answered transient ${ft} until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: $(printf '%s' "$body" | head -c 200)" >&2
-            return 5
+            if [ "$status" = "503" ] || [ -n "$ft" ]; then
+                log_warn "read ${key}: a node answered transient (HTTP ${status}${ft:+, ${ft}}) until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: ${body}" >&2
+                return 5
+            fi
+            break
         fi
         sleep "$TRANSIENT_READ_BACKOFF_S"
     done
 
     if [ -n "$body" ]; then
-        log_warn "read ${key}: a node answered, but not found/absent (not a transient type); last body: $(printf '%s' "$body" | head -c 200)" >&2
+        log_warn "read ${key}: a node answered, but not found/absent (HTTP ${status:-none}; not a transient type, or unresolved at the deadline); last body: ${body}" >&2
     elif [ -n "$last_transient" ]; then
-        log_warn "read ${key}: no node answered this attempt (every endpoint failed at transport or non-2xx); the previous attempt WAS answered with a transient refusal: $(printf '%s' "$last_transient" | head -c 200)" >&2
+        log_warn "read ${key}: no node answered this attempt (every endpoint failed at transport or non-2xx); the previous attempt WAS answered with a transient refusal: ${last_transient}" >&2
     else
         log_warn "read ${key}: no node answered (every endpoint failed at transport or non-2xx)" >&2
     fi
@@ -602,7 +709,7 @@ test_checkpoint_driver_is_alive() {
 
 test_post_crash_liveness() {
     if ! create_entity 9999; then
-        log_fail "cluster does not accept new entity creates after the crash"
+        log_fail "the post-crash create was not accepted (transient refusals are retried for ${ENTITY_CREATE_RETRY_DEADLINE_S}s; the refusal body is in the warning above)"
         return 1
     fi
 

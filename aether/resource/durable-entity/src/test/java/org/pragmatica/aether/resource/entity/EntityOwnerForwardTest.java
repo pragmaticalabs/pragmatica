@@ -350,6 +350,25 @@ class EntityOwnerForwardTest {
             .isInstanceOf(EntityError.EntityAlreadyExists.class));
     }
 
+    /// A transient owner-side refusal (the owner's substrate not ready after a failover) must stay
+    /// transient for the sender: flattened to the non-transient carrier it read as a permanent fault and
+    /// a boundary mapping `Cause.Transient` to "unavailable" answered 500 instead of 503. The failureType
+    /// is the owner-side class's simple name, so the real class name is used, not a literal.
+    @Test
+    void create_ownerRefusesAsStorageUnavailable_surfacesTheTransientTypedCause() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused(EntityError.StorageUnavailable.class.getSimpleName(),
+                                                                   "not yet promoted"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityError.StorageUnavailable.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("not yet promoted");
+        });
+    }
+
     /// An unknown failureType keeps the carrier — its message names the owner's reason verbatim,
     /// and minting a wrong typed cause would be worse than a generic one.
     @Test
