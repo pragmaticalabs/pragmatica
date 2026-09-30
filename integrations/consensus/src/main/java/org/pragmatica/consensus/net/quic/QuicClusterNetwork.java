@@ -674,10 +674,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         var serverRef = server;
-
+        // #1461: arming is a DEPENDENT step (`withSuccess`), not an `onSuccess` handler, which runs asynchronously and
+        // may land after the returned promise resolves: a completed start then implies the periodic tasks are armed.
         return serverRef.start(port)
                         .map(unit -> captureLoopbackLoop(serverRef, unit))
-                        .onSuccess(_ -> armPeriodicTasks())
+                        .withSuccess(_ -> armPeriodicTasks())
                         .onSuccess(_ -> fireReadyHooks())
                         .onFailure(this::onStartFailed)
                         .mapToUnit();
