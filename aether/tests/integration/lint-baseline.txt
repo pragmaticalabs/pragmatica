@@ -32,8 +32,8 @@
 [R2] aether/tests/integration/suites/11-observability/test-events-cluster-ordering.sh:60 — "${node0}/api/v1/events" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:188 — remote_exec "docker ps --filter 'label=aether.node-id=${nid}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true
 [R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:379 — leader=$(cat "$LEADER_FILE" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:146 — kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
-[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:147 — kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
+[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:139 — kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
+[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:140 — kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
 [R2] aether/tests/integration/suites/13-edge-cases/test-disruption-budget.sh:51 — drain_count=$(grep -cve '^$' "$DRAIN_NODES_FILE" 2>/dev/null || true)
 [R3] aether/tests/integration/suites/07-cluster-mgmt/test-bootstrap.sh:69 — tautological assert_ne on raw response (var $status from line 68)
 [R3] aether/tests/integration/suites/08-resources/test-scheduled-tasks.sh:17 — tautological assert_ne on raw response (var $tasks from line 16)
