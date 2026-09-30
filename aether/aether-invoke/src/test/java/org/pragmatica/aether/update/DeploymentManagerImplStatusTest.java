@@ -47,11 +47,12 @@ class DeploymentManagerImplStatusTest {
     static final Version V2 = Version.version("2.0.0").unwrap();
     static final String DEPLOYMENT_ID = "deployment-1";
 
+    private KVStore<AetherKey, AetherValue> kvStore;
     private DeploymentManager manager;
 
     @BeforeEach
     void setUp() {
-        var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(),
+        kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(),
                                                           stubSerializer(),
                                                           stubDeserializer());
 
@@ -111,6 +112,20 @@ class DeploymentManagerImplStatusTest {
             assertThat(manager.status("no-such-deployment").isEmpty()).as("the fallback must not fabricate a deployment").isTrue();
         }
 
+        /// A corrupt committed enum name must read as absent (404 at the route), never throw out of
+        /// `status`, and must not abort `activate()` for the records around it.
+        @Test
+        void status_isAbsentAndDoesNotThrow_forACorruptStoredState() {
+            manager.rollback(DEPLOYMENT_ID).onFailure(cause -> Assertions.fail(cause.message()));
+            commit(kvStore, List.of(new KVCommand.Put<AetherKey, AetherValue>(DeploymentKey.deploymentKey("corrupt-1"),
+                                                                              corruptDeploymentValue())));
+
+            blip();
+
+            assertThat(manager.status("corrupt-1").isEmpty()).as("a corrupt record is absent, not an exception").isTrue();
+            assertThat(manager.status(DEPLOYMENT_ID).isPresent()).as("its neighbour survives the restore").isTrue();
+        }
+
         @Test
         void list_keepsTheNonTerminalDeployment_afterLeaderBlip() {
             blip();
@@ -134,6 +149,25 @@ class DeploymentManagerImplStatusTest {
                                                V2.bareVersion(),
                                                DeploymentStrategy.BLUE_GREEN.name(),
                                                DeploymentState.DEPLOYED.name(),
+                                               VersionRouting.ALL_OLD.toString(),
+                                               "",
+                                               "",
+                                               CleanupPolicy.GRACE_PERIOD.name(),
+                                               BASE.asString(),
+                                               3,
+                                               now,
+                                               now);
+    }
+
+    private static DeploymentValue corruptDeploymentValue() {
+        var now = System.currentTimeMillis();
+
+        return DeploymentValue.deploymentValue("corrupt-1",
+                                               "org.test:my-slice:2.0.0",
+                                               V1.bareVersion(),
+                                               V2.bareVersion(),
+                                               DeploymentStrategy.BLUE_GREEN.name(),
+                                               "NO_SUCH_STATE",
                                                VersionRouting.ALL_OLD.toString(),
                                                "",
                                                "",
