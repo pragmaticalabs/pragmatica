@@ -121,9 +121,14 @@ final class DeploymentManagerImpl implements DeploymentManager {
                             .flatMap(this::applyCompleteRouting);
     }
 
+    /// A terminal deployment (`COMPLETED`, `ROLLED_BACK`, `FAILED`) stays in the KV as a committed
+    /// `DeploymentKey` but is never held in the map after `activate()` (`restoreDeployment` skips it),
+    /// so the map alone answers 404 for it after any STRATEGIES reassignment. The committed record is
+    /// therefore the fallback: read-only reconstruction, nothing is cached. Every other reader of the
+    /// map (`list`, `activeRouting`, `checkNoActiveDeployment`) keeps filtering `isActive`.
     @Override
     public Option<Deployment> status(String deploymentId) {
-        return option(activeDeployments.get(deploymentId));
+        return option(activeDeployments.get(deploymentId)).orElse(() -> committedDeployment(deploymentId));
     }
 
     @Override
@@ -513,14 +518,24 @@ final class DeploymentManagerImpl implements DeploymentManager {
         }
     }
 
+    private Option<Deployment> committedDeployment(String deploymentId) {
+        return kvStore.get(DeploymentKey.deploymentKey(deploymentId))
+                      .filter(DeploymentValue.class::isInstance)
+                      .map(DeploymentValue.class::cast)
+                      .flatMap(this::reconstructDeployment);
+    }
+
     @SuppressWarnings("JBCT-RET-01")
     private void restoreDeployment(DeploymentValue dv) {
-        var state = DeploymentState.valueOf(dv.state());
-
-        if (state.isTerminal()) {
+        if (DeploymentState.valueOf(dv.state()).isTerminal()) {
             return;
         }
 
+        reconstructDeployment(dv).onPresent(deployment -> activeDeployments.put(deployment.deploymentId(), deployment));
+    }
+
+    private Option<Deployment> reconstructDeployment(DeploymentValue dv) {
+        var state = DeploymentState.valueOf(dv.state());
         var strategy = DeploymentStrategy.valueOf(dv.strategy());
         var routing = VersionRouting.versionRouting(dv.routing());
         var version = Version.version(dv.oldVersion());
@@ -529,27 +544,26 @@ final class DeploymentManagerImpl implements DeploymentManager {
         if (routing.isFailure() || version.isFailure() || newVersion.isFailure()) {
             log.warn("Failed to restore deployment {}: invalid stored data", dv.deploymentId());
 
-            return;
+            return none();
         }
 
         var artifacts = parseArtifacts(dv.artifacts());
         var thresholds = parseThresholds(dv.thresholds());
-        var deployment = new Deployment(dv.deploymentId(),
-                                        dv.blueprintId(),
-                                        version.unwrap(),
-                                        newVersion.unwrap(),
-                                        state,
-                                        strategy,
-                                        parseStrategyConfig(strategy, dv.strategyConfig()),
-                                        routing.unwrap(),
-                                        thresholds,
-                                        CleanupPolicy.valueOf(dv.cleanupPolicy()),
-                                        artifacts,
-                                        dv.newInstances(),
-                                        dv.createdAt(),
-                                        dv.updatedAt());
 
-        activeDeployments.put(deployment.deploymentId(), deployment);
+        return Option.some(new Deployment(dv.deploymentId(),
+                                          dv.blueprintId(),
+                                          version.unwrap(),
+                                          newVersion.unwrap(),
+                                          state,
+                                          strategy,
+                                          parseStrategyConfig(strategy, dv.strategyConfig()),
+                                          routing.unwrap(),
+                                          thresholds,
+                                          CleanupPolicy.valueOf(dv.cleanupPolicy()),
+                                          artifacts,
+                                          dv.newInstances(),
+                                          dv.createdAt(),
+                                          dv.updatedAt()));
     }
 
     private List<ArtifactBase> parseArtifacts(String artifactsStr) {
