@@ -283,6 +283,39 @@ class PartitionFencedDurableEntityFenceTest {
     /// The `LinearizableEntityServe` port (#345 I1(d)) must survive the I3 rewrite: a wired entity routes
     /// a `LINEARIZABLE` read through the pipeline over the SAME arc its write fence uses, rather than
     /// silently serving a local read — the claim-vs-reality gap the owner ruling refused to leave open.
+    /// The stream's failover errors (`OwnerNotActivated`, `OwnerCatchupPending`) are `Cause.Transient` and
+    /// pass through the substrate untranslated; the entity must not flatten them into the non-transient
+    /// [EntityError.StorageFailed], or a "not ready yet" reads as a permanent storage fault.
+    @Nested
+    class AppendFailureClassification {
+        @Test
+        void create_yieldsTransientStorageUnavailable_whenTheSubstrateFailsTransiently() {
+            substrate.failAppendsWith(new NotYetPromoted());
+
+            var result = unwiredEntity().create("k1", 1).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(EntityError.StorageUnavailable.class);
+                assertThat(cause.isTransient()).isTrue();
+                assertThat(cause.message()).contains("not yet promoted");
+            });
+        }
+
+        @Test
+        void create_yieldsStorageFailed_whenTheSubstrateFailsGenuinely() {
+            substrate.failAppendsWith(new EntityLogError.MalformedRecord("torn"));
+
+            var result = unwiredEntity().create("k1", 1).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(EntityError.StorageFailed.class);
+                assertThat(cause.isTransient()).isFalse();
+            });
+        }
+    }
+
     @Nested
     class LinearizableReads {
         @Test
@@ -406,6 +439,12 @@ class PartitionFencedDurableEntityFenceTest {
         private final Map<Integer, Long> highWater = new ConcurrentHashMap<>();
         private final Map<Integer, Long> nodeEpoch = new ConcurrentHashMap<>();
 
+        private Option<Cause> appendFailure = Option.none();
+
+        void failAppendsWith(Cause cause) {
+            appendFailure = Option.some(cause);
+        }
+
         void reshuffle(int partition) {
             highWater.merge(partition, 1L, Long::sum);
         }
@@ -421,6 +460,10 @@ class PartitionFencedDurableEntityFenceTest {
 
         @Override
         public Promise<Long> append(String keyspace, int partition, byte[] record) {
+            if (appendFailure.isPresent()) {
+                return appendFailure.fold(() -> Promise.success(-1L), Cause::promise);
+            }
+
             if (nodeEpoch.getOrDefault(partition, 0L) < highWater.getOrDefault(partition, 0L)) {
                 return new EntityLogError.StaleOwnerAppend(keyspace,
                                                            partition,
@@ -473,6 +516,15 @@ class PartitionFencedDurableEntityFenceTest {
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
             return Promise.success(Option.none());
+        }
+    }
+
+    /// Stands in for the stream's transient failover errors, which this module cannot name: it does not
+    /// depend on the stream module, and the property under test is the `Cause.Transient` classification.
+    private record NotYetPromoted() implements Cause, Cause.Transient {
+        @Override
+        public String message() {
+            return "stream partition is not yet promoted on this node (catch-up pending)";
         }
     }
 
