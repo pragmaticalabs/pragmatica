@@ -18,6 +18,7 @@
 #   T10 FAILCAP_MAX_FIRST_FAIL bounds first-fail captures per suite, with one WARN.
 #   T11 a capture that ends with no node logs is a WARN, not an INFO.
 #   T12 a caller's $(fn 2>&1) around log_fail receives the same data with the capture armed as without.
+#   T13 plain log_fail / capture_before_destructive under set -euo pipefail never end the caller.
 #   INTEG_DIR_UNDER_TEST=<path> selects another copy of aether/tests/integration (used for the mutation probes).
 #   bash aether/tests/integration/test/test-failtime-capture.sh
 set -uo pipefail
@@ -39,7 +40,7 @@ scenario() {
     local name="$1" body="$2"; shift 2
     local d="${WORK}/${name}"; mkdir -p "$d"
     : > "${d}/events"
-    ( export FAILCAP_NO_TTY=1 TARGET_HOST=localhost ENV_TYPE=docker CLOUD_MODE=false EV="${d}/events" \
+    ( export TARGET_HOST=localhost ENV_TYPE=docker CLOUD_MODE=false EV="${d}/events" \
         AETHER_FAILURE_LOGS_DIR="${d}/failure-logs" SUITE_TAG=02-chaos CLUSTER_ID=a \
         CLUSTER_NAME=aether-b-node- COMPOSE_FILE="${WORK}/compose.yml" "$@"
       source "${INTEG_DIR}/lib/common.sh" > /dev/null 2>&1 || echo "SOURCE-FAILED common.sh" >> "$EV"
@@ -176,7 +177,7 @@ else fail "T9a run-tests.sh no longer exports BOOTSTRAP_CLUSTER_NAME"; fi
 mkdir -p "${WORK}/cloud"; : > "${WORK}/cloud/events"
 env -i PATH="$PATH" HOME="$WORK" TARGET_HOST=localhost CLOUD_MODE=true CLOUD_RUNTIME=container CLUSTER_ID=b \
     BOOTSTRAP_CLUSTER_NAME=test-b AETHER_SSH_KEY=/dev/null SUITE_TAG=02-chaos SUITE_START_EPOCH=1700000000 \
-    SUITE_FAILCAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")" AETHER_FAILURE_LOGS_DIR="${WORK}/cloud/failure-logs" FAILCAP_NO_TTY=1 \
+    SUITE_FAILCAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")" AETHER_FAILURE_LOGS_DIR="${WORK}/cloud/failure-logs" \
     INTEG_DIR="$INTEG_DIR" bash -c '
         set -euo pipefail
         source "$INTEG_DIR/lib/common.sh" > /dev/null 2>&1; source "$INTEG_DIR/lib/cluster.sh" > /dev/null 2>&1
@@ -233,6 +234,28 @@ if [ -s "${WORK}/subst/events.armed" ] && cmp -s "${WORK}/subst/events.armed" "$
    && [ "$(count_events subst docker-logs)" -eq 2 ] && ! grep -q 'fail-time capture' "${WORK}/subst/events.armed"; then
     ok "T12 \$(fn 2>&1) around log_fail: data identical armed vs unarmed (capture ran: 2 node-log reads), no capture line in it"
 else fail "T12 armed=[$(tr '\n' '|' < "${WORK}/subst/events.armed")] unarmed=[$(tr '\n' '|' < "${WORK}/subst/events.unarmed")] reads=$(count_events subst docker-logs)"; fi
+
+# T13 --------------------------------------------------------------------------------------------------------------
+# errexit: log_fail and capture_before_destructive as PLAIN statements in a `set -euo pipefail` script, stdin from
+# /dev/null, must not end it. The first pre-destructive call has no pre-* directory yet, so its `ls | wc` fails under
+# pipefail; only the `|| true` wrapper keeps that inside the hook. `script -q /dev/null`-style tty stripping is not
+# available everywhere, and no /dev/tty write remains to strip (T13b greps for it).
+body_errexit() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")
+    TEST_TAG=t
+    set -euo pipefail
+    log_fail "plain statement" > /dev/null
+    capture_before_destructive "plain-step"
+    echo "continued" > "${EV}.continued"
+    rm -rf "$SUITE_FAILCAP_DIR"
+}
+scenario errexit body_errexit
+[ "$(cat "${WORK}/errexit/events.continued" 2>/dev/null)" = "continued" ] \
+    && ok "T13 plain log_fail + capture_before_destructive under set -euo pipefail: the script continues" \
+    || fail "T13 the script died inside the hook: $(tr '\n' '|' < "${WORK}/errexit/out" | head -c 300)"
+[ -z "$(grep -v '^ *#' "${INTEG_DIR}/lib/capture.sh" | grep '/dev/tty')" ] \
+    && ok "T13b no /dev/tty write in lib/capture.sh code (comments excluded)" \
+    || fail "T13b lib/capture.sh writes /dev/tty"
 
 echo ""
 echo "  ----"

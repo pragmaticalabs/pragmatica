@@ -135,8 +135,13 @@ capture_node_logs() {
 
 # The capture writes NOTHING to stdout or stderr. log_fail is called inside callers' command substitutions,
 # including `$(fn 2>&1)`, so any line the capture printed there would land in that caller's data. Its own output
-# goes to one notes file per suite, and to the controlling terminal when there is one (a terminal write cannot be
-# captured by a substitution). FAILCAP_NO_TTY=1 turns the terminal write off (stub suites).
+# goes to one notes file per suite (never the terminal: a /dev/tty write fails without a controlling terminal, which
+# kills a `set -e` caller, and can stop the process under `tostop`). run-tests.sh prints one summary line per suite.
+#
+# A diagnostic hook must never be able to kill a test. The two entry points (_failcap_on_fail,
+# capture_before_destructive) are called as PLAIN statements from `set -euo pipefail` scripts, so each is a thin
+# wrapper that runs its body as `body || true`: errexit is ignored inside a command tested by `||`, so a failing
+# `ls | wc` (pipefail, no matching directory yet) or any other non-zero status stays inside the hook.
 _failcap_notes_file() {
     local f="$(_failcap_root)/${SUITE_TAG:-no-suite}/failtime-capture-notes.txt"
     mkdir -p "$(dirname "$f")" 2>/dev/null || true
@@ -144,7 +149,6 @@ _failcap_notes_file() {
 }
 _failcap_note() {
     printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$(_failcap_notes_file)" 2>/dev/null || true
-    [ -z "${FAILCAP_NO_TTY:-}" ] && { printf '%s\n' "$1" > /dev/tty; } 2>/dev/null
     return 0
 }
 
@@ -157,7 +161,7 @@ FAILCAP_MAX_FIRST_FAIL="${FAILCAP_MAX_FIRST_FAIL:-6}"
 # _failcap_capture <reason> — one capture into a fresh timestamped per-test directory. Output goes to the notes
 # file (see above) and nothing here can fail the caller.
 _failcap_capture() {
-    local reason="$1" suite test dir
+    local reason="${1:-unspecified}" suite test dir
     suite="${SUITE_TAG:-no-suite}"
     test="${TEST_TAG:-outside-a-test}"
     dir="$(_failcap_root)/${suite}/${test}/$(date -u '+%Y%m%dT%H%M%SZ')-${reason}"
@@ -180,7 +184,8 @@ _failcap_capture() {
 _failcap_armed() { [ -n "${SUITE_FAILCAP_DIR:-}" ] && [ -d "${SUITE_FAILCAP_DIR}" ] && [ -z "${_FAILCAP_ACTIVE:-}" ]; }
 
 # Called by log_fail after it has recorded the failure.
-_failcap_on_fail() {
+_failcap_on_fail() { _failcap_on_fail_body "$@" || true; }
+_failcap_on_fail_body() {
     _failcap_armed || return 0
     : > "${SUITE_FAILCAP_DIR}/suite-has-fail" 2>/dev/null || true
     local n
@@ -197,8 +202,9 @@ _failcap_on_fail() {
 }
 
 # capture_before_destructive <step> — evidence from the outgoing cluster, taken before <step> recreates it.
-capture_before_destructive() {
-    local step="$1" n
+capture_before_destructive() { _failcap_before_destructive_body "$@" || true; }
+_failcap_before_destructive_body() {
+    local step="${1:-unnamed}" n
     _failcap_armed || return 0
     [ -f "${SUITE_FAILCAP_DIR}/suite-has-fail" ] || [ "${TEST_FAIL_COUNT:-0}" -gt 0 ] || return 0
     n=$(ls -d "${SUITE_FAILCAP_DIR}"/pre-* 2>/dev/null | wc -l | tr -d ' ')

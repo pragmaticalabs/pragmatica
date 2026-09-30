@@ -451,7 +451,14 @@ run_suite() {
         fi
     done
     rm -f "$restore_marker"
-    [ -n "$SUITE_FAILCAP_DIR" ] && rm -rf "$SUITE_FAILCAP_DIR"
+    if [ -n "$SUITE_FAILCAP_DIR" ]; then
+        # One line here, in the runner (its output reaches run-container.log); the notes file is the record.
+        local ff_n pre_n
+        ff_n=$(find "$SUITE_FAILCAP_DIR" -maxdepth 1 -name 'first-fail-*' | wc -l | tr -d ' ')
+        pre_n=$(find "$SUITE_FAILCAP_DIR" -maxdepth 1 -name 'pre-*' | wc -l | tr -d ' ')
+        [ $((ff_n + pre_n)) -gt 0 ] && log_info "${suite_name}: failtime captures: ${ff_n} first-fail, ${pre_n} pre-destructive (see failure-logs/${suite_name}/)"
+        rm -rf "$SUITE_FAILCAP_DIR"
+    fi
     unset SUITE_RESTORE_FAILED_MARKER SUITE_FAILCAP_DIR SUITE_START_EPOCH
     unset SUITE_TAG
 
