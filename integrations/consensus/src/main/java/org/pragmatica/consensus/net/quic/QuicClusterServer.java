@@ -568,16 +568,18 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         /// The dialer verifies identity only AFTER the acceptor has attached, and the acceptor's attach
-        /// can supersede a healthy incumbent link (`PeerState.attachOverConnected`). So refuse BEFORE
-        /// answering or registering: close the connection without a Hello response, which the dialer
-        /// reports as an ordinary failed dial. Deliberately NOT a [NetworkMessage.HelloRefused] — that
-        /// tells the dialer its own identity is retired and makes it exit.
+        /// can supersede a healthy incumbent link (`PeerState.attachOverConnected`). So answer with our
+        /// own Hello (the dialer's existing identity check then fails the dial at once, on the ordinary
+        /// connect-failure path — closing silently would leave it pinned CONNECTING until the staleness
+        /// sweep) but NEVER register the connection, then close it. Deliberately NOT a
+        /// [NetworkMessage.HelloRefused] — that tells the dialer its own identity is retired and makes
+        /// it exit.
         private void refuseMisdirectedHello(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             log.warn("QUIC acceptor refused misdirected Hello from {}: intended={} self={}",
                      hello.sender(),
                      hello.intendedPeer(),
                      selfId);
-            ctx.channel().parent().close();
+            sendHelloResponse(ctx).addListener(_ -> ctx.channel().parent().close());
         }
 
         /// Answer a refused Hello with an explicit [NetworkMessage.HelloRefused] — in place of the Hello
@@ -601,7 +603,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             return deserializer.decode(bytes);
         }
 
-        private void sendHelloResponse(ChannelHandlerContext ctx) {
+        private ChannelFuture sendHelloResponse(ChannelHandlerContext ctx) {
             // Responses flowing back from the acceptor carry NO preamble.
             var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId,
                                                                         selfAddress,
@@ -609,9 +611,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                                                                         bootTokens.self(),
                                                                         Option.none()));
 
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
+            var written = ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
+
             // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.
             quicMetrics.onBytesSent(helloBytes.length);
+
+            return written;
         }
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
