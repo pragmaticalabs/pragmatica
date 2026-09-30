@@ -414,6 +414,7 @@ public final class ClusterSyncContext {
         return new ClusterSyncPing(self,
                                    observations,
                                    rabiaTerm,
+                                   epoch.incarnation(),
                                    epoch.rabiaTerm(),
                                    epoch.localCounter(),
                                    carriesAuthority

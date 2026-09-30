@@ -198,7 +198,8 @@ class DurableProjectionRebuildTest {
                                                               PartitionBounds.routed(StreamReadRouter.localOnly(partitions)),
                                                               this::applyAll,
                                                               this::committed,
-                                                              this::committedAssignment);
+                                                              this::committedAssignment,
+                                                              () -> 0L);
         projection = support.attach(ARTIFACT.base(),
                                     TOPIC_STREAM,
                                     Option.none(),
@@ -302,7 +303,7 @@ class DurableProjectionRebuildTest {
     /// the rewound cursor stands. Dropping `EpochBearing` from the checkpoint value turns this red.
     @Test
     void zombieCheckpoint_atTheOldEpoch_isRefusedByTheApplier() {
-        var rewound = RewindEpoch.rewindEpoch(1L, 1L);
+        var rewound = RewindEpoch.rewindEpoch(0L, 1L, 1L);
 
         applyNow(checkpoint(6L, RewindEpoch.NONE));
         assertThat(committedCursor()).as("control: the pre-rewind checkpoint landed").isEqualTo(Option.some(6L));
@@ -377,7 +378,7 @@ class DurableProjectionRebuildTest {
         projection.rebuild().await().onFailure(cause -> fail("first rebuild refused: " + cause.message()));
         awaitLive(20_000);
         awaitModel(123456L, 15_000);
-        awaitCommittedEpoch(RewindEpoch.rewindEpoch(1L, 1L), 20_000);
+        awaitCommittedEpoch(RewindEpoch.rewindEpoch(0L, 1L, 1L), 20_000);
         // The assignee's slice restarts: the registration goes with it, and a NEW store (generation 0)
         // comes back. Whatever the store counts, the committed epoch is 1/1.
         registry.unregister(ARTIFACT.base(), TOPIC_STREAM);
@@ -397,7 +398,7 @@ class DurableProjectionRebuildTest {
         projection.rebuild().await().onFailure(cause -> fail("second rebuild refused: " + cause.message()));
         var minted = freshStore.replayStatus().await().unwrap().currentRewind().unwrap();
 
-        assertThat(NodeReplayCursor.epochOf(minted).isStrictlyAfter(RewindEpoch.rewindEpoch(1L, 1L))).as("minted strictly after the committed 1/1, from committed state: %s",
+        assertThat(NodeReplayCursor.epochOf(minted).isStrictlyAfter(RewindEpoch.rewindEpoch(0L, 1L, 1L))).as("minted strictly after the committed 1/1, from committed state: %s",
                                                                                                          minted)
                   .isTrue();
         awaitCommittedEpoch(NodeReplayCursor.epochOf(minted), 20_000);
@@ -438,7 +439,7 @@ class DurableProjectionRebuildTest {
 
     /// Between the mint and the put, a competing rebuild commits a rewind record under the SAME epoch.
     private final class RacingCursor implements Projection.ReplayCursor {
-        private final StreamCursorCheckpointValue competitor = new StreamCursorCheckpointValue(0L, 1L, selfToken(), 1L, 1L, true);
+        private final StreamCursorCheckpointValue competitor = new StreamCursorCheckpointValue(0L, 1L, selfToken(), 0L, 1L, 1L, true);
         private final Projection.ReplayCursor real;
 
         private RacingCursor(Projection.ReplayCursor real) {
@@ -480,14 +481,14 @@ class DurableProjectionRebuildTest {
         assertThat(model()).isEqualTo(Option.some(123456L));
         assertThat(deadLettersForGroup()).isEmpty();
         awaitCommittedCursor(6L, 5_000);
-        assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.rewindEpoch(1L, 1L)));
+        assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.rewindEpoch(0L, 1L, 1L)));
     }
 
     /// Resume order is `(epoch, offset)`: a stale-high local cursor from before the rewind loses to the
     /// rewound cluster cursor, however low. `max(local, cluster)` on the offset turns this red.
     @Test
     void resume_prefersTheRewoundClusterCursor_overAStaleHighLocalOne() {
-        var rewound = RewindEpoch.rewindEpoch(1L, 1L);
+        var rewound = RewindEpoch.rewindEpoch(0L, 1L, 1L);
 
         localCursors.commit(GROUP, TOPIC_STREAM, PARTITION, 6L, assignmentEpoch(), RewindEpoch.NONE).await();
         applyNow(checkpoint(0L, rewound));
@@ -532,7 +533,7 @@ class DurableProjectionRebuildTest {
     private StreamConsumerManager.AssignmentAuthority authority() {
         return StreamConsumerManager.AssignmentAuthority.assignmentAuthority(this::committedAssignment,
                                                                              ConsumerAssignmentWriter.consumerAssignmentWriter(() -> true,
-                                                                                                                               () -> 1L,
+                                                                                                                               () -> Epoch.epoch(0L, 1L, 0L),
                                                                                                                                HlcClock.hlcClock(SELF),
                                                                                                                                this::committedAssignment),
                                                                              this::applyAll);

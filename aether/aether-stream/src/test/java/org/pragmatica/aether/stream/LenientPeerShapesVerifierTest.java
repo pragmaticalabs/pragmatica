@@ -115,7 +115,7 @@ class LenientPeerShapesVerifierTest {
 
     private boolean promote(NodeId self, Map<NodeId, StreamPartitionManager> rings, Map<NodeId, Long> oldest) {
         var promoted = rings.get(self);
-        var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(self, Epoch.epoch(3, 0), 3, HlcTimestamp.ZERO));
+        var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(self, Epoch.epoch(0L, 3, 0), 3, HlcTimestamp.ZERO));
         var real = PromotionTestRanges.over(rings);
         // `oldest` is what a copy's catch-up read can no longer serve. For a PEER that is its ring-and-tier retention.
         // For the CANDIDATE it is only its ring tail: the gate reads the candidate's own window through ring AND

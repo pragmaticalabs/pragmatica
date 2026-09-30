@@ -7,6 +7,7 @@ package org.pragmatica.aether.node.projection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
@@ -62,7 +63,8 @@ public record NodeReplayCursor(String topicStream,
                                PartitionBounds bounds,
                                Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
                                Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
-                               CommittedAssignments committedAssignments) implements ReplayCursor {
+                               CommittedAssignments committedAssignments,
+                               LongSupplier clusterIncarnation) implements ReplayCursor {
     private static final Logger log = LoggerFactory.getLogger(NodeReplayCursor.class);
 
     sealed interface RewindError extends Cause {
@@ -143,6 +145,11 @@ public record NodeReplayCursor(String topicStream,
     /// checkpoint, so the running consumer's next checkpoint would drive the EMPTY rebuilt model LIVE.
     /// Partitions are those the stream declares, not only the captured ones — an empty partition's
     /// committed epoch still bounds the mint.
+    ///
+    /// #1529: the token carries the cluster incarnation and ranks by it first. The committed checkpoints
+    /// may come back from a backup of an earlier incarnation after a cold restart, and the node-local
+    /// cursor survives on disk; a rewind minted in the current incarnation starts its own sequence and
+    /// outranks both, however high their generation and rewind.
     @Override
     public Promise<RewindToken> mintRewindToken(long generation) {
         return groupId.get()
@@ -159,8 +166,16 @@ public record NodeReplayCursor(String topicStream,
                               .max(RewindEpoch::compareTo)
                               .orElse(RewindEpoch.NONE);
 
-        return new RewindToken(Math.max(generation, newest.generation()),
-                               newest.rewind() + 1);
+        return nextToken(newest, clusterIncarnation.getAsLong(), generation);
+    }
+
+    /// Strictly newer than `newest`: past it in its own incarnation, or the first rewind of a newer one.
+    static RewindToken nextToken(RewindEpoch newest, long currentIncarnation, long generation) {
+        return newest.incarnation() >= currentIncarnation
+               ? new RewindToken(newest.incarnation(),
+                                 Math.max(generation, newest.generation()),
+                                 newest.rewind() + 1)
+               : new RewindToken(currentIncarnation, generation, 1L);
     }
 
     @Override
@@ -283,10 +298,10 @@ public record NodeReplayCursor(String topicStream,
     }
 
     public static RewindEpoch epochOf(RewindToken token) {
-        return RewindEpoch.rewindEpoch(token.generation(), token.rewind());
+        return RewindEpoch.rewindEpoch(token.incarnation(), token.generation(), token.rewind());
     }
 
     public static RewindToken tokenOf(RewindEpoch epoch) {
-        return new RewindToken(epoch.generation(), epoch.rewind());
+        return new RewindToken(epoch.incarnation(), epoch.generation(), epoch.rewind());
     }
 }

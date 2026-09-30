@@ -58,8 +58,8 @@ class ClusterCursorStoreTest {
     private static final int PARTITION = 2;
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     private static final NodeId PEER = NodeId.nodeId("node-2").unwrap();
-    private static final Epoch EPOCH = Epoch.epoch(1L, 1L);
-    private static final Epoch NEXT_EPOCH = Epoch.epoch(1L, 2L);
+    private static final Epoch EPOCH = Epoch.epoch(0L, 1L, 1L);
+    private static final Epoch NEXT_EPOCH = Epoch.epoch(0L, 1L, 2L);
     private static final AssignmentToken SELF_TOKEN = AssignmentToken.assignmentToken(SELF, EPOCH);
     private static final AssignmentToken PEER_TOKEN = AssignmentToken.assignmentToken(PEER, NEXT_EPOCH);
     private static final ConsumerAssignmentKey ASSIGNMENT_KEY = ConsumerAssignmentKey.consumerAssignmentKey(STREAM, PARTITION, GROUP);
@@ -113,10 +113,22 @@ class ClusterCursorStoreTest {
         @Test
         void resumeCursor_prefersTheRewoundClusterCursor_overAHigherLocalOneAtAnOlderEpoch() {
             var local = Cursor.cursor(900L, RewindEpoch.NONE);
-            var cluster = Cursor.cursor(0L, RewindEpoch.rewindEpoch(1L, 1L));
+            var cluster = Cursor.cursor(0L, RewindEpoch.rewindEpoch(0L, 1L, 1L));
 
             assertThat(ClusterCursorStore.resumeCursor(Option.some(local), Option.some(cluster)))
                     .isEqualTo(Option.some(cluster));
+        }
+
+        /// #1529 acceptance 3: the node-local cursor survives a cold restart on disk; the committed
+        /// checkpoints come back from a backup that may predate it. A rewind minted in the new run must
+        /// still win over that surviving cursor, however high its rewind epoch from the previous run.
+        @Test
+        void resumeCursor_prefersTheNewRunsRewind_overASurvivingLocalCursorFromBeforeAColdRestart() {
+            var survivingLocal = Cursor.cursor(900L, RewindEpoch.rewindEpoch(1L, 3L, 4L));
+            var newRunRewind = Cursor.cursor(0L, RewindEpoch.rewindEpoch(2L, 1L, 1L));
+
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(survivingLocal), Option.some(newRunRewind)))
+                    .isEqualTo(Option.some(newRunRewind));
         }
 
         /// And in the other direction: a local cursor committed under the NEWER epoch (this node applied
@@ -124,7 +136,7 @@ class ClusterCursorStoreTest {
         /// that same epoch, and over a higher cluster cursor at an older one.
         @Test
         void resumeCursor_prefersTheLocalCursor_whenItsEpochIsNewerOrEqualAndItIsAhead() {
-            var rewound = RewindEpoch.rewindEpoch(1L, 1L);
+            var rewound = RewindEpoch.rewindEpoch(0L, 1L, 1L);
 
             assertThat(ClusterCursorStore.resumeCursor(Option.some(Cursor.cursor(5L, rewound)),
                                                        Option.some(Cursor.cursor(2L, rewound))))
@@ -258,7 +270,7 @@ class ClusterCursorStoreTest {
     /// (the arms are pure predicates; which one runs first cannot change the verdict).
     @Nested
     class RewindAndAssignmentFencesCompose {
-        private static final RewindEpoch REWOUND = RewindEpoch.rewindEpoch(1L, 1L);
+        private static final RewindEpoch REWOUND = RewindEpoch.rewindEpoch(0L, 1L, 1L);
         private KVStore<AetherKey, AetherValue> kv;
 
         @BeforeEach
@@ -450,7 +462,7 @@ class ClusterCursorStoreTest {
 
             assign(SELF, EPOCH);
             assign(PEER, NEXT_EPOCH);
-            assign(SELF, Epoch.epoch(1L, 3L));
+            assign(SELF, Epoch.epoch(0L, 1L, 3L));
 
             assertThat(node.commit(GROUP, STREAM, PARTITION, 150L, EPOCH).await()
                            .map(outcome -> outcome instanceof CommitOutcome.Fenced)).isEqualTo(Result.success(true));
@@ -490,7 +502,7 @@ class ClusterCursorStoreTest {
         void commit_isFenced_whenTheRecordCarriesTheSameCounterUnderALaterTerm() {
             var node = storeFor(SELF, false, new ArrayList<>());
 
-            assign(SELF, Epoch.epoch(2L, 1L));
+            assign(SELF, Epoch.epoch(0L, 2L, 1L));
 
             assertThat(node.commit(GROUP, STREAM, PARTITION, 150L, EPOCH).await()
                            .map(outcome -> outcome instanceof CommitOutcome.Fenced)).isEqualTo(Result.success(true));

@@ -582,7 +582,7 @@ Kept:
 }
 ```
 
-**`POST /api/cluster/await-quiesced?epoch={ t:c }&timeout=30s`** — blocks until the queried node has `observedEpoch ≥ requested` AND the leader reports cluster-wide quiescence at ≥ that epoch; returns 200 on success, 408 on timeout.
+**`POST /api/cluster/await-quiesced?epoch={ i:t:c }&timeout=30s`** — blocks until the queried node has `observedEpoch ≥ requested` AND the leader reports cluster-wide quiescence at ≥ that epoch; returns 200 on success, 408 on timeout, 400 for an epoch not in `incarnation:term:counter` form (the pre-#1529 `t:c` form included).
 
 ### 14.2 Quiesced = what exactly?
 
@@ -598,7 +598,7 @@ Single scalar: `minOfAllAcks ≥ E AND noPending`.
 
 ```
 aether cluster generation [--json|--watch]
-aether cluster await-quiesced --epoch=7:142 [--timeout=30s]
+aether cluster await-quiesced --epoch=1:7:142 [--timeout=30s]   # incarnation:term:counter (#1529)
 ```
 
 ### 14.4 Events

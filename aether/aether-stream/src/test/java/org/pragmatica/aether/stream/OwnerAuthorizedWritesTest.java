@@ -94,7 +94,7 @@ class OwnerAuthorizedWritesTest {
         void publishLocal_refused_evenWithAnExplicitCurrentEpoch() {
             partitionManager.ownerWriteAdmission((_, _) -> Option.some(OWNER));
 
-            partitionManager.publishLocal(STREAM, PARTITION, "e0".getBytes(), 1L, Epoch.epoch(3L, 1L))
+            partitionManager.publishLocal(STREAM, PARTITION, "e0".getBytes(), 1L, Epoch.epoch(0L, 3L, 1L))
                             .onSuccessRun(Assertions::fail);
             assertThat(localHead()).isEqualTo(-1L);
         }

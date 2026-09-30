@@ -43,13 +43,13 @@ public final class HighWaterOwnerEpochGate implements OwnerEpochGate {
     }
 
     @Override
-    public boolean isStale(byte[] key, long epochTerm, long epochCounter) {
-        return highWater.isStale(domain, Epoch.epoch(epochTerm, epochCounter));
+    public boolean isStale(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        return highWater.isStale(domain, Epoch.epoch(epochIncarnation, epochTerm, epochCounter));
     }
 
     @Contract
     @Override
-    public void advance(byte[] key, long epochTerm, long epochCounter) {
-        highWater.advance(domain, Epoch.epoch(epochTerm, epochCounter));
+    public void advance(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        highWater.advance(domain, Epoch.epoch(epochIncarnation, epochTerm, epochCounter));
     }
 }

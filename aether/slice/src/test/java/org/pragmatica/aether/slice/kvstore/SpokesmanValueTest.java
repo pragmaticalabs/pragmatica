@@ -22,7 +22,7 @@ class SpokesmanValueTest {
     class Factory {
         @Test
         void spokesmanValue_withFields_populatesRecord() {
-            var epoch = Epoch.epoch(3L, 10L);
+            var epoch = Epoch.epoch(0L, 3L, 10L);
             var hlc = new HlcTimestamp(50L, new NodeId("core-1"));
 
             var v = SpokesmanValue.spokesmanValue(List.of("community-a", "community-b"), epoch, hlc, 2L);
