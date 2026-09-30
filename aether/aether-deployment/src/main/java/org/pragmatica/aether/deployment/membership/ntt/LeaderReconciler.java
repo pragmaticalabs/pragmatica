@@ -113,8 +113,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// and the existing surplus path ([`#computePeersToDrain`], the surplus follow-up) converges the cluster back
 /// to the configured count. A provision dispatched while a discounted entry exists is a substitute (generation 1)
 /// and is never itself discounted, so one missing slot has at most two in flight per ceiling window (#1786). The
-/// bound is per leader: an inherited entry restarts at generation 0. The grace runs from the entry's `sinceNanos` — dispatch, or the ULID mint time for
-/// an inherited entry — so a leader change neither restarts nor shortens it.
+/// bound is per leader: an inherited entry restarts at generation 0. The grace runs from the entry's
+/// `sinceNanos` — dispatch, or the ULID mint time for an inherited entry — so a leader change neither restarts
+/// nor shortens it.
 ///
 /// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
 /// provision a replacement for a configured core peer that has not yet joined (initial
