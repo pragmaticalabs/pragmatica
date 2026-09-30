@@ -79,6 +79,15 @@ class ClusterInitSizingRoundTripTest {
                      .sum();
     }
 
+    private static List<String> roleHosts(ClusterBootstrapConfig config, NodeRole role) {
+        return config.sources()
+                     .values()
+                     .stream()
+                     .flatMap(source -> java.util.stream.Stream.ofNullable(source.roles().get(role)))
+                     .flatMap(sub -> sub.hosts().or(List.of()).stream())
+                     .toList();
+    }
+
     private static boolean hasWorkerTable(ClusterBootstrapConfig config) {
         return config.sources()
                      .values()
@@ -302,6 +311,49 @@ class ClusterInitSizingRoundTripTest {
             assertThat(config.coreTopology().min().or(-1)).isEqualTo(5);
             assertThat(config.coreTopology().max().or(-1)).isEqualTo(5);
             assertThat(hasWorkerTable(config)).isTrue();
+            assertThat(roleHosts(config, NodeRole.CORE)).containsExactly("10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5");
+            assertThat(roleHosts(config, NodeRole.WORKER)).containsExactly("10.0.0.6", "10.0.0.7");
+        }
+
+        /// #1199 — the ssh file `init` writes must pass the validator `aether cluster bootstrap`
+        /// runs. It used to write `count` under each role, which PF-10 refuses, so every ssh `init`
+        /// output was unbootstrappable while `init` exited 0.
+        @Test
+        void ssh_initOutput_passesTheBootstrapValidator(@TempDir Path tmp) {
+            List.of("10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4,10.0.0.5",
+                    "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4,10.0.0.5,10.0.0.6,10.0.0.7")
+                .forEach(hosts -> {
+                    var output = tmp.resolve("ssh-" + hosts.length() + ".toml");
+
+                    assertThat(run("init", "--target", "ssh", "--name", "ssh-cluster",
+                                   "--hosts", hosts,
+                                   "--ssh-user", "aether", "--ssh-key", "/tmp/id_ed25519",
+                                   "--core-nodes", "5",
+                                   "--output", output.toString()).exitCode())
+                             .as("ssh init with hosts " + hosts)
+                             .isEqualTo(0);
+
+                    ClusterBootstrapConfigValidator.validate(parsed(output))
+                                                   .onFailure(cause -> fail("ssh init output is not bootstrappable: " + cause.message()));
+                });
+        }
+
+        /// #1199 — `init` validates its own output before writing it. A host listed twice lands in both
+        /// the core and worker tiers, which bootstrap refuses (PF-09); `init` must refuse too, and
+        /// must not leave the unbootstrappable file behind.
+        @Test
+        void ssh_initRefusesToWriteAConfigBootstrapWouldReject(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+
+            var result = run("init", "--target", "ssh", "--name", "ssh-cluster",
+                             "--hosts", "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4,10.0.0.5,10.0.0.1",
+                             "--ssh-user", "aether", "--ssh-key", "/tmp/id_ed25519",
+                             "--core-nodes", "5",
+                             "--output", output.toString());
+
+            assertThat(result.exitCode()).isNotEqualTo(0);
+            assertThat(result.stderr()).contains("PF-09");
+            assertThat(output).doesNotExist();
         }
     }
 

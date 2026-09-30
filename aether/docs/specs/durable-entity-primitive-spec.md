@@ -292,18 +292,36 @@ public @interface OrdersEntity {}
 
 ```toml
 [orders-entity]
-# Partition count for this entity type; each partition gets one fenced owner.
-partitions        = 64
-# Replication factor of the entity's backing stream partition — copies per partition INCLUDING
-# the owner. Honored on the restart-durable log path (I3): minSyncReplicas derives from it, and the
-# write acks only after owner-plus-peers meet the barrier. (An earlier revision said "ignored once
-# the log path is wired" — the opposite landed.)
-replication-factor = 3
-# Retention after terminal state before GC.
-terminal-ttl      = "7d"
-# Optional: enable per-transition audit stream.
-audit-stream      = "orders-audit"
+# Logical name of the entity family; required.
+keyspace            = "orders"
+# Partition count for this entity type; each partition gets one fenced owner. Default 64.
+partition_count     = 64
+# Optional (#1564). Replication factor of the entity's backing stream partition — copies per
+# partition INCLUDING the owner. Absent: the committed cluster [replication] default (built-in 3).
+replication_factor  = 3
+# Optional (#1564). Copies, the owner included, that hold a write before it is acknowledged.
+# Absent: min(cluster default (built-in 2), replication_factor).
+confirmation_factor = 2
 ```
+
+The section binds to `DurableEntityConfig(keyspace, partitionCount, replicationFactor,
+confirmationFactor)`; component names are looked up in snake_case, and the record is `@StrictKeys`, so
+any other key (a dashed `replication-factor`, the pre-#1564 `min_sync_replicas`) fails the bind instead
+of being ignored. An earlier revision of this example used dashed keys (`partitions`,
+`replication-factor`, `terminal-ttl`, `audit-stream`) that never bound to anything; terminal-state GC
+and a per-transition audit stream are not config keys at this head.
+
+The replication policy is the one streams and durable topics use (`guarantees.md` §4a, #1564): valid iff
+`1 ≤ confirmation_factor ≤ replication_factor`; refused, typed, at deploy (the slice-jar replication
+pre-flight) and at activation when that bound fails, when an RF below 3 came from a default, when RF
+exceeds the cluster's desired core count, or when a live keyspace is redeclared with different factors
+(`ChangedOnLiveResource`); warned (`replication-factor-below-three`, LOUD; `confirmation-equals-replication-factor`;
+`confirmation-factor-owner-only`) in the WARN log and the deploy response's `warnings`. The derived CF of
+earlier revisions (`minSyncReplicas() = min(2, RF)`) is gone (superseded by #1564). The write path appends
+on the owner (fsync) and then awaits `CF − 1` distinct non-self acks; an entity append has no pre-append
+replica floor, so a write whose barrier is not met is still applied on the owner and reported
+`ReplicationBarrierUnmet` — the record is in the owner's log and fold but was not acknowledged at CF, and is
+lost if the owner dies before any peer holds it `[mechanism: StreamEntityLogSubstrate.awaitBarrier after publishLocal]`.
 
 **Step 3 — manifest** (`slice-manifest.toml` reactive/resource section):
 
@@ -457,11 +475,14 @@ public @interface OrdersWorkflow {}
 
 ```toml
 [order-workflow]
-partitions        = 64
-replication-factor = 3
-terminal-ttl      = "30d"
-audit-stream      = "order-workflow-audit"
+keyspace            = "order-workflow"
+partition_count     = 64
+replication_factor  = 3          # optional (#1564); absent: the cluster [replication] default
+confirmation_factor = 2          # optional (#1564); absent: min(cluster default, replication_factor)
 ```
+
+Design sketch: the keys above follow `DurableEntityConfig`. Terminal-state retention (`30d`) and an audit
+stream (`order-workflow-audit`) are intended features with no config key yet.
 
 ### 6.4 Worked example — `OrderProcess` FSM
 
@@ -752,11 +773,14 @@ public @interface OrderSaga {}
 
 ```toml
 [order-saga]
-partitions        = 32
-replication-factor = 3
-terminal-ttl      = "90d"
-audit-stream      = "order-saga-audit"
+keyspace            = "order-saga"
+partition_count     = 32
+replication_factor  = 3          # optional (#1564); absent: the cluster [replication] default
+confirmation_factor = 2          # optional (#1564); absent: min(cluster default, replication_factor)
 ```
+
+Design sketch: the keys above follow `DurableEntityConfig`. Terminal-state retention (`90d`) and an audit
+stream (`order-saga-audit`) are intended features with no config key yet.
 
 ### 7.10 Worked example — order saga
 

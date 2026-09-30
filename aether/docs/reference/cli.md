@@ -652,6 +652,23 @@ aether blueprints publish org.example:my-app:1.0.0
 aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
+**Publish output — rejected bindings and warnings.** Under the default TABLE format `publish` prints
+`Published blueprint: <coords>` and then one line per entry of the response's `rejectedStreamBindings`
+(#1336) and one line per entry of its `warnings` (#1564), in response order:
+
+```
+Published blueprint: org.example:my-app:1.0.0
+WARNING [streams.orders] [replication-factor-below-three]: stream 'orders' (replication_factor=2, confirmation_factor=2): replication_factor is below 3
+```
+
+A warning line reads `WARNING <field> [<rule>]: <message>`. The replication warnings are
+`replication-factor-below-three` (an explicit `replication_factor` below 3 — LOUD),
+`confirmation-equals-replication-factor` (losing any one replica refuses writes) and
+`confirmation-factor-owner-only` (`confirmation_factor = 1`: the owner's death loses records it
+acknowledged but had not replicated); see `guarantees.md` §4a. A warning never fails the command. With
+`--quiet`, or any non-TABLE format, nothing extra is printed — JSON output already carries both keys.
+`deploy` and `apply` print the whole response body, so the same keys appear there as JSON.
+
 **Single-migrator gate.** `deploy` and `publish` (the artifact-based paths) are refused with
 HTTP 409 when the artifact declares migrations for a datasource that a **different** blueprint
 already migrates; a refused request writes nothing. Republishing the *same* blueprint at a newer
@@ -1584,12 +1601,12 @@ aether streams list
 
 ### `aether streams status <name-or-address>`
 
-Show detailed stream info including per-partition details. Bare name defaults to
-`system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream. Wraps
-`GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
+Show detailed stream info including per-partition details. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
 
 ```bash
-aether streams status my-events                  # -> system:my-events:1.0.0
+aether streams status system:my-events:1.0.0
 aether streams status orders:order-events:1.0.0
 ```
 
@@ -1624,9 +1641,9 @@ See [Management API — Declarative Stream Consumers](management-api.md#declarat
 
 ### `aether streams publish <name-or-address> <message> [--partition N]`
 
-Publish a text message to a stream. The message is base64-encoded automatically. Bare name
-defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream.
-Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
+Publish a text message to a stream. The message is base64-encoded automatically. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
 
 `--partition N` targets a specific partition; omitted, it defaults to **partition 0** (unchanged
 behavior). This command does no key-based routing — Management-API publish writes untyped bytes
@@ -1635,22 +1652,22 @@ is a direct, deliberate target choice, not a routing key. Naming a partition out
 declared range fails with `400 Bad Request` naming the valid range.
 
 ```bash
-aether streams publish my-events "Hello, world!"
+aether streams publish system:my-events:1.0.0 "Hello, world!"
 aether streams publish orders:order-events:1.0.0 "Hello, world!"
-aether streams publish my-events "Hello, world!" --partition 2
+aether streams publish orders:order-events:1.0.0 "Hello, world!" --partition 2
 ```
 
 ### `aether streams read <name-or-address> <partition>`
 
-Read events from a specific partition of a stream. Bare name defaults to `system:<name>:1.0.0`;
-a `namespace:stream:version` address targets any stream. Optional `--since <offset>` selects the
+Read events from a specific partition of a stream. Takes the full `namespace:stream:version`
+address; a bare name is refused (spell a system stream `system:<name>:1.0.0`). Optional `--since <offset>` selects the
 starting offset (maps to `?from=`), and `--limit <N>` caps the number of events returned (maps to
 `?max=`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}`.
 
 ```bash
-aether streams read my-events 0                  # -> system:my-events:1.0.0
+aether streams read system:my-events:1.0.0 0
 aether streams read orders:order-events:1.0.0 0
-aether streams read my-events 0 --since 100 --limit 50
+aether streams read orders:order-events:1.0.0 0 --since 100 --limit 50
 ```
 
 ### `aether streams create <name> [--partitions N]`
@@ -1660,12 +1677,12 @@ catalog entry. Use [`aether stream create`](#aether-stream-create-namespacestrea
 
 ### `aether streams delete <name-or-address> [--force]`
 
-Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Bare
-name defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any
-stream. Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
+Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Takes the
+full `namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
 
 ```bash
-aether streams delete my-events
+aether streams delete system:my-events:1.0.0
 aether streams delete orders:order-events:1.0.0 --force
 ```
 
@@ -1705,13 +1722,13 @@ aether streams consumer-group status orders-workers orders
 aether streams list
 
 # Check stream details
-aether streams status user-events
+aether streams status system:user-events:1.0.0
 
 # Publish a message
-aether streams publish user-events "order_created:12345"
+aether streams publish system:user-events:1.0.0 "order_created:12345"
 
 # Read events from partition 0, starting at offset 100, max 50 events
-aether streams read user-events 0 --since 100 --limit 50
+aether streams read system:user-events:1.0.0 0 --since 100 --limit 50
 ```
 
 ---
@@ -1865,6 +1882,8 @@ aether stream tail orders:order-events:1.0.0 --no-follow   # one-shot drain, the
 Create a stream at a catalog address and register it in the catalog. Idempotent: an address that
 already exists reports `exists`. `--partitions N` overrides the server-side default partition count.
 Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}`.
+There is no replication option: the stream takes the committed cluster `[replication]` defaults (#1564;
+built-in `replication_factor` 3, `confirmation_factor` 2), so a publish to it needs one registered peer.
 
 An address in the `topic` or `entity` namespace is refused with `400` (`ReservedStreamName`), because
 those stream kinds are created only by internal provisioning (durable topics, entity keyspaces). The
@@ -2582,8 +2601,8 @@ aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--res
 | `--cluster <name>` | Target the named cluster instead of the active-context one, and rewrite the file's `[cluster].name` to `<name>` before applying — the same rewrite as `aether cluster bootstrap --cluster`, so a cluster bootstrapped under an override accepts its own TOML (`cluster.name` is immutable) |
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
-| `--resume` | Resume a halted apply from first unfinished wave |
-| `--rollback` | Rollback completed waves to pre-apply state |
+| `--resume` | Resume a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below) |
+| `--rollback` | Roll back a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below); even when reached, it lists the recorded resources and destroys nothing |
 | `--full-check` | Run full network pre-flight checks |
 
 **Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
@@ -2612,6 +2631,14 @@ state for the cluster and abort without it (`No apply state found for cluster '<
 resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
 rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
 options report that message and the wave executor is unreachable end to end.
+
+**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
+- `destroyed`: gone, nothing to do;
+- `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
+  --wait --yes`, then the provider's delete (for Hetzner, `hcloud server delete <server-id>`);
+- `kept` (created by an earlier, completed step, so it belongs to the desired configuration): keep it if it joined
+  (`aether nodes`), or remove it the same way.
 
 ### `aether cluster rotate-key`
 

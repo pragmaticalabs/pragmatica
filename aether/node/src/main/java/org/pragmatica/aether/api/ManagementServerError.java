@@ -67,6 +67,21 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1564: a publish refused BEFORE the append because fewer than `confirmation_factor − 1` peers are registered
+    /// (`NOT_ENOUGH_REPLICAS`) — nothing was written, and the refusal passes once the replica set registers (a stream
+    /// created by this very publish has none yet). 503, so a client retries rather than treating it as a server fault.
+    record PublishRetryable(String streamName, Cause cause) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Publish to stream '" + streamName + "' refused before writing, retry: " + cause.message();
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
     /// #524: an explicit `partition` on a Management-API publish named a partition the stream does not
     /// declare. Names the valid range rather than silently writing to partition 0 or 500ing.
     record InvalidPartition(int requested, int partitionCount) implements ManagementServerError {

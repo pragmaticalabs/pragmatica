@@ -41,10 +41,11 @@ public interface ResourceFactory<T, C> {
     }
 
     /// Binds a config from the named section of a configuration provider; a declaration the binder
-    /// cannot honour is a failure, never a default.
+    /// cannot honour is a failure, never a default. `context` carries the node's runtime extensions, for a
+    /// binder that resolves the declaration against cluster state (#1564: stream replication defaults).
     @FunctionalInterface
     interface SectionBinder<C> {
-        Result<C> bind(ConfigurationProvider provider, String section);
+        Result<C> bind(ConfigurationProvider provider, String section, ProvisioningContext context);
     }
 
     /// Default unload: close the resource through whichever close convention it implements.

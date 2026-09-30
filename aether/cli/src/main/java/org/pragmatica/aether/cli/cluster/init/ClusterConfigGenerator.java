@@ -115,14 +115,39 @@ public sealed interface ClusterConfigGenerator {
         appendKvBare(sb,
                      "ssh_port",
                      String.valueOf(ssh.port()));
-        appendKvBare(sb, "hosts", renderStringList(ssh.hosts()));
     }
 
+    /// #1199 — an SSH source sizes each role by its OWN `hosts` list (PF-10 refuses `count`), and the
+    /// parser reads `hosts` only from the role sub-tables, so the host list is split here: the first
+    /// `core` hosts form the core tier and the remainder the worker tier.
     private static void appendRoles(StringBuilder sb, ClusterConfigAnswers answers) {
+        var core = answers.topology().core();
+
+        answers.ssh()
+               .filter(_ -> answers.target() == SourceType.SSH)
+               .onPresent(ssh -> appendSshRoles(sb, ssh, core))
+               .onEmpty(() -> appendCountRoles(sb, answers, core));
+    }
+
+    private static void appendSshRoles(StringBuilder sb, SshAnswers ssh, int core) {
+        var hosts = ssh.hosts();
+        var split = Math.min(core, hosts.size());
+
         appendSection(sb, "source." + SOURCE_NAME + ".core");
-        appendKvBare(sb,
-                     "count",
-                     String.valueOf(answers.topology().core()));
+        appendKvBare(sb, "hosts", renderStringList(hosts.subList(0, split)));
+        appendBlank(sb);
+        if (split < hosts.size()) {
+            appendSection(sb, "source." + SOURCE_NAME + ".worker");
+            appendKvBare(sb,
+                         "hosts",
+                         renderStringList(hosts.subList(split, hosts.size())));
+            appendBlank(sb);
+        }
+    }
+
+    private static void appendCountRoles(StringBuilder sb, ClusterConfigAnswers answers, int core) {
+        appendSection(sb, "source." + SOURCE_NAME + ".core");
+        appendKvBare(sb, "count", String.valueOf(core));
         answers.cloud().onPresent(cloud -> appendKv(sb, "instance_type", cloud.instanceType()));
         appendBlank(sb);
         if (answers.topology().worker() > 0) {

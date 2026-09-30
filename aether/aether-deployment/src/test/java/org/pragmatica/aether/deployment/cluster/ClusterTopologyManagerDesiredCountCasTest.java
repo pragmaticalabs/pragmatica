@@ -31,8 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// mutation check's target: without the confirm-and-retry, "loses every time" would report success.
 class ClusterTopologyManagerDesiredCountCasTest {
 
+    /// Blank TOML, as a self-bootstrapped seed carries: the scale path now reads the committed TOML's
+    /// `[replication.cluster_events]` (#1564 B1), and the placeholder `"toml"` it used before is not a TOML document.
     private static ClusterConfigValue base() {
-        return ClusterConfigValue.clusterConfigValue("toml",
+        return ClusterConfigValue.clusterConfigValue("",
                                                      "prod",
                                                      "1.0.0",
                                                      List.of(new TopologyEntry("eu", "core", 3)),
@@ -104,6 +106,37 @@ class ClusterTopologyManagerDesiredCountCasTest {
                 return outcome(commands, false);
             };
         }
+    }
+
+    /// #1564 B1: a core scale-down below the committed cluster-events confirmation factor would leave
+    /// `system:cluster-events` unresolvable; it is refused, typed, and nothing is written.
+    @Test
+    void applyDesiredCount_coreScaleBelowClusterEventsConfirmation_isRefusedWithoutApplying() {
+        var fiveCores = ClusterConfigValue.clusterConfigValue("""
+                                                              [replication.cluster_events]
+                                                              confirmation_factor = 5
+                                                              """,
+                                                              "prod",
+                                                              "1.0.0",
+                                                              List.of(new TopologyEntry("eu", "core", 5)),
+                                                              3,
+                                                              9,
+                                                              "hetzner",
+                                                              1);
+        var harness = Harness.harness(fiveCores);
+
+        var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
+                                                                    harness.writer(harness.alwaysWins()),
+                                                                    "eu",
+                                                                    "core",
+                                                                    3,
+                                                                    ClusterTopologyManagerRecord.DESIRED_COUNT_CAS_ATTEMPTS)
+                                                 .await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterReplication.ClusterEventsFactorsRefused.class));
+        assertThat(harness.applies().get()).isZero();
+        assertThat(harness.committed().get().desiredCountFor("eu", "core")).isEqualTo(5);
     }
 
     @Test

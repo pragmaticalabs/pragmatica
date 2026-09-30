@@ -2450,13 +2450,13 @@ public class AetherCli implements Runnable {
             }
 
             /// #1336: the TABLE success line alone hides the `[streams.X]` declarations the cluster did not
-            /// bind; JSON/VALUE/CSV already carry the whole body.
+            /// bind, and (#1564) the deploy-time warnings; JSON/VALUE/CSV already carry the whole body.
             private static void printRejectedStreamBindings(String response, OutputOptions options) {
                 if (options.isQuiet() || options.format() != OutputFormat.TABLE) {
                     return;
                 }
 
-                RejectedStreamBindings.lines(response).forEach(System.out::println);
+                DeployWarnings.publishTableFooter(response).forEach(System.out::println);
             }
         }
 
@@ -4212,6 +4212,11 @@ public class AetherCli implements Runnable {
         /// that could silently mean two different engine keys is worse than requiring the caller to say
         /// which one". The same now holds for these four commands, so they refuse rather than guess.
         /// `system` streams are unaffected in substance — they are still reachable, spelled in full.
+        /// #1480 — the help text for every command that takes a stream address. It used to advertise the
+        /// bare-name default #1044 removed, sending operators to the one form the parser refuses.
+        static final String STREAM_ADDRESS_HELP = "Stream address: namespace:stream:version. A bare name is refused; "
+                                                + "use system:<name>:1.0.0 for a system stream";
+
         private static Result<ResourceAddress> resolveStreamAddress(String raw) {
             return raw.contains(":")
                    ? ResourceAddress.resourceAddress(raw)
@@ -4255,7 +4260,7 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @Override
@@ -4296,7 +4301,7 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @Parameters(index = "1", description = "Message content")
@@ -4336,7 +4341,7 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @Parameters(index = "1", description = "Partition number")
@@ -4403,7 +4408,7 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
