@@ -119,7 +119,7 @@ class OwnerActivationTest {
     }
 
     private static StreamPartitionOwnershipValue ownedBy(NodeId owner, long term) {
-        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.epoch(term, 0), term, HlcTimestamp.ZERO);
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.epoch(0L, term, 0), term, HlcTimestamp.ZERO);
     }
 
     /// The refusal starts the activation asynchronously; poll briefly for it to land.

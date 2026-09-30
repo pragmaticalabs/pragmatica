@@ -44,7 +44,7 @@ class StreamOwnershipViewsTest {
     private static final NodeId COMMITTED_OWNER = new NodeId("node-b");
     private static final String STREAM = "owned-stream";
     private static final int PARTITION = 0;
-    private static final Epoch COMMITTED_EPOCH = Epoch.epoch(4L, 2L);
+    private static final Epoch COMMITTED_EPOCH = Epoch.epoch(0L, 4L, 2L);
 
     private StreamOwnershipViews views;
     private StreamPartitionManager partitionManager;

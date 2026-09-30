@@ -58,7 +58,7 @@ class ClusterSyncMetricsScopeTest {
         context.setSourceMetricsSupplier(() -> List.of(fresh,
             new CommunityMetricsSnapshot("c", WORKER, 1, List.of(), now - 60_000, 1, 1),
             new CommunityMetricsSnapshot("c", CORE, 1, List.of(), now + 60_000, 1, 1)));
-        context.broadcastPing(Epoch.epoch(1, 0), 1);
+        context.broadcastPing(Epoch.epoch(0L, 1, 0), 1);
         assertThat(network.sent.stream().filter(item -> item.message() instanceof SourceMetricsBatch).toList())
             .singleElement().satisfies(item -> assertThat(((SourceMetricsBatch) item.message()).snapshots()).containsExactly(fresh));
     }
@@ -78,6 +78,7 @@ class ClusterSyncMetricsScopeTest {
         collector.onClusterSyncPing(new ClusterSyncPing(CORE,
                                                         source,
                                                         1,
+                                                        0L,
                                                         1,
                                                         0,
                                                         Set.of(),
@@ -101,7 +102,7 @@ class ClusterSyncMetricsScopeTest {
                                                                                                    1,
                                                                                                    1))
                                                      .toList());
-        context.broadcastPing(Epoch.epoch(1, 0), 1);
+        context.broadcastPing(Epoch.epoch(0L, 1, 0), 1);
         var typedBatches = network.sent.stream().filter(item -> item.message() instanceof SourceMetricsBatch).toList();
 
         assertThat(typedBatches).hasSize(Math.ceilDiv(producerCount, 128))
@@ -144,7 +145,7 @@ class ClusterSyncMetricsScopeTest {
                                                                                              TimeSpan.timeSpan(1).hours(),
                                                                                              () -> 1L,
                                                                                              3,
-                                                                                             () -> Epoch.epoch(1, 0),
+                                                                                             () -> Epoch.epoch(0L, 1, 0),
                                                                                              PeerObservationStore.peerObservationStore());
 
                                                         ref.set(context);

@@ -50,8 +50,8 @@ class StreamOwnershipBatchDriverTest {
     private static final NodeId OWNER_B = NodeId.nodeId("core-b").unwrap();
     private static final String STREAM = "orders";
     private static final long COMMITTED_TERM = 9L;
-    private static final Epoch COMMITTED_EPOCH = Epoch.epoch(COMMITTED_TERM, 1L);
-    private static final Epoch TAKEOVER_EPOCH = Epoch.epoch(COMMITTED_TERM, 2L);
+    private static final Epoch COMMITTED_EPOCH = Epoch.epoch(0L, COMMITTED_TERM, 1L);
+    private static final Epoch TAKEOVER_EPOCH = Epoch.epoch(0L, COMMITTED_TERM, 2L);
     private static final HlcClock CLOCK = HlcClock.hlcClock(new NodeId("core-a"));
 
     private static StreamPartitionOwnershipValue ownership(NodeId owner, Epoch epoch, long ownershipTerm) {
@@ -69,7 +69,7 @@ class StreamOwnershipBatchDriverTest {
     }
 
     private static StreamPartitionOwnershipWriter leaderWriter(CommittedOwnership committed, HrwOwner hrw) {
-        return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true, () -> COMMITTED_TERM, CLOCK, committed, hrw);
+        return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true, () -> Epoch.epoch(0L, COMMITTED_TERM, 0L), CLOCK, committed, hrw);
     }
 
     private static List<PartitionKey> keys(int... partitions) {

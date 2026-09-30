@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.slice.StreamPublisher;
 import java.util.stream.IntStream;
@@ -256,7 +257,7 @@ class DurableTopicContextDeliveryTest {
 
         return StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committed,
                                                                              ConsumerAssignmentWriter.consumerAssignmentWriter(() -> true,
-                                                                                                                               () -> 1L,
+                                                                                                                               () -> Epoch.epoch(0L, 1L, 0L),
                                                                                                                                HlcClock.hlcClock(SELF),
                                                                                                                                committed),
                                                                              commands -> applyAssignments(committedAssignments, commands));

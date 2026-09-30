@@ -78,7 +78,7 @@ class SwimHintWiringTest {
     @Test
     void pongResponsiveReporter_sendsPeerResponsiveForPongSender() {
         AetherNode.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(PEER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
-                                   0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
+                                   0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         assertThat(hints)
             .as("A pong retracts that sender's PEER_UNRESPONSIVE hint (R-b)")
@@ -90,7 +90,7 @@ class SwimHintWiringTest {
     @Test
     void pongResponsiveReporter_selfPong_sendsNothing() {
         AetherNode.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(SELF, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
-                                   0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
+                                   0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         assertThat(hints).as("There is no hint about self to retract").isEmpty();
     }

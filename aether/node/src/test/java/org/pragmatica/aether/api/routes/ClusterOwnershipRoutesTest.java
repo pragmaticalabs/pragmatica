@@ -48,9 +48,9 @@ class ClusterOwnershipRoutesTest {
     private static final NodeId GOVERNOR = NodeId.nodeId("gov-1").unwrap();
     private static final NodeId DHT_OWNER = NodeId.nodeId("core-1").unwrap();
     private static final NodeId STREAM_OWNER = NodeId.nodeId("core-2").unwrap();
-    private static final Epoch COMMUNITY_EPOCH = Epoch.epoch(5, 2);
-    private static final Epoch DHT_EPOCH = Epoch.epoch(6, 1);
-    private static final Epoch STREAM_EPOCH = Epoch.epoch(7, 3);
+    private static final Epoch COMMUNITY_EPOCH = Epoch.epoch(0L, 5, 2);
+    private static final Epoch DHT_EPOCH = Epoch.epoch(0L, 6, 1);
+    private static final Epoch STREAM_EPOCH = Epoch.epoch(0L, 7, 3);
 
     private KVStore<AetherKey, AetherValue> store;
     private OwnershipEpochHighWater highWater;
@@ -151,7 +151,7 @@ class ClusterOwnershipRoutesTest {
     class FenceWindow {
         @Test
         void assembleOwnershipResponse_highWaterAheadOfCommitted_marksEntryFenced() {
-            highWater.advance(OwnershipDomain.dhtPartition("partition-3"), Epoch.epoch(9, 0));
+            highWater.advance(OwnershipDomain.dhtPartition("partition-3"), Epoch.epoch(0L, 9, 0));
 
             ClusterTopologyRoutes.assembleOwnershipResponse(node, "dht")
                                  .onFailure(cause -> fail("dht ownership must succeed: " + cause.message()))

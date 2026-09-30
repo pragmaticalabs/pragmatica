@@ -28,12 +28,12 @@ class StreamCursorCheckpointValueCodecTest {
 
     @Test
     void checkpointValue_roundTrip_distinguishesTheEpoch() {
-        var token = AssignmentToken.assignmentToken(NodeId.nodeId("node-1").unwrap(), Epoch.epoch(1L, 1L));
+        var token = AssignmentToken.assignmentToken(NodeId.nodeId("node-1").unwrap(), Epoch.epoch(0L, 1L, 1L));
         var unrewound = StreamCursorCheckpointValue.streamCursorCheckpointValue(7L, token);
-        var rewound = StreamCursorCheckpointValue.streamCursorCheckpointValue(7L, token, RewindEpoch.rewindEpoch(1L, 1L));
+        var rewound = StreamCursorCheckpointValue.streamCursorCheckpointValue(7L, token, RewindEpoch.rewindEpoch(0L, 1L, 1L));
 
         assertThat(roundTrip(unrewound).rewindEpoch()).isEqualTo(RewindEpoch.NONE);
-        assertThat(roundTrip(rewound).rewindEpoch()).isEqualTo(RewindEpoch.rewindEpoch(1L, 1L));
+        assertThat(roundTrip(rewound).rewindEpoch()).isEqualTo(RewindEpoch.rewindEpoch(0L, 1L, 1L));
         assertThat(roundTrip(rewound)).isEqualTo(rewound);
     }
 

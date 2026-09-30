@@ -21,10 +21,14 @@ import org.pragmatica.lang.Option;
 /// either reads it here, from the committed [ClusterIncarnationKey] — there is no second source.
 ///
 /// - [#current] — the committed incarnation, or `0` before genesis has minted one.
+/// - [#currentId] — the committed per-incarnation ULID (#1625), absent before genesis.
 /// - [#genesisCommand] — the leader's mint for a cluster that has none yet (incarnation 1, fresh lineage).
 /// - [#restoreCommands] — what a restore (#1533) commits: the restored lineage, above every incarnation
 ///   the backup has recorded for it.
 /// - [#superseding]/[#supersedeCommands] — what `aether backup declare-genesis` commits (#1532).
+///
+/// [ObservedIncarnation] mirrors [#current] from the key's notifications for threads that must not take the
+/// `KVStore` monitor (network threads: the QUIC and SWIM loops); it is fed from here, never written independently.
 public sealed interface ClusterIncarnation {
     /// The value [#current] answers before genesis.
     long NONE = 0L;
@@ -37,6 +41,11 @@ public sealed interface ClusterIncarnation {
                         .or(NONE);
     }
 
+    /// The committed per-incarnation ULID, when genesis has happened. An identity for equality only.
+    static Option<String> currentId(KVStore<AetherKey, AetherValue> kvStore) {
+        return committed(kvStore).map(ClusterIncarnationValue::incarnationId);
+    }
+
     /// The committed lineage and incarnation, when genesis has happened.
     static Option<ClusterIncarnationValue> committed(KVStore<AetherKey, AetherValue> kvStore) {
         return kvStore.getTyped(ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.class);
@@ -46,14 +55,16 @@ public sealed interface ClusterIncarnation {
     /// mints resolve first-wins in the applier ([ClusterIncarnationValue] is version-fenced), so a caller
     /// confirms by re-reading [#committed] rather than trusting that its own write landed.
     static Option<KVCommand<AetherKey>> genesisCommand(KVStore<AetherKey, AetherValue> kvStore,
-                                                       Supplier<String> freshLineageId) {
+                                                       Supplier<String> freshLineageId,
+                                                       Supplier<String> freshIncarnationId) {
         return committed(kvStore).isPresent()
                ? Option.none()
-               : Option.some(put(ClusterIncarnationValue.genesis(freshLineageId.get())));
+               : Option.some(put(ClusterIncarnationValue.genesis(freshLineageId.get(), freshIncarnationId.get())));
     }
 
     /// The commands a restore applies in ONE batch, after the restored state is in place: keep the
-    /// restored lineage at `max(restored, highestRecordedForLineage) + 1`.
+    /// restored lineage at `max(restored, highestRecordedForLineage) + 1`, under the fresh
+    /// `incarnationId` — never the restored one, so a reused number cannot pass for the old incarnation.
     ///
     /// The floor is what makes a restore monotonic. Restoring an OLDER backup of the lineage (L@3 while
     /// the backup store has recorded L@7) must not go back to L@4, and restoring L@5 must not reuse L@6,
@@ -69,19 +80,25 @@ public sealed interface ClusterIncarnation {
     /// already minted its own genesis before the restore ran, which the successor fence would refuse.
     /// This bypasses the fence by design; monotonicity here comes from the floor.
     static List<KVCommand<AetherKey>> restoreCommands(ClusterIncarnationValue restored,
-                                                      long highestRecordedForLineage) {
+                                                      long highestRecordedForLineage,
+                                                      String incarnationId) {
         var next = Math.max(restored.incarnation(), highestRecordedForLineage) + 1;
 
         return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()),
-                       put(ClusterIncarnationValue.clusterIncarnationValue(restored.lineageId(), next)));
+                       put(ClusterIncarnationValue.clusterIncarnationValue(restored.lineageId(), next, incarnationId)));
     }
 
     /// The incarnation `aether backup declare-genesis` moves this cluster to (#1532): its own lineage, past
     /// BOTH its own incarnation and the head's. Never backwards — a cluster at L@9 declaring over another
-    /// lineage's head at 3 goes to L@10, never L@4, which would reuse an incarnation L already ran.
-    static ClusterIncarnationValue superseding(ClusterIncarnationValue current, long headIncarnation) {
+    /// lineage's head at 3 goes to L@10, never L@4, which would reuse an incarnation L already ran. The new
+    /// incarnation gets a fresh `incarnationId` (#1625), never `current`'s: it is a different incarnation, and
+    /// sharing the id would make the two compare equal.
+    static ClusterIncarnationValue superseding(ClusterIncarnationValue current,
+                                               long headIncarnation,
+                                               String freshIncarnationId) {
         return ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(),
-                                                               Math.max(current.incarnation(), headIncarnation) + 1);
+                                                               Math.max(current.incarnation(), headIncarnation) + 1,
+                                                               freshIncarnationId);
     }
 
     /// The declaration's write, as two leader transactions submitted in ONE batch and applied in order. The

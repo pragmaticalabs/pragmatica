@@ -96,7 +96,7 @@ class HierarchicalMetadataRecoveryTest {
                                     org.pragmatica.aether.metrics.NodeReportedState expected) {
         var core = leader();
         workers.forEach(worker -> core.route(new org.pragmatica.consensus.net.NetworkServiceMessage.Send(worker,
-            new org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing(core.self(), Map.of(), 0, 0, 0,
+            new org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing(core.self(), Map.of(), 0, 0L, 0, 0,
                 java.util.Set.of(), java.util.Set.of(), Map.of(), java.util.Set.of(), false, false))));
         return workers.stream().allMatch(worker -> core.metricsCollector().reportedStates().get(worker) == expected);
     }

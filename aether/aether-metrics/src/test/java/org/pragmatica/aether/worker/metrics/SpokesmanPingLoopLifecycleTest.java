@@ -62,7 +62,7 @@ class SpokesmanPingLoopLifecycleTest {
 
     @Test
     void assignedStatus_activatesAndWritesActive() {
-        var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.epoch(7L, 0L), HlcTimestamp.ZERO, 1L);
+        var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.epoch(0L, 7L, 0L), HlcTimestamp.ZERO, 1L);
 
         loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none()));
 

@@ -38,7 +38,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final TimeSpan MAX_TIMEOUT = TimeSpan.timeSpan(120).seconds();
 
-    private static final Fn1<Cause, String> INVALID_EPOCH = Causes.forOneValue("Invalid epoch parameter [%s] (expected term:counter)");
+    private static final Fn1<Cause, String> INVALID_EPOCH = Causes.forOneValue("Invalid epoch parameter [%s] (expected incarnation:term:counter)");
 
     private static final Fn1<Cause, String> INVALID_TIMEOUT = Causes.forOneValue("Invalid timeout parameter [%s]");
 
@@ -77,16 +77,19 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private static Result<Epoch> parseEpochString(String raw) {
         var parts = raw.split(":");
 
-        if (parts.length != 2) {
+        if (parts.length != 3) {
             return INVALID_EPOCH.apply(raw).result();
         }
 
-        return parseLongPair(parts[0], parts[1]).mapError(_ -> INVALID_EPOCH.apply(raw));
+        return parseEpochParts(parts[0], parts[1], parts[2]).mapError(_ -> INVALID_EPOCH.apply(raw));
     }
 
-    private static Result<Epoch> parseLongPair(String termRaw, String counterRaw) {
-        return Number.parseLong(termRaw).flatMap(term -> Number.parseLong(counterRaw).map(counter -> Epoch.epoch(term,
-                                                                                                                 counter)));
+    /// `incarnation:term:counter` — the [Epoch#toString] form, cluster incarnation first (#1529).
+    private static Result<Epoch> parseEpochParts(String incarnationRaw, String termRaw, String counterRaw) {
+        return Result.all(Number.parseLong(incarnationRaw),
+                          Number.parseLong(termRaw),
+                          Number.parseLong(counterRaw))
+                     .map(Epoch::epoch);
     }
 
     static Result<TimeSpan> parseTimeout(Option<String> raw) {

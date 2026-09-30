@@ -115,7 +115,7 @@ class LowCandidateTwoLineagesTest {
     /// record naming `D`, drive the first demand through the gate, and wait for the attempt to settle.
     private OwnerActivation attemptPromotion() {
         var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(D,
-                                                                                             Epoch.epoch(3, 0),
+                                                                                             Epoch.epoch(0L, 3, 0),
                                                                                              3,
                                                                                              HlcTimestamp.ZERO));
         var peers = Map.of(A, ringA, C, ringC);

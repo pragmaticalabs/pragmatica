@@ -46,7 +46,7 @@ class DHTMessageEpochCodecTest {
     @Test
     void putRequest_roundTrip_preservesEpochPrimitives() {
         var codec = codec();
-        var original = new DHTMessage.PutRequest("req-1", new NodeId("n1"), bytes("k"), bytes("v"), 4242L, 7L, 3L);
+        var original = new DHTMessage.PutRequest("req-1", new NodeId("n1"), bytes("k"), bytes("v"), 4242L, 0L, 7L, 3L);
         var buf = Unpooled.buffer();
 
         try {
@@ -66,7 +66,7 @@ class DHTMessageEpochCodecTest {
     @Test
     void keyValue_roundTrip_preservesEpochPrimitives() {
         var codec = codec();
-        var original = new DHTMessage.KeyValue(bytes("mk"), bytes("mv"), 99L, 12L, 5L);
+        var original = new DHTMessage.KeyValue(bytes("mk"), bytes("mv"), 99L, 0L, 12L, 5L);
         var buf = Unpooled.buffer();
 
         try {

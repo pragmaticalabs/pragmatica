@@ -315,7 +315,7 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     private static EpochInfo toEpochInfo(Epoch epoch) {
-        return new EpochInfo(epoch.rabiaTerm(), epoch.localCounter());
+        return new EpochInfo(epoch.incarnation(), epoch.rabiaTerm(), epoch.localCounter());
     }
 
     record unused() implements ClusterGenerationAssembler {}
