@@ -42,6 +42,7 @@ import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -844,9 +845,11 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     /// #1564: a single publish refused before the append for want of registered peers answers 503 (retryable), not
-    /// a 500. The batch form reports it per item already (`OUTCOME_UNKNOWN` with the cause).
-    private static Cause retryableRefusal(String streamName, Cause cause) {
-        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS
+    /// a 500 — whether this node is the owner (`NOT_ENOUGH_REPLICAS`) or forwarded to it and the owner answered
+    /// retryable (`RemotePublishRetryable`, which the owner sends only for a pre-append refusal). The batch form
+    /// reports it per item already (`OUTCOME_UNKNOWN` with the cause).
+    static Cause retryableRefusal(String streamName, Cause cause) {
+        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || cause instanceof StreamForwardError.RemotePublishRetryable
                ? new ManagementServerError.PublishRetryable(streamName, cause)
                : cause;
     }

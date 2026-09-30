@@ -461,6 +461,20 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                    .addListener(future -> handleQuicConnect(peerId, address, attempt, future));
     }
 
+    /// #1489: a TLS handshake failure (an [javax.net.ssl.SSLException] anywhere in the cause chain) is reported as
+    /// [QuicTransportError.HandshakeFailed]; every other connect failure stays [QuicTransportError.ConnectFailed].
+    private static QuicTransportError connectFailure(InetSocketAddress address, Throwable failure) {
+        return isTlsFailure(failure)
+               ? QuicTransportError.HandshakeFailed.FACTORY.apply(address.toString(), Causes.fromThrowable(failure))
+               : QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(), Causes.fromThrowable(failure));
+    }
+
+    private static boolean isTlsFailure(Throwable failure) {
+        return java.util.stream.Stream.iterate(failure, java.util.Objects::nonNull, Throwable::getCause)
+                                      .limit(16)
+                                      .anyMatch(javax.net.ssl.SSLException.class::isInstance);
+    }
+
     @SuppressWarnings({"JBCT-PAT-01", "unchecked"})  // Netty future callback
     private void handleQuicConnect(NodeId peerId,
                                    InetSocketAddress address,
@@ -469,8 +483,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         var promise = attempt.promise();
 
         if (!future.isSuccess()) {
-            promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(),
-                                                                        Causes.fromThrowable(future.cause())));
+            promise.fail(connectFailure(address, future.cause()));
 
             return;
         }
@@ -702,14 +715,34 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             ctx.close();
         }
 
+        /// #1694: the peer closed the connection before answering our Hello — e.g. the server refused our client
+        /// certificate after the TLS handshake had completed on our side. Nothing failed the dial on this path: the
+        /// Hello timeout below guarded on the channel still being active, so the connect promise never settled.
+        /// Failing an already-settled promise is a no-op, so a close after the Hello answer changes nothing.
+        @Override
+        @Contract
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            if (!helloReceived) {
+                promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(peerId.id(),
+                                                                            Causes.cause("the peer closed the connection before answering the Hello")));
+            }
+
+            super.channelInactive(ctx);
+        }
+
         private void scheduleHelloTimeout(ChannelHandlerContext ctx) {
             ctx.executor().schedule(() -> onHelloTimeout(ctx), HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         }
 
+        /// #1694: the timeout settles the dial whether or not the channel is still active; it only closes an active one.
         private void onHelloTimeout(ChannelHandlerContext ctx) {
-            if (!helloReceived && ctx.channel().isActive()) {
-                log.warn("Hello response timeout for peer {}", peerId);
-                promise.fail(HELLO_TIMEOUT);
+            if (helloReceived) {
+                return;
+            }
+
+            log.warn("Hello response timeout for peer {}", peerId);
+            promise.fail(HELLO_TIMEOUT);
+            if (ctx.channel().isActive()) {
                 ctx.close();
             }
         }

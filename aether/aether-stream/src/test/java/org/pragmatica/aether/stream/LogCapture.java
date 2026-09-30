@@ -15,7 +15,7 @@ import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.layout.PatternLayout;
 
 
-/// Test-only: capture the formatted WARN messages one class's logger emits. The returned runnable
+/// Test-only: capture the formatted WARN-or-worse messages one class's logger emits. The returned runnable
 /// detaches the appender; call it in a `finally`. Filtering on the logger NAME keeps other loggers'
 /// WARNs out. Same shape as the deployment module's capture helpers.
 @SuppressWarnings("JBCT-RET-01")  // `Appender.append` is log4j's void override
@@ -34,7 +34,7 @@ final class LogCapture {
                                             Property.EMPTY_ARRAY) {
             @Override
             public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && loggerName.equals(event.getLoggerName())) {
+                if (event.getLevel().isMoreSpecificThan(Level.WARN) && loggerName.equals(event.getLoggerName())) {
                     sink.add(event.getMessage().getFormattedMessage());
                 }
             }
