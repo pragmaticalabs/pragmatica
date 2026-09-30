@@ -9,4 +9,5 @@
   receipt-silent for 3s. The 500ms window is a guess.
   [verified: `QuicMisdirectedDialTest` (real QUIC pair; skipping the refusal reddens it), `PeerStateTest` (removing the
   floor reddens the 1s-old case; window 0 reddens the 100ms case and 18 of 20 `QuicSimultaneousDialLaneTest`
-  repetitions), consensus 964 tests and `aether/node` 2075 tests green. `[unverified:` no cloud or multi-node run.`]
+  repetitions), consensus 964 tests and `aether/node` 2075 tests green.]
+  [unverified: no cloud or multi-node run.]
