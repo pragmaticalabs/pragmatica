@@ -42,6 +42,10 @@ public final class DistributedDHTClient implements DHTClient {
     /// MISS, at most this many ring members OUTSIDE the R-set are probed for a stranded copy. Keeps
     /// the mitigation a bounded, best-effort cache-warmth pass rather than an unbounded ring scan.
     private static final int DEFAULT_FALLBACK_PROBE_LIMIT = 8;
+    /// Upper bound on replacement requests a single quorum read may issue after its targets depart
+    /// the ring mid-read (each departed target costs at most one). Bounds the work a churning ring can
+    /// inflict on one read; past it the departed slot fails instead of being replaced.
+    private static final int DEFAULT_READ_REISSUE_LIMIT = 3;
     private static final HexFormat HEX = HexFormat.of();
 
     private final DHTNode node;
@@ -127,16 +131,13 @@ public final class DistributedDHTClient implements DHTClient {
 
         Promise<Option<byte[]>> promise = Promise.promise();
         var collector = QuorumCollector.<Option<byte[]>> quorumCollector(quorum, targets.size(), promise);
+        var read = InFlightRead.inFlightRead(key, collector, readDeadlineNanos(), DEFAULT_READ_REISSUE_LIMIT);
+        var unsubscribe = node.ring().onNodeRemoved(departed -> reissueAfterDeparture(read, departed));
 
-        for (var target : targets) {
-            if (target.equals(node.nodeId())) {
-                handleLocalGet(key, collector);
-            } else {
-                sendRemoteGet(target, key, collector);
-            }
-        }
+        targets.forEach(target -> dispatchRead(read, target));
 
         return promise.timeout(config.operationTimeout())
+                      .onResultRun(unsubscribe)
                       .flatMap(quorumResult -> resolveOrFallback(key, quorumResult));
     }
 
@@ -281,6 +282,45 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     // --- Private helpers ---
+    private long readDeadlineNanos() {
+        return System.nanoTime() + config.operationTimeout()
+                                         .nanos();
+    }
+
+    private void dispatchRead(InFlightRead read, NodeId target) {
+        if (target.equals(node.nodeId())) {
+            read.markAddressed(target);
+            handleLocalGet(read.key(), read.collector());
+        } else {
+            sendTrackedGet(read, target);
+        }
+    }
+
+    private void sendTrackedGet(InFlightRead read, NodeId target) {
+        var correlationId = IdGenerator.generate();
+
+        read.expect(target, correlationId);
+        sendRemoteGet(target, read.key(), read.collector(), correlationId);
+    }
+
+    /// A target of an in-flight read left the ring: its reply may never come, and waiting for it
+    /// would burn the whole operation timeout. If it still owed a reply, take over its slot (the
+    /// atomic `pendingOps.remove` arbitrates against a concurrent reply, so exactly one side owns the
+    /// slot) and re-issue to a replacement replica from the current ring. Quorum semantics are
+    /// untouched: same quorum, same slot count, and a departure is never counted as an empty answer.
+    private void reissueAfterDeparture(InFlightRead read, NodeId departed) {
+        read.claim(departed).flatMap(this::removePending).onPresent(_ -> replaceOrFail(read, departed));
+    }
+
+    /// Fill a departed target's slot with a replacement, or fail the slot (fast-fail accrual, the same
+    /// `QuorumCollector#onFailure` path a transport refusal takes) when no replacement is allowed.
+    private void replaceOrFail(InFlightRead read, NodeId departed) {
+        read.nextReplacement(targetNodes(read.key()))
+            .onPresent(replacement -> dispatchRead(read, replacement))
+            .onEmpty(() -> failCollector(read.collector(),
+                                         DHTError.peerUnreachable(departed, "left the ring mid-read")));
+    }
+
     /// Whether quorum is arithmetically unreachable for this op: after liveness filtering, fewer
     /// live targets remain than the required `quorum`. The `quorum` is derived from the full ring
     /// size ([`DHTConfig#effectiveWriteQuorum`] / [`DHTConfig#effectiveReadQuorum`] capped at the
@@ -490,8 +530,13 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private void sendRemoteGet(NodeId target, byte[] key, QuorumCollector<Option<byte[]>> collector) {
-        var correlationId = IdGenerator.generate();
+        sendRemoteGet(target, key, collector, IdGenerator.generate());
+    }
 
+    private void sendRemoteGet(NodeId target,
+                               byte[] key,
+                               QuorumCollector<Option<byte[]>> collector,
+                               String correlationId) {
         pendingOps.put(correlationId, new PendingOperation<>(collector));
         dispatchTracked(target,
                         new DHTMessage.GetRequest(correlationId, node.nodeId(), key),

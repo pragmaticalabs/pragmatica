@@ -24,6 +24,9 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -386,6 +389,128 @@ class DistributedDHTClientTest {
                   .await()
                   .onSuccess(_ -> fail("Expected failure"))
                   .onFailure(c -> assertThat(c.message()).contains("No available nodes"));
+        }
+    }
+
+    /// A target of an in-flight R-set read departs the ring: the read re-issues to a replacement from the
+    /// current ring instead of waiting out the operation timeout. The client is a pure reader (its own
+    /// id is not on the ring), so every replica is remote and driven by hand through the capturing network.
+    @Nested
+    class DepartureReissue {
+        private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, timeSpan(10).seconds());
+
+        private ConsistentHashRing<NodeId> ring;
+        private CapturingNetwork network;
+        private DistributedDHTClient client;
+
+        @BeforeEach
+        void setUp() {
+            ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            // enough spare replicas that only the re-issue bound, never candidate exhaustion, stops a churning read
+            for (var i = 1; i <= 12; i++) {
+                ring.addNode(new NodeId("replica-" + i));
+            }
+            var node = dhtNode(LOCAL_NODE, memoryStorageEngine(), ring, CONFIG);
+            network = new CapturingNetwork();
+            client = distributedDHTClient(node, network, CONFIG);
+        }
+
+        private List<CapturedMessage> getRequests() {
+            return network.captured.stream()
+                                   .filter(m -> m.message() instanceof DHTMessage.GetRequest)
+                                   .toList();
+        }
+
+        private void reply(CapturedMessage request, Option<byte[]> value) {
+            var req = (DHTMessage.GetRequest) request.message();
+
+            client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), request.target(), value));
+        }
+
+        @Test
+        void get_resolvesWithoutTimeout_whenOneTargetDepartsMidRead() {
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+            assertThat(initial).hasSize(3);
+
+            // one replica answers with the value, one never answers and leaves the ring, one is silent
+            reply(initial.getFirst(), Option.some(value("v1")));
+            ring.removeNode(initial.get(1).target());
+
+            var reissued = getRequests().subList(3, getRequests().size());
+            assertThat(reissued).hasSize(1);
+            assertThat(reissued.getFirst().target()).isNotIn(initial.stream().map(CapturedMessage::target).toList());
+            reply(reissued.getFirst(), Option.some(value("v1")));
+
+            // the timeout is 10s: resolving inside 2s proves the read did not wait for it
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected resolution without waiting for the timeout: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+        }
+
+        @Test
+        void get_sendsNoExtraRequests_whenNoTargetDeparts() {
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+
+            reply(initial.get(0), Option.some(value("v1")));
+            // a node outside the R-set leaving mid-read is not a departure of a read target
+            var bystander = new HashSet<>(ring.nodes());
+            initial.forEach(m -> bystander.remove(m.target()));
+            bystander.stream().limit(2).forEach(ring::removeNode);
+            reply(initial.get(1), Option.some(value("v1")));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected success: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+            assertThat(getRequests()).hasSize(3);
+        }
+
+        @Test
+        void get_doesNotReissue_afterReadCompleted() {
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+
+            // quorum (2 of 3) completes the read; the third target is still owing a reply
+            reply(initial.get(0), Option.some(value("v1")));
+            reply(initial.get(1), Option.some(value("v1")));
+            read.await(timeSpan(2).seconds());
+            ring.removeNode(initial.get(2).target());
+
+            assertThat(getRequests()).hasSize(3);
+        }
+
+        @Test
+        void get_boundsReissues_andFailsFastOncePastTheBound() {
+            var read = client.get(key("k1"));
+            var departed = new ArrayList<NodeId>();
+
+            // depart 4 of the targets currently owing a reply; only 3 replacements may ever be issued
+            for (var i = 0; i < 4; i++) {
+                departNextOwingTarget(departed);
+            }
+
+            assertThat(getRequests()).hasSize(6);
+            assertThat(read.isResolved()).isFalse();
+
+            // a fifth departure fails a second slot: quorum 2 of 3 becomes impossible, no timeout wait
+            departNextOwingTarget(departed);
+
+            assertThat(getRequests()).hasSize(6);
+            var outcome = read.await(timeSpan(2).seconds());
+            outcome.onSuccess(_ -> fail("Expected quorum failure"))
+                   .onFailure(c -> assertThat(c).isInstanceOf(DHTError.QuorumNotReached.class));
+        }
+
+        private void departNextOwingTarget(List<NodeId> departed) {
+            var owing = getRequests().stream()
+                                     .map(CapturedMessage::target)
+                                     .filter(t -> !departed.contains(t))
+                                     .findFirst()
+                                     .orElseThrow();
+
+            departed.add(owing);
+            ring.removeNode(owing);
         }
     }
 
