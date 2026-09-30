@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.repository.maven.LocalRepository;
 
 import java.io.IOException;
@@ -61,6 +62,8 @@ class LocalRepositoryTest {
                       // Then: error message indicates artifact not found
                       assertThat(cause.message()).contains("Artifact not found");
                       assertThat(cause.message()).contains("org.example:missing:1.0.0");
+                      // an ANSWER ("absent"), not an inability to answer: the composite lookup keys on this
+                      assertThat(cause).isInstanceOf(Repository.Absent.class);
                   });
     }
 
