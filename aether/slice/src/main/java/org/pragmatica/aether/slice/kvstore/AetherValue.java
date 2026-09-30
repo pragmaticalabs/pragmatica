@@ -104,7 +104,7 @@ public sealed interface AetherValue {
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
-                                        instances,
+                                        defaultMinInstances(instances),
                                         owner,
                                         DEFAULT_PLACEMENT,
                                         System.currentTimeMillis(),
@@ -116,7 +116,7 @@ public sealed interface AetherValue {
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
             return new SliceTargetValue(version,
                                         instances,
-                                        instances,
+                                        defaultMinInstances(instances),
                                         none(),
                                         DEFAULT_PLACEMENT,
                                         System.currentTimeMillis(),
@@ -185,6 +185,15 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+
+        /// #1497 — the one availability floor for every writer that has no explicit value: `ceil(n/2)`, the
+        /// blueprint default. CLI/REST deploy, `addSliceTargetCommand`, A/B tests and rollback used to write
+        /// `minInstances == instances`; the #1488 drain guard then could never drain an owner of such a slice,
+        /// so a surplus drain deferred forever. Known cost (owner-accepted): `minInstances` is also the
+        /// autoscaler's floor, so a slice deployed with 3 instances from the CLI can now scale down to 2.
+        public static int defaultMinInstances(int instances) {
+            return Math.ceilDiv(instances, 2);
         }
 
         public int effectiveMinInstances() {

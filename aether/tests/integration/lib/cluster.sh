@@ -4732,23 +4732,27 @@ deploy_list() {
 
 deploy_status() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "{id}" || return 1
     api_get "/api/v1/deploy/${deployment_id}"
 }
 
 deploy_promote() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "promote" || return 1
     log_info "Promoting deployment: ${deployment_id}" >&2
     api_post "/api/v1/deploy/promote/${deployment_id}" "{}"
 }
 
 deploy_rollback() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "rollback" || return 1
     log_info "Rolling back deployment: ${deployment_id}" >&2
     api_post "/api/v1/deploy/rollback/${deployment_id}" "{}"
 }
 
 deploy_complete() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "complete" || return 1
     log_info "Completing deployment: ${deployment_id}" >&2
     api_post "/api/v1/deploy/complete/${deployment_id}" "{}"
 }
@@ -4788,9 +4792,26 @@ deploy_cleanup() {
 }
 
 # Extract deployment ID from the most recent entry in deploy list
+# #1476: an empty id fails HERE, quoting the response it was read from, instead of flowing on into
+# `/api/v1/deploy/promote/` and coming back as a 404 that looks like a routing fault. The [FAIL] line
+# goes to stderr because callers capture stdout (`did=$(deploy_extract_id ...)`).
 deploy_extract_id() {
-    local deployments="$1"
-    json_value "$deployments" "deploymentId"
+    local deployments="$1" id
+    id=$(json_value "$deployments" "deploymentId")
+    if [ -z "$id" ]; then
+        echo -e "${RED}[FAIL]${NC}  $(_log_prefix)no deploymentId in the response, so no deployment was started or listed: $(printf '%s' "$deployments" | head -c 300)" >&2
+        return 1
+    fi
+    printf '%s' "$id"
+}
+
+# #1476: never issue a deployment request with an empty id. `/api/v1/deploy/promote/` with no id is a
+# 404 that reads as a missing route, while the real cause is a failed start earlier in the test.
+_require_deployment_id() {
+    local deployment_id="$1" action="$2"
+    [ -n "$deployment_id" ] && return 0
+    echo -e "${RED}[FAIL]${NC}  $(_log_prefix)refusing to call /api/v1/deploy/${action} with an empty deployment id; the step that should have produced it failed earlier" >&2
+    return 1
 }
 
 # ---------------------------------------------------------------------------
