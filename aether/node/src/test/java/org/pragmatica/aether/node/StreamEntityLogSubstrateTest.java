@@ -41,6 +41,27 @@ import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLo
 /// go through `partitionManager` alone — so they are passed as `null` rather than built for no purpose.
 class StreamEntityLogSubstrateTest {
 
+    /// #1564 R8 pin (entities): a keyspace redeclared with different replication factors is refused, typed — the
+    /// committed policy of a live resource is not changed in place.
+    @Test
+    void ensureLog_existingStreamWithDifferentFactors_isRefused() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("orders", 8, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).unwrap();
+
+        var changed = substrate.ensureLog("orders", 8, new org.pragmatica.aether.slice.ReplicationFactors(3, 3));
+
+        assertThat(changed.<Object> fold(cause -> cause, _ -> "accepted")).isInstanceOf(org.pragmatica.aether.slice.ReplicationFactorsError.ChangedOnLiveResource.class);
+    }
+
     /// #596 review S4: `ensureLog` is idempotent, and idempotent must not mean SHAPE-BLIND. A redeploy
     /// declaring a different partition_count re-hashes every key against a stream laid out for the old
     /// count — keys land on partitions whose history lives elsewhere and read back as absent. The
@@ -57,9 +78,9 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("orders", 8, 3, 2).unwrap();
+        substrate.ensureLog("orders", 8, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).unwrap();
 
-        var mismatched = substrate.ensureLog("orders", 4, 3, 2);
+        var mismatched = substrate.ensureLog("orders", 4, new org.pragmatica.aether.slice.ReplicationFactors(3, 2));
 
         assertThat(mismatched.isFailure()).isTrue();
 
@@ -81,9 +102,9 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("orders", 8, 3, 2).unwrap();
+        substrate.ensureLog("orders", 8, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).unwrap();
 
-        assertThat(substrate.ensureLog("orders", 8, 3, 2).isSuccess())
+        assertThat(substrate.ensureLog("orders", 8, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).isSuccess())
             .as("the same declaration must keep re-ensuring cleanly — every node hosting the keyspace calls it")
             .isTrue();
     }
@@ -105,7 +126,7 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("orders", 1, 3, 0).unwrap();
+        substrate.ensureLog("orders", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
         partitionManager.ownerWriteAdmission((_, _) -> Option.some(new NodeId("node-owner")));
 
         var refusal = substrate.append("orders", 0, new byte[] {1, 2, 3}).await();
@@ -133,7 +154,7 @@ class StreamEntityLogSubstrateTest {
                                                  null);
 
         // minSyncReplicas=2 ("owner plus one peer") must await exactly ONE non-self ack.
-        substrate.ensureLog("orders", 1, 3, 2).unwrap();
+        substrate.ensureLog("orders", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).unwrap();
         substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
 
         assertThat(capturedMinAcks.get()).isEqualTo(1);
@@ -156,7 +177,7 @@ class StreamEntityLogSubstrateTest {
 
         // minSyncReplicas=3 ("owner plus two peers") must await exactly TWO non-self acks — guards
         // against a mutant that hardcodes `1` rather than computing `minSyncReplicas - 1`.
-        substrate.ensureLog("orders", 1, 3, 3).unwrap();
+        substrate.ensureLog("orders", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 3)).unwrap();
         substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
 
         assertThat(capturedMinAcks.get()).isEqualTo(2);
@@ -181,7 +202,7 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("orders", 1, 3, 2).unwrap();
+        substrate.ensureLog("orders", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).unwrap();
         substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
 
         assertThat(substrate.headOffset("orders", 0)).isEqualTo(0L);
@@ -208,7 +229,7 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("ledger", 1, 3, 1).unwrap();
+        substrate.ensureLog("ledger", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
         substrate.append("ledger", 0, new byte[16]).await().unwrap();
 
         substrate.append("ledger", 0, new byte[300_000])

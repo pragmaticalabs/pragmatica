@@ -12,12 +12,14 @@
 #
 # Binding contract (SpiResourceProvider.loadConfig -> ProviderBasedConfigService.bindToClass):
 # the section is bound to the ResourceFactory's `configType()`, here
-# `DurableEntityConfig(String keyspace, int partitionCount, int replicationFactor)`. The binder
-# prefers the record's static `durableEntityConfig(...)` factory over its constructor, so every
-# validation rule below is enforced at BIND time and a rejected value fails slice loading with a
-# named cause. Record components are looked up after `toSnakeCase`, so `partitionCount` must be
-# spelled `partition_count`. Every component must be present — the binder has no default-value
-# fallback.
+# `DurableEntityConfig(String keyspace, int partitionCount, Option<Integer> replicationFactor,
+# Option<Integer> confirmationFactor)` (#1564). The binder prefers the record's static
+# `durableEntityConfig(...)` factory over its constructor, so the rules below are enforced at BIND time
+# and a rejected value fails slice loading with a named cause. Record components are looked up after
+# `toSnakeCase`, so `partitionCount` must be spelled `partition_count`. `keyspace` and
+# `partition_count` must be present; `replication_factor` and `confirmation_factor` are optional and
+# resolve against the committed cluster `[replication]` defaults at provisioning. The record is
+# @StrictKeys: a key it does not declare fails the bind.
 [entities.orders]
 keyspace = "orders"
 
@@ -34,9 +36,8 @@ partition_count = 8
 # replicated stream partition, so the field finally buys what it always claimed to.
 #
 # This is the total number of copies of each partition INCLUDING the owner, and it becomes the
-# backing stream's `replicas`. At 3, DurableEntityConfig.minSyncReplicas() derives 2 — the owner plus
-# one peer must hold a record before the write acks — which is what makes state survive the OWNER'S
-# DEATH and not merely its restart. Declaring 1 here would still be legal and would still be durable
-# across a restart, but a new owner would recover only to the last checkpoint; that is the weaker
-# guarantee and it has to be asked for on purpose.
+# backing stream's replication factor. With no `confirmation_factor` declared, CF resolves to
+# min(cluster default 2, 3) = 2 — the owner plus one peer must hold a record before the write acks —
+# which is what makes state survive the OWNER'S DEATH and not merely its restart. A factor below 3 may
+# be declared (#1564), with a LOUD warning; it is the weaker guarantee and has to be asked for on purpose.
 replication_factor = 3

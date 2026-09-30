@@ -87,6 +87,12 @@ affinity_key = "customerId"
 |----------|------|---------|-------------|
 | `instances` | int | `3` | Number of slice instances. At least 3; fewer is refused when the blueprint is parsed (#1495), so one drain or node failure leaves a slice at two or more instances `[mechanism: placement puts at most one instance of a slice on a node]`. The floor also holds at runtime: `aether scale` refuses fewer than 3, and the autoscaler never scales a slice below 3 |
 | `minAvailable` | int | `ceil(instances/2)` | Fewest ACTIVE instances a scale-down or an automatic drain may leave. At least 2 and at most `instances`; fewer is refused when the blueprint is parsed (#1495) |
+| `timeout_ms` | int | - | Request timeout in milliseconds |
+| `memory_mb` | int | - | Memory allocation per instance |
+| `load_balancing` | string | - | Load balancing strategy (`round_robin`, `least_connections`) |
+| `affinity_key` | string | - | Request field for sticky routing |
+
+If a slice config file is missing, default values are used (logged as info message).
 
 How far each operation can take a running slice down (#1495):
 
@@ -98,12 +104,6 @@ How far each operation can take a running slice down (#1495):
 | Operator drain or shutdown (`aether nodes drain`, `POST /api/v1/nodes/drain\|shutdown`) | **none yet**: only the core disruption budget is checked | see #1720 `[unverified-gap: #1720]` |
 | Automatic rollback (#1573) | 3 when it has to create the slice target; otherwise the existing count | a missing target is written at `SliceSpec.MIN_INSTANCES` |
 | A/B test (known exception) | **1**: A/B tests currently write a 1-instance target | see #1721 `[unverified-gap: #1721]` |
-| `timeout_ms` | int | - | Request timeout in milliseconds |
-| `memory_mb` | int | - | Memory allocation per instance |
-| `load_balancing` | string | - | Load balancing strategy (`round_robin`, `least_connections`) |
-| `affinity_key` | string | - | Request field for sticky routing |
-
-If a slice config file is missing, default values are used (logged as info message).
 
 ### Topological Ordering
 

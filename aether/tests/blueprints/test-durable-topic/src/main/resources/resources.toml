@@ -5,19 +5,21 @@
 # and a different key convention.
 #
 # KEY CONVENTION TRAP, stated because it silently degrades the whole fixture: topic sections use
-# UNDERSCORES (`topic_name`, `min_sync_replicas`) while `[streams.X]` sections use DASHES
-# (`min-sync-replicas`). A dashed key here parses as ABSENT, and an absent `durability` defaults to
+# UNDERSCORES (`topic_name`, `confirmation_factor`) while most `[streams.X]` keys still use DASHES
+# (`max-event-size`). A dashed key here parses as ABSENT, and an absent `durability` defaults to
 # "ephemeral" — so a typo would not fail, it would quietly hand the test an ephemeral topic and make
 # every durable assertion vacuously green. DurableTopicDeliveryForgeTest therefore asserts the
 # topic came up durable rather than trusting this file.
 #
-# Every topic is `partitions = 1, replicas = 3, min_sync_replicas = 3`, and each number is load
-# bearing:
+# Every topic is `partitions = 1, replication_factor = 3, confirmation_factor = 3`, and each number is
+# load bearing:
 #
-#   - `replicas = 3` + `min_sync_replicas = 3` is the durable tier's only accepted scoping
-#     (durable-pubsub-spec §3: a durable declaration outside `min-sync == replicas >= 3` is rejected
-#     at parse; 3 is the stream replication minimum, #1547). It is also what makes the owner-kill arm mean anything: at RF=1 the ack never
-#     depended on a second copy, so surviving a kill would prove nothing.
+#   - `replication_factor = 3` + `confirmation_factor = 3`: every acknowledged event is on every replica,
+#     which is what the owner-kill arm asserts (DurableTopicDeliveryForgeTest derives its peer-ack count
+#     from it). Since #1564 CF < RF is accepted too (lossless through #1555's promotion gate); this
+#     fixture keeps CF == RF on purpose, and so raises the `confirmation-equals-replication-factor`
+#     deploy warning. At RF=1 the ack never depended on a second copy, so surviving a kill would prove
+#     nothing.
 #   - `partitions = 1` makes two separate assertions sharp. Delivery: with the slice deployed on
 #     every node and exactly one partition, a correctly gated consumer delivers each event ONCE
 #     cluster-wide while an ungated one delivers it once per node — the count discriminates.
@@ -30,8 +32,8 @@
 topic_name = "order-events"
 durability = "durable"
 partitions = 1
-replicas = 3
-min_sync_replicas = 3
+replication_factor = 3
+confirmation_factor = 3
 retention = "7d"
 
 # The dead-letter path. TWO subscriber methods bind to this ONE topic, which makes them two distinct
@@ -43,8 +45,8 @@ retention = "7d"
 topic_name = "poison-events"
 durability = "durable"
 partitions = 1
-replicas = 3
-min_sync_replicas = 3
+replication_factor = 3
+confirmation_factor = 3
 retention = "7d"
 
 # #1333: the projection arm. ONE partition, so the projection's in-process store has exactly one
@@ -55,6 +57,6 @@ retention = "7d"
 topic_name = "projection-events"
 durability = "durable"
 partitions = 1
-replicas = 3
-min_sync_replicas = 3
+replication_factor = 3
+confirmation_factor = 3
 retention = "7d"

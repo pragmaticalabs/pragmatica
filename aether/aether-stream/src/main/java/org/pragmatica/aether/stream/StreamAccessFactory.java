@@ -206,6 +206,6 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
     }
 
     private static Result<Unit> ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
-        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(config));
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(config));
     }
 }

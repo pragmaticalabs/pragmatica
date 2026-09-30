@@ -44,8 +44,8 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Provisioning stall under churn | fix landed; budget cloud-pending | **pending validation (#362)** |
 | Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
 | `BEST_EFFORT` slice failure (durable `PARTIAL`) | n/a — durable until redeployed | `BlueprintStatusAggregationTest` |
-| Stream owner failover (`min-sync-replicas ≥ 2`) | none today (#1550); ≤180 s / ≤120 s measured at RF=2 before #1547 | 02-chaos C17–C20 (RF=2) |
-| Stream owner loss (RF = 3, default `min-sync-replicas`) | none today — ownership stays on the dead owner; replicated history held on survivors | `StreamDefaultRfOwnerReplacementTest` |
+| Stream owner failover (`confirmation_factor ≥ 2`) | none today (#1550); ≤180 s / ≤120 s measured at RF=2 before #1547 | 02-chaos C17–C20 (RF=2) |
+| Stream owner loss (RF = 3, default `confirmation_factor` 2) | none today — ownership stays on the dead owner; replicated history held on survivors | `StreamDefaultRfOwnerReplacementTest` |
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
 | QUIC connection churn | missing-peer reconcile 5–60 s | 12-network connectedPeerCount |
 | Full-cluster restart | derived state rebuilds; snapshot-only KV | guarantees.md §1–§2 · **partial (#349)** |
@@ -126,24 +126,24 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ## Streams
 
-### Stream owner failover — `min-sync-replicas ≥ 2`
+### Stream owner failover — `confirmation_factor ≥ 2`
 
 - **Symptom (intended):** a partition's owner dies; a brief read unavailability, then a caught-up replica serves the complete history. **Today** ownership does not leave a killed owner without a later membership event (#1550) — see the section below; the budget and the "no operator action" line describe the RF=2 behaviour 02-chaos measured before #1547, not the current one.
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes, `servedByOwner` returns true on the new owner, `replicas[].state` shows a CAUGHT_UP replica.
 - **Automatic response (intended, `[design intent — unverified]` at RF=3):** HRW ownership reseats to a CAUGHT_UP replica; the epoch fence rejects the deposed owner's late appends; the new owner serves **every** pre-kill event in order.
 - **Budget:** measured at RF=2 before #1547 — new owner-authoritative view ≤180 s; complete history settled ≤120 s (02-chaos C18/C19/C20). None today (#1550).
-- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `min-sync-replicas = replicas` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events). At `2 ≤ min-sync-replicas < replicas` an acked event is on the owner and `min-sync − 1` peers, and promotion catches up from a single survivor, so a lossless promotion is not yet guaranteed (#411). The 02-chaos proof below ran at RF=2 with `min-sync-replicas = replicas`; its fixture is RF=3 with `min-sync-replicas = 2` since #1547, and a blueprint's declared `min-sync-replicas` reaches the runtime since #1549.
+- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `confirmation_factor = replication_factor` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events). At `2 ≤ CF < RF` an acked event is on the owner and `CF − 1` peers; #1555's promotion gate catches the new owner up from the highest-head live member before it serves, so every acked event held by a live replica is recovered `[design intent — unverified]`. The 02-chaos proof below ran at RF=2 with the write-ack floor equal to RF (then named `min-sync-replicas`, renamed `confirmation_factor` by #1564); its fixture is RF=3 with CF 2 since #1547, and a blueprint's declared factor reaches the runtime since #1549.
 - **Operator action:** none is known to move ownership off a killed owner today (#1550); replacing the lost core is the only membership event that has been observed to.
 - **Proof anchor:** `02-chaos/test-stream-replica-failover.sh` (C17–C20); `PartitionBackfillTest`.
 
-### Stream owner loss — RF = 3, default `min-sync-replicas` (the default stream)
+### Stream owner loss — RF = 3, default `confirmation_factor` 2 (the default stream)
 
 - **Symptom (#1550):** a partition's owner is terminally removed and the partition stops being served: every survivor keeps resolving the dead node as owner, and forwarded reads fail with "Stream partition is not owned by this node".
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes and the new owner's view shows the replicas' `confirmedOffset`.
 - **Automatic response:** intended — HRW hands ownership to the next-ranked survivor, which is already a replica `[design intent — unverified]`. Measured 2026-09-27 on the rc4 tip and at RF=3: ownership did not move within 3 minutes, and a replacement core joining under a fresh identity did not move it either.
 - **Budget:** none today.
-- **Degraded / at risk:** events acked but not yet replicated when the owner died. At the default `min-sync-replicas` the ack is the owner's WAL fsync alone, and a terminally removed owner's WAL is never read again, so those events are **lost**, not merely unavailable. Everything that reached the replicas is still HELD on the survivors `[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]`; it is not served while ownership stays on the dead owner.
-- **Operator action:** replace the lost core; no action is known to move ownership off the dead owner. To make every acked event reach the replicas before the ack, set `min-sync-replicas = replicas` (see [known-limitations.md](known-limitations.md)).
+- **Degraded / at risk:** since #1564 the default `confirmation_factor` is 2, so an acked event is on the owner and one peer before the ack and the owner's death alone does not lose it `[design intent — unverified]`. Before #1564 the default acked on the owner's WAL fsync alone; that is still the case for a stream declaring `confirmation_factor = 1` (warned at declaration), and because a terminally removed owner's WAL is never read again, events acked but not yet replicated when such an owner dies are **lost**, not merely unavailable. Everything that reached the replicas is still HELD on the survivors `[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]`; it is not served while ownership stays on the dead owner.
+- **Operator action:** replace the lost core; no action is known to move ownership off the dead owner. To make every acked event reach every replica before the ack, declare `confirmation_factor = replication_factor` — at the cost that losing any one replica refuses writes (see [known-limitations.md](known-limitations.md)).
 - **Proof anchor:** Forge `StreamDefaultRfOwnerReplacementTest` (owner killed, replacement joins under a fresh id: two survivors hold all events, RF=1 control holds none; the serving half is disabled behind a tripwire on the ownership stall).
 
 ### Fresh-stream first-publish race

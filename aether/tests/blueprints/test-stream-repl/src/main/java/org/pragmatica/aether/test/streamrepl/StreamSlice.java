@@ -19,9 +19,9 @@ import static org.pragmatica.lang.Result.success;
 /// Minimal stream-only slice (no database) for the 02-chaos replica-failover test.
 ///
 /// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.repl-failover-events`
-/// resource (declared in `resources.toml` with partitions=1, replicas=3, min-sync-replicas=2 and count-based
-/// retention so a slow consumer is never evicted). The declared min-sync-replicas=2 is meant to make each
-/// publish await one replica ack; it does not reach the runtime until #1549. Exposes two
+/// resource (declared in `resources.toml` with partitions=1, replication_factor=3, confirmation_factor=2 and
+/// count-based retention so a slow consumer is never evicted). The declared confirmation_factor=2 makes each
+/// publish await one replica ack. Exposes two
 /// app-HTTP routes:
 ///
 ///   - `POST /api/stream-repl/publish` — append one payload to the log (partition 0).

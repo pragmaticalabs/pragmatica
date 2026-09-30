@@ -38,7 +38,7 @@ test_rolling_promote() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
+    assert_ne "$did" "" "Got deployment ID" || return 1
     deploy_promote "$did"
     if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
         log_fail "Rolling promote of ${did} did not quiesce within 30s"
@@ -68,7 +68,7 @@ test_rolling_complete() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
+    assert_ne "$did" "" "Got deployment ID" || return 1
     local result
     result=$(deploy_complete "$did")
     assert_contains "$result" "COMPLETED" "Rolling deployment completed"

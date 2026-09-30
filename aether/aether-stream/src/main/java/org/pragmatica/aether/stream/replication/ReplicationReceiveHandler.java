@@ -67,7 +67,7 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.REPLICA_FSYNC_F
 /// same ordered section that found the divergence: every later offer at an offset `>= N`, in this batch or any
 /// later one, live or duplicate, is refused as [StreamError.ReplicaQuarantined]. Nothing at or past `N` is
 /// therefore ever acked, and an ack is cumulative on the owner, so no ack can cover `N`. Offsets below `N`
-/// still verify and ack. The owner's min-sync barrier stops counting this replica at `N - 1` for as long as the
+/// still verify and ack. The owner's confirmation barrier stops counting this replica at `N - 1` for as long as the
 /// quarantine lasts.
 ///
 /// The refusal still fires `onGap`. In production that runs the backfill orchestrator, which refuses every
@@ -328,7 +328,7 @@ public final class ReplicationReceiveHandler {
 
     /// A batch from a node that cannot be the committed owner: nothing is applied and nothing is acked —
     /// not even the stale-duplicate re-ack, which would otherwise count this replica toward a non-owner's
-    /// min-sync barrier for an offset holding a DIFFERENT event here. No gap repair either: this node's
+    /// confirmation barrier for an offset holding a DIFFERENT event here. No gap repair either: this node's
     /// log is intact; the batch is simply not authoritative.
     private void refuseUnauthorizedSender(ReplicationMessage.ReplicateEvents message) {
         log.warn("ReplicationReceiveHandler: refusing batch for {}[{}] from {} at epoch {} — sender is not the committed owner "
@@ -376,7 +376,7 @@ public final class ReplicationReceiveHandler {
         }
 
         var highestHeld = fromOffset + outcome.held() - 1;
-        // Ack ONLY after the batch is fsynced here (#634 item 1): the owner's min-sync barrier counts
+        // Ack ONLY after the batch is fsynced here (#634 item 1): the owner's confirmation barrier counts
         // this ack as a durable copy, so acking from RAM would let correlated power loss inside the
         // unsealed window erase writes the caller was told reached RF. A failed sync WITHHOLDS the ack —
         // the record is applied and serveable, but this replica must not be counted toward durability;

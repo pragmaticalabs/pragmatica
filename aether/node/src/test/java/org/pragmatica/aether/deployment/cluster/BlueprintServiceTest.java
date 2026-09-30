@@ -125,6 +125,86 @@ class BlueprintServiceTest {
         service = BlueprintService.blueprintService(cluster, store, repository);
     }
 
+    /// #1564 / #1617 (R10): a deploy warning is raised as a `deploy-warning` operator warning, so it reaches the cluster
+    /// event log as well as the WARN log and the publish response. Drives the real `publish(dsl)` over a slice jar whose
+    /// `resources.toml` declares a stream with an explicit replication factor of 1 — the LOUD warning.
+    @Nested
+    class DeployWarningEvents {
+        private static final Artifact WARN_SLICE = Artifact.artifact("org.example:warn-slice:1.0.0").unwrap();
+
+        @TempDir
+        Path tempDir;
+
+        @Test
+        void publish_withADeployWarning_raisesItAsADeployWarningOperatorWarning() throws IOException {
+            var warnings = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            var liveStore = new TestKVStore();
+            var liveCluster = new TestClusterNode();
+
+            liveCluster.setStore(liveStore);
+            var sliceJar = writeSliceJarDeclaringFactorOne();
+            Repository liveRepository = artifact -> WARN_SLICE.equals(artifact)
+                                                    ? Result.lift(Causes::fromThrowable, () -> sliceJar.toUri().toURL())
+                                                            .flatMap(url -> Location.location(artifact, url))
+                                                            .async()
+                                                    : Causes.cause("Artifact not present in local repository").promise();
+            var liveService = BlueprintService.blueprintService(liveCluster,
+                                                                liveStore,
+                                                                liveRepository,
+                                                                org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warnings::add));
+            var dsl = """
+                    id = "org.example:warn-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:warn-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            var published = liveService.publish(dsl)
+                                       .await()
+                                       .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()))
+                                       .unwrap();
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+            // The sink hands off asynchronously: wait for as many events as the answer carries, bounded.
+            while (warnings.size() < published.warnings().size() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(published.warnings()).as("the publish answer carries the warning").isNotEmpty();
+            assertThat(warnings).as("every deploy warning is raised as an operator warning")
+                                .hasSize(published.warnings().size());
+            assertThat(warnings.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.DEPLOY_WARNING);
+            assertThat(warnings.getFirst().subject()).isEqualTo("org.example:warn-app:1.0.0");
+            assertThat(warnings).anySatisfy(warning -> assertThat(warning.message()).contains("replication-factor-below-three"));
+        }
+
+        private Path writeSliceJarDeclaringFactorOne() throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, WARN_SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, "org.example.warn.WarnSlice");
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("warn-slice-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/warn/"));
+                out.closeEntry();
+                out.putNextEntry(new ZipEntry("META-INF/resources.toml"));
+                out.write("""
+                          [streams.orders]
+                          replication_factor = 1
+                          """.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+
+            return target;
+        }
+    }
+
     @Nested
     class PublishTests {
         // Note: publish() requires actual JAR files for dependency resolution.

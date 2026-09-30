@@ -78,6 +78,13 @@ class EmberBootstrapAdminKeyAuthTest {
     private static final int FIRST_CANDIDATE_BASE = 27700;
     private static final int LAST_CANDIDATE_BASE = 29500;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
 
@@ -159,28 +166,7 @@ class EmberBootstrapAdminKeyAuthTest {
     }
 
     private int startClusterAndResolveLeaderPort() {
-        var basePort = freeBasePort();
-
-        cluster = emberCluster(CLUSTER_SIZE,
-                               basePort,
-                               basePort + MGMT_OFFSET,
-                               basePort + APP_HTTP_OFFSET,
-                               "adminkey");
-        cluster.withClusterSecret(CLUSTER_SECRET.getBytes(StandardCharsets.UTF_8));
-        // Reproduce the INCIDENT'S posture exactly: management security ON, and NOT ONE key configured
-        // — which is every cluster `aether cluster init` creates, because it never writes one. Ember's
-        // default `SecurityMode.NONE` disables `ManagementServer`'s security gate outright
-        // (`securityEnabled` at its dispatch), so under the default every request answers 200 and this
-        // test would measure the absence of a gate rather than the presence of a credential. That is
-        // not hypothetical: it is what the first run of this test did, and control 1 below is what
-        // caught it.
-        cluster.withAppHttpSecurity(SecurityMode.API_KEY, Map.of());
-
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started"))
-            .describedAs("a three-node cluster on a verified-free port block at %d must form within %s",
-                         basePort,
-                         START_BOUND)
-            .isEqualTo("started");
+        cluster = EmberTestPorts.startedCluster(PORTS, EmberBootstrapAdminKeyAuthTest::incidentPostureCluster, START_BOUND);
 
         // Leadership is not established at the instant `start()` returns, so this waits rather than
         // asserting immediately — the first version asserted straight away and failed on a cluster that
@@ -278,53 +264,21 @@ class EmberBootstrapAdminKeyAuthTest {
         }
     }
 
-    /// The first candidate base whose whole block — cluster ports (QUIC, so UDP as well as TCP),
-    /// management ports and app-HTTP ports — binds free right now. Same helper and rationale as
-    /// `EmberClusterObservedNodeStateTest`, on a disjoint candidate range so the two never contend.
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free block of " + SLOTS + " consecutive ports found between "
-                                 + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE
-                                 + "; this box is too busy to run a cluster test");
+    /// The incident's cluster (#1667: built per attempt, so a port lost between probe and bind retries on a fresh block).
+    private static EmberCluster incidentPostureCluster(int basePort) {
+        var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "adminkey");
+
+        built.withClusterSecret(CLUSTER_SECRET.getBytes(StandardCharsets.UTF_8));
+        // Reproduce the INCIDENT'S posture exactly: management security ON, and NOT ONE key configured
+        // — which is every cluster `aether cluster init` creates, because it never writes one. Ember's
+        // default `SecurityMode.NONE` disables `ManagementServer`'s security gate outright
+        // (`securityEnabled` at its dispatch), so under the default every request answers 200 and this
+        // test would measure the absence of a gate rather than the presence of a credential. That is
+        // not hypothetical: it is what the first run of this test did, and control 1 below is what
+        // caught it.
+        built.withAppHttpSecurity(SecurityMode.API_KEY, Map.of());
+
+        return built;
     }
 
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!udpFree(base + slot)
-                || !tcpFree(base + slot)
-                || !tcpFree(base + MGMT_OFFSET + slot)
-                || !tcpFree(base + APP_HTTP_OFFSET + slot)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
-    }
 }

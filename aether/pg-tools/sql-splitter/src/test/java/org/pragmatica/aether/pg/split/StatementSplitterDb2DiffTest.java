@@ -58,7 +58,7 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// build. If Docker is unavailable the whole class is skipped via [#dockerAvailable] rather than
 /// failing.
 @Tag("heavy-db")
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class StatementSplitterDb2DiffTest {
     private static final DialectSpec DB2 = Dialects.DB2;
 

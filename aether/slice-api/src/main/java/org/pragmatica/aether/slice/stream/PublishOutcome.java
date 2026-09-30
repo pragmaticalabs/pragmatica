@@ -15,9 +15,9 @@ import org.pragmatica.lang.Result;
 /// it either acknowledged a batch with refused events as success, or failed the batch and hid the events that
 /// DID land, so a caller retrying the whole batch duplicated them (#1237: a retry can duplicate unless keyed).
 ///
-/// - [Published]: durably appended at `offset`, min-sync barrier satisfied.
+/// - [Published]: durably appended at `offset`, confirmation barrier satisfied.
 /// - [OutcomeUnknown]: the write was attempted and refused or timed out. The refusal may be raised before the
-///   local append (`ensureWritableConsistency`) or after it (#1236: the min-sync barrier); the caller cannot
+///   local append (`ensureWritableConsistency`) or after it (#1236: the confirmation barrier); the caller cannot
 ///   tell which, so the event MAY be in the log. Retry only with a stable message key (#1237).
 /// - [NotAttempted]: the event never reached the write path (no consensus path for a STRONG stream, an earlier
 ///   event of the same partition group failed, or the request was rejected before writing for a PARTITION-level

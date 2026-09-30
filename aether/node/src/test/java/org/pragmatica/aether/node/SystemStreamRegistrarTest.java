@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
@@ -230,6 +231,63 @@ class SystemStreamRegistrarTest {
 
             scheduler.fireAll();
             assertThat(createStreamCalls.get()).isEqualTo(1);
+        }
+
+        /// #1564 B1: a cluster-events CF the committed core count cannot satisfy used to be retried every ≤30 s at
+        /// DEBUG, forever. A replication-policy refusal is terminal: one attempt, no retry, and the refusal reaches
+        /// the operator sink exactly once.
+        @Test
+        void onLeaderChange_replicationPolicyRefusal_latchesWithoutRetrying_andReachesTheSinkOnce() {
+            var createStreamCalls = new AtomicInteger();
+            var refusals = new ArrayList<org.pragmatica.lang.Cause>();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+                                                                            createStreamCalls.incrementAndGet();
+                                                                            return new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                      5).result();
+                                                                        },
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        refusals::add);
+
+            registrar.onLeaderChange(gained());
+            // fireNext, never fireAll: were the refusal retried, fireAll would loop forever instead of failing.
+            scheduler.fireNext();
+
+            assertThat(createStreamCalls.get()).isEqualTo(1);
+            assertThat(scheduler.hasPending()).as("a refusal is never retried").isFalse();
+            assertThat(refusals).singleElement().isInstanceOf(ReplicationFactorsError.ConfirmationOutOfRange.class);
+        }
+
+        /// #1564 B1: the operator clears a refusal by committing a corrected cluster config, which re-arms the
+        /// refused leg and runs it at once.
+        @Test
+        void onClusterConfigChanged_afterRefusal_rearmsAndCommits() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var createStreamCalls = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+                                                                            createStreamCalls.incrementAndGet();
+                                                                            return refuse.get()
+                                                                                   ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                        5).result()
+                                                                                   : unitResult();
+                                                                        },
+                                                                        () -> unitResult(),
+                                                                        scheduler);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(scheduler.hasPending()).as("the refusal latched without a retry").isFalse();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+
+            assertThat(scheduler.hasPending()).isTrue();
+            scheduler.fireAll();
+            assertThat(createStreamCalls.get()).as("refused once, then committed after the config change").isEqualTo(2);
+            assertThat(registrar.isComplete()).isTrue();
+            registrar.onClusterConfigChanged();
+            assertThat(scheduler.hasPending()).as("a committed leg is never re-armed").isFalse();
         }
 
         @Test

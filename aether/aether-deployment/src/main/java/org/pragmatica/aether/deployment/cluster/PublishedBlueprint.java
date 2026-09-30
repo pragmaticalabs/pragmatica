@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.List;
 
 import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
+import org.pragmatica.aether.deployment.validation.StreamValidationWarning;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 
 
@@ -15,13 +16,20 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 /// blueprint state — [ExpandedBlueprint] is the replicated KV record and must not carry them. A slice
 /// that uses a rejected alias fails at load naming that alias; the operator learns why here, at the
 /// point where it is actionable.
-public record PublishedBlueprint(ExpandedBlueprint blueprint, List<StreamValidationFailure> rejectedStreamBindings) {
+///
+/// #1564: `warnings` are the deploy-time warnings — the stream validation warnings and the replication warnings
+/// the declarations raised (owner ruling: LOUD). Deploy-response data too, reported to the operator here.
+public record PublishedBlueprint(ExpandedBlueprint blueprint,
+                                 List<StreamValidationFailure> rejectedStreamBindings,
+                                 List<StreamValidationWarning> warnings) {
     public PublishedBlueprint {
         rejectedStreamBindings = List.copyOf(rejectedStreamBindings);
+        warnings = List.copyOf(warnings);
     }
 
     public static PublishedBlueprint publishedBlueprint(ExpandedBlueprint blueprint,
-                                                        List<StreamValidationFailure> rejectedStreamBindings) {
-        return new PublishedBlueprint(blueprint, rejectedStreamBindings);
+                                                        List<StreamValidationFailure> rejectedStreamBindings,
+                                                        List<StreamValidationWarning> warnings) {
+        return new PublishedBlueprint(blueprint, rejectedStreamBindings, warnings);
     }
 }

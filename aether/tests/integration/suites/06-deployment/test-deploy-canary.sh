@@ -43,7 +43,7 @@ test_canary_start() {
     result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 3)
     assert_contains "$result" "deploymentId" "Canary started with deployment ID"
     DEPLOYMENT_ID=$(deploy_extract_id "$result")
-    assert_ne "$DEPLOYMENT_ID" "" "Captured deployment ID from start response"
+    assert_ne "$DEPLOYMENT_ID" "" "Captured deployment ID from start response" || return 1
 }
 
 test_canary_list() {
@@ -53,7 +53,7 @@ test_canary_list() {
 }
 
 test_canary_promote() {
-    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
+    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID" || return 1
     deploy_promote "$DEPLOYMENT_ID"
     if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
         log_fail "Canary promote of ${DEPLOYMENT_ID} did not quiesce within 30s"
@@ -79,7 +79,7 @@ test_canary_promote() {
 }
 
 test_canary_complete() {
-    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
+    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID" || return 1
     # Wait for promote's post-quiescence state before asserting terminal state.
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "promote snapshot not quiesced"
     local result

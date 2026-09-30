@@ -104,7 +104,7 @@ public sealed interface AetherValue {
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
-                                        instances,
+                                        defaultMinInstances(instances),
                                         owner,
                                         DEFAULT_PLACEMENT,
                                         System.currentTimeMillis(),
@@ -116,7 +116,7 @@ public sealed interface AetherValue {
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
             return new SliceTargetValue(version,
                                         instances,
-                                        instances,
+                                        defaultMinInstances(instances),
                                         none(),
                                         DEFAULT_PLACEMENT,
                                         System.currentTimeMillis(),
@@ -185,6 +185,16 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+
+        /// #1497 — the one availability floor for every writer that has no explicit value: `ceil(n/2)`, the
+        /// blueprint default. CLI/REST deploy, `addSliceTargetCommand`, A/B tests and rollback used to write
+        /// `minInstances == instances`; the #1488 drain guard then could never drain an owner of such a slice,
+        /// so a surplus drain deferred forever. `minInstances` also feeds the autoscaler's floor, but the
+        /// autoscaler never scales a slice below 3 (#1495: its floor is `max(minInstances, 3)`), so a slice
+        /// deployed with 3 instances stays at 3.
+        public static int defaultMinInstances(int instances) {
+            return Math.ceilDiv(instances, 2);
         }
 
         public int effectiveMinInstances() {
@@ -1287,7 +1297,13 @@ public sealed interface AetherValue {
                                  int weight,
                                  long registeredAt,
                                  String security,
-                                 String declaredSecurity) {
+                                 String declaredSecurity,
+                                 int pathArity,
+                                 List<String> spacers) {
+            public RouteEntry {
+                spacers = List.copyOf(spacers);
+            }
+
             public static RouteEntry activeRoute(String httpMethod,
                                                  String pathPrefix,
                                                  String sliceMethod,
@@ -1300,6 +1316,19 @@ public sealed interface AetherValue {
                                                  String sliceMethod,
                                                  String security,
                                                  String declaredSecurity) {
+                return activeRoute(httpMethod, pathPrefix, sliceMethod, security, declaredSecurity, 0, List.of());
+            }
+
+            /// #1678: `pathArity` and `spacers` are the route's SHAPE beyond its base path. Sibling routes of one
+            /// slice share `pathPrefix` (`GET /orders/{id}` and `GET /orders/{id}/admin` are both `/orders/`); the
+            /// shape is what lets a node that does not host the route pick the sibling a request is served by.
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security,
+                                                 String declaredSecurity,
+                                                 int pathArity,
+                                                 List<String> spacers) {
                 return new RouteEntry(httpMethod,
                                       pathPrefix,
                                       sliceMethod,
@@ -1307,7 +1336,9 @@ public sealed interface AetherValue {
                                       100,
                                       System.currentTimeMillis(),
                                       security,
-                                      declaredSecurity);
+                                      declaredSecurity,
+                                      pathArity,
+                                      spacers);
             }
 
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
