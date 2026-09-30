@@ -96,6 +96,7 @@ await_generation_quiesced() { return 0; }
 wait_for_phase() { return 0; }
 cluster_no_deficit() { return 0; }
 slices_active_instances() { echo 3; }
+_restore_slices_gate() { return 0; }   # the slice gate has its own suite (test-restore-slices-gate.sh)
 slices_target_total() { echo 3; }
 provisioning_snapshot() { echo "{\"leader\":true,\"countedCoreMembers\":${COUNTED},\"deficit\":0,\"effective\":${COUNTED}}"; }
 # ACTIVE can settle: SETTLE_AFTER=<seconds since start>, SETTLE_TO=<value>
