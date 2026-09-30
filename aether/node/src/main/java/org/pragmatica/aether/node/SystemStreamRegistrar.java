@@ -238,10 +238,14 @@ public final class SystemStreamRegistrar {
     /// clears its own report and un-latches the leg: the next leader attempts the registration itself and reports a
     /// refusal that still holds, and this node re-attempts if it regains leadership. Without this a former leader kept
     /// a stale CRITICAL alert, and a re-elected one stayed silent over a still-refused leg.
+    /// A refusal is outstanding while it is latched (`refused`) AND while a re-armed leg has not yet committed
+    /// (`recovering`, e.g. its pass is failing transiently) — the alert is up in both, so both are released (v1735 r3).
     private void releaseRefusal(AtomicBoolean refused, AtomicBoolean done, AtomicBoolean recovering) {
-        if (refused.compareAndSet(true, false)) {
+        var wasRefused = refused.getAndSet(false);
+        var wasRecovering = recovering.getAndSet(false);
+
+        if (wasRefused || wasRecovering) {
             done.set(false);
-            recovering.set(false);
             recoverySink.run();
         }
     }

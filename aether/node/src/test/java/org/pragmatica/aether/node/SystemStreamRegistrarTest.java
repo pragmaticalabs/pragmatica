@@ -432,6 +432,35 @@ class SystemStreamRegistrarTest {
                          .toList();
         }
 
+        /// v1735 r3 residual: a corrected config re-armed the refused leg (no longer latched, still recovering), its pass
+        /// then fails TRANSIENTLY, and the node loses leadership — the alert is still up, so it must still be cleared.
+        @Test
+        void deactivate_whileAReArmedLegIsStillFailingTransiently_clearsTheReport() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : StreamError.General.STREAM_CONFIG_COMMIT_FAILED.result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(refusals.get()).isEqualTo(1);
+            assertThat(recoveries.get()).as("the re-armed-but-uncommitted refusal is cleared on leadership loss")
+                                        .isEqualTo(1);
+        }
+
         @Test
         void deactivate_withoutARefusal_clearsNothing() {
             var recoveries = new AtomicInteger();
