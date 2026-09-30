@@ -133,11 +133,13 @@ public final class DistributedDHTClient implements DHTClient {
         var collector = QuorumCollector.<Option<byte[]>> quorumCollector(quorum, targets.size(), promise);
         var read = InFlightRead.inFlightRead(key, collector, readDeadlineNanos(), DEFAULT_READ_REISSUE_LIMIT);
         var unsubscribe = node.ring().onNodeRemoved(departed -> reissueAfterDeparture(read, departed));
-
+        // every original target is addressed before the first dispatch, so a departure landing mid-loop can
+        // never pick a not-yet-dispatched target as its replacement (one replica must never fill two slots)
+        targets.forEach(read::markAddressed);
         targets.forEach(target -> dispatchRead(read, target));
 
         return promise.timeout(config.operationTimeout())
-                      .onResultRun(unsubscribe)
+                      .withResult(_ -> unsubscribe.run())
                       .flatMap(quorumResult -> resolveOrFallback(key, quorumResult));
     }
 
@@ -316,9 +318,41 @@ public final class DistributedDHTClient implements DHTClient {
     /// `QuorumCollector#onFailure` path a transport refusal takes) when no replacement is allowed.
     private void replaceOrFail(InFlightRead read, NodeId departed) {
         read.nextReplacement(targetNodes(read.key()))
-            .onPresent(replacement -> dispatchRead(read, replacement))
+            .onPresent(replacement -> dispatchReplacement(read, replacement))
             .onEmpty(() -> failCollector(read.collector(),
                                          DHTError.peerUnreachable(departed, "left the ring mid-read")));
+    }
+
+    /// A replacement was not a replica when the value was written, and the survivor rebalance that would
+    /// give it a copy starts only after the ring listeners ran. Its "absent" is therefore no evidence of
+    /// absence and must not vote: counting it breaks the R+W intersection (an absent original plus an
+    /// absent replacement would out-vote a holder still owing its reply). A present answer fills the slot;
+    /// an absent one fails it, so the read either finds the value or fails fast as retryable.
+    private void dispatchReplacement(InFlightRead read, NodeId replacement) {
+        Promise<Option<byte[]>> answer = Promise.promise();
+        var single = QuorumCollector.<Option<byte[]>> quorumCollector(1, 1, answer);
+        var _ = answer.onSuccess(value -> countReplacementAnswer(read, replacement, value))
+                      .onFailure(cause -> failCollector(read.collector(),
+                                                        cause));
+
+        if (replacement.equals(node.nodeId())) {
+            handleLocalGet(read.key(), single);
+        } else {
+            var correlationId = IdGenerator.generate();
+
+            read.expect(replacement, correlationId);
+            sendRemoteGet(replacement, read.key(), single, correlationId);
+        }
+    }
+
+    /// Same `@Contract` void-mutator suppression as [#failCollector].
+    @SuppressWarnings("JBCT-RET-07")
+    private static void countReplacementAnswer(InFlightRead read, NodeId replacement, Option<byte[]> value) {
+        if (value.isPresent()) {
+            read.collector().onSuccess(value);
+        } else {
+            failCollector(read.collector(), DHTError.peerUnreachable(replacement, "replacement holds no copy yet"));
+        }
     }
 
     /// Whether quorum is arithmetically unreachable for this op: after liveness filtering, fewer
@@ -606,15 +640,18 @@ public final class DistributedDHTClient implements DHTClient {
         var _ = network.sendOutcome(target, message)
                        .onSuccess(outcome -> {
                                       if (!outcome.isSent()) {
-                                      pendingOps.remove(correlationId);
-                                      failCollector(collector,
+                                      failOwnedSlot(correlationId,
+                                                    collector,
                                                     toCause(outcome));
                                   }
                                   })
-                       .onFailure(cause -> {
-                           pendingOps.remove(correlationId);
-                           failCollector(collector, cause);
-                       });
+                       .onFailure(cause -> failOwnedSlot(correlationId, collector, cause));
+    }
+
+    /// Fail a refused request's slot only if this path still owns it: a concurrent departure may already
+    /// have claimed the pending op (and re-issued the slot), and one slot must never be counted twice.
+    private <T> void failOwnedSlot(String correlationId, QuorumCollector<T> collector, Cause cause) {
+        removePending(correlationId).onPresent(_ -> failCollector(collector, cause));
     }
 
     private static Cause toCause(WriteOutcome outcome) {

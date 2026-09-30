@@ -17,7 +17,7 @@ package org.pragmatica.dht;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -51,7 +51,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     private final NavigableMap<Integer, SortedSet<N>> ring = new TreeMap<>();
     private final Map<N, List<Integer>> nodeToVirtualNodes = new HashMap<>();
     private final int virtualNodesPerPhysical;
-    private final List<Consumer<N>> removalListeners = new CopyOnWriteArrayList<>();
+    private final Map<Object, Consumer<N>> removalListeners = new ConcurrentHashMap<>();
 
     private ConsistentHashRing(int virtualNodesPerPhysical) {
         this.virtualNodesPerPhysical = virtualNodesPerPhysical;
@@ -96,7 +96,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     @Contract
     public void removeNode(N node) {
         if (removeUnderLock(node)) {
-            removalListeners.forEach(listener -> listener.accept(node));
+            removalListeners.values().forEach(listener -> listener.accept(node));
         }
     }
 
@@ -107,9 +107,11 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     /// @param listener invoked on the removing thread, outside the ring lock
     /// @return handle that unregisters the listener when run
     public Runnable onNodeRemoved(Consumer<N> listener) {
-        removalListeners.add(listener);
+        var token = new Object();
 
-        return () -> removalListeners.remove(listener);
+        removalListeners.put(token, listener);
+
+        return () -> removalListeners.remove(token);
     }
 
     private boolean removeUnderLock(N node) {
