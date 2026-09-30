@@ -111,6 +111,12 @@ public final class PeerState {
     /// dual-dial race during formation (kept as DUPLICATE) from a post-partition reconnect
     /// (adopted) where `isActive()` lies indefinitely on a partition-orphaned link.
     private static final long SUPERSEDE_MIN_AGE_NANOS = TimeUnit.SECONDS.toNanos(3);
+    /// A lower-id link that arrives within this long of the incumbent's attach is the dual-dial race
+    /// of formation, and BOTH ends must converge on the lower-id link (#1390) whatever traffic the
+    /// incumbent already carried: receipts are not symmetric across the two ends, so the receipt floor
+    /// must not apply inside the race. Beyond it the incumbent is an established link. A guess sized
+    /// well above a loopback/LAN handshake and below the ~2s a ghost-dialed link lives (cloud run 1).
+    private static final long CONVERGENCE_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(500);
 
     public enum Phase {
         INIT,
@@ -393,16 +399,20 @@ public final class PeerState {
     /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). Incumbent initiated by
     /// the LOWER id always survives a higher-id link; a same-direction link within
     /// [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial race. A lower-id link
-    /// displaces a higher-id incumbent (the #1390 convergence) only when that incumbent is
-    /// receipt-silent: a peer heard from within [SUPERSEDE_MIN_AGE_NANOS] has a working link, and a
-    /// stray handshake (a dial aimed at a recycled address that reached us anyway) must not tear it
-    /// down. A never-heard incumbent (the cold-start dual-dial race) still converges at once.
+    /// displaces a higher-id incumbent (the #1390 convergence) when it lands inside the
+    /// [CONVERGENCE_WINDOW_NANOS] race window, or when the incumbent is receipt-silent: an established
+    /// link whose peer was heard from within [SUPERSEDE_MIN_AGE_NANOS] is working, and a stray
+    /// handshake (a dial aimed at a recycled address that reached us anyway) must not tear it down.
     private boolean isIncumbentKept(int directionOrder, long nowNanos) {
         return switch (Integer.signum(directionOrder)) {
             case -1 -> true;
             case 0 -> phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;
-            default -> isHeardFromRecently(nowNanos);
+            default -> isEstablishedAndHeard(nowNanos);
         };
+    }
+
+    private boolean isEstablishedAndHeard(long nowNanos) {
+        return phaseAgeNanos(nowNanos) > CONVERGENCE_WINDOW_NANOS && isHeardFromRecently(nowNanos);
     }
 
     private boolean isHeardFromRecently(long nowNanos) {

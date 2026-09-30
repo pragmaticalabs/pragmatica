@@ -194,6 +194,23 @@ class PeerStateTest {
     }
 
     @Test
+    void attach_lowerIdDialInsideTheRaceWindow_supersedesEvenAfterTheIncumbentWasHeard() {
+        // Formation dual-dial race: receipts are not symmetric across the two ends, so a heard-from
+        // incumbent that is only 100ms old must still yield to the lower-id link (#1390 convergence).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(HIGHER);
+        s.attach(incumbent, T0 + 2);
+        var hundredMillis = TimeUnit.MILLISECONDS.toNanos(100);
+        s.markInbound(T0 + 2 + hundredMillis / 2);
+        var fresh = initiatedBy(LOWER);
+        var result = s.attach(fresh, T0 + 2 + hundredMillis);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(incumbent);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
+    }
+
+    @Test
     void attach_lowerIdDialOverReceiptSilentHigherIdIncumbent_supersedes() {
         // Control for the floor above: same shapes, but the incumbent has been silent for more than
         // SUPERSEDE_MIN_AGE, so the lower-id link is adopted and the old one handed back to close.
