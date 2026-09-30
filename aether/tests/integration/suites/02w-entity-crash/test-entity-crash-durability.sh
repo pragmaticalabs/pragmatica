@@ -105,6 +105,37 @@ entity_post_any() {
     return 1
 }
 
+# Like entity_post_any, but KEEPS the status and body of a non-2xx answer. `_api_call` prints a body only for a
+# 2xx, so once app routes answer 503 for a `Cause.Transient` (#1737/#1765) a transient refusal would read here as
+# "no node answered" and never be retried. Output is the body followed by a `__ENTITY_HTTP_STATUS:NNN__` line;
+# rc 0 iff the answer is a 2xx that matches, rc 1 otherwise. A TRANSPORT failure (no HTTP status: curl error,
+# timeout) moves to the next endpoint exactly as entity_post_any does; any node that ANSWERED, whatever the
+# status, is authoritative (the product forwards a create to its owner, so reaching any live node is enough)
+# and its answer is returned. Nothing reachable prints nothing and returns 1.
+entity_create_post() {
+    local path="$1" payload="$2" matcher="$3" pass ep out status body
+
+    [ -n "$ENTITY_APP_ENDPOINTS" ] || refresh_app_endpoints || return 1
+
+    for pass in 1 2; do
+        while IFS= read -r ep; do
+            [ -z "$ep" ] && continue
+            out=$(_api_call POST "${ep}${path}" "$payload" 1 2>/dev/null) || true
+            status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+            case "${status:-000}" in 000) continue ;; esac
+            body=$(printf '%s' "$out" | sed '$d')
+            printf '%s\n__ENTITY_HTTP_STATUS:%s__' "$body" "$status"
+            case "$status" in
+                2*) printf '%s' "$body" | grep -qE "$matcher" && return 0 ;;
+            esac
+            return 1
+        done <<< "$ENTITY_APP_ENDPOINTS"
+        [ "$pass" -eq 1 ] && refresh_app_endpoints >/dev/null 2>&1
+    done
+
+    return 1
+}
+
 # Rotates over every node so a key's committed owner is actually reached. Two passes:
 # ownership can commit between them, and a node killed mid-suite simply fails its leg.
 #
@@ -127,30 +158,37 @@ create_entity() {
     # connection reset). Counting that as failure UNDER-counts acks, which is what made the first
     # run report 4/40. The durability assertion re-reads the value, so a wrong guess here cannot
     # manufacture a pass.
-    # A create refused with an ALLOW-LISTED TRANSIENT failureType is retried with backoff until
+    # A create refused with an ALLOW-LISTED TRANSIENT failureType, or answered 503, is retried with backoff until
     # ENTITY_CREATE_RETRY_DEADLINE_S (a post-failover owner that is not ready yet answers "retry", and the one
     # attempt this used to make read as "the cluster does not accept creates"). Anything else fails at once:
     # never ForwardRefused or StorageFailed (a genuine storage fault must not be retried into silence), and an
     # empty answer (no node reachable) is not a transient refusal either. The FULL body is logged: a 200-byte
     # cut deleted the inner cause ("... for k") that decides which failure it was.
-    local deadline=$((SECONDS + ENTITY_CREATE_RETRY_DEADLINE_S)) delay="$ENTITY_CREATE_RETRY_BACKOFF_S" ft
+    local deadline=$((SECONDS + ENTITY_CREATE_RETRY_DEADLINE_S)) delay="$ENTITY_CREATE_RETRY_BACKOFF_S" ft out status
     while :; do
-        if body=$(entity_post_any "/api/entity/create" "$payload" \
-                                  '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
+        if out=$(entity_create_post "/api/entity/create" "$payload" \
+                                    '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
             return 0
         fi
-        ft=$(transient_failure_type "$body") || break
+        status=$(printf '%s' "$out" | grep -oE '__ENTITY_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__ENTITY_HTTP_STATUS://;s/__//')
+        body=$(printf '%s' "$out" | sed '$d')
+        # Retry a 503 (the product's answer for a Cause.Transient) or an allow-listed failureType; nothing
+        # else, and not an empty answer (no HTTP status: no node was reachable).
+        ft=$(transient_failure_type "$body") || ft=""
+        if [ -z "$status" ] || { [ "$status" != "503" ] && [ -z "$ft" ]; }; then
+            break
+        fi
         if [ "$SECONDS" -ge "$deadline" ]; then
-            log_warn "create ${key}: still refused with transient ${ft} at the ${ENTITY_CREATE_RETRY_DEADLINE_S}s retry deadline; last body: ${body}" >&2
+            log_warn "create ${key}: still refused (HTTP ${status}${ft:+, ${ft}}) at the ${ENTITY_CREATE_RETRY_DEADLINE_S}s retry deadline; last body: ${body}" >&2
             return 1
         fi
-        log_warn "create ${key}: transient ${ft}; retrying in ${delay}s" >&2
+        log_warn "create ${key}: transient refusal (HTTP ${status}${ft:+, ${ft}}); retrying in ${delay}s" >&2
         sleep "$delay"
         delay=$(( delay * 2 > 5 ? 5 : delay * 2 ))
     done
 
-    if [ -n "$body" ]; then
-        log_warn "create ${key}: no node accepted (not a transient type; not retried); last body: ${body}" >&2
+    if [ -n "$status" ]; then
+        log_warn "create ${key}: no node accepted (HTTP ${status}, not a transient refusal; not retried); last body: ${body}" >&2
     fi
     return 1
 }
@@ -175,11 +213,13 @@ create_range_recording_acks() {
     done
 }
 
+# `StorageUnavailable` (EntityError.StorageUnavailable, #1766) is the append boundary's transient refusal that
+# used to be flattened into StorageFailed/ForwardRefused; those two stay OFF this list on purpose.
 # Refusals that mean "retry", never "no" (#1501). Each is a `Cause.Transient` in the product and
 # clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it
 # may serve reads (EntityLogError.java). An EXPLICIT allow-list, so an unknown failure type is never
 # retried into silence. Space-separated; extend only with a failureType the product marks transient.
-ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress OwnershipNotYetCommitted LinearizableUnavailable}"
+ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress OwnershipNotYetCommitted LinearizableUnavailable StorageUnavailable}"
 # The same allow-list bounds the CREATE retry (create_entity): ~30s, 1s doubling to 5s.
 ENTITY_CREATE_RETRY_DEADLINE_S="${ENTITY_CREATE_RETRY_DEADLINE_S:-30}"
 ENTITY_CREATE_RETRY_BACKOFF_S="${ENTITY_CREATE_RETRY_BACKOFF_S:-1}"
