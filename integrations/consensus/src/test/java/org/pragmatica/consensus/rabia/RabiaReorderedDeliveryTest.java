@@ -350,8 +350,9 @@ class RabiaReorderedDeliveryTest {
 
     /// #1683 path 1 — a replica that missed every message of slot P (it never proposes, votes or learns
     /// the decision) is repaired by the NEXT decision anywhere: Decision(P+1) is past a gap, so it is
-    /// buffered and the replica resyncs. Mutation that reddens it: delete `triggerResync()` in the
-    /// `comparison > 0` branch of `handleDecision` — the replica stays at P and the schedule stalls.
+    /// buffered and, once `decisionGapTimeout` (100 ms here) expires with P still missing, the replica resyncs.
+    /// Mutation that reddens it: make `armDecisionGapTimer` return immediately — the replica stays at P and
+    /// the schedule stalls.
     @Test
     void replicaThatMissedASlotCatchesUpFromTheNextDecision() {
         for (int seed = 0; seed < 6; seed++) {

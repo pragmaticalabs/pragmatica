@@ -3126,7 +3126,7 @@ public class RabiaEngine<C extends Command> {
 
     /// #1683 — a replica that missed ALL traffic for its current slot while the cluster then went quiet
     /// learns of the gap from nothing: it is `Idle` (no stall detector), no later Decision is broadcast
-    /// (path 1, [#handleDecision] → [#triggerResync]), and peers repair only on an inbound ballot. It
+    /// (path 1, [#handleDecision] → [#awaitMissingSlot], which resyncs once the gap timeout expires), and peers repair only on an inbound ballot. It
     /// served the stale state indefinitely and [#isPendingCatchUp] reported `false`, because no message
     /// had advanced the observed cluster phase.
     ///
@@ -3419,8 +3419,8 @@ public class RabiaEngine<C extends Command> {
     /// #1683 — a peer asking about slot P may be behind by more than P. Replaying only P repairs one slot
     /// per request, and when P's data is already cleaned the fallback SyncResponse is ignored by an
     /// ACTIVE requester. So the latest slot this replica completed is sent too: the requester applies it
-    /// directly when it is the next slot, and otherwise buffers it and resyncs ([#handleDecision], the
-    /// same path a live later Decision takes).
+    /// directly when it is the next slot, and otherwise buffers it for in-order release, resyncing on a far gap or
+    /// once the gap timeout expires ([#handleDecision], the same path a live later Decision takes).
     private void replayFrontierDecision(NodeId peer, Phase requested) {
         var current = currentPhase.get().value();
 
