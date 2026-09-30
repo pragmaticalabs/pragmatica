@@ -21,11 +21,19 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class ConfigLoader {
+    private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
+    /// The only key a `[storage.streams]` section carries (#634-3); the `streams` instance is built from the
+    /// node's stream settings, not from this section.
+    private static final Set<String> STREAMS_SECTION_KEYS = Set.of("wal_path");
+
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
@@ -473,6 +481,7 @@ public final class ConfigLoader {
                 // it is never misread as a storage instance literally named "encryption". Parsed
                 // separately by `populateStorageEncryptionConfig`.
                 if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.startsWith("encryption.")) {
+                    warnIgnoredStreamsKeys(doc, instanceName, sectionName);
                     instances.put(instanceName, storageFromSection(doc, sectionName));
                 }
             }
@@ -577,11 +586,31 @@ public final class ConfigLoader {
                : AlertConfig.EventConfig.eventConfig();
     }
 
+    /// v1617 (#1725): `[storage.streams]` only carries `wal_path`; any other key there (`disk_path`, `snapshot_path`,
+    /// `encrypted`, ...) has no effect. It used to be dropped silently, so an operator setting one believed it applied.
+    private static void warnIgnoredStreamsKeys(TomlDocument doc, String instanceName, String sectionName) {
+        if (!"streams".equals(instanceName)) {
+            return;
+        }
+
+        var ignored = doc.keys(sectionName)
+                         .stream()
+                         .filter(key -> !STREAMS_SECTION_KEYS.contains(key))
+                         .sorted()
+                         .toList();
+
+        if (!ignored.isEmpty()) {
+            log.warn("[storage.streams] carries only wal_path; these keys have no effect and are ignored: {}", ignored);
+        }
+    }
+
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
         var memoryMaxBytes = parseLong(doc, sectionName, "memory_max_bytes", 256 * 1024 * 1024);
         var diskMaxBytes = parseLong(doc, sectionName, "disk_max_bytes", 10L * 1024 * 1024 * 1024);
-        var diskPath = doc.getString(sectionName, "disk_path").or("/data/aether/storage");
-        var snapshotPath = doc.getString(sectionName, "snapshot_path").or("/data/aether/metadata-snapshots");
+        // #912: one source for the default paths (and the root they honour), not a second copy of the literals.
+        var defaults = StorageConfig.storageConfig();
+        var diskPath = doc.getString(sectionName, "disk_path").or(defaults.diskPath());
+        var snapshotPath = doc.getString(sectionName, "snapshot_path").or(defaults.snapshotPath());
         var mutationThreshold = parseInt(doc, sectionName, "snapshot_mutation_threshold", 1000);
         var snapshotInterval = doc.getString(sectionName, "snapshot_max_interval").or("60s");
         var retentionCount = parseInt(doc, sectionName, "snapshot_retention_count", 5);

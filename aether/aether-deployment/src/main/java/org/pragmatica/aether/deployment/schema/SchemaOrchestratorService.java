@@ -38,6 +38,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -61,6 +62,13 @@ public interface SchemaOrchestratorService {
     Promise<Unit> migrateIfNeeded(String datasourceName);
     Promise<Unit> undoTo(String datasourceName, int targetVersion);
     Promise<Unit> baseline(String datasourceName, int version);
+
+    /// #217: `force` lets the baseline proceed over an in-flight migration (audited). Implementations that
+    /// do not re-check under a fence ignore it.
+    default Promise<Unit> baseline(String datasourceName, int version, boolean force) {
+        return baseline(datasourceName, version);
+    }
+
     long LOCK_TTL_MS = 5 * 60 * 1000L;
     int MAX_RETRIES = 3;
     long BACKOFF_BASE_MS = 5000;
@@ -104,6 +112,8 @@ public interface SchemaOrchestratorService {
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private static final Logger log = LoggerFactory.getLogger(SchemaOrchestratorServiceInstance.class);
+    /// The audit logger `AetherNode`'s `AuditLog` writes to; a fence-level forced baseline is recorded there too.
+    private static final Logger AUDIT = LoggerFactory.getLogger("org.pragmatica.aether.audit");
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> kvStore;
@@ -166,6 +176,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return executeUndoOrBaseline(datasourceName,
                                      targetVersion,
                                      "undo",
+                                     _ -> Promise.success(unit()),
                                      (connector, scripts, owner) -> schemaManager.undo(datasourceName,
                                                                                        targetVersion,
                                                                                        scripts,
@@ -181,9 +192,15 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// [SchemaError.ChecksumMismatch]) were unreachable because nothing ever asked the manager.
     @Override
     public Promise<Unit> baseline(String datasourceName, int version) {
+        return baseline(datasourceName, version, false);
+    }
+
+    @Override
+    public Promise<Unit> baseline(String datasourceName, int version, boolean force) {
         return executeUndoOrBaseline(datasourceName,
                                      version,
                                      "baseline",
+                                     stage -> baselineFenceCheck(datasourceName, version, force, stage),
                                      (connector, scripts, owner) -> schemaManager.baseline(datasourceName,
                                                                                            version,
                                                                                            scripts,
@@ -211,13 +228,19 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private Promise<Unit> executeUndoOrBaseline(String datasourceName,
                                                 int requestedVersion,
                                                 String operation,
+                                                Fn1<Promise<Unit>, String> fenceCheck,
                                                 Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
         var versionKey = SchemaVersionKey.schemaVersionKey(datasourceName);
 
         return kvStore.get(versionKey)
                       .filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
                       .map(SchemaVersionValue.class::cast)
-                      .map(value -> runUndoOrBaseline(datasourceName, requestedVersion, operation, value, terminalOp))
+                      .map(value -> runUndoOrBaseline(datasourceName,
+                                                      requestedVersion,
+                                                      operation,
+                                                      value,
+                                                      fenceCheck,
+                                                      terminalOp))
                       .or(() -> schemaRecordVanished(datasourceName, operation));
     }
 
@@ -237,25 +260,64 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                             int requestedVersion,
                                             String operation,
                                             SchemaVersionValue value,
+                                            Fn1<Promise<Unit>, String> fenceCheck,
                                             Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
         var attemptToken = new Object();
 
-        return acquireLock(datasourceName, attemptToken).flatMap(_ -> resolveMigrationScripts(datasourceName, value).flatMap(scripts -> provisionAndRun(datasourceName,
-                                                                                                                                                        scripts,
-                                                                                                                                                        value.owningBlueprint(),
-                                                                                                                                                        terminalOp).mapError(cause -> handleUndoOrBaselineTimeout(datasourceName,
-                                                                                                                                                                                                                  requestedVersion,
-                                                                                                                                                                                                                  operation,
-                                                                                                                                                                                                                  value,
-                                                                                                                                                                                                                  cause)))
-                                                                                             .flatMap(result -> recordOutcome(datasourceName,
-                                                                                                                              operation,
-                                                                                                                              value,
-                                                                                                                              result))
-                                                                                             .flatMap(_ -> releaseLock(datasourceName))
-                                                                                             .replaceResult(result -> finalizeAttempt(datasourceName,
-                                                                                                                                      attemptToken,
-                                                                                                                                      result)));
+        return acquireLock(datasourceName, attemptToken).flatMap(_ -> fenceCheck.apply("under the fence, before the database is touched"))
+                          .flatMap(_ -> resolveMigrationScripts(datasourceName, value).flatMap(scripts -> provisionAndRun(datasourceName,
+                                                                                                                          scripts,
+                                                                                                                          value.owningBlueprint(),
+                                                                                                                          terminalOp).mapError(cause -> handleUndoOrBaselineTimeout(datasourceName,
+                                                                                                                                                                                    requestedVersion,
+                                                                                                                                                                                    operation,
+                                                                                                                                                                                    value,
+                                                                                                                                                                                    cause)))
+                                                               .flatMap(result -> fenceCheck.apply("under the fence, before COMPLETED is written; the database baseline already ran")
+                                                                                            .map(_ -> result))
+                                                               .flatMap(result -> recordOutcome(datasourceName,
+                                                                                                operation,
+                                                                                                value,
+                                                                                                result))
+                                                               .flatMap(_ -> releaseLock(datasourceName))
+                                                               .replaceResult(result -> finalizeAttempt(datasourceName,
+                                                                                                        attemptToken,
+                                                                                                        result)));
+    }
+
+    /// #217 (v1617): the route checks the record's status BEFORE this fence, so a deploy that arms a migration
+    /// (writes PENDING) after that check was overwritten by `recordOutcome`'s COMPLETED, and the migration never
+    /// ran. The status is therefore re-read under the fence twice: before the database is touched, and
+    /// immediately before the COMPLETED write. The Put itself is not a compare-and-set, so a write landing
+    /// between the second read and the Put is still possible; the window is the Put's own latency.
+    ///
+    /// `force` proceeds anyway and writes the audit line the route writes for its own override.
+    private Promise<Unit> baselineFenceCheck(String datasourceName, int version, boolean force, String stage) {
+        var status = kvStore.get(SchemaVersionKey.schemaVersionKey(datasourceName))
+                            .filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
+                            .map(SchemaVersionValue.class::cast)
+                            .map(SchemaVersionValue::status);
+
+        return status.filter(s -> s == SchemaStatus.PENDING || s == SchemaStatus.MIGRATING || s == SchemaStatus.UNKNOWN)
+                     .fold(() -> Promise.success(unit()),
+                           inFlight -> force
+                                       ? forcedBaseline(datasourceName, version, inFlight, stage)
+                                       : SchemaError.BaselineOverInFlightMigration.baselineOverInFlightMigration(datasourceName,
+                                                                                                                 inFlight,
+                                                                                                                 stage).promise());
+    }
+
+    private static Promise<Unit> forcedBaseline(String datasourceName,
+                                                int version,
+                                                SchemaStatus overridden,
+                                                String stage) {
+        AUDIT.warn("SCHEMA_BASELINE_FORCED datasource={} version={} overriddenStatus={} stage={}",
+                   datasourceName,
+                   version,
+                   overridden,
+                   stage);
+
+        return Promise.success(unit());
     }
 
     /// #543/#832 review round 1 BLOCKING 3: `provisionAndRun`'s manager call had no bound, unlike
