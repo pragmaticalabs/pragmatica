@@ -77,6 +77,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -2005,6 +2006,106 @@ class LeaderReconcilerTest {
                 .as("mints for ONE missing slot over ~630s (more than the 600s ceiling)")
                 .hasSizeLessThanOrEqualTo(2);
             assertThat(peakInFlight).as("peak concurrent in-flight entries for one slot").isLessThanOrEqualTo(2);
+        }
+
+        /// #1786 — a stuck slot (every replacement listed, none joins) with a leader handover every
+        /// `tenureIntervals` poll intervals. The new leader inherits every unjoined id, re-minted on the fake
+        /// timeline so its ULID mint time matches (the CTM mints on the real wall clock, which would silently
+        /// restart the grace). Returns the mints for the one missing slot. Adopted from v1770's P3 probe.
+        private int mintsWithHandovers(int tenureIntervals, int totalIntervals) {
+            dispatchOneReplacement();
+            var dispatchedAtFakeMs = new LinkedHashMap<NodeId, Long>();
+            var live = new LinkedHashSet<NodeId>(ctm.provisionReplacementCalls());
+
+            live.forEach(id -> dispatchedAtFakeMs.put(id, timeSource.nanoTime() / 1_000_000));
+            var seen = ctm.provisionReplacementCalls().size();
+
+            for (var i = 1; i <= totalIntervals; i++) {
+                live.forEach(id -> ctm.reportInstanceState(id, ReplacementInstanceState.PRESENT));
+                advanceOnePollInterval();
+                var calls = ctm.provisionReplacementCalls();
+
+                for (var k = seen; k < calls.size(); k++) {
+                    live.add(calls.get(k));
+                    dispatchedAtFakeMs.put(calls.get(k), timeSource.nanoTime() / 1_000_000);
+                }
+                seen = calls.size();
+                live.retainAll(reconciler.inFlightProvisioningKeys());
+
+                if (i % tenureIntervals == 0) {
+                    live = handOver(live, dispatchedAtFakeMs);
+                }
+            }
+
+            return ctm.provisionReplacementCalls().size();
+        }
+
+        /// One leader handover: the surviving unjoined ids are re-minted with their original fake-timeline mint
+        /// time, deactivated and re-inherited by the next term. Returns the re-minted ids.
+        private LinkedHashSet<NodeId> handOver(LinkedHashSet<NodeId> live, Map<NodeId, Long> dispatchedAtFakeMs) {
+            var nowFakeMs = timeSource.nanoTime() / 1_000_000;
+            var carried = new LinkedHashSet<NodeId>();
+
+            for (var id : live) {
+                var reminted = mintedAt(System.currentTimeMillis() - (nowFakeMs - dispatchedAtFakeMs.get(id)));
+
+                dispatchedAtFakeMs.put(reminted, dispatchedAtFakeMs.get(id));
+                ctm.reportInstanceState(reminted, ReplacementInstanceState.PRESENT);
+                carried.add(reminted);
+            }
+            reconciler.deactivate();
+            leaderTerm.set(leaderTerm.get() + 1);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.copyOf(carried));
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).forEach(ManualTask::runIfLive);
+
+            return carried;
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_noHandover_sameHarness_mintsAtMostTwo() {
+            assertThat(mintsWithHandovers(1000, 42)).as("control: same harness, no handover in ~630s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery60s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(4, 42)).as("mints over ~630s, handover every 60s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery105s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(7, 42)).as("mints over ~630s, handover every 105s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery120s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(8, 42)).as("mints over ~630s, handover every 120s").isLessThanOrEqualTo(2);
+        }
+
+        /// #1786 — the documented misclassification of the handover inference: two genuinely missing slots whose
+        /// replacements were minted more than the grace apart read, to the inheriting leader, as original +
+        /// substitute. The later one is never discounted (pre-#1786 ceiling behaviour, slower to heal, no extra
+        /// spend): after both are long past the grace, exactly one more mint covers the earlier slot, where two
+        /// generation-0 entries would both be discounted and mint twice.
+        @Test
+        void newLeader_twoGenuineSlotsMintedMoreThanGraceApart_laterIsReadAsSubstitute_keepsCounting() {
+            var earlier = mintedAt(System.currentTimeMillis() - 120_000L);
+            var later = mintedAt(System.currentTimeMillis() - 10_000L);
+
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(earlier, later));
+            ctm.reportInstanceState(earlier, ReplacementInstanceState.PRESENT);
+            ctm.reportInstanceState(later, ReplacementInstanceState.PRESENT);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            advancePollIntervals(11);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("only the earlier entry is discounted: one mint, not two")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).contains(earlier, later);
         }
 
         /// #1783 — the discounted replacement then joins late, after its substitute was dispatched. The cluster

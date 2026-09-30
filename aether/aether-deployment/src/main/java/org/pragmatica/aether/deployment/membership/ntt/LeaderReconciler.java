@@ -113,7 +113,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// and the existing surplus path ([`#computePeersToDrain`], the surplus follow-up) converges the cluster back
 /// to the configured count. A provision dispatched while a discounted entry exists is a substitute (generation 1)
 /// and is never itself discounted, so one missing slot has at most two in flight per ceiling window (#1786). The
-/// bound is per leader: an inherited entry restarts at generation 0. The grace runs from the entry's
+/// generation survives a leader handover by inference from the inherited ids' mint times (see
+/// [`#inheritedGeneration`]). The grace runs from the entry's
 /// `sinceNanos` — dispatch, or the ULID mint time for an inherited entry — so a leader change neither restarts
 /// nor shortens it.
 ///
@@ -504,12 +505,14 @@ public final class LeaderReconciler {
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
 
+        var unjoinedMints = unjoinedMintTimes(retained, currentMembers);
+
         for (var id : retained) {
             if (currentMembers.contains(id)) {
                 continue;
             }
 
-            inFlightProvisioning.putIfAbsent(id, inheritedEntry(id, nowNanos, ceiling));
+            inFlightProvisioning.putIfAbsent(id, inheritedEntry(id, nowNanos, ceiling, inheritedGeneration(id, unjoinedMints)));
         }
 
         log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
@@ -526,11 +529,45 @@ public final class LeaderReconciler {
     /// and dispatched, since the reconciler mints an id only to dispatch it. Its absence count starts at zero
     /// and its first-listing floor at inheritance: this leader counts only listings it has seen itself, so no
     /// part of a prior leader's history can shorten the observation.
-    private static InFlightEntry inheritedEntry(NodeId id, long nowNanos, TimeSpan ceiling) {
+    private static InFlightEntry inheritedEntry(NodeId id, long nowNanos, TimeSpan ceiling, int generation) {
         return InFlightEntry.inFlightEntry(nowNanos - timeSpan(mintAgeMs(id)).millis().nanos(),
                                            ceiling,
                                            InFlightState.UNCONFIRMED,
-                                           nowNanos);
+                                           nowNanos,
+                                           generation);
+    }
+
+    /// Mint times (ULID epoch milliseconds) of the retained ids that are not yet members; ids with no ULID
+    /// carry no mint time and are left out.
+    private static List<Long> unjoinedMintTimes(Set<NodeId> retained, Set<NodeId> currentMembers) {
+        return retained.stream()
+                       .filter(id -> !currentMembers.contains(id))
+                       .map(id -> mintedUlid(id).map(ULID::timestamp)
+                                                .or(-1L))
+                       .filter(mint -> mint >= 0L)
+                       .toList();
+    }
+
+    /// #1786 — the substitute generation survives a leader handover by inference, because what a leader
+    /// inherits is a set of node ids: the retained-dispatch wire carries no per-entry attributes, and the
+    /// provider's answer for an id is only a state (`ReplacementInstanceState`), never labels. A retained
+    /// unjoined id minted more than [`#joinGraceWindow`] after another retained unjoined id's mint is treated
+    /// as a substitute (generation 1) — a substitute is only ever dispatched once the entry it replaces has been
+    /// unjoined for longer than the grace. MISCLASSIFICATION DIRECTION: a genuine second missing slot first
+    /// dispatched more than the grace after another unjoined one is also read as a substitute, so it is never
+    /// discounted and falls back to the pre-#1786 ceiling behaviour — slower to heal, never extra spend. The
+    /// converse (a substitute read as generation 0) needs the original evicted by its ceiling first, which is
+    /// the bound's own window. Ids without a ULID are generation 0.
+    private int inheritedGeneration(NodeId id, List<Long> unjoinedMints) {
+        return mintedUlid(id).map(ulid -> generationForMint(ulid.timestamp(), unjoinedMints))
+                             .or(0);
+    }
+
+    private int generationForMint(long mintMs, List<Long> unjoinedMints) {
+        return unjoinedMints.stream()
+                            .anyMatch(other -> mintMs - other > joinGraceWindow.millis())
+               ? SUBSTITUTE_GENERATION
+               : 0;
     }
 
     /// How long ago `id` was minted, in milliseconds, read from the wall clock `ULID#ulid` stamps with (an
