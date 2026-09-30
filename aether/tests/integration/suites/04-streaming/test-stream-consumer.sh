@@ -45,6 +45,11 @@ test_publish_and_verify_count() {
     local success=0
     local publish_errfile
     publish_errfile=$(mktemp)
+    # Every publish's offset, partition and answering endpoint is recorded (P3 capture for a possible
+    # acked-data loss): a shortfall below quotes them next to the per-node view of the stream.
+    local publish_trace
+    publish_trace=$(mktemp)
+    STREAM_PUBLISH_TRACE="$publish_trace"
     local i payload publish_rc
     for i in $(seq 1 "$publish_count"); do
         payload="{\"key\":\"consumer-test-${i}\",\"data\":\"msg-${i}\",\"timestamp\":$(now_epoch)}"
@@ -79,10 +84,15 @@ test_publish_and_verify_count() {
         sleep 1
     done
     if [ -z "$msg_count" ] || ! [ "$msg_count" -ge "$publish_count" ] 2>/dev/null; then
-        log_fail "totalEvents (${msg_count:-<absent>}) did not reach published (${publish_count}) within ${STREAM_COUNT_POLL_BUDGET_S:-30}s. /info body: $(printf '%s' "$info" | head -c 2000) || /replicas/0 body: $(stream_replicas "$STREAM_NAME" 0 2>&1 | head -c 2000)"
+        log_fail "totalEvents (${msg_count:-<absent>}) did not reach published (${publish_count}) within ${STREAM_COUNT_POLL_BUDGET_S:-30}s. Last /info body: $(printf '%s' "$info" | head -c 2000)"
+        log_fail "shortfall capture: $(stream_shortfall_report "$STREAM_NAME" "$publish_trace")"
+        unset STREAM_PUBLISH_TRACE
+        rm -f "$publish_trace"
         return 1
     fi
 
+    unset STREAM_PUBLISH_TRACE
+    rm -f "$publish_trace"
     assert_ge "$msg_count" "$publish_count" "totalEvents (${msg_count}) >= published (${publish_count})"
 }
 

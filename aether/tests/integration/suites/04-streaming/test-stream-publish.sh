@@ -31,8 +31,10 @@ test_publish_single_event() {
 }
 
 test_publish_batch() {
-    local success=0 failure=0 errfile
+    local success=0 failure=0 errfile trace
     errfile=$(mktemp)
+    trace=$(mktemp)
+    STREAM_PUBLISH_TRACE="$trace"
     for i in $(seq 1 50); do
         local payload="{\"key\":\"batch-${i}\",\"data\":\"payload-${i}\",\"timestamp\":$(now_epoch)}"
         # `2>&1` here discarded the `api ... status=NNN: <body>` diagnostic that `_api_call`
@@ -45,8 +47,12 @@ test_publish_batch() {
         fi
     done
     log_info "Batch publish: success=${success}, failure=${failure}"
-    [ "$failure" -eq 0 ] || log_warn "Batch publish diagnostics (first 500B): $(head -c 500 "$errfile" 2>/dev/null | tr -d '\n')"
-    rm -f "$errfile"
+    [ "$failure" -eq 0 ] || {
+        log_warn "Batch publish diagnostics (first 500B): $(head -c 500 "$errfile" 2>/dev/null | tr -d '\n')"
+        log_warn "shortfall capture: $(stream_shortfall_report "$STREAM_NAME" "$trace")"
+    }
+    unset STREAM_PUBLISH_TRACE
+    rm -f "$errfile" "$trace"
     assert_eq "$success" "50" "All 50 events published"
 }
 

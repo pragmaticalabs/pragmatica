@@ -4643,22 +4643,47 @@ stream_create() {
 # "catalog unreachable" and "stream absent from an otherwise healthy catalog" call for different
 # actions (fix the cluster vs create the stream), so they must not read alike. stdout stays
 # coordinate-only: the assert call sites capture it with `$(...)` and redirect stderr away.
+# Resolution is EXACT for streams this harness creates (stream_create puts them in
+# STREAM_TEST_NAMESPACE at STREAM_TEST_VERSION): when that address is in the catalog it is returned,
+# whatever else carries the same bare name. Cluster A holds `integration/test-events` AND the
+# `org.pragmatica.aether.test.test-persistence/test-events` that a deployed blueprint declares; the old
+# namespace-blind `head -1` over an unordered listing picked either one, re-resolved on every publish, so
+# one test's writes split across the two streams (6 + 14 of 20 measured, and the batch's 48 in the other).
+# A bare name with no harness-namespace entry resolves only when it matches EXACTLY ONE catalog entry (an
+# app-declared stream such as `notifications`); a match in several namespaces FAILS, loudly, naming them.
+# The exact address is cached per test process ($$, one process per test file) so a test resolves it once.
 stream_coordinate() {
-    local name="$1" body coord
+    local name="$1" body matches exact count cache
+    cache="${TMPDIR:-/tmp}/aether-stream-coord.$$.${name}"
+    if [ -s "$cache" ]; then
+        cat "$cache"
+        return 0
+    fi
     body=$(api_get "/api/v1/streams" 2>/dev/null) || {
         log_warn "stream_coordinate ${name}: GET /api/v1/streams failed — catalog unreachable" >&2
         return 1
     }
-    coord=$(printf '%s' "$body" \
+    matches=$(printf '%s' "$body" \
         | tr '}' '\n' \
         | grep -F "\"stream\":\"${name}\"" \
         | sed -E 's/.*"namespace":"([^"]*)".*"stream":"([^"]*)".*"version":"([^"]*)".*/\1\/\2\/\3/' \
-        | head -1)
-    [ -n "$coord" ] || {
-        log_warn "stream_coordinate ${name}: not in the catalog (create it with stream_create); catalog holds: $(printf '%s' "$body" | grep -oE '"stream":"[^"]*"' | tr '\n' ' ' | head -c 300)" >&2
+        | sort -u)
+    exact="${STREAM_TEST_NAMESPACE}/${name}/${STREAM_TEST_VERSION}"
+    if printf '%s\n' "$matches" | grep -qxF "$exact"; then
+        printf '%s' "$exact" | tee "$cache"
+        return 0
+    fi
+    count=$(printf '%s\n' "$matches" | grep -c . || true)
+    if [ "$count" -eq 1 ]; then
+        printf '%s' "$matches"
+        return 0
+    fi
+    if [ "$count" -gt 1 ]; then
+        log_warn "stream_coordinate ${name}: AMBIGUOUS — the bare name matches ${count} catalog entries and none is the harness address ${exact}: $(printf '%s' "$matches" | tr '\n' ' ')" >&2
         return 1
-    }
-    printf '%s' "$coord"
+    fi
+    log_warn "stream_coordinate ${name}: not in the catalog (create it with stream_create); catalog holds: $(printf '%s' "$body" | grep -oE '"stream":"[^"]*"' | tr '\n' ' ' | head -c 300)" >&2
+    return 1
 }
 
 stream_info() {
@@ -4704,32 +4729,45 @@ stream_declared_name() {
 }
 
 # Publish one event with the retry policy below and print the FINAL HTTP status ("000" when nothing
-# answered) on stdout; the final response body goes to $3 when given. A 503 whose body says
-# "retry"/"retryable" is a TRANSIENT refusal (an owner not yet promoted, not enough replicas): it is
-# retried with backoff for up to STREAM_PUBLISH_RETRY_BUDGET_S (default 10s), then the last refusal is
-# reported as-is. Every other failure is returned IMMEDIATELY, in particular a 500, including
-# "Publish outcome unknown ... FORWARD_TIMEOUT": the publish may have landed, and without a message id a
-# resend can duplicate it (#1750), so it must never be retried here.
+# answered) on stdout; the final response body goes to $3 when given. ONLY a 503 whose body says the
+# publish was "refused before writing" (ManagementServerError.PublishRetryable: an owner not yet promoted,
+# not enough replicas) is retried, with 250ms -> 1s backoff for up to STREAM_PUBLISH_RETRY_BUDGET_S
+# (default 10s); the last refusal is then reported as-is. Everything else returns after exactly ONE
+# request, in particular a 500 including "Publish outcome unknown ... FORWARD_TIMEOUT": the publish may
+# have landed, and without a message id a resend can duplicate it (#1750).
+# When STREAM_PUBLISH_TRACE names a file, one line per call is appended:
+#   endpoint=<ep> status=<s> attempts=<n> offset=<o> partition=<p>
+# so a later shortfall can be tied to which node answered which offset (partition is the response's
+# field when present, else 0, the Management API default).
 stream_publish_status() {
     local name="$1" body="$2" body_file="${3:-/dev/null}" coord
     coord=$(stream_coordinate "$name") || { printf '000'; return 0; }
     local budget="${STREAM_PUBLISH_RETRY_BUDGET_S:-10}"
-    local delay="${STREAM_PUBLISH_RETRY_DELAY_S:-0.5}"
+    local delay="${STREAM_PUBLISH_RETRY_DELAY_S:-0.25}" max_delay="${STREAM_PUBLISH_RETRY_MAX_DELAY_S:-1}"
     local deadline=$(( SECONDS + budget ))
-    local out status resp_body attempt=0
+    local out status resp_body ep attempt=0 off part
     while :; do
         attempt=$((attempt + 1))
-        out=$(_api_call POST "$(_resolve_live_endpoint)/api/v1/streams/${coord}/publish" "$body" 1) || true
+        ep=$(_resolve_live_endpoint)
+        out=$(_api_call POST "${ep}/api/v1/streams/${coord}/publish" "$body" 1) || true
         status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
         resp_body=$(printf '%s' "$out" | sed '$d')
-        if [ "$status" = "503" ] && printf '%s' "$resp_body" | grep -qi 'retry'; then
+        if [ "$status" = "503" ] && printf '%s' "$resp_body" | grep -qi 'refused before writing'; then
             if [ "$SECONDS" -lt "$deadline" ]; then
+                log_warn "stream_publish ${name}: attempt ${attempt} got 503 ($(printf '%s' "$resp_body" | head -c 120)); retrying in ${delay}s" >&2
                 sleep "$delay"
+                delay=$(awk -v d="$delay" -v m="$max_delay" 'BEGIN { d = d * 2; if (d > m) d = m; print d }')
                 continue
             fi
-            log_warn "stream_publish ${name}: retryable 503 still refused after ${attempt} attempt(s) in ${budget}s; last body: $(printf '%s' "$resp_body" | head -c 300)" >&2
+            log_warn "stream_publish ${name}: 503 refused-before-writing still refused after ${attempt} attempt(s) in ${budget}s; last body: $(printf '%s' "$resp_body" | head -c 300)" >&2
         fi
         printf '%s' "$resp_body" > "$body_file"
+        if [ -n "${STREAM_PUBLISH_TRACE:-}" ]; then
+            off=$(json_value "$resp_body" "offset" 2>/dev/null || true)
+            part=$(json_value "$resp_body" "partition" 2>/dev/null || true)
+            printf 'endpoint=%s status=%s attempts=%s offset=%s partition=%s\n' \
+                "$ep" "${status:-000}" "$attempt" "${off:--}" "${part:-0}" >> "$STREAM_PUBLISH_TRACE"
+        fi
         printf '%s' "${status:-000}"
         return 0
     done
@@ -4801,6 +4839,43 @@ stream_replicas() {
     local name="$1" partition="${2:-0}" coord
     coord=$(stream_coordinate "$name") || return 1
     api_get "/api/v1/streams/${coord}/replicas/${partition}"
+}
+
+# Management endpoints of every live node, one per line (best effort; a node that does not answer is
+# handled by the caller). Cloud: the running cores' public IPs; docker/remote: MGMT_PORT + 0..NODE_COUNT-1.
+_stream_live_endpoints() {
+    local id ip i
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        for id in $(cloud_running_cores); do
+            ip=$(cloud_public_ip "$id" 2>/dev/null) || continue
+            printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+            printf '%s://%s:%s\n' "${MGMT_SCHEME:-http}" "$ip" "${CLOUD_MGMT_PORT:-8080}"
+        done
+    else
+        for i in $(seq 0 $(( ${NODE_COUNT:-5} - 1 ))); do
+            printf 'http://%s:%s\n' "${TARGET_HOST}" "$(( ${MGMT_PORT:-5151} + i ))"
+        done
+    fi
+}
+
+# Capture for a stream whose count fell short of what was acknowledged (a possible acked-data loss):
+# every acked offset and which endpoint answered it (from the STREAM_PUBLISH_TRACE file), the /info body
+# (partitionDetails), /replicas/0, and `replicas-local` from EVERY node — a node that fails is reported
+# and skipped over, never a reason to stop. Prints on stdout; the caller quotes it in one log line.
+stream_shortfall_report() {
+    local name="$1" trace="${2:-}" identity ep body
+    echo "acked offsets (offset@partition, in publish order): $(grep -E 'status=(2|3)[0-9][0-9]' "$trace" 2>/dev/null | sed -E 's/.*offset=([^ ]+) partition=([^ ]+).*/\1@\2/' | tr '\n' ' ')"
+    echo "answering endpoints: $(grep -oE 'endpoint=[^ ]+' "$trace" 2>/dev/null | sort | uniq -c | tr '\n' ' ')"
+    echo "non-2xx publishes: $(grep -vE 'status=(2|3)[0-9][0-9]' "$trace" 2>/dev/null | tr '\n' '|')"
+    echo "/info: $(stream_status "$name" 2>&1 | head -c 2000)"
+    echo "/replicas/0: $(stream_replicas "$name" 0 2>&1 | head -c 2000)"
+    identity=$(stream_identity "$name" 2>/dev/null) || identity=""
+    for ep in $(_stream_live_endpoints); do
+        if [ -z "$identity" ]; then echo "replicas-local @ ${ep}: <no catalog identity>"; continue; fi
+        body=$(curl -sk -m 5 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/streams/${identity}/0/replicas-local" 2>&1) \
+            || body="<request failed rc=$?: ${body}>"
+        echo "replicas-local @ ${ep}: $(printf '%s' "$body" | head -c 1500)"
+    done
 }
 
 # ---------------------------------------------------------------------------
