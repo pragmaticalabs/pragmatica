@@ -1403,6 +1403,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                path,
                                                                                                requestId);
             case RateGuardError.LimitExceeded exceeded -> sendRateLimitResponse(response, path, requestId, exceeded);
+            case Cause transientCause when transientCause.isTransient() -> sendProblem(response,
+                                                                                       HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                       transientCause.message(),
+                                                                                       path,
+                                                                                       requestId);
             default -> {
                 log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
                 sendProblem(response,

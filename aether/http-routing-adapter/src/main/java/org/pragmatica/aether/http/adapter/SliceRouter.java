@@ -344,12 +344,19 @@ public interface SliceRouter {
             /// `matchPath`/`matchQuery` wrap in a `Causes.CompositeCause` via `Result.all`. Unwrap that
             /// (a direct [HttpError], or one carried as a composite member) so its typed status (400) is
             /// honored instead of collapsing to the slice mapper's 500 default. Any other cause falls
-            /// through to the slice error mapper unchanged.
+            /// through to the slice error mapper; a 500 it leaves unmapped is re-derived by the default
+            /// mapper so a transient cause answers 503 (#1737) — the generated mapper's `default` is a
+            /// hard-coded 500 that cannot see [Cause#isTransient].
             private HttpError resolveHttpError(Cause cause) {
                 return Option.from(cause.stream()
                                         .filter(HttpError.class::isInstance)
                                         .map(HttpError.class::cast)
-                                        .findFirst()).or(() -> errorMapper.map(cause));
+                                        .findFirst()).or(() -> mapWithTransientFallback(cause));
+            }
+
+            private HttpError mapWithTransientFallback(Cause cause) {
+                return errorMapper.orElse(ErrorMapper.defaultMapper())
+                                  .map(cause);
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {

@@ -100,7 +100,7 @@ eager-full-reservation** remains and recurs as stream count grows. This spec is 
 | `ClusterEventAggregator.emit` | `ClusterEventAggregator.java:253-267` |
 | Deployment FSM `Active` slice-state transitions | `ClusterDeploymentState.java:1002-1089` |
 | `handleSliceFailure` / `DeploymentFailed` route | `:1023-1051, 1084-1089` |
-| HTTP error mapping (non-`HttpError` Cause → 500) | `aether/http-routing-adapter/.../ErrorMapper.java:16-18` |
+| HTTP error mapping (app routes: non-`HttpError` Cause → 500, or 503 when `Cause.isTransient()`, #1737) | `aether/http-routing-adapter/.../ErrorMapper.java:16-18` |
 
 ### 3.1 OffHeapRingBuffer allocation model (key finding)
 
@@ -302,8 +302,11 @@ numeric detail. The opaque message stays the user-facing detail string.
 **(b) Propagation.**
 - *Management publish:* `StreamRoutes.recoverWhenAlreadyExists` (`:240-244`) already returns any
   non-`ALREADY_EXISTS` cause unchanged → `ensureStreamExists` fails → `publishToPartition` fails →
-  the route's `Result` is failed → `ErrorMapper` maps the non-`HttpError` cause to **HTTP 500** with
-  `detail = "Total off-heap memory limit exceeded"` (`ErrorMapper.java:16-18`). **No route change
+  the route's `Result` is failed → the Management API's `ProblemResponses.resolveStatus` answers **HTTP 500**
+  (the cause is not `HttpStatusAware`) with
+  `detail = "Total off-heap memory limit exceeded"`. (An APP route maps the same cause through
+  `ErrorMapper`, which since #1737 answers **503** because `STREAM_MEMORY_EXCEEDED` is
+  `isTransient()`; the Management path does not use `ErrorMapper`.) **No route change
   needed** for publish; the create-floor failure now reaches here instead of being masked.
 - *App/resource stream provisioning:* change `StreamPublisherFactory.ensureStreamExists`
   (`StreamPublisherFactory.java:74-76`) and `StreamAccessFactory.ensureStreamExists`
@@ -457,7 +460,7 @@ naturally infrequent (once per failed create) and is not rate-limited.
 
 | Caller | Failure point | Cause | Surfaced as |
 |---|---|---|---|
-| `StreamRoutes.publishToPartition` → `ensureStreamExists` | create-floor (pool can't fit floor) | `STREAM_MEMORY_EXCEEDED` | HTTP **500**, detail "Total off-heap memory limit exceeded" (via `ErrorMapper` 500-default) + `StreamMemoryExceeded` event (phase=`create-floor`) + WARN log |
+| `StreamRoutes.publishToPartition` → `ensureStreamExists` | create-floor (pool can't fit floor) | `STREAM_MEMORY_EXCEEDED` | HTTP **500**, detail "Total off-heap memory limit exceeded" (via `ProblemResponses` 500-default) + `StreamMemoryExceeded` event (phase=`create-floor`) + WARN log |
 | `StreamRoutes.createStream` (explicit `POST /streams`) | create-floor | `STREAM_MEMORY_EXCEEDED` | HTTP **500** same detail + event + WARN |
 | App slice resource `StreamPublisher`/`StreamAccess` (`*Factory.provision`) | create-floor | `STREAM_MEMORY_EXCEEDED` | Provision `Promise` fails → slice → `FAILED` (non-fatal/transient) → `DeploymentFailed` cluster event + retry w/ backoff (`ClusterDeploymentState:1053-1075`) + `StreamMemoryExceeded` event + WARN. **Deployment visibly fails**, not silent. |
 | System bootstrap (`SystemStreamFactories.ensureLocalPartition`) | create-floor | `STREAM_MEMORY_EXCEEDED` | Fail-soft (node boots) BUT WARN + `StreamMemoryExceeded` event; `SystemStreamRegistrar` treats terminal (no retry thrash, `:197-201`) |
@@ -623,7 +626,7 @@ Use the project CLI for cluster management (not curl), per project conventions.
 | 6 | §4.3 alloc-fail guard | guarded `arena.allocate` → release + `Result` | TODO |
 | 7 | §4.3 growth seam | inject `reserve`/`release` into buffer | TODO |
 | 8 | §4.3 release-on-destroy | `closeAndRelease` uses live `allocatedBytes()` | TODO |
-| 9 | §4.5b publish propagation | (verify ErrorMapper 500 — no code change) | TODO |
+| 9 | §4.5b publish propagation | (verify Management-API 500; app-route `ErrorMapper` answers 503 for transient causes since #1737 — no code change) | TODO |
 | 10 | §4.5b app propagation | `StreamPublisherFactory`/`StreamAccessFactory` propagate | TODO |
 | 11 | §4.5b deployment surface | non-fatal/transient mapping; verify slice FAILED path | TODO |
 | 12 | §4.5c event variant | `ClusterEvent.StreamMemoryExceeded` + permits | TODO |
