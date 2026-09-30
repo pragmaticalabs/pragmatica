@@ -24,8 +24,9 @@ not reach the router at all. It falls through to the static file handler, which 
    are configurable in `forge.toml` — `base_port` (the cluster's QUIC/consensus UDP range,
    `base_port`–`base_port+nodes-1`, default `6000`), `management_port`, `app_http_port` and
    `dashboard_port`. Moving all four lets a second instance coexist; moving only the other three
-   does not, because the QUIC range is the one whose collision the kernel does not report (the
-   sockets carry `SO_REUSEADDR`, so a duplicate bind succeeds and the datagrams are split silently).
+   does not, because the QUIC range collides. Before #1719 that collision was silent (the sockets
+   carried `SO_REUSEADDR`, so a duplicate bind succeeded and the datagrams were split); since #1719 the
+   QUIC bind is exclusive and a taken port fails the node's start with `BindFailed` naming the port.
 
    Since #1008 Forge checks its whole QUIC range at startup and exits non-zero naming the occupied
    ports, so that collision is loud rather than appearing as step 2 never returning. A start that

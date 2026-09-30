@@ -18,19 +18,14 @@ import org.pragmatica.lang.Unit;
 
 /// #1008 — startup guard refusing to form a Forge cluster on QUIC ports another process already holds.
 ///
-/// WHY A PREFLIGHT AND NOT A GUARD ON THE BIND ITSELF. The QUIC bind cannot report this collision.
-/// `QuicClusterServer` sets `SO_REUSEADDR` on its `NioDatagramChannel` — deliberately, so a restarting
-/// node rebinds its own port immediately — and two UDP sockets that BOTH set `SO_REUSEADDR` bind the
-/// same port successfully. Measured on Darwin 25.5.0, all four combinations: holder and probe both
-/// carrying `SO_REUSEADDR` is the ONLY one where the second bind succeeds; the other three are refused
-/// with `Address already in use`. Forge-versus-Forge is exactly that one case. So a second Forge does
-/// not fail to bind — it binds, then splits the port's datagrams with the first instance and never
-/// reaches quorum, presenting as `activePeerCount=1`.
-///
-/// `QuicTransportError.BindFailed` already names the port and already aborts the whole cluster start,
-/// so propagating bind failures harder changes nothing: on this path nothing fails. The probe below
-/// therefore binds each port WITHOUT `SO_REUSEADDR`, which IS refused while any holder exists, and
-/// reports before a single node is created.
+/// WHY A PREFLIGHT AS WELL AS THE BIND. Until #1719 the QUIC bind could not report this collision:
+/// `QuicClusterServer` set `SO_REUSEADDR`, and two UDP sockets that BOTH set it bind the same port
+/// successfully (measured on Darwin 25.5.0: of the four combinations only both-set succeeds), so a
+/// second Forge bound, split the port's datagrams with the first and never reached quorum. Since #1719
+/// the cluster bind is exclusive and a taken port fails the start with `QuicTransportError.BindFailed`.
+/// This probe remains because it checks EVERY port of the range before a single node is created, rather
+/// than failing part-way through the cluster start. It binds each port WITHOUT `SO_REUSEADDR`, which is
+/// refused while any holder exists.
 ///
 /// LIMITATION, stated rather than papered over: this is a time-of-check/time-of-use probe. Each socket
 /// is closed before the cluster binds the port for real, so a process claiming it inside that window is
@@ -70,7 +65,7 @@ public sealed interface ForgePortPreflight {
     }
 
     /// Adapter leaf — the kernel is the only authority on whether a port is free. Deliberately does
-    /// NOT set `SO_REUSEADDR`: that omission is the entire mechanism (see the type documentation).
+    /// NOT set `SO_REUSEADDR`, so any existing holder makes the bind fail (see the type documentation).
     @SuppressWarnings("JBCT-EX-01")
     private static InetSocketAddress bindAndClose(int port) throws Exception {
         try (var channel = DatagramChannel.open(StandardProtocolFamily.INET)) {

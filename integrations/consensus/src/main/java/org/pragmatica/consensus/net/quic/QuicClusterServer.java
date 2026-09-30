@@ -40,7 +40,6 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -280,13 +279,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         eventLoopGroup = group;
         var codec = buildQuicCodec();
-        var bootstrap = new Bootstrap().group(group)
-                                       .channel(NioDatagramChannel.class)
-                                       // SO_REUSEADDR enables fast rebind when a node restarts and the kernel still holds
-                                       // the cluster UDP port in TIME_WAIT — without it `BindException: Address already in
-                                       // use` cascades through chaos tests every time a node is killed and restarted.
-                                       .option(ChannelOption.SO_REUSEADDR, true)
-                                       .handler(codec);
+        // #1719 / #1015 — the cluster port is bound EXCLUSIVELY (no SO_REUSEADDR). With it, a second reuse-enabled socket
+        // (another node or process on the host) binds the same port silently, and on Linux the later socket then
+        // receives every datagram for it: this node goes deaf mid-stream (#1727) and the BindFailed guard below could
+        // never fire. UDP has no TIME_WAIT to escape, so exclusivity costs nothing on restart once the old socket has
+        // closed; a port conflict now fails the start with BindFailed naming the port.
+        var bootstrap = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec);
 
         bootstrap.bind(new InetSocketAddress(port)).addListener(future -> handleBind(port, promise, future));
     }
