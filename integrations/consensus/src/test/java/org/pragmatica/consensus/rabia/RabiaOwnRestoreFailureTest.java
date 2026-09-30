@@ -208,8 +208,9 @@ class RabiaOwnRestoreFailureTest {
             .as("#1447: a node re-entering adoption every round must emit the stuck-sync WARN; answered %s requests",
                 network.answered())
             .isTrue();
-        // The WARN is logged in round WARN_ROUNDS BEFORE that round's SyncRequest goes out, so sampling the
-        // counter the instant the WARN is visible can read WARN_ROUNDS - 1. Wait for the rounds instead.
+        // answerWith wires the counter only after started() has armed the first round (FAST_RETRY out), so a
+        // test thread stalled past that round leaves it uncounted and the WARN can arrive with WARN_ROUNDS - 1
+        // (CI, 2026-09-30; reproduced with a 50ms stall before answerWith). Wait for the rounds instead.
         assertThat(awaitCondition(() -> network.answered() >= WARN_ROUNDS, STUCK_BUDGET_MILLIS))
             .as("adoption was re-entered on several rounds, not once; answered %s requests", network.answered())
             .isTrue();
