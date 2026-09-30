@@ -125,10 +125,10 @@ public interface ObservabilityRegistry {
             registerTransportGauge("quic_active_connections", "Active QUIC peer connections", metricsSupplier);
             registerTransportGauge("quic_handshake_total", "Total QUIC handshakes completed", metricsSupplier);
             registerTransportGauge("quic_handshake_failures_total",
-                                   "#1489: QUIC connects that failed in their TLS handshake (not other dial failures)",
+                                   "QUIC connects that failed in their TLS handshake (not other dial failures)",
                                    metricsSupplier);
             registerTransportGauge("quic_dial_failures_total",
-                                   "#1489: every failed QUIC dial, whatever the stage (unreachable, refused, timed out, rejected, TLS)",
+                                   "Every failed QUIC dial, whatever the stage (unreachable, refused, timed out, rejected, TLS)",
                                    metricsSupplier);
             registerTransportGauge("quic_dial_abandoned_total",
                                    "#1578: dials abandoned before their QUIC handshake because the peer connected over another link",

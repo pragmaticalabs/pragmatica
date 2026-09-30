@@ -2998,8 +2998,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         connectPeer(peer, forceInitiate);
     }
 
-    /// Package-private test seam — the #1578 abandon an attach performs, invoked directly, so a test can aim it at
-    /// an attempt in a chosen stage (e.g. past its QUIC handshake, Hello unanswered).
     /// Package-private test seam (#1461) — whether the reconciler or the keepalive is scheduled.
     boolean periodicTasksScheduledForTests() {
         return reconcilerTask.isScheduled() || keepaliveTask.isScheduled();
@@ -3011,6 +3009,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         dialResolved(peer, inetAddress, port);
     }
 
+    /// Package-private test seam — the #1578 abandon an attach performs, invoked directly, so a test can aim it at
+    /// an attempt in a chosen stage (e.g. past its QUIC handshake, Hello unanswered).
     void abandonPendingDialForTests(NodeId peerId) {
         abandonPendingDial(peerId);
     }
