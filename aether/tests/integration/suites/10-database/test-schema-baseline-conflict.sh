@@ -77,15 +77,41 @@ _migrated() {
     [ "${v:--1}" -ge 900 ] 2>/dev/null
 }
 
-# POST baseline; sets BASELINE_STATUS (HTTP status, 000 = no response) and BASELINE_BODY.
+# The leader's management endpoint, or empty when it cannot be derived (caller falls back to the
+# live endpoint). Schema mutations are leader-bound: a non-leader answers 409 SchemaNotLeader, which
+# is ALSO a 409 — so an unfiltered POST to a follower could be mistaken for the conflict under test.
+_leader_mgmt_endpoint() {
+    local leader ip
+    leader=$(cluster_leader_http) || return 0
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        ip=$(cloud_public_ip "$leader" 2>/dev/null) || return 0
+        [ -n "$ip" ] && printf '%s://%s:%s' "${MGMT_SCHEME:-http}" "$ip" "${CLOUD_MGMT_PORT:-8080}"
+    elif [[ "$leader" =~ ^node-([0-9]+)$ ]]; then
+        printf 'http://%s:%s' "${TARGET_HOST}" "$((MGMT_PORT + BASH_REMATCH[1] - 1))"
+    fi
+    return 0
+}
+
+# POST baseline to the LEADER; sets BASELINE_STATUS (HTTP status, 000 = no response) and BASELINE_BODY.
 # Uses _api_call's status marker rather than api_post, which discards the status of a refusal.
+# A SchemaNotLeader refusal (leadership moved, or the leader endpoint was not derivable) is retried,
+# re-resolving the leader each time; it is NEVER accepted as the conflict: if retries run out the
+# body still says "requires the leader node" and the callers' detail match fails the test.
 BASELINE_STATUS=""
 BASELINE_BODY=""
 baseline_post() {
-    local out
-    out=$(_api_call POST "$(_resolve_live_endpoint)/api/v1/schema/baseline/${DATASOURCE}" "{}" 1) || true
-    BASELINE_STATUS=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
-    BASELINE_BODY=$(printf '%s' "$out" | sed '$d')
+    local out endpoint attempt
+    for attempt in 1 2 3 4 5; do
+        endpoint=$(_leader_mgmt_endpoint)
+        [ -n "$endpoint" ] || endpoint=$(_resolve_live_endpoint)
+        out=$(_api_call POST "${endpoint}/api/v1/schema/baseline/${DATASOURCE}" "{}" 1) || true
+        BASELINE_STATUS=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+        BASELINE_BODY=$(printf '%s' "$out" | sed '$d')
+        case "$BASELINE_BODY" in
+            *"requires the leader node"*) log_info "baseline attempt ${attempt}: SchemaNotLeader at ${endpoint}; retrying against the leader"; sleep "${BASELINE_RETRY_SLEEP:-1}" ;;
+            *) return 0 ;;
+        esac
+    done
 }
 
 _expected_conflict_detail() {

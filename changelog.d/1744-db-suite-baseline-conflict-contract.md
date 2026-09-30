@@ -9,6 +9,8 @@
   `test-schema-baseline-conflict.sh`; CHARTER C3/C6 are rewritten to match.
 - **Stated gap:** the first-time baseline path now has no end-to-end coverage; the CHARTER records it as
   `[unverified: ...]` (rc5 follow-up).
-  [verified: `aether/tests/integration/test/test-baseline-conflict-suite.sh` (5 stub scenarios against the real
-  `_api_call`); the pre-change script fails the 409 scenario exactly as the real runs did, and disabling the
-  version check leaves the moved-version scenario green. No cluster or cloud run was made.]
+  [verified: `aether/tests/integration/test/test-baseline-conflict-suite.sh` (8 stub scenarios against the real
+  `_api_call`, each asserting the EXACT set of reddened tests); the pre-change script fails the 409 scenario exactly as
+  the real runs did. Mutations: disabling the version check, or the second-409 body check, makes the scenario that
+  pins it stop reddening; disabling the SchemaNotLeader retry reddens the retry scenario. The baseline POST targets the
+  leader and retries a SchemaNotLeader 409, which is never accepted as the conflict. No cluster or cloud run was made.]

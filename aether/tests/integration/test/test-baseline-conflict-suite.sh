@@ -8,6 +8,9 @@
 #   B3  server answers 409 first, then 200 (not repeatable)                  -> repeatability test FAILS
 #   B4  server answers 409 twice but a POST moves currentVersion             -> unchanged-version test FAILS
 #   B5  server answers 409 naming the WRONG version                          -> contract test FAILS
+#   B6  first 409 correct, SECOND 409 names another version                 -> repeatability test FAILS
+#   B7  first call SchemaNotLeader 409, then the real conflict (retry)       -> every test passes
+#   B8  SchemaNotLeader 409 forever                                          -> contract test FAILS (never a pass)
 # SCRIPT_UNDER_TEST=<path> selects another copy (mutation probe against the pre-change script).
 #   bash aether/tests/integration/test/test-baseline-conflict-suite.sh
 set -uo pipefail
@@ -57,6 +60,9 @@ schema_status() {
     fi
 }
 api_get() { schema_status; }
+cluster_leader_http() { echo node-1; }
+MGMT_PORT=5151
+BASELINE_RETRY_SLEEP=0
 STUB
 
 # Stub curl: only the baseline POST is served here; the response depends on $SCEN and the call count.
@@ -64,12 +70,20 @@ cat > "$WORK/bin/curl" <<'STUB'
 #!/bin/bash
 n=$(( $(cat "$WORK/calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$WORK/calls"
 conflict() { printf '{"type":"about:blank","title":"Conflict","status":409,"detail":"Baseline conflict for datasource '"'"'database.testpersistence'"'"': versioned migrations already applied up to version %s","requestId":"mgmt"}\n__API_HTTP_STATUS:409__' "$1"; }
+notleader() { cat <<'JSON'
+{"type":"about:blank","title":"Conflict","status":409,"detail":"Schema baseline for datasource 'database.testpersistence' requires the leader node — current leader: node-2","requestId":"mgmt"}
+__API_HTTP_STATUS:409__
+JSON
+}
 case "$SCEN" in
     conflict)  conflict 900 ;;
     ok200)     printf '{"status":"BASELINED"}\n__API_HTTP_STATUS:200__' ;;
     nonidem)   if [ "$n" -eq 1 ]; then conflict 900; else printf '{"status":"BASELINED"}\n__API_HTTP_STATUS:200__'; fi ;;
     moves)     conflict 900; echo 950 > "$WORK/version" ;;
     wrongver)  conflict 1 ;;
+    secondwrong) if [ "$n" -eq 1 ]; then conflict 900; else conflict 950; fi ;;
+    notleader) if [ "$n" -eq 1 ]; then notleader; else conflict 900; fi ;;
+    notleader_forever) notleader ;;
 esac
 STUB
 chmod +x "$WORK/bin/curl"
@@ -86,15 +100,24 @@ run conflict
 if [ "$(ran conflict)" = "7" ] && [ -z "$(failed_tests conflict)" ]; then ok "B1 conflict server: 7 tests ran, none failed"
 else fail "B1 ran=$(ran conflict) failed=[$(failed_tests conflict)]"; fi
 
-expect_red() {  # <scenario> <label> <test-name-substring>
+# The failed set must be EXACTLY the named tests: a superset would let an unrelated failure (a broken
+# stub, a typo) pass as the reddening under test.
+R1="Baseline refused on migrated datasource (409)"; R2="Refused baseline is repeatable (identical 409)"; R3="Version unchanged after refused baselines"
+expect_red() {  # <scenario> <label> <exact failed set, '|'-terminated>
     run "$1"
-    if [ "$(ran "$1")" = "7" ] && failed_tests "$1" | grep -q "$3"; then ok "$2 reddens: $(failed_tests "$1")"
-    else fail "$2 ran=$(ran "$1") failed=[$(failed_tests "$1")]"; fi
+    if [ "$(ran "$1")" = "7" ] && [ "$(failed_tests "$1")" = "$3" ]; then ok "$2 reddens exactly: $3"
+    else fail "$2 ran=$(ran "$1") failed=[$(failed_tests "$1")] wanted=[$3]"; fi
 }
-expect_red ok200 "B2 200-on-baseline" "Baseline refused on migrated"
-expect_red nonidem "B3 non-idempotent second call" "repeatable"
-expect_red moves "B4 version moved by a POST" "Version unchanged"
-expect_red wrongver "B5 wrong version in the 409" "Baseline refused on migrated"
+expect_red ok200 "B2 200-on-baseline" "${R1}|${R2}|"
+expect_red nonidem "B3 non-idempotent second call" "${R2}|"
+expect_red moves "B4 version moved by a POST" "${R3}|"
+expect_red wrongver "B5 wrong version in the 409" "${R1}|${R2}|"
+expect_red secondwrong "B6 second 409 differs from the first" "${R2}|"
+expect_red notleader_forever "B8 SchemaNotLeader never resolves" "${R1}|${R2}|"
+run notleader
+if [ "$(ran notleader)" = "7" ] && [ -z "$(failed_tests notleader)" ] && grep -q 'SchemaNotLeader at http://stub:5151' "$WORK/out.notleader"; then
+    ok "B7 SchemaNotLeader then leader: retried against the leader endpoint, 7 tests passed"
+else fail "B7 ran=$(ran notleader) failed=[$(failed_tests notleader)]"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"
