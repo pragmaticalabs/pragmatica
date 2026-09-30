@@ -266,6 +266,30 @@ class ClusterIncarnationTest {
             assertThat(ClusterIncarnation.currentId(kvStore)).isEqualTo(Option.some("id-minted"));
         }
 
+        /// A node restarted with a fresh identity and no restore gains leadership while its OWN store has not caught
+        /// up (empty): its registrar mints a genesis against the cluster's committed store, and the version fence
+        /// refuses it — the committed incarnation id stays, and the lagging leader's registrar never reports
+        /// complete, since its confirm read finds nothing. (From v1533's verification of #1635; red only when the
+        /// fence is removed from `ClusterIncarnationValue`.)
+        @Test
+        void laggingNewLeader_withAnEmptyLocalStore_doesNotReplaceTheCommittedIncarnationId() {
+            var first = registrar(this::applyToStore);
+
+            first.onLeaderChange(leaderChange(true));
+            var minted = ClusterIncarnation.committed(kvStore).unwrap();
+            first.onLeaderChange(leaderChange(false));
+            var lagging = emptyStore();
+            var successor = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> lagging,
+                                                                                                                           this::applyToStore,
+                                                                                                                           () -> "lineage-lagging",
+                                                                                                                           () -> "id-lagging"),
+                                                                                    this::capture);
+            successor.onLeaderChange(leaderChange(true));
+
+            assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(minted));
+            assertThat(successor.isComplete()).as("its confirm read finds nothing in its own empty store").isFalse();
+        }
+
         /// A commit that fails (not yet quorate) is retried on the next pass rather than given up.
         @Test
         void transientCommitFailure_isRetried() {

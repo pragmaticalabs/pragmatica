@@ -1108,10 +1108,13 @@ public sealed interface AetherValue {
     /// The cluster's lineage and incarnation, under [AetherKey.ClusterIncarnationKey] (#1529 part 1).
     /// `lineageId` names the cluster's history across cold restarts; `incarnation` counts those restarts
     /// and dominates any per-incarnation counter (a consensus revision restarts with the cluster).
-    /// `incarnationId` is a ULID minted fresh at every genesis mint and every restore (#1529 part 2,
-    /// #1625): unlike the number, it is never reused, so two histories that happen to reach the same
-    /// incarnation number (a restore whose predecessor never reached the backup, or two lineages) stay
-    /// distinguishable. It is an identity, compared for equality only — ordering is the number's job.
+    /// `incarnationId` is a ULID minted fresh at every genesis mint, every restore and every `declare-genesis`
+    /// (#1529 part 2, #1625, #1533) — and at nothing else: a leader change keeps it (the value is replicated
+    /// state). Unlike the number, it is never reused, so two histories that happen to reach the same
+    /// incarnation number (a restore whose predecessor never reached the backup, two lineages, or two
+    /// clusters restored from one backup at once) stay distinguishable; the KV backup refuses to let one
+    /// replace the other's head (#1533, `BACKUP_FORKED`). It is an identity, compared for equality only —
+    /// ordering is the number's job.
     ///
     /// [VersionFenced] on `incarnation`, which gives two per-operation guarantees and no more: a genesis
     /// mint against an absent key is first-wins, and a Put through the fence is accepted only as the
@@ -1140,6 +1143,55 @@ public sealed interface AetherValue {
         @Override
         public long fenceVersion() {
             return incarnation;
+        }
+    }
+
+    /// What a restore decision concluded (#1533), under [AetherKey.BackupRestoreKey].
+    @Codec
+    enum BackupRestoreOutcome {
+        /// A restore of `commit` has started and not finished; a new leader resumes the same commit.
+        IN_PROGRESS,
+        /// The backup at `commit` was restored.
+        RESTORED,
+        /// Nothing to restore (an empty backup, or `[backup] restore = fresh`); genesis follows.
+        FRESH,
+        /// The KV already held cluster state — a live cluster is never restored over.
+        SKIPPED_EXISTING_STATE,
+        /// The deciding leader has no `[backup]` enabled.
+        DISABLED,
+        /// Wire sentinel: an ordinal this node cannot name decodes here instead of throwing. Not terminal,
+        /// so a node that cannot name the outcome keeps its restore gate closed. Must stay LAST.
+        UNKNOWN;
+        /// Whether the decision is final — the restore gate opens only on these.
+        public boolean isTerminal() {
+            return this == RESTORED || this == FRESH || this == SKIPPED_EXISTING_STATE || this == DISABLED;
+        }
+    }
+
+    /// The committed restore decision (#1533). `lineageId`/`incarnation`/`revision` are the restored
+    /// document's header and `commit` its backup commit, for [BackupRestoreOutcome#IN_PROGRESS] and
+    /// [BackupRestoreOutcome#RESTORED]; empty and zero otherwise.
+    record BackupRestoreValue(BackupRestoreOutcome outcome,
+                              String lineageId,
+                              long incarnation,
+                              long revision,
+                              String commit) implements AetherValue {
+        public static BackupRestoreValue backupRestoreValue(BackupRestoreOutcome outcome,
+                                                            String lineageId,
+                                                            long incarnation,
+                                                            long revision,
+                                                            String commit) {
+            return new BackupRestoreValue(outcome, lineageId, incarnation, revision, commit);
+        }
+
+        /// A decision that restores nothing.
+        public static BackupRestoreValue decided(BackupRestoreOutcome outcome) {
+            return new BackupRestoreValue(outcome, "", 0L, 0L, "");
+        }
+
+        /// The same restore, finished.
+        public BackupRestoreValue restored() {
+            return new BackupRestoreValue(BackupRestoreOutcome.RESTORED, lineageId, incarnation, revision, commit);
         }
     }
 
@@ -1495,6 +1547,18 @@ public sealed interface AetherValue {
                                           owningBlueprint,
                                           attemptCount,
                                           System.currentTimeMillis());
+        }
+
+        /// The same record with only `status` replaced — every other field, `updatedAt` included, kept.
+        public SchemaVersionValue withStatus(SchemaStatus newStatus) {
+            return new SchemaVersionValue(datasourceName,
+                                          currentVersion,
+                                          lastMigration,
+                                          newStatus,
+                                          artifactCoords,
+                                          owningBlueprint,
+                                          attemptCount,
+                                          updatedAt);
         }
     }
 

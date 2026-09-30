@@ -4667,6 +4667,42 @@ stream_info() {
     api_get "/api/v1/streams/${coord}"
 }
 
+# stream_info is the catalog METADATA route (STREAMS_METADATA): namespace, stream, version, refCount,
+# partitionCount, retention... — no event counts, and the name field is `stream`, not `name`.
+# The per-partition totals live on /info (STREAM_GET), which since #1478 reports the OWNERS' heads.
+stream_status() {
+    local name="$1" coord
+    coord=$(stream_coordinate "$name") || return 1
+    api_get "/api/v1/streams/${coord}/info"
+}
+
+# stream_total_events <name>: prints /info's totalEvents. A body WITHOUT the field is a harness/API
+# mismatch, not a measured zero: the earlier `${count:-0}` rendered "field absent" as "got '0'" and
+# sent the 2026-09-29 investigation after a product defect that was really the wrong endpoint (#1478).
+# Fails non-zero, stdout empty, stderr naming the absence, so callers capturing stdout cannot mistake it.
+stream_total_events() {
+    local name="$1" info count
+    info=$(stream_status "$name") || return 1
+    count=$(json_value "$info" "totalEvents")
+    [ -n "$count" ] || {
+        log_warn "stream_total_events ${name}: totalEvents field absent from /info body: $(printf '%s' "$info" | head -c 300)" >&2
+        return 1
+    }
+    printf '%s' "$count"
+}
+
+# stream_declared_name <name>: prints the metadata body's `stream` field; absent is a loud failure.
+stream_declared_name() {
+    local name="$1" info declared
+    info=$(stream_info "$name") || return 1
+    declared=$(json_value "$info" "stream")
+    [ -n "$declared" ] || {
+        log_warn "stream_declared_name ${name}: stream field absent from metadata body: $(printf '%s' "$info" | head -c 300)" >&2
+        return 1
+    }
+    printf '%s' "$declared"
+}
+
 stream_publish() {
     local name="$1" body="$2" coord
     coord=$(stream_coordinate "$name") || return 1

@@ -26,6 +26,7 @@ ENUM org.pragmatica.aether.slice.generation.ClusterMode CORE_ONLY=0,HIERARCHICAL
 ENUM org.pragmatica.aether.slice.generation.ClusterQuiescence QUIESCED=0,CONVERGING=1,DEGRADED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.generation.CommunityQuiescence QUIESCED=0,CONVERGING=1,DEGRADED=2,DISSOLVING=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.generation.HealthHint HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome IN_PROGRESS=0,RESTORED=1,FRESH=2,SKIPPED_EXISTING_STATE=3,DISABLED=4,UNKNOWN=5
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase DISPATCHED=0,OBSERVED=1,RELEASED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase COLD_BOOT=0,NORMAL=1,RECOVERING=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus SUCCEEDED=0,FAILED=1,ROLLED_BACK=2,IN_PROGRESS=3,UNKNOWN=4
@@ -130,6 +131,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ApiKeyAuditKey (entryId:java
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ApiKeyKey (keyId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$AppBlueprintKey (blueprintId:org.pragmatica.aether.slice.blueprint.BlueprintId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$AutoHealStateKey ()
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$BackupRestoreKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey (blueprintId:org.pragmatica.aether.slice.blueprint.BlueprintId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey (nodeId:org.pragmatica.consensus.NodeId)
@@ -185,6 +187,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ApiKeyAuditValue (keyId:ja
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ApiKeyValue (keyId:java.lang.String,keyHash:java.lang.String,createdAt:long,expiresAt:long,status:java.lang.String,revokedAt:long,gracePeriodMs:long,authorizationRole:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AppBlueprintValue (blueprint:org.pragmatica.aether.slice.blueprint.ExpandedBlueprint,registerOnly:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AutoHealStateValue (enabled:boolean,reason:java.lang.String,updatedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreValue (outcome:org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome,lineageId:java.lang.String,incarnation:long,revision:long,commit:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue (bindings:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress (alias:java.lang.String,address:org.pragmatica.aether.slice.resource.ResourceAddress)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue (allocated:int,version:long,inventoryComplete:boolean)
@@ -470,6 +473,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ApiKeyAuditKey 1092
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ApiKeyKey 1093
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AppBlueprintKey 1094
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AutoHealStateKey 1674
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BackupRestoreKey 1718
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey 1095
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey 1688
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey 1689
@@ -525,6 +529,8 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ApiKeyAuditValue 1604
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ApiKeyValue 1605
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$AppBlueprintValue 1606
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$AutoHealStateValue 1675
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome 1720
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreValue 1719
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue 1607
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress 1608
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue 1690

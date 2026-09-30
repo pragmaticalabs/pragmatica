@@ -406,11 +406,12 @@ public final class ConfigLoader {
         var enabled = doc.getString("backup", "enabled").map(ConfigLoader::toBooleanValue).or(false);
 
         if (enabled) {
-            var interval = doc.getString("backup", "interval").or("5m");
             var path = doc.getString("backup", "path").or("");
             var remote = doc.getString("backup", "remote").or("");
+            var restore = BackupConfig.RestoreMode.restoreMode(doc.getString("backup", "restore").or("auto")).getOrThrow(IllegalArgumentException::new,
+                                                                                                                         "invalid [backup]");
 
-            builder.backup(BackupConfig.backupConfig(true, interval, path, remote));
+            builder.backup(BackupConfig.backupConfig(true, path, remote, restore));
         }
     }
 

@@ -201,7 +201,7 @@ public final class EmberCluster {
     /// disk tier and the per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
     /// Opt-in restart-stable consensus state for recovery tests; retained across stop/start.
-    private final AtomicReference<Option<Path>> consensusBaseDir = new AtomicReference<>(Option.none());
+    private final AtomicReference<Option<KvBackup>> kvBackup = new AtomicReference<>(Option.none());
     /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
     /// not opt into [#withDataBaseDir]. Created ONCE per `EmberCluster` instance and deliberately
     /// NOT cleaned by [#stop], because that is exactly what gives the marker its meaning here:
@@ -422,23 +422,26 @@ public final class EmberCluster {
         dataBaseDir.set(Option.option(baseDir));
     }
 
-    /// Enable the git-backed `[backup]` consensus snapshot in pre-created per-node directories before the
-    /// first start. Consensus itself runs in memory (owner ruling, session 28); the backup is what a
-    /// whole-cluster restart restores from. The caller provisions <baseDir>/<nodeId> for initial and
-    /// future nodes. The participation marker remains durable; this never reasserts newness on restart.
+    /// TEST SEAM (#1532/#1533) — enable the change-triggered KV backup on every node created from now on:
+    /// node N backs up into `<baseDir>/<nodeId>` and pushes to `remote`, which every node shares (a bare
+    /// repository path or URL), and a cold restart applies `restore`. Consensus itself runs in memory
+    /// (owner ruling, session 28), so the backup is the only thing a whole-cluster restart restores from.
+    /// Call again before a restart to change the restore mode.
     @Contract
-    public Unit withConsensusBaseDir(Path baseDir) {
-        consensusBaseDir.set(Option.some(baseDir));
+    public Unit withKvBackup(Path baseDir, String remote, BackupConfig.RestoreMode restore) {
+        kvBackup.set(Option.some(new KvBackup(baseDir, remote, restore)));
 
         return Unit.unit();
     }
 
-    private Option<BackupConfig> consensusBackup(NodeId nodeId) {
-        return consensusBaseDir.get()
-                               .map(base -> BackupConfig.backupConfig(false,
-                                                                      "5m",
-                                                                      base.resolve(nodeId.id()).toString(),
-                                                                      ""));
+    private record KvBackup(Path baseDir, String remote, BackupConfig.RestoreMode restore) {}
+
+    private Option<BackupConfig> kvBackupConfig(NodeId nodeId) {
+        return kvBackup.get()
+                       .map(backup -> BackupConfig.backupConfig(true,
+                                                                backup.baseDir().resolve(nodeId.id()).toString(),
+                                                                backup.remote(),
+                                                                backup.restore()));
     }
 
     /// TEST SEAM (#491 pinned convergence variant) — raise the SWIM suspect timeout, the transport
@@ -1401,7 +1404,7 @@ public final class EmberCluster {
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
                                           HttpProtocol.H1,
                                           perNodeStorageConfig(nodeId),
-                                          consensusBackup(nodeId),
+                                          kvBackupConfig(nodeId),
                                           membership,
 
         // membership-config override: raised split-timeout ONLY for the #491 pinned convergence variant

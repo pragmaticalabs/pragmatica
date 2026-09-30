@@ -38,6 +38,13 @@ import org.slf4j.LoggerFactory;
 
 public interface AbTestManager {
     Promise<Unit> activate();
+
+    /// #1533 — re-read the A/B tests from the KV store when a restore has landed after [#activate] (a
+    /// fresh cluster activates before its restore). A no-op unless active; idempotent.
+    default Unit reloadRestoredState() {
+        return Unit.unit();
+    }
+
     Promise<Unit> deactivate();
     boolean isActive();
 
@@ -96,6 +103,15 @@ public interface AbTestManager {
                 restoreState();
 
                 return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Unit reloadRestoredState() {
+                if (active.get()) {
+                    restoreState();
+                }
+
+                return Unit.unit();
             }
 
             @Override
