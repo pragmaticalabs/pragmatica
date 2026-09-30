@@ -24,6 +24,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.IntConsumer;
+import java.util.function.LongSupplier;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -477,14 +478,22 @@ public interface AetherNode extends ManageableNode {
     /// "drained" by exit status alone. 78 is `EX_CONFIG` in sysexits(3): the node's configured identity is
     /// unusable, and restarting it unchanged cannot succeed.
     int EXIT_IDENTITY_REFUSED = 78;
+    /// Process exit code when the SWIM gossip-key divergence gate refuses the boot (#683): gossip arrives
+    /// under a key epoch this node does not hold and none has ever decrypted. Production reaches it through
+    /// `System.exit` so the node's shutdown hooks run ([GossipKeyDivergenceGuard] measured that path); an
+    /// in-JVM host records it and stops only that node (#1312).
+    int EXIT_GOSSIP_KEY_DIVERGED = 1;
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
-        return aetherNode(config, Runtime.getRuntime()::halt);
+        return aetherNode(config,
+                          MessageRouter.DelegateRouter.delegate(),
+                          NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()));
     }
 
     /// `processExit` receives the node's exit code — [#EXIT_DRAINED] after a completed drain,
-    /// [#EXIT_IDENTITY_REFUSED] when the cluster refuses this process's identity. Production halts the JVM
-    /// with it; an in-JVM host records it and stops the node.
+    /// [#EXIT_IDENTITY_REFUSED] when the cluster refuses this process's identity, [#EXIT_GOSSIP_KEY_DIVERGED]
+    /// when the gossip-key divergence gate refuses the boot. An in-JVM host records it and stops the node;
+    /// production enters through [#aetherNode(AetherNodeConfig)] instead.
     static Result<AetherNode> aetherNode(AetherNodeConfig config, IntConsumer processExit) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
         var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
@@ -493,7 +502,8 @@ public interface AetherNode extends ManageableNode {
                           delegateRouter,
                           nodeCodec,
                           () -> processExit.accept(EXIT_DRAINED),
-                          () -> processExit.accept(EXIT_IDENTITY_REFUSED));
+                          () -> processExit.accept(EXIT_IDENTITY_REFUSED),
+                          () -> processExit.accept(EXIT_GOSSIP_KEY_DIVERGED));
     }
 
     /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
@@ -515,29 +525,35 @@ public interface AetherNode extends ManageableNode {
                           delegateRouter,
                           nodeCodec,
                           () -> Runtime.getRuntime().halt(EXIT_DRAINED),
-                          () -> Runtime.getRuntime().halt(EXIT_IDENTITY_REFUSED));
+                          () -> Runtime.getRuntime().halt(EXIT_IDENTITY_REFUSED),
+                          () -> System.exit(EXIT_GOSSIP_KEY_DIVERGED));
     }
 
-    /// In-JVM hosts: the one `jvmExit` hook serves both the drain exit and an identity refusal.
+    /// In-JVM hosts: the one `jvmExit` hook serves the drain exit, an identity refusal and a gossip-key
+    /// divergence refusal.
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec,
                                          Runnable jvmExit) {
-        return aetherNode(config, delegateRouter, nodeCodec, jvmExit, jvmExit);
+        return aetherNode(config, delegateRouter, nodeCodec, jvmExit, jvmExit, jvmExit);
     }
 
     /// `identityRefusedExit` runs when the cluster refuses this process's identity (production:
-    /// `halt(EXIT_IDENTITY_REFUSED)`); `jvmExit` runs after a completed drain (production: `halt(EXIT_DRAINED)`).
+    /// `halt(EXIT_IDENTITY_REFUSED)`); `jvmExit` runs after a completed drain (production: `halt(EXIT_DRAINED)`);
+    /// `gossipKeyDivergedExit` runs when the gossip-key divergence gate refuses the boot (production:
+    /// `System.exit(EXIT_GOSSIP_KEY_DIVERGED)`, #1312).
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec,
                                          Runnable jvmExit,
-                                         Runnable identityRefusedExit) {
+                                         Runnable identityRefusedExit,
+                                         Runnable gossipKeyDivergedExit) {
         return aetherNode(config,
                           delegateRouter,
                           nodeCodec,
                           jvmExit,
                           identityRefusedExit,
+                          gossipKeyDivergedExit,
                           variable -> Option.option(System.getenv(variable)));
     }
 
@@ -549,6 +565,7 @@ public interface AetherNode extends ManageableNode {
                                          SliceCodec nodeCodec,
                                          Runnable jvmExit,
                                          Runnable identityRefusedExit,
+                                         Runnable gossipKeyDivergedExit,
                                          Fn1<Option<String>, String> environment) {
         return config.validate()
                      .flatMap(_ -> createNode(config,
@@ -556,6 +573,7 @@ public interface AetherNode extends ManageableNode {
                                               nodeCodec,
                                               jvmExit,
                                               identityRefusedExit,
+                                              gossipKeyDivergedExit,
                                               environment));
     }
 
@@ -566,12 +584,14 @@ public interface AetherNode extends ManageableNode {
                                                  SliceCodec nodeCodec,
                                                  Runnable jvmExit,
                                                  Runnable identityRefusedExit,
+                                                 Runnable gossipKeyDivergedExit,
                                                  Fn1<Option<String>, String> environment) {
         return ClusterEventsLimits.clusterEventsLimits(environment).flatMap(limits -> createNodeWithBootToken(config,
                                                                                                               delegateRouter,
                                                                                                               nodeCodec,
                                                                                                               jvmExit,
                                                                                                               identityRefusedExit,
+                                                                                                              gossipKeyDivergedExit,
                                                                                                               BootToken.bootToken(),
                                                                                                               limits));
     }
@@ -581,6 +601,7 @@ public interface AetherNode extends ManageableNode {
                                                               SliceCodec nodeCodec,
                                                               Runnable jvmExit,
                                                               Runnable identityRefusedExit,
+                                                              Runnable gossipKeyDivergedExit,
                                                               long bootToken,
                                                               ClusterEventsLimits clusterEventsLimits) {
         return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
@@ -588,6 +609,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                 nodeCodec,
                                                                                                 jvmExit,
                                                                                                 identityRefusedExit,
+                                                                                                gossipKeyDivergedExit,
                                                                                                 keyring,
                                                                                                 resolvePersistence(config),
                                                                                                 bootToken,
@@ -599,6 +621,7 @@ public interface AetherNode extends ManageableNode {
                                                             SliceCodec nodeCodec,
                                                             Runnable jvmExit,
                                                             Runnable identityRefusedExit,
+                                                            Runnable gossipKeyDivergedExit,
                                                             Option<EncryptionKeyring> storageKeyring,
                                                             RabiaPersistence<KVCommand<AetherKey>> persistence,
                                                             long bootToken,
@@ -769,6 +792,7 @@ public interface AetherNode extends ManageableNode {
                                                              syncHoldRegistry,
                                                              jvmExit,
                                                              identityRefusedExit,
+                                                             gossipKeyDivergedExit,
                                                              storageKeyring,
                                                              bootToken,
                                                              clusterEventsLimits));
@@ -1735,6 +1759,7 @@ public interface AetherNode extends ManageableNode {
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit,
                                                    Runnable identityRefusedExit,
+                                                   Runnable gossipKeyDivergedExit,
                                                    Option<EncryptionKeyring> storageKeyring,
                                                    long bootToken,
                                                    ClusterEventsLimits clusterEventsLimits) {
@@ -3896,6 +3921,7 @@ public interface AetherNode extends ManageableNode {
                                                                              rotatingEncryptor,
                                                                              announceJoinTrigger,
                                                                              jvmExit,
+                                                                             gossipKeyDivergedExit,
                                                                              startOutcome);
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
@@ -7297,8 +7323,12 @@ public interface AetherNode extends ManageableNode {
     /// — the signature of a cluster that rotated its gossip key after this node's derived key was
     /// issued. The guard decorates for the TRANSPORT only; `encryptor` itself stays the rotation
     /// target, so an applied rotation is picked up through the delegate and disarms the guard.
-    /// `System.exit(1)` mirrors `Main`'s other boot gates: the failure surfaces at deployment time
-    /// rather than as a silent, permanently unjoinable node.
+    /// The guard exits through the node's `gossipKeyDivergedExit` (#1312): production passes
+    /// `System.exit(EXIT_GOSSIP_KEY_DIVERGED)`, which mirrors `Main`'s other boot gates and runs the node's
+    /// shutdown hooks — the guard is armed for minutes after boot, long enough for this node to have
+    /// joined consensus over QUIC, and `System.exit` was measured to terminate cleanly from this thread
+    /// ([GossipKeyDivergenceGuard]). A single-JVM host (Ember/Forge) passes a per-node stop, because a
+    /// `System.exit` there would take every co-hosted node down.
     ///
     /// #1308: the join is announced only once SWIM has STARTED, and a failed start (typically the
     /// SWIM UDP port already bound) fails the node through `failNode`. A node without its SWIM
@@ -7318,9 +7348,30 @@ public interface AetherNode extends ManageableNode {
                                    RotatingGossipEncryptor encryptor,
                                    Runnable announceJoinTrigger,
                                    Runnable failNode,
+                                   Runnable gossipKeyDivergedExit,
+                                   Promise<Unit> startOutcome) {
+        return startSwim(swimHealthDetector,
+                         network,
+                         encryptor,
+                         announceJoinTrigger,
+                         failNode,
+                         gossipKeyDivergedExit,
+                         System::nanoTime,
+                         startOutcome);
+    }
+
+    /// The same, on the divergence gate's arming clock (`gateClock`), so a test can arm the gate without
+    /// waiting out its delay.
+    static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                   ClusterNetwork network,
+                                   RotatingGossipEncryptor encryptor,
+                                   Runnable announceJoinTrigger,
+                                   Runnable failNode,
+                                   Runnable gossipKeyDivergedExit,
+                                   LongSupplier gateClock,
                                    Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
-        var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, () -> System.exit(1));
+        var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
 
         return swimHealthDetector.start(workerGroup, guarded)
                                  .onFailure(startOutcome::fail)

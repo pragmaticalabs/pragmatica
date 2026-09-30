@@ -399,6 +399,14 @@ class StorageMaintenanceWiringTest {
     /// shipped behaviour and is not asserted here: `DefaultStorageGarbageCollector.deleteBlock` calls
     /// `deleteFromPrivateTiers`, never `delete`, precisely so this node's local refcount cannot delete
     /// a block another node may still reference. Collection is a PRIVATE-tier operation by design.
+    ///
+    /// #1359 — this failed once on CI (run 35484065991, PR #1285 head `d16c478e4`, 0.007 s) at the
+    /// lifecycle-record assertion with the other two instruments green. At that head the record was
+    /// removed in an `.onSuccess` handler of the tier deletion: an independent Promise action that runs
+    /// asynchronously, so the collector's `await()` could return before the record was gone. Since
+    /// `f28f2a34e` (#801) the collector removes the record synchronously by compare-and-remove BEFORE it
+    /// deletes from the tiers, so the assertion is deterministic with no wait, and a wait added here would
+    /// hide a regression of that ordering rather than tolerate a race.
     @Test
     void createAll_realMaintenanceDriverTick_actuallyCollectsOrphanedContentBlock() {
         var setups = createAllWithExplicitContent(Option.none());
