@@ -557,13 +557,13 @@ public final class LeaderReconciler {
 
         synchronized (deficitLeadershipLossNanos) {
             deficitLeadershipLossNanos.removeIf(stamp -> now - stamp > deficitDebounceWindow.nanos());
-
             if (!deficit) {
                 deficitLeadershipLossNanos.clear();
+
                 return;
             }
-            deficitLeadershipLossNanos.addLast(now);
 
+            deficitLeadershipLossNanos.addLast(now);
             if (deficitLeadershipLossNanos.size() >= LEADERSHIP_LOSS_WARN_THRESHOLD) {
                 log.warn("LeaderReconciler: leadership lost {} times within one deficit debounce window ({} ms) while a core deficit exists — the debounce clock resets on every loss, so auto-heal cannot provision until leadership stabilises",
                          deficitLeadershipLossNanos.size(),
