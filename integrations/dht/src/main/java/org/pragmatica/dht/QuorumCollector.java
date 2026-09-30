@@ -17,6 +17,7 @@ package org.pragmatica.dht;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 
 import org.pragmatica.lang.Cause;
@@ -37,12 +38,23 @@ public final class QuorumCollector<T> {
     private final AtomicInteger failureCount = new AtomicInteger(0);
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
+    /// Strict-absence mode: a decisive value completes the read at once; otherwise completion waits
+    /// until every slot has answered. Not used (never true) in quorum-count mode.
+    private final boolean awaitAll;
+    private final Predicate<T> decisive;
 
-    private QuorumCollector(int quorum, int total, Promise<T> promise, UnaryOperator<T> valueMerger) {
+    private QuorumCollector(int quorum,
+                            int total,
+                            Promise<T> promise,
+                            UnaryOperator<T> valueMerger,
+                            boolean awaitAll,
+                            Predicate<T> decisive) {
         this.quorum = quorum;
         this.total = total;
         this.promise = promise;
         this.valueMerger = valueMerger;
+        this.awaitAll = awaitAll;
+        this.decisive = decisive;
     }
 
     /// Create a quorum collector that keeps the first value received.
@@ -51,7 +63,7 @@ public final class QuorumCollector<T> {
     /// @param total   total responses expected
     /// @param promise promise to resolve when quorum reached or failed
     public static <T> QuorumCollector<T> quorumCollector(int quorum, int total, Promise<T> promise) {
-        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity());
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), false, _ -> false);
     }
 
     /// Create a quorum collector for Option values that prefers non-empty over empty.
@@ -61,14 +73,33 @@ public final class QuorumCollector<T> {
     /// @param total   total responses expected
     /// @param promise promise to resolve when quorum reached or failed
     public static <V> QuorumCollector<Option<V>> optionCollector(int quorum, int total, Promise<Option<V>> promise) {
-        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity());
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), false, _ -> false);
+    }
+
+    /// Create a collector for a read whose ABSENT answer must be earned: the first non-empty reply
+    /// completes the read at once (FOUND), while an empty outcome resolves only after EVERY slot has
+    /// answered (a slot that failed counts as answered, as long as at least `quorum` slots answered
+    /// successfully; otherwise the usual fast-fail fires). A slot that never answers keeps the read
+    /// open until the caller's deadline, so a late reply carrying the value is never discarded.
+    ///
+    /// @param quorum  minimum successful (empty or not) answers needed for an ABSENT result
+    /// @param total   number of slots (R-set replicas) expected to answer
+    /// @param promise promise to resolve when found, absent, or quorum becomes impossible
+    public static <V> QuorumCollector<Option<V>> strictAbsenceCollector(int quorum,
+                                                                        int total,
+                                                                        Promise<Option<V>> promise) {
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), true, Option::isPresent);
     }
 
     /// Record a successful response. Resolves promise when quorum reached.
     @Contract
     public void onSuccess(T value) {
         bestValue.accumulateAndGet(value, this::selectBest);
-        if (successCount.incrementAndGet() >= quorum) {
+        var answered = successCount.incrementAndGet();
+
+        if (awaitAll
+            ? decisive.test(value) || allAnswered(answered, failureCount.get())
+            : answered >= quorum) {
             promise.succeed(bestValue.get());
         }
     }
@@ -85,7 +116,14 @@ public final class QuorumCollector<T> {
 
         if (total - failures < quorum) {
             promise.fail(DHTError.quorumNotReached(quorum, successCount.get()));
+        } else if (awaitAll && allAnswered(successCount.get(), failures)) {
+            promise.succeed(bestValue.get());
         }
+    }
+
+    /// Every slot has answered or failed, and enough answered to stand as a quorum.
+    private boolean allAnswered(int answered, int failed) {
+        return answered + failed >= total && answered >= quorum;
     }
 
     private T selectBest(T existing, T incoming) {

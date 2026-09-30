@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.CoreError;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -405,14 +406,20 @@ class DistributedDHTClientTest {
 
         @BeforeEach
         void setUp() {
-            ring = ConsistentHashRing.<NodeId>consistentHashRing();
             // enough spare replicas that only the re-issue bound, never candidate exhaustion, stops a churning read
-            for (var i = 1; i <= 12; i++) {
+            useRing(12, CONFIG);
+        }
+
+        /// Rebuild the fixture over `replicas` remote nodes. With 3 replicas the R-set is the whole ring, so
+        /// the resolve fallback probe (ring minus R-set) has nobody to probe and an absent read ends there.
+        private void useRing(int replicas, DHTConfig config) {
+            ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            for (var i = 1; i <= replicas; i++) {
                 ring.addNode(new NodeId("replica-" + i));
             }
-            var node = dhtNode(LOCAL_NODE, memoryStorageEngine(), ring, CONFIG);
+            var node = dhtNode(LOCAL_NODE, memoryStorageEngine(), ring, config);
             network = new CapturingNetwork();
-            client = distributedDHTClient(node, network, CONFIG);
+            client = distributedDHTClient(node, network, config);
         }
 
         private List<CapturedMessage> getRequests() {
@@ -433,8 +440,9 @@ class DistributedDHTClientTest {
             var initial = getRequests();
             assertThat(initial).hasSize(3);
 
-            // one replica answers with the value, one never answers and leaves the ring, one is silent
-            reply(initial.getFirst(), Option.some(value("v1")));
+            // one replica answers empty, one never answers and leaves the ring, one is silent; the value is
+            // only on the replacement, so the read can complete only through the re-issue
+            reply(initial.getFirst(), Option.none());
             ring.removeNode(initial.get(1).target());
 
             var reissued = getRequests().subList(3, getRequests().size());
@@ -453,12 +461,13 @@ class DistributedDHTClientTest {
             var read = client.get(key("k1"));
             var initial = getRequests();
 
-            reply(initial.get(0), Option.some(value("v1")));
+            reply(initial.get(0), Option.none());
             // a node outside the R-set leaving mid-read is not a departure of a read target
             var bystander = new HashSet<>(ring.nodes());
             initial.forEach(m -> bystander.remove(m.target()));
             bystander.stream().limit(2).forEach(ring::removeNode);
-            reply(initial.get(1), Option.some(value("v1")));
+            reply(initial.get(1), Option.none());
+            reply(initial.get(2), Option.some(value("v1")));
 
             read.await(timeSpan(2).seconds())
                 .onFailure(c -> fail("Expected success: " + c.message()))
@@ -471,9 +480,8 @@ class DistributedDHTClientTest {
             var read = client.get(key("k1"));
             var initial = getRequests();
 
-            // quorum (2 of 3) completes the read; the third target is still owing a reply
+            // the first value completes the read; the other targets are still owing a reply
             reply(initial.get(0), Option.some(value("v1")));
-            reply(initial.get(1), Option.some(value("v1")));
             read.await(timeSpan(2).seconds());
             ring.removeNode(initial.get(2).target());
 
@@ -500,6 +508,73 @@ class DistributedDHTClientTest {
             var outcome = read.await(timeSpan(2).seconds());
             outcome.onSuccess(_ -> fail("Expected quorum failure"))
                    .onFailure(c -> assertThat(c).isInstanceOf(DHTError.QuorumNotReached.class));
+        }
+
+
+        @Test
+        void get_isFound_whenValueOnlyOnThirdAnsweringReplica() {
+            useRing(3, CONFIG);
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+
+            // two empty answers used to end the read as "absent"; the late third reply carries the value
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            assertThat(read.isResolved()).isFalse();
+            reply(initial.get(2), Option.some(value("v1")));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected the late value to be found: " + c.message()))
+                .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("v1")))
+                                     .onEmpty(() -> fail("Value discarded: read reported absent")));
+        }
+
+        @Test
+        void get_isAbsent_whenEveryReplicaAnswersEmpty() {
+            useRing(3, CONFIG);
+            var read = client.get(key("k1"));
+
+            getRequests().forEach(m -> reply(m, Option.none()));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected absent: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+
+        @Test
+        void get_timesOutAtDeadline_whenOneReplicaNeitherAnswersNorDeparts() {
+            var shortConfig = new DHTConfig(3, 2, 2, timeSpan(300).millis());
+            useRing(3, shortConfig);
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+
+            // not a silent "absent": the caller sees the operation timeout, as for any unanswered read
+            read.await(timeSpan(3).seconds())
+                .onSuccess(_ -> fail("Expected the deadline failure, not an answer"))
+                .onFailure(c -> assertThat(c).isInstanceOf(CoreError.Timeout.class));
+        }
+
+        @Test
+        void get_isAbsent_whenThirdDepartsAndReplacementAnswersEmpty() {
+            useRing(4, CONFIG);
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            ring.removeNode(initial.get(2).target());
+
+            var reissued = getRequests().subList(3, getRequests().size());
+            assertThat(reissued).hasSize(1);
+            reply(reissued.getFirst(), Option.none());
+
+            // the deadline is 10s: an answer inside 2s proves the read did not wait for it
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected absent via the replacement: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
         }
 
         private void departNextOwingTarget(List<NodeId> departed) {
