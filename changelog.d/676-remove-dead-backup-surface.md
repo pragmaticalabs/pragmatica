@@ -19,7 +19,7 @@
   [mechanism: the removal is enforced by the compiler and the cli-docs gate; `git grep` for `BackupService`,
   `BACKUP_TRIGGER|BACKUPS_LIST|BACKUP_RESTORE`, `/api/v1/backups`, `aether backup` across `*.java` and live
   `*.md` returns only the #676 annotations]
-- **`GitBackedPersistence` no longer corrupts the previous snapshot on an interrupted save.** `state.toml` was
+- **`GitBackedPersistence` no longer corrupts the previous snapshot on an interrupted save.** (Superseded within this release by #1533, which removes `GitBackedPersistence` and `GitBackedPersistenceTest`; the `[verified:]` citations below name tests that ran at the time and no longer exist. `FileOps.moveAtomic` and `FileOpsTest` remain.) `state.toml` was
   written in place with `TRUNCATE_EXISTING`; a save that failed after the open left a truncated file, and
   `load()` decoded the half base64 line into an EMPTY snapshot — a node restarted after a mid-save crash would
   have loaded nothing and said so to no one. The snapshot is now written to `state.toml.partial`, fsynced
