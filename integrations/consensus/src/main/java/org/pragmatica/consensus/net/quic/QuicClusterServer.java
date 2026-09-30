@@ -186,6 +186,8 @@ public sealed interface QuicClusterServer {
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
     private static final long HELLO_TIMEOUT_MS = 15_000;
+    /// Grace before the acceptor closes a refused misdirected connection: the dialer must read our Hello first.
+    private static final long MISDIRECTED_CLOSE_DELAY_MS = 5_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0;  // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 64_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
@@ -570,9 +572,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         /// The dialer verifies identity only AFTER the acceptor has attached, and the acceptor's attach
         /// can supersede a healthy incumbent link (`PeerState.attachOverConnected`). So answer with our
-        /// own Hello (the dialer's existing identity check then fails the dial at once, on the ordinary
-        /// connect-failure path — closing silently would leave it pinned CONNECTING until the staleness
-        /// sweep) but NEVER register the connection, then close it. Deliberately NOT a
+        /// own Hello (the dialer's existing identity check then fails the dial on the ordinary
+        /// connect-failure path) but NEVER register the connection. We must not close it ourselves: a
+        /// close raced with the Hello's delivery can reach the dialer first, and the dialer has no
+        /// close-before-Hello handler, so the dial would stay pinned CONNECTING until the staleness
+        /// sweep. The dialer closes its side on the mismatch; we close after a grace period as the
+        /// backstop (QUIC idle timeout is disabled, so nothing else would reap it). Deliberately NOT a
         /// [NetworkMessage.HelloRefused] — that tells the dialer its own identity is retired and makes
         /// it exit.
         private void refuseMisdirectedHello(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
@@ -580,9 +585,13 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                      hello.sender(),
                      hello.intendedPeer(),
                      selfId);
-            sendHelloResponse(ctx).addListener(_ -> ctx.channel()
-                                                       .parent()
-                                                       .close());
+            sendHelloResponse(ctx);
+            ctx.executor()
+               .schedule(() -> ctx.channel()
+                                  .parent()
+                                  .close(),
+                         MISDIRECTED_CLOSE_DELAY_MS,
+                         TimeUnit.MILLISECONDS);
         }
 
         /// Answer a refused Hello with an explicit [NetworkMessage.HelloRefused] — in place of the Hello
