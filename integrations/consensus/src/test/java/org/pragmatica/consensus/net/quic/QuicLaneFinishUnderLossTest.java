@@ -153,7 +153,7 @@ class QuicLaneFinishUnderLossTest {
         awaitTrue(() -> acceptorSide.get() != null
                         && java.util.Arrays.stream(StreamType.values()).allMatch(lane -> acceptorSide.get().stream(lane).isPresent()),
                   "the acceptor registered every lane the dialer opened");
-        sockets = Option.some(LaneDiagnosis.Sockets.attach(dialerSide.connection(), acceptorSide.get().connection()));
+        sockets = Option.some(LaneDiagnosis.Sockets.attach(dialerSide.connection(), acceptorSide.get().connection(), relay.ports()));
     }
 
     private String stats() {

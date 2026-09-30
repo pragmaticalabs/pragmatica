@@ -125,19 +125,26 @@ final class LaneDiagnosis {
         private final Channel acceptor;
         private final DatagramCounter dialerDatagrams = new DatagramCounter();
         private final DatagramCounter acceptorDatagrams = new DatagramCounter();
+        private final List<Integer> relayPorts;
         private final Map<String, long[]> udpAtStart;
         private final Map<String, Long> snmpAtStart;
 
-        private Sockets(Channel dialer, Channel acceptor) {
+        private Sockets(Channel dialer, Channel acceptor, List<Integer> relayPorts) {
             this.dialer = dialer;
             this.acceptor = acceptor;
-            this.udpAtStart = udpQueues(List.of(localPort(dialer), localPort(acceptor)));
+            this.relayPorts = relayPorts;
+            this.udpAtStart = udpQueues(ports());
             this.snmpAtStart = snmp();
         }
 
         /// The datagram channels are the QuicChannels' parents: the dialer's per-peer socket and the server's bound one.
         static Sockets attach(QuicChannel dialerConnection, QuicChannel acceptorConnection) {
-            var sockets = new Sockets(dialerConnection.parent(), acceptorConnection.parent());
+            return attach(dialerConnection, acceptorConnection, List.of());
+        }
+
+        /// Also reads the kernel queues of a relay's sockets (`relayPorts`), which sit between the two ends.
+        static Sockets attach(QuicChannel dialerConnection, QuicChannel acceptorConnection, List<Integer> relayPorts) {
+            var sockets = new Sockets(dialerConnection.parent(), acceptorConnection.parent(), relayPorts);
 
             sockets.dialer.pipeline().addFirst("lane-diagnosis-datagrams", sockets.dialerDatagrams);
             sockets.acceptor.pipeline().addFirst("lane-diagnosis-datagrams", sockets.acceptorDatagrams);
@@ -145,11 +152,20 @@ final class LaneDiagnosis {
         }
 
         String describe() {
-            var udpNow = udpQueues(List.of(localPort(dialer), localPort(acceptor)));
+            var udpNow = udpQueues(ports());
+            var relay = relayPorts.isEmpty()
+                        ? ""
+                        : " relaySockets{" + relayPorts.stream()
+                                                      .map(port -> port + " udp=" + udp(port, udpNow))
+                                                      .collect(Collectors.joining(" ")) + "}";
 
             return "sockets(since attach){dialer{" + channel(dialer) + " " + dialerDatagrams + " udp=" + udp(localPort(dialer), udpNow)
                    + "} acceptor{" + channel(acceptor) + " " + acceptorDatagrams + " udp=" + udp(localPort(acceptor), udpNow)
-                   + "} snmpUdp(host-wide)=" + snmpDeltas() + "}";
+                   + "}" + relay + " snmpUdp(host-wide)=" + snmpDeltas() + "}";
+        }
+
+        private List<Integer> ports() {
+            return Stream.concat(Stream.of(localPort(dialer), localPort(acceptor)), relayPorts.stream()).toList();
         }
 
         private static String channel(Channel datagram) {

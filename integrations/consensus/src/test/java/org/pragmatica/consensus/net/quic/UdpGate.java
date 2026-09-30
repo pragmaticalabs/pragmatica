@@ -25,13 +25,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
 /// #1578 test helper. A UDP relay on its own port in front of `targetPort`: drops every datagram while closed; once open, relays each
 /// client (by source address) through its own upstream socket and relays the replies back.
 final class UdpGate implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(UdpGate.class);
+
     private final DatagramSocket front;
     private final InetSocketAddress target;
     private final Map<SocketAddress, DatagramSocket> upstreams = new ConcurrentHashMap<>();
@@ -41,12 +49,16 @@ final class UdpGate implements AutoCloseable {
     /// #1727: probability of dropping a relayed datagram, in either direction (0 = none).
     private volatile double dropRate;
     private final java.util.Random drops;
-    /// #1727: what the relay did, for a failure's diagnosis. A relay thread used to end SILENTLY on any IOException, which
-    /// stalls one direction for good while the other keeps flowing; [#describe] names such an exit and its cause.
+    /// #1727: what the relay did, for a failure's diagnosis. A relay thread used to END SILENTLY on any IOException, which
+    /// stalls one direction for good while the other keeps flowing (v1677 attributed two loss-test reds under d1 load to
+    /// it). Now a direction survives a transient error ([#survives]) and stops only on teardown, recording why.
     private final AtomicLong toTarget = new AtomicLong();
     private final AtomicLong toClient = new AtomicLong();
     private final AtomicLong discarded = new AtomicLong();
+    private final AtomicLong transientErrors = new AtomicLong();
+    private final List<String> recentErrors = new CopyOnWriteArrayList<>();
     private final List<String> exits = new CopyOnWriteArrayList<>();
+    private final AtomicInteger failNextSends = new AtomicInteger();
 
     private UdpGate(DatagramSocket front, InetSocketAddress target, long seed) {
         this.front = front;
@@ -116,14 +128,15 @@ final class UdpGate implements AutoCloseable {
 
                 front.receive(packet);
                 if (open && !drop()) {
-                    upstream(packet.getSocketAddress()).send(new DatagramPacket(packet.getData(), packet.getLength(), target));
+                    send(upstream(packet.getSocketAddress()), new DatagramPacket(packet.getData(), packet.getLength(), target));
                     toTarget.incrementAndGet();
                 } else {
                     discarded.incrementAndGet();
                 }
             } catch (IOException e) {
-                exited("to-target", e);
-                return;
+                if (!survives("to-target", front, e)) {
+                    return;
+                }
             }
         }
     }
@@ -152,27 +165,58 @@ final class UdpGate implements AutoCloseable {
 
                 socket.receive(packet);
                 if (!drop()) {
-                    front.send(new DatagramPacket(packet.getData(), packet.getLength(), client));
+                    send(front, new DatagramPacket(packet.getData(), packet.getLength(), client));
                     toClient.incrementAndGet();
                 } else {
                     discarded.incrementAndGet();
                 }
             } catch (IOException e) {
-                exited("to-client", e);
-                return;
+                if (!survives("to-client", socket, e)) {
+                    return;
+                }
             }
         }
     }
 
-    private void exited(String direction, IOException cause) {
-        if (!closed) {
-            exits.add(direction + ": " + cause);
+    /// A relay direction survives a transient IOException (a send or receive failing under load, e.g. ENOBUFS): the datagram
+    /// is lost, as on a real network, and is counted and logged, and the loop goes on. It stops only on teardown (the gate
+    /// closed, or the socket it reads closed), and records the cause.
+    private boolean survives(String direction, DatagramSocket receiving, IOException cause) {
+        if (closed || receiving.isClosed()) {
+            exits.add(direction + ": " + (closed ? "gate closed" : "socket closed") + " (" + cause + ")");
+            return false;
         }
+        transientErrors.incrementAndGet();
+        if (recentErrors.size() < 10) {
+            recentErrors.add(direction + ": " + cause);
+        }
+        LOG.warn("UdpGate {} survived a transient error: {}", direction, cause.toString());
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        return true;
+    }
+
+    /// Test seam: the next `count` relayed sends, in either direction, fail with an IOException as ENOBUFS would.
+    void failNextSends(int count) {
+        failNextSends.set(count);
+    }
+
+    private void send(DatagramSocket socket, DatagramPacket packet) throws IOException {
+        if (failNextSends.getAndUpdate(remaining -> Math.max(0, remaining - 1)) > 0) {
+            throw new IOException("injected send failure (UdpGate#failNextSends)");
+        }
+        socket.send(packet);
+    }
+
+    /// The relay's own UDP ports (front and every upstream), so a diagnosis can read their kernel queues too.
+    List<Integer> ports() {
+        return java.util.stream.Stream.concat(java.util.stream.Stream.of(front), upstreams.values().stream())
+                                      .map(DatagramSocket::getLocalPort)
+                                      .toList();
     }
 
     String describe() {
         return "relay(since relay start){toTarget=" + toTarget.get() + " toClient=" + toClient.get() + " discarded=" + discarded.get()
-               + " exitsBeforeClose=" + exits + "}";
+               + " transientErrors=" + transientErrors.get() + " recentErrors=" + recentErrors + " exits=" + exits + "}";
     }
 
     @Override
