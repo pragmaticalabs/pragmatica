@@ -3,6 +3,7 @@
 
 LIB_DIR_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${LIB_DIR_COMMON}/json.sh"
+source "${LIB_DIR_COMMON}/capture.sh"
 
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -165,6 +166,8 @@ log_fail()  {
     echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"
     TEST_FAIL_COUNT=$(( ${TEST_FAIL_COUNT:-0} + 1 ))
     printf '%s: %s\n' "${TEST_TAG:-outside-a-test}" "$1" >> "${HARNESS_FAIL_FILE:-/dev/null}" 2>/dev/null || true
+    # Evidence at the instant of the first [FAIL] of a test (lib/capture.sh); inert outside run-tests.sh.
+    _failcap_on_fail || true
 }
 log_step()  { echo -e "${BLUE}[STEP]${NC}  $(_log_prefix)$1"; }
 

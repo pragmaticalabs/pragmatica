@@ -1942,7 +1942,7 @@ drop_ctm_replacements() {
 # run2/run4 pre-kill deaths (node-5, node-3) undiagnosable. A remote-side daemon
 # (scripts/log-streamer.sh) keeps an appending `docker logs -f` attached to every aether-*
 # container — including auto-heal replacements, via a 5s re-scan — so the FILES survive
-# container removal. capture_node_logs (run-tests.sh) fetches them as streamed-*.log.
+# container removal. capture_node_logs (lib/capture.sh) fetches them as streamed-*.log.
 start_log_streamers() {
     [ "$ENV_TYPE" = "remote" ] || return 0
 
@@ -3235,6 +3235,8 @@ _cloud_full_drain_recover() {
         log_fail "_cloud_full_drain_recover: tools/cloud-reaper.sh not found or not executable (resolved path: ${reaper}) — nothing destroyed"
         return 2
     fi
+    # The reap deletes every VM and its logs; keep them if this suite has already failed.
+    capture_before_destructive "cloud-reap"
     log_warn "_cloud_full_drain_recover: full self-drain confirmed from per-VM evidence (_cloud_reap_after_confirmed_drain) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
     local reap_out reap_rc
     reap_out=$("$reaper" --cluster "$cluster_name" --strict-cluster --destroy --force 2>&1)
@@ -3283,6 +3285,8 @@ _cloud_full_drain_recover() {
 
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
+    # The recreate below destroys the outgoing containers' logs; keep them if this suite has already failed.
+    capture_before_destructive "restart_all_nodes"
     if [ "$CLOUD_MODE" = "true" ]; then
         # Cloud has NO single Docker host and NO docker-compose project — each node
         # is its own VM. The old SSH-based `docker restart` / JVM pkill+relaunch loop
