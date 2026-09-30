@@ -96,9 +96,9 @@ final class EpochHistory {
     /// record of an epoch starts it, every later one of the same epoch is attributed by it.
     Result<Unit> recordIfNew(AppendLog.EpochKey key, long startOffset, AppendLog.EpochOrder order) {
         synchronized (lock) {
-            return !entries.isEmpty() && entries.getLast()
-                                                .key()
-                                                .equals(key)
+            return ! entries.isEmpty() && entries.getLast()
+                                                 .key()
+                                                 .equals(key)
                    ? Result.unitResult()
                    : recordStart(key, startOffset, order);
         }
@@ -139,7 +139,7 @@ final class EpochHistory {
             return Result.unitResult();
         }
 
-        return !order.follows(key, last.key()) || startOffset < last.startOffset()
+        return ! order.follows(key, last.key()) || startOffset < last.startOffset()
                ? new AppendLog.WalError.EpochRegression(key, startOffset, last.key(), last.startOffset()).result()
                : persist(appended(key, startOffset));
     }
@@ -175,8 +175,7 @@ final class EpochHistory {
     static byte[] encode(List<AppendLog.EpochStart> history) {
         var body = new StringBuilder(HEADER).append('\n');
 
-        history.forEach(entry -> body.append(entry.key()
-                                                  .token())
+        history.forEach(entry -> body.append(entry.key().token())
                                      .append(' ')
                                      .append(entry.startOffset())
                                      .append('\n'));
@@ -213,7 +212,7 @@ final class EpochHistory {
 
     private static Result<List<AppendLog.EpochStart>> legacyAsEmpty(Path sidecar) {
         log.warn("Epoch history {} is format v1, which cannot carry an owner epoch; it is read as EMPTY, so this log's "
-                 + "records have no provenance and a divergence check flags it (#1596)",
+                + "records have no provenance and a divergence check flags it (#1596)",
                  sidecar);
 
         return Result.success(List.of());
@@ -228,9 +227,9 @@ final class EpochHistory {
     }
 
     private static Result<AppendLog.EpochKey> parseKey(Path sidecar, String field) {
-        return AppendLog.EpochKey.epochKey(field)
-                                 .mapError(_ -> new AppendLog.WalError.EpochHistoryCorrupt(sidecar,
-                                                                                            "not an epoch key: '" + field + "'"));
+        return AppendLog.EpochKey.epochKey(field).mapError(_ -> new AppendLog.WalError.EpochHistoryCorrupt(sidecar,
+                                                                                                           "not an epoch key: '" + field
+                                                                                                          + "'"));
     }
 
     private static Result<Long> parseLong(Path sidecar, String field) {

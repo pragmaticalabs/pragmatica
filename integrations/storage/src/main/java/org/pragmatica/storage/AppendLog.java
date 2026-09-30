@@ -490,7 +490,11 @@ public final class AppendLog implements AutoCloseable {
         }
     }
 
-    private Result<Long> writeAttributed(long offset, byte[] payload, long timestampMillis, EpochKey key, EpochOrder order) {
+    private Result<Long> writeAttributed(long offset,
+                                         byte[] payload,
+                                         long timestampMillis,
+                                         EpochKey key,
+                                         EpochOrder order) {
         synchronized (writeLock) {
             return offset > lastOffset
                    ? epochs.recordIfNew(key, offset, order)
@@ -891,8 +895,7 @@ public final class AppendLog implements AutoCloseable {
         private static final Pattern TOKEN = Pattern.compile("\\p{Graph}+");
 
         public static Result<EpochKey> epochKey(String token) {
-            return Verify.ensure(token, Verify.Is::matches, TOKEN)
-                         .map(EpochKey::new);
+            return Verify.ensure(token, Verify.Is::matches, TOKEN).map(EpochKey::new);
         }
     }
 
