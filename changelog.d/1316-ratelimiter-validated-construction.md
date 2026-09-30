@@ -1,5 +1,5 @@
 ### Changed (2026-09-29 — #1316: RateLimiter accepted configurations its packed state cannot represent)
-- **Breaking (pre-GA): `RateLimiter.rateLimiter(...)`, `builder()...timeSource(...)` and
+- **Breaking (pre-GA): `RateLimiter.rateLimiter(...)`, the deprecated `RateLimiter.create(...)`, `builder()...timeSource(...)` and
   `withDefaultTimeSource()` now return `Result<RateLimiter>`.** A configuration the packed
   `[tokens:16 | lastRefill:48]` state cannot represent fails with the typed
   `RateLimiterError.InvalidConfiguration` instead of being truncated or dividing by zero later:

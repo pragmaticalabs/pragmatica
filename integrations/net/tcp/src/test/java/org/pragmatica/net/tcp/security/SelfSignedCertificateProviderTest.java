@@ -172,11 +172,44 @@ class SelfSignedCertificateProviderTest {
             assertThat(later.key()).isEqualTo(currentOnD.key());
         }
 
-        /// The day label is read in the clock's zone: the one-argument factory uses the system
-        /// default zone, so this pins only that the seam's zone is honoured, not which zone
-        /// production uses.
+        /// #1415: the day label is the UTC day of the clock's instant, whatever zone the clock (or the
+        /// host) is in. At 11:00Z a `+14:00` host is already on the next local day and a `-12:00` host
+        /// still on the previous one — two local days apart, which a zone-read label turns into a
+        /// full use of the one-day accept window before any clock skew.
         @Test
-        void dayBoundary_isTheClockZonesMidnight() {
+        void hostsInDifferentZones_deriveTheSameDayKeys() {
+            var instant = Instant.parse("2026-09-21T11:00:00Z");
+            var east = provider(Clock.fixed(instant, ZoneOffset.ofHours(14)));
+            var west = provider(Clock.fixed(instant, ZoneOffset.ofHours(-12)));
+            var utc = provider(Clock.fixed(instant, ZoneOffset.UTC));
+
+            assertThat(keyId(east.currentGossipKey())).as("#1415: the gossip day is the UTC day, not the host zone's")
+                      .isEqualTo(keyId(west.currentGossipKey()))
+                      .isEqualTo(keyId(utc.currentGossipKey()));
+            assertThat(keyId(east.previousGossipKey())).isEqualTo(keyId(west.previousGossipKey()));
+            assertThat(keyId(east.nextGossipKey())).isEqualTo(keyId(west.nextGossipKey()));
+        }
+
+        /// #1415 at the boundary itself, on a non-UTC host: a `+05:00` host's local midnight (19:00Z) does not
+        /// roll the key, and UTC midnight does. A UTC-zoned clock cannot tell the two apart.
+        @Test
+        void dayBoundary_onANonUtcHost_isUtcMidnight_notLocalMidnight() {
+            var plusFive = ZoneOffset.ofHours(5);
+            var beforeLocalMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T18:59:59Z"), plusFive));
+            var afterLocalMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T19:00:00Z"), plusFive));
+            var beforeUtcMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T23:59:59Z"), plusFive));
+            var afterUtcMidnight = provider(Clock.fixed(Instant.parse("2026-09-22T00:00:00Z"), plusFive));
+
+            assertThat(keyId(afterLocalMidnight.currentGossipKey())).as("the host's local midnight is not a gossip-day boundary")
+                      .isEqualTo(keyId(beforeLocalMidnight.currentGossipKey()));
+            assertThat(keyId(afterUtcMidnight.currentGossipKey())).as("UTC midnight is the gossip-day boundary")
+                      .isEqualTo(keyId(beforeUtcMidnight.nextGossipKey()))
+                      .isNotEqualTo(keyId(beforeUtcMidnight.currentGossipKey()));
+        }
+
+        /// The day boundary is UTC midnight (#1415).
+        @Test
+        void dayBoundary_isUtcMidnight() {
             var clock = new MutableClock(Instant.parse("2026-09-21T23:59:59Z"));
             var provider = provider(clock);
             var beforeMidnight = keyId(provider.currentGossipKey());

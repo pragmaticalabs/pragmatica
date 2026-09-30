@@ -14,6 +14,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ForgeEvent;
 import org.pragmatica.aether.forge.api.ForgeRouter;
+import org.pragmatica.aether.forge.api.OperatorKey;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.simulator.ChaosController;
@@ -62,7 +63,8 @@ public final class ForgeApiHandler {
                             ChaosController chaosController,
                             InventoryState inventoryState,
                             Deque<ForgeEvent> events,
-                            long startTime) {
+                            long startTime,
+                            OperatorKey operatorKey) {
         this.chaosController = chaosController;
         this.inventoryState = inventoryState;
         this.events = events;
@@ -76,12 +78,15 @@ public final class ForgeApiHandler {
                                               metrics,
                                               events,
                                               startTime,
-                                              this::logEvent);
+                                              this::logEvent,
+                                              operatorKey);
     }
 
+    /// `operatorKey` is the credential every proxied call to an embedded node carries (#1105).
     public static ForgeApiHandler forgeApiHandler(EmberCluster cluster,
                                                   ForgeMetrics metrics,
-                                                  ConfigurableLoadRunner configurableLoadRunner) {
+                                                  ConfigurableLoadRunner configurableLoadRunner,
+                                                  OperatorKey operatorKey) {
         var chaosController = ChaosController.chaosController(event -> executeChaosEvent(cluster, event));
         var inventoryState = InventoryState.inventoryState();
         var events = new ConcurrentLinkedDeque<ForgeEvent>();
@@ -93,7 +98,8 @@ public final class ForgeApiHandler {
                                    chaosController,
                                    inventoryState,
                                    events,
-                                   startTime);
+                                   startTime,
+                                   operatorKey);
     }
 
     private static void executeChaosEvent(EmberCluster cluster, ChaosEvent event) {

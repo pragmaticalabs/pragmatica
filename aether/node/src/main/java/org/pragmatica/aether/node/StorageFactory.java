@@ -342,7 +342,7 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StorageConfig defaults) {
-        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults));
+        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults, List.of()));
     }
 
     /// #852 round 2: the boot decision `AetherNode` actually makes -- the config-map instances AND
@@ -362,19 +362,44 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StreamSetupRequest streams) {
-        var results = pendingSetups(configs, nodeId, dhtClient, keyring, StorageConfig.storageConfig());
+        var results = pendingSetups(withoutStreamsSection(configs),
+                                    nodeId,
+                                    dhtClient,
+                                    keyring,
+                                    StorageConfig.storageConfig(),
+                                    StoragePathsOverlap.streamsClaims(streams));
 
         results.add(armStreamStorage(streams));
 
         return admit(results);
     }
 
+    /// `streams` is built by its own arm from the [StreamSetupRequest]. A `[storage.streams]` section only carries
+    /// `wal_path` (read by `AetherNode`), so it is not a second instance: building it as one produced two setups
+    /// named `streams`, and collecting them threw `IllegalStateException: Duplicate key streams`, so any node
+    /// configured with the documented `wal_path` key failed to boot with a raw exception.
+    private static Map<String, StorageConfig> withoutStreamsSection(Map<String, StorageConfig> configs) {
+        return configs.entrySet()
+                      .stream()
+                      .filter(entry -> !STREAMS_NAME.equals(entry.getKey()))
+                      .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
     private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> configs,
                                                             String nodeId,
                                                             Option<DHTClient> dhtClient,
                                                             Option<EncryptionKeyring> keyring,
-                                                            StorageConfig defaults) {
+                                                            StorageConfig defaults,
+                                                            List<StoragePathsOverlap.Claim> reserved) {
         var results = new ArrayList<Result<PendingSetup>>();
+        var effective = effectiveConfigs(configs, defaults, keyring.isPresent());
+        var overlap = StoragePathsOverlap.find(effective, reserved);
+        // #856: refused BEFORE any instance is built, so a refused boot opens no tier and stamps nothing.
+        if (overlap.isPresent()) {
+            results.add(overlap.unwrap().result());
+
+            return results;
+        }
 
         configs.forEach((name, config) -> results.add(createOne(name, config, nodeId, dhtClient, keyring)));
         // Every node carries an `artifacts` storage instance — operators expect it without
@@ -413,6 +438,124 @@ public final class StorageFactory {
         }
 
         return results;
+    }
+
+    /// Every instance `pendingSetups` will build, with the configuration it will build it from: the explicit
+    /// sections plus the synthesized `artifacts` and `content` defaults when absent.
+    private static Map<String, StorageConfig> effectiveConfigs(Map<String, StorageConfig> configs,
+                                                               StorageConfig defaults,
+                                                               boolean encrypted) {
+        var effective = new java.util.LinkedHashMap<>(configs);
+
+        effective.putIfAbsent(ARTIFACTS_NAME, defaultArtifactsConfig(defaults, encrypted));
+        effective.putIfAbsent(CONTENT_NAME, defaultContentConfig(configs, defaults, encrypted));
+
+        return effective;
+    }
+
+    /// #856 — two storage instances whose directories coincide, or where one lies inside the other, would
+    /// each count the other's bytes against their own `disk_max_bytes` (`LocalDiskTier` walks its whole
+    /// base path) and would share metadata snapshots. Every instance that omits `disk_path` or
+    /// `snapshot_path` resolves the same `/data/aether/...` default, so an explicit `[storage.vault]`
+    /// without paths beside the synthesized `artifacts` did exactly this. The boot is refused, naming both
+    /// instances and the paths; the recovery is to give each instance its own `disk_path` and
+    /// `snapshot_path`. Paths of ONE instance may nest (its snapshots under its own disk directory).
+    public record StoragePathsOverlap(String first, String firstPath, String second, String secondPath) implements Cause {
+        record Claim(String instance, String kind, Path path) {}
+
+        static Option<StoragePathsOverlap> find(Map<String, StorageConfig> configs) {
+            return find(configs, List.of());
+        }
+
+        /// `reserved`: directories already owned by an instance built outside `configs` — the `streams` arm's segment,
+        /// snapshot and WAL directories (CodeRabbit on #1725: an instance whose `disk_path` is the streams segment
+        /// directory used to pass, and both tiers then opened one directory).
+        static Option<StoragePathsOverlap> find(Map<String, StorageConfig> configs, List<Claim> reserved) {
+            var claims = java.util.stream.Stream.concat(configs.entrySet()
+                                                               .stream()
+                                                               .flatMap(entry -> java.util.stream.Stream.of(claim(entry.getKey(),
+                                                                                                                  "disk_path",
+                                                                                                                  entry.getValue()
+                                                                                                                       .diskPath()),
+                                                                                                            claim(entry.getKey(),
+                                                                                                                  "snapshot_path",
+                                                                                                                  entry.getValue()
+                                                                                                                       .snapshotPath()))),
+                                                        reserved.stream()
+                                                                .map(claim -> new Claim(claim.instance(),
+                                                                                        claim.kind(),
+                                                                                        canonical(claim.path()))))
+                                                .sorted(java.util.Comparator.comparing(Claim::instance)
+                                                                            .thenComparing(Claim::kind))
+                                                .toList();
+
+            return Option.from(claims.stream()
+                                     .flatMap(a -> claims.stream()
+                                                         .filter(b -> a.instance()
+                                                                       .compareTo(b.instance()) < 0)
+                                                         .filter(b -> overlaps(a.path(),
+                                                                               b.path()))
+                                                         .map(b -> new StoragePathsOverlap(a.instance(),
+                                                                                           a.kind() + " " + a.path(),
+                                                                                           b.instance(),
+                                                                                           b.kind() + " " + b.path())))
+                                     .findFirst());
+        }
+
+        static List<Claim> streamsClaims(StreamSetupRequest streams) {
+            var claims = new ArrayList<Claim>();
+
+            claims.add(new Claim(STREAMS_NAME,
+                                 "segments",
+                                 streams.streamDataDir().resolve("segments")));
+            claims.add(new Claim(STREAMS_NAME,
+                                 "snapshots",
+                                 streams.streamDataDir().resolve("snapshots")));
+            streams.logRoot().onPresent(root -> claims.add(new Claim(STREAMS_NAME, "wal", root)));
+
+            return List.copyOf(claims);
+        }
+
+        private static Claim claim(String instance, String kind, String path) {
+            return new Claim(instance, kind, canonical(Path.of(path)));
+        }
+
+        /// CodeRabbit on #1725: the tiers follow symlinked directories, so two symlink aliases of one directory are one
+        /// directory. The longest EXISTING prefix is resolved to its real path and the missing tail re-appended; a path
+        /// that does not exist at all is only normalised.
+        static Path canonical(Path path) {
+            var absolute = path.toAbsolutePath().normalize();
+            var existing = absolute;
+
+            while (existing != null && !Files.exists(existing)) {
+                existing = existing.getParent();
+            }
+
+            if (existing == null) {
+                return absolute;
+            }
+
+            var anchor = existing;
+            var real = Result.lift(Causes::fromThrowable, () -> anchor.toRealPath()).or(anchor);
+
+            return real.resolve(anchor.relativize(absolute));
+        }
+
+        private static boolean overlaps(Path a, Path b) {
+            return a.startsWith(b) || b.startsWith(a);
+        }
+
+        @Override
+        public String message() {
+            return "storage instances '" + first
+                 + "' (" + firstPath
+                 + ") and '" + second
+                 + "' (" + secondPath
+                 + ") share a directory -- refusing to boot: each would count the other's bytes against its own "
+                 + "disk_max_bytes and they would share metadata snapshots. Give every [storage.<name>] section its "
+                 + "own disk_path and snapshot_path (an instance that omits them resolves the shared "
+                 + "/data/aether/... default)";
+        }
     }
 
     /// #852: two phases. Every arm above was built with its disk marker still pending (a pure guard

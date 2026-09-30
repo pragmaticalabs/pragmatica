@@ -100,28 +100,51 @@ public final class DelegatedStorageAdapter {
 
     /// #250 review: `active` must reflect whether both managers actually started, not merely that
     /// activation was attempted -- a caller reading `isActive()` after this returns needs "true" to
-    /// mean the group is really running. The CAS still gates re-entry (only one caller proceeds past
-    /// it at a time); on any manager failure it is rolled back to `false` before this method returns.
-    public Promise<Unit> activate() {
-        if (!active.compareAndSet(false, true)) {
+    /// mean the group is really running, so the flag is set only once both activations succeeded.
+    ///
+    /// #804: a PARTIAL activation (one manager started, the other failed) stops the one that started
+    /// before returning. Otherwise it kept running while the adapter reported inactive, and no later
+    /// `deactivate()` could reach it, because that guards on the adapter being active. Both methods are
+    /// synchronized so an activation and a deactivation never interleave their manager calls.
+    public synchronized Promise<Unit> activate() {
+        if (active.get()) {
             return Promise.success(unit());
         }
 
-        Result.all(demotionManager.activate().onFailure(cause -> logActivationFailure("demotion manager", cause)),
-                   garbageCollector.activate().onFailure(cause -> logActivationFailure("garbage collector", cause)))
+        var demotion = demotionManager.activate().onFailure(cause -> logActivationFailure("demotion manager", cause));
+        var collector = garbageCollector.activate()
+                                        .onFailure(cause -> logActivationFailure("garbage collector", cause));
+
+        Result.all(demotion, collector)
               .map((_, _) -> unit())
+              .onSuccessRun(() -> active.set(true))
               .onSuccessRun(() -> log.info("STORAGE delegation group activated"))
-              .onFailureRun(() -> active.set(false));
+              .onFailureRun(() -> stopPartiallyActivated(demotion, collector));
 
         return Promise.success(unit());
     }
 
-    public Promise<Unit> deactivate() {
-        if (active.compareAndSet(true, false)) {
-            garbageCollector.deactivate().onFailure(cause -> logDeactivationFailure("garbage collector", cause));
-            demotionManager.deactivate().onFailure(cause -> logDeactivationFailure("demotion manager", cause));
-            log.info("STORAGE delegation group deactivated");
+    private void stopPartiallyActivated(Result<Unit> demotion, Result<Unit> collector) {
+        demotion.onSuccessRun(() -> demotionManager.deactivate()
+                                                   .onFailure(cause -> logDeactivationFailure("demotion manager", cause)));
+        collector.onSuccessRun(() -> garbageCollector.deactivate()
+                                                     .onFailure(cause -> logDeactivationFailure("garbage collector",
+                                                                                                cause)));
+    }
+
+    /// #804 — mirror of `activate()`: the adapter reports inactive only once BOTH managers deactivated.
+    /// A failed deactivation keeps it active (a maintenance pass may still be scheduled or running) and
+    /// is logged at WARN with the cause; a later `deactivate()` retries.
+    public synchronized Promise<Unit> deactivate() {
+        if (!active.get()) {
+            return Promise.success(unit());
         }
+
+        Result.all(garbageCollector.deactivate().onFailure(cause -> logDeactivationFailure("garbage collector", cause)),
+                   demotionManager.deactivate().onFailure(cause -> logDeactivationFailure("demotion manager", cause)))
+              .map((_, _) -> unit())
+              .onSuccessRun(() -> active.set(false))
+              .onSuccessRun(() -> log.info("STORAGE delegation group deactivated"));
 
         return Promise.success(unit());
     }

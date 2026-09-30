@@ -25,11 +25,21 @@ public record StorageConfig(long memoryMaxBytes,
                             int snapshotRetentionCount,
                             String walPath,
                             boolean encrypted) {
+    /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
+    /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
+    /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
+    public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
+    private static final String DEFAULT_ROOT = "/data/aether";
+
     public static StorageConfig storageConfig() {
+        var root = Option.option(System.getProperty(DEFAULT_ROOT_PROPERTY))
+                         .filter(Verify.Is::notBlank)
+                         .or(DEFAULT_ROOT);
+
         return new StorageConfig(256 * 1024 * 1024,
                                  10L * 1024 * 1024 * 1024,
-                                 "/data/aether/storage",
-                                 "/data/aether/metadata-snapshots",
+                                 root + "/storage",
+                                 root + "/metadata-snapshots",
                                  1000,
                                  "60s",
                                  5,
