@@ -206,6 +206,18 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// At least one repository could not answer (timeout, network, write failure), so the
+        /// artifact is not known to be absent. [ArtifactNotFound] is reserved for the case where EVERY
+        /// repository answered "absent"; this cause carries every repository's outcome, in lookup order,
+        /// so a log line says which repository answered what. Retried exactly as [ArtifactNotFound] is —
+        /// both are `Intermittent`, and the disposition is decided by that type alone.
+        record ArtifactUnavailable(String artifact, List<String> repositoryOutcomes) implements Intermittent {
+            @Override
+            public String message() {
+                return "Artifact unavailable, not every repository answered: " + artifact + " " + repositoryOutcomes;
+            }
+        }
+
         record NetworkError(String detail, Cause causeSource) implements Intermittent {
             @Override
             public String message() {

@@ -5,10 +5,17 @@
 package org.pragmatica.aether.slice.repository;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
 
 public interface Repository {
+    /// The failure a repository returns when it ANSWERED and the artifact is not there. Every other
+    /// failure (timeout, network, write, checksum) means the repository could not answer, which is a
+    /// different fact: a composite of repositories reports "not found" only when all of them said
+    /// this, and "unavailable" otherwise.
+    interface Absent extends Cause {}
+
     Promise<Location> locate(Artifact artifact);
 
     default Promise<Location> locate(Artifact artifact, String classifier) {
