@@ -118,7 +118,7 @@ final class ArtifactCache {
         }
 
         log.warn("Cached artifact {} no longer matches the checksum this node recorded when it wrote it; fetching it again "
-                 + "(the stale copy is replaced only once the fetch succeeds)",
+                + "(the stale copy is replaced only once the fetch succeeds)",
                  jar);
 
         return CacheState.STALE;
