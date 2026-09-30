@@ -4,13 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -30,6 +34,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 
@@ -48,6 +53,14 @@ class AetherNodeStartSwimTest {
     private static final Cause SWIM_BIND_FAILED = Causes.cause("SWIM UDP port already bound (test cause)");
     private static final Cause FORMATION_FAILED = Causes.cause("cluster formation failed (test cause)");
 
+    /// #1312: gossip under a key epoch the node does not hold, from a cluster that rotated its key.
+    private static final byte[] NODE_KEY = filled((byte) 0x11);
+    private static final int NODE_KEY_ID = 20260914;
+    private static final byte[] ROTATED_KEY = filled((byte) 0x22);
+    private static final int ROTATED_KEY_ID = 1;
+
+    private final AtomicInteger divergences = new AtomicInteger();
+    private final CountDownLatch diverged = new CountDownLatch(1);
     private final AtomicInteger announcements = new AtomicInteger();
     private final AtomicInteger failures = new AtomicInteger();
     private final CountDownLatch announced = new CountDownLatch(1);
@@ -59,7 +72,7 @@ class AetherNodeStartSwimTest {
         var detector = detectorWithSwimPort(swimPort);
 
         try (var holder = new DatagramSocket(swimPort)) {
-            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, Promise.promise());
+            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, this::diverge, Promise.promise());
 
             assertThat(failed.await(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("a SWIM start that cannot bind UDP %d must fail the node", swimPort)
@@ -81,7 +94,7 @@ class AetherNodeStartSwimTest {
         var detector = detectorWithSwimPort(freeUdpPort());
 
         try {
-            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, Promise.promise());
+            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, this::diverge, Promise.promise());
 
             assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("a started SWIM must announce the join")
@@ -157,6 +170,7 @@ class AetherNodeStartSwimTest {
                                  encryptor(),
                                  this::announce,
                                  () -> outcomeSettledWhenFailNodeRan.set(outcome.isResolved()),
+                                 this::diverge,
                                  outcome);
 
             var settled = outcome.await(timeSpan(WAIT_SECONDS).seconds());
@@ -168,6 +182,47 @@ class AetherNodeStartSwimTest {
             assertThat(outcomeSettledWhenFailNodeRan)
                 .as("the outcome must be settled by the time failNode runs, or formation can win the race")
                 .isTrue();
+        }
+    }
+
+    /// #1312 — the gossip-key divergence gate exits through the node's own `gossipKeyDivergedExit`, never
+    /// `System.exit`: in a single-JVM host (Ember/Forge) that exit is a per-node stop, and a `System.exit`
+    /// would take every co-hosted node down. Drives the production [AetherNode#startSwim] with a REAL
+    /// detector on a REAL UDP port, fed REAL datagrams encrypted under a rotated cluster key; only the
+    /// gate's arming clock is moved past its delay. `failNode` must stay untouched: divergence is not a
+    /// SWIM start failure, and a guard routed to the wrong hook would stop the node with the wrong exit.
+    @Test
+    void startSwim_gossipKeyDiverges_exitsThroughTheNodesDivergenceHook() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+        var gateClock = new AtomicLong();
+
+        try (var sender = new DatagramSocket()) {
+            AetherNode.startSwim(detector,
+                                 network(),
+                                 RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY, NODE_KEY_ID)),
+                                 this::announce,
+                                 this::fail,
+                                 this::diverge,
+                                 gateClock::get,
+                                 Promise.promise());
+            assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("SWIM started").isTrue();
+            gateClock.set(GossipKeyDivergenceGuard.ARMING_DELAY_NANOS + 1);
+
+            var datagram = aesGcm(ROTATED_KEY, ROTATED_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8))
+                                                              .unwrap();
+
+            for (var i = 0; i < GossipKeyDivergenceGuard.UNKNOWN_KEY_THRESHOLD * 2; i++) {
+                sender.send(new DatagramPacket(datagram, datagram.length, InetAddress.getLoopbackAddress(), swimPort));
+            }
+
+            assertThat(diverged.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("gossip under an unheld key epoch must exit through the node's divergence hook")
+                .isTrue();
+            assertThat(divergences.get()).as("the gate fires once").isEqualTo(1);
+            assertThat(failures.get()).as("divergence is not a SWIM start failure").isZero();
+        } finally {
+            detector.stop();
         }
     }
 
@@ -222,6 +277,11 @@ class AetherNodeStartSwimTest {
         announced.countDown();
     }
 
+    private void diverge() {
+        divergences.incrementAndGet();
+        diverged.countDown();
+    }
+
     private void fail() {
         failures.incrementAndGet();
         failed.countDown();
@@ -250,6 +310,18 @@ class AetherNodeStartSwimTest {
 
     private static RotatingGossipEncryptor encryptor() {
         return RotatingGossipEncryptor.rotatingGossipEncryptor(GossipEncryptor.none());
+    }
+
+    private static GossipEncryptor aesGcm(byte[] key, int keyId) {
+        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(key, keyId).unwrap();
+    }
+
+    private static byte[] filled(byte value) {
+        var bytes = new byte[32];
+
+        java.util.Arrays.fill(bytes, value);
+
+        return bytes;
     }
 
     private static int freeUdpPort() throws SocketException {
