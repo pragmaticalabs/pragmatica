@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -248,6 +249,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// and carried on every self update, so a peer that never saw our ANNOUNCE still learns them from
     /// steady-state gossip. Empty until the first announce.
     private volatile Map<String, String> selfLabels = Map.of();
+    /// The only labels gossip carries: what core counting and the member descriptor read (`role`, `source`).
+    /// The full label map stays on ANNOUNCE and the QUIC Hello — an update with every label is several times
+    /// larger and, at the default eight updates per message, would push EVERY probe past the datagram budget.
+    private static final Set<String> GOSSIPED_LABEL_KEYS = Set.of(NodeInfo.LABEL_ROLE, NodeInfo.LABEL_SOURCE);
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
@@ -1844,7 +1849,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // already advanced the value) never regresses it.
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
-            selfLabels = self.labels();
+            selfLabels = gossipLabels(self.labels());
             var attempts = new AtomicInteger(0);
             var future = new AtomicReference<ScheduledFuture<?>>();
             var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
@@ -2522,7 +2527,14 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                     member.incarnation(),
                                                                     member.address(),
                                                                     bootTokenOf(member.nodeId()),
-                                                                    member.labels()));
+                                                                    gossipLabels(member.labels())));
+    }
+
+    private static Map<String, String> gossipLabels(Map<String, String> labels) {
+        return labels.entrySet()
+                     .stream()
+                     .filter(label -> GOSSIPED_LABEL_KEYS.contains(label.getKey()))
+                     .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     private void addMemberUpdate(MembershipUpdate update) {

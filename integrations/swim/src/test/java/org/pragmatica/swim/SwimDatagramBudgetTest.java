@@ -124,6 +124,45 @@ class SwimDatagramBudgetTest {
                                      .toList();
     }
 
+    /// The default configuration sends eight updates per message. Even with long, realistic full label maps on the
+    /// members, gossip carries only the labels core counting reads (role, source), so the default-8 Ack stays under
+    /// the budget with room to spare instead of tipping every probe past the receive buffer.
+    @Test
+    void defaultEightUpdateAck_withLongRealisticLabels_carriesOnlyRoleAndSource_underBudget() {
+        var defaults = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+                                   .unwrap();
+        var longLabels = Map.of(NodeInfo.LABEL_ROLE, "core",
+                                NodeInfo.LABEL_SOURCE, "replacement",
+                                NodeInfo.LABEL_HOSTNAME, "aether-production-eu-central-core-node-0123456789abcdef.internal.example.com",
+                                NodeInfo.LABEL_ZONE, "fsn1-dc14-availability-zone-primary",
+                                NodeInfo.LABEL_INSTANCE_TYPE, "ccx33-dedicated-vcpu-general-purpose",
+                                NodeInfo.LABEL_POOL, "core-pool-primary-replacement-generation-7");
+
+        IntStream.range(0, 20).forEach(i -> defaults.onMessage(ASKER_ADDR,
+                                                               new Ping(ASKER,
+                                                                        1L,
+                                                                        List.of(MembershipUpdate.membershipUpdate(new NodeId("aether-test-cluster-node-01m3rc2gnr6bnvmnmc7rs0r" + i),
+                                                                                                                  MemberState.ALIVE,
+                                                                                                                  0L,
+                                                                                                                  new InetSocketAddress("127.0.0.1", 9900 + i),
+                                                                                                                  0L,
+                                                                                                                  longLabels)))));
+        transport.sentMessages.clear();
+        defaults.onMessage(ASKER_ADDR, new Ping(ASKER, 2L, List.of()));
+        var piggyback = transport.sentMessages.stream()
+                                              .map(SentMessage::message)
+                                              .filter(Ack.class::isInstance)
+                                              .map(Ack.class::cast)
+                                              .findFirst()
+                                              .orElseThrow()
+                                              .piggyback();
+
+        assertThat(SwimConfig.DEFAULT.maxPiggyback()).isEqualTo(8);
+        assertThat(piggyback).hasSize(8);
+        assertThat(estimatedBytes(piggyback)).isLessThanOrEqualTo(PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
+        assertThat(piggyback).allSatisfy(update -> assertThat(update.labels().keySet()).isSubsetOf(NodeInfo.LABEL_ROLE, NodeInfo.LABEL_SOURCE));
+    }
+
     private Ack ackToPing(int sequence) {
         transport.sentMessages.clear();
         protocol.onMessage(ASKER_ADDR, new Ping(ASKER, sequence, List.of()));

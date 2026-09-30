@@ -130,6 +130,18 @@ class SwimGossipLabelsTest {
             .allSatisfy(relayed -> assertThat(relayed.labels()).isEqualTo(CORE_LABELS));
     }
 
+    @Test
+    void gossipedLabelsForAFaultyMember_areStoredButNotReEmittedAsDiscovery() {
+        gossip(1L, update(MemberState.FAULTY, 0L, Map.of()));
+        var discoveredBefore = discoveredLabels().size();
+        gossip(2L, update(MemberState.FAULTY, 0L, CORE_LABELS));
+
+        assertThat(protocol.members().get(REPLACEMENT).labels()).as("labels adopted").isEqualTo(CORE_LABELS);
+        assertThat(discoveredLabels())
+            .as("a FAULTY member must not re-enter the QUIC dial set through a discovery re-emit")
+            .hasSize(discoveredBefore);
+    }
+
     private void gossip(long sequence, MembershipUpdate update) {
         protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, sequence, List.of(update)));
     }

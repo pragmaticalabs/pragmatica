@@ -4722,9 +4722,10 @@ public interface AetherNode extends ManageableNode {
         // `onMemberDescriptor` is thread-safe (concurrent map + per-member monitor).
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> routeConnectionEstablished(connection,
-                                                                                          topologyForSwim,
-                                                                                          membershipFsm,
-                                                                                          swimHealthDetector)));
+                                                                                          topologyForSwim::get,
+                                                                                          membershipFsm::onMemberDescriptor,
+                                                                                          swimHealthDetector::onNodeConnected,
+                                                                                          swimHealthDetector::onNodeConnected)));
         Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
         // Membership-FSM unification (Wave D, consumer #4): the cluster-quiescence gate's health
         // source is the authoritative MembershipFsm (healthHints()). The SwimHintsRegistry tap stays
@@ -7102,17 +7103,19 @@ public interface AetherNode extends ManageableNode {
     /// Feed a QUIC `ConnectionEstablished` to the membership FSM and the SWIM health detector. The transport
     /// attaches the Hello `NodeInfo` for a topology-unknown peer AND for a known peer that supplied labels, so
     /// the FSM descriptor upsert sees the role either way. The SWIM feed keeps its established source order:
-    /// the topology's own `NodeInfo` first, the Hello's only when topology does not know the peer.
+    /// the topology's own `NodeInfo` first, the Hello's only when topology does not know the peer, the bare id
+    /// when neither exists. Package-private with the sinks as parameters so the routing is testable.
     @Contract
-    private static void routeConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connection,
-                                                   TopologyManager topologyForSwim,
-                                                   MembershipFsm membershipFsm,
-                                                   CoreSwimHealthDetector swimHealthDetector) {
-        connection.nodeInfo().onPresent(membershipFsm::onMemberDescriptor);
-        topologyForSwim.get(connection.nodeId())
-                       .orElse(connection::nodeInfo)
-                       .onPresent(swimHealthDetector::onNodeConnected)
-                       .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()));
+    static void routeConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connection,
+                                           Function<NodeId, Option<NodeInfo>> topologyLookup,
+                                           Consumer<NodeInfo> membershipDescriptor,
+                                           Consumer<NodeInfo> swimConnectedInfo,
+                                           Consumer<NodeId> swimConnectedId) {
+        connection.nodeInfo().onPresent(membershipDescriptor);
+        topologyLookup.apply(connection.nodeId())
+                      .orElse(connection::nodeInfo)
+                      .onPresent(swimConnectedInfo)
+                      .onEmpty(() -> swimConnectedId.accept(connection.nodeId()));
     }
 
     /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /
