@@ -16,6 +16,8 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +32,7 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -387,7 +390,8 @@ class QuicLaneOwnershipTest {
                  + " sent=" + sent + " succeeded=" + succeeded.get() + " failed=" + failed.get() + " undelivered-indices="
                  + indices(undelivered()) + " closes=" + closes + " dialerStream.active=" + dialerStream.isActive()
                  + " acceptorStream.active=" + acceptorStream.map(QuicStreamChannel::isActive).or(false)
-                 + " stats@10s=" + statsAtTimeout + " stats@+15s=" + stats());
+                 + " stats@10s=" + statsAtTimeout + " stats@+15s=" + stats() + " acceptorPortSharers="
+                 + server.boundPort().map(PortSharers::describe).or("n/a"));
         }
 
         /// Every write resolved and every acknowledged one was read.
@@ -474,6 +478,60 @@ class QuicLaneOwnershipTest {
                        + st.lostBytes() + " retransB=" + st.streamRetransBytes();
             } catch (Exception e) {
                 return "active=" + channel.isActive() + " stats-unavailable:" + e;
+            }
+        }
+    }
+
+    /// #1727 — every UDP socket bound to a port, from Linux `/proc/net/udp{,6}`, each marked as this JVM's (its inode is
+    /// among this process's socket fds) or OTHER. v1677 reproduced #1727 as a foreign reuse-enabled socket taking over the
+    /// acceptor's port mid-burst (#1719), so a delivery shortfall names any intruder. Best-effort: "n/a" off Linux.
+    private static final class PortSharers {
+        private static final List<Path> TABLES = List.of(Path.of("/proc/net/udp"), Path.of("/proc/net/udp6"));
+
+        static String describe(int port) {
+            if (TABLES.stream().noneMatch(Files::isReadable)) {
+                return "n/a";
+            }
+
+            var own = ownSocketInodes();
+            var suffix = String.format(":%04X", port);
+
+            return TABLES.stream()
+                         .filter(Files::isReadable)
+                         .flatMap(PortSharers::entries)
+                         .filter(fields -> fields.length > 9 && fields[1].endsWith(suffix))
+                         .map(fields -> "inode " + fields[9] + (own.contains(fields[9]) ? " (this JVM)" : " (OTHER)"))
+                         .toList()
+                         .toString();
+        }
+
+        private static Stream<String[]> entries(Path table) {
+            try {
+                return Files.readAllLines(table)
+                            .stream()
+                            .skip(1)
+                            .map(line -> line.trim().split("\\s+"));
+            } catch (Exception e) {
+                return Stream.empty();
+            }
+        }
+
+        private static Set<String> ownSocketInodes() {
+            try (var fds = Files.list(Path.of("/proc/self/fd"))) {
+                return fds.map(PortSharers::link)
+                          .filter(target -> target.startsWith("socket:["))
+                          .map(target -> target.substring("socket:[".length(), target.length() - 1))
+                          .collect(Collectors.toSet());
+            } catch (Exception e) {
+                return Set.of();
+            }
+        }
+
+        private static String link(Path fd) {
+            try {
+                return Files.readSymbolicLink(fd).toString();
+            } catch (Exception e) {
+                return "";
             }
         }
     }
