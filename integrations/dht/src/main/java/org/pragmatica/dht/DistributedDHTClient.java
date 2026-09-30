@@ -35,7 +35,6 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.IdGenerator;
 
 import static org.pragmatica.lang.Unit.unit;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Distributed DHT client with quorum-based reads and writes.
@@ -329,23 +328,12 @@ public final class DistributedDHTClient implements DHTClient {
                ? QuorumCollector.<byte[]> graceCollector(quorum,
                                                          total,
                                                          promise,
-                                                         collector -> scheduleAbsentGrace(collector,
-                                                                                          options,
-                                                                                          deadlineNanos))
+                                                         collector -> AbsentGrace.schedule(collector,
+                                                                                           promise,
+                                                                                           options,
+                                                                                           deadlineNanos,
+                                                                                           SharedScheduler::schedule))
                : QuorumCollector.<Option<byte[]>> quorumCollector(quorum, total, promise);
-    }
-
-    /// R empty answers are in: give the remaining original replica(s) at most the grace window, never
-    /// longer than what is left of the read's own deadline, then report absent.
-    private static Unit scheduleAbsentGrace(QuorumCollector<Option<byte[]>> collector,
-                                            ReadOptions options,
-                                            long deadlineNanos) {
-        var delay = Math.max(0,
-                             Math.min(options.absentGrace().nanos(),
-                                      deadlineNanos - System.nanoTime()));
-        var _ = SharedScheduler.schedule(collector::resolveWithBest, timeSpan(delay).nanos());
-
-        return unit();
     }
 
     private void dispatchRead(InFlightRead read, NodeId target) {
