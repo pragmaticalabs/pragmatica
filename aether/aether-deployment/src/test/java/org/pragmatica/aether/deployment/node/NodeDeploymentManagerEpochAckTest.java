@@ -40,11 +40,11 @@ class NodeDeploymentManagerEpochAckTest {
     class ThresholdReaching {
         @Test
         void allTargetsAckAtOrAboveEpoch_signalsReady() {
-            tracker.registerExpectation(sliceKey, Epoch.epoch(7L, 10L), Set.of(NODE_1, NODE_2, NODE_3));
+            tracker.registerExpectation(sliceKey, Epoch.epoch(0L, 7L, 10L), Set.of(NODE_1, NODE_2, NODE_3));
 
-            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(7L, 10L)).isPresent()).isFalse();
-            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(7L, 10L)).isPresent()).isFalse();
-            var ready = tracker.observeAck(sliceKey, NODE_3, Epoch.epoch(7L, 11L));
+            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 7L, 10L)).isPresent()).isFalse();
+            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(0L, 7L, 10L)).isPresent()).isFalse();
+            var ready = tracker.observeAck(sliceKey, NODE_3, Epoch.epoch(0L, 7L, 11L));
 
             assertThat(ready.isPresent())
                     .as("third ack must signal ready")
@@ -54,13 +54,13 @@ class NodeDeploymentManagerEpochAckTest {
 
         @Test
         void readySignal_firesExactlyOnce_subsequentAcksAreNoop() {
-            tracker.registerExpectation(sliceKey, Epoch.epoch(7L, 10L), Set.of(NODE_1, NODE_2));
+            tracker.registerExpectation(sliceKey, Epoch.epoch(0L, 7L, 10L), Set.of(NODE_1, NODE_2));
 
-            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(7L, 10L)).isPresent()).isFalse();
-            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(7L, 10L)).isPresent())
+            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 7L, 10L)).isPresent()).isFalse();
+            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(0L, 7L, 10L)).isPresent())
                     .as("second ack triggers ready")
                     .isTrue();
-            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(7L, 11L)).isPresent())
+            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 7L, 11L)).isPresent())
                     .as("subsequent ack after consume is no-op")
                     .isFalse();
         }
@@ -70,36 +70,36 @@ class NodeDeploymentManagerEpochAckTest {
     class FencingAndFiltering {
         @Test
         void ackBelowExpectedEpoch_isIgnored() {
-            tracker.registerExpectation(sliceKey, Epoch.epoch(7L, 10L), Set.of(NODE_1, NODE_2));
+            tracker.registerExpectation(sliceKey, Epoch.epoch(0L, 7L, 10L), Set.of(NODE_1, NODE_2));
 
-            var stale = tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(7L, 5L));
+            var stale = tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 7L, 5L));
 
             assertThat(stale.isPresent()).isFalse();
-            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(7L, 10L)).isPresent())
+            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(0L, 7L, 10L)).isPresent())
                     .as("only NODE_2 has actually acked")
                     .isFalse();
         }
 
         @Test
         void ackFromUntargetedNode_isIgnored() {
-            tracker.registerExpectation(sliceKey, Epoch.epoch(7L, 10L), Set.of(NODE_1, NODE_2));
+            tracker.registerExpectation(sliceKey, Epoch.epoch(0L, 7L, 10L), Set.of(NODE_1, NODE_2));
 
-            assertThat(tracker.observeAck(sliceKey, NODE_3, Epoch.epoch(7L, 50L)).isPresent()).isFalse();
-            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(7L, 10L)).isPresent()).isFalse();
-            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(7L, 10L)).isPresent()).isTrue();
+            assertThat(tracker.observeAck(sliceKey, NODE_3, Epoch.epoch(0L, 7L, 50L)).isPresent()).isFalse();
+            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 7L, 10L)).isPresent()).isFalse();
+            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(0L, 7L, 10L)).isPresent()).isTrue();
         }
 
         @Test
         void noExpectationRegistered_observeAck_returnsNone() {
-            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(99L, 0L)).isPresent()).isFalse();
+            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 99L, 0L)).isPresent()).isFalse();
         }
 
         @Test
         void clearedExpectation_observeAck_returnsNone() {
-            tracker.registerExpectation(sliceKey, Epoch.epoch(7L, 0L), Set.of(NODE_1));
+            tracker.registerExpectation(sliceKey, Epoch.epoch(0L, 7L, 0L), Set.of(NODE_1));
             tracker.clear(sliceKey);
 
-            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(7L, 0L)).isPresent()).isFalse();
+            assertThat(tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 7L, 0L)).isPresent()).isFalse();
         }
     }
 
@@ -109,11 +109,11 @@ class NodeDeploymentManagerEpochAckTest {
         void ackThresholdCanBeReached_beforeLocalPublishCompletes() {
             // Simulate: NDM registers expectation when issuing publish; remote nodes
             // process and ack via NodeRoutesKey BEFORE the local publish Promise resolves.
-            tracker.registerExpectation(sliceKey, Epoch.epoch(11L, 100L), Set.of(NODE_2, NODE_3, NODE_4));
+            tracker.registerExpectation(sliceKey, Epoch.epoch(0L, 11L, 100L), Set.of(NODE_2, NODE_3, NODE_4));
 
-            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(11L, 100L)).isPresent()).isFalse();
-            assertThat(tracker.observeAck(sliceKey, NODE_3, Epoch.epoch(11L, 105L)).isPresent()).isFalse();
-            var ready = tracker.observeAck(sliceKey, NODE_4, Epoch.epoch(11L, 110L));
+            assertThat(tracker.observeAck(sliceKey, NODE_2, Epoch.epoch(0L, 11L, 100L)).isPresent()).isFalse();
+            assertThat(tracker.observeAck(sliceKey, NODE_3, Epoch.epoch(0L, 11L, 105L)).isPresent()).isFalse();
+            var ready = tracker.observeAck(sliceKey, NODE_4, Epoch.epoch(0L, 11L, 110L));
 
             assertThat(ready.isPresent())
                     .as("cross-node acks alone are sufficient to fast-transition")
@@ -122,9 +122,9 @@ class NodeDeploymentManagerEpochAckTest {
 
         @Test
         void laterLocalClear_isSafe_idempotentWithFastPath() {
-            tracker.registerExpectation(sliceKey, Epoch.epoch(7L, 10L), Set.of(NODE_1));
+            tracker.registerExpectation(sliceKey, Epoch.epoch(0L, 7L, 10L), Set.of(NODE_1));
 
-            var ready = tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(7L, 10L));
+            var ready = tracker.observeAck(sliceKey, NODE_1, Epoch.epoch(0L, 7L, 10L));
             assertThat(ready.isPresent()).isTrue();
 
             // Local publish promise resolves later → calls clear; must not throw.

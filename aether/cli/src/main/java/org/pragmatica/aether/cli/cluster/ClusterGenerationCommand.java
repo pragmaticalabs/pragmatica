@@ -79,9 +79,12 @@ class ClusterGenerationCommand implements Callable<Integer> {
 
         return epochNode == null || epochNode.isNull()
                ? "(unavailable)"
-               : epochNode.get("rabiaTerm")
-                          .asLong() + ":" + epochNode.get("localCounter")
-                                                     .asLong();
+               : epochNode.path("incarnation")
+                          .asLong()
+                + ":" + epochNode.get("rabiaTerm")
+                                 .asLong()
+                + ":" + epochNode.get("localCounter")
+                                 .asLong();
     }
 
     // RET-06: `root` is a nullable Jackson JsonNode (childNode returns null for absent nodes) —

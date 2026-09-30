@@ -627,7 +627,7 @@ public sealed interface ManagementApiResponses {
                                      List<ClusterGenerationCommunity> communities,
                                      List<ClusterGenerationPartition> partitions) {}
 
-    record EpochInfo(long rabiaTerm, long localCounter) {}
+    record EpochInfo(long incarnation, long rabiaTerm, long localCounter) {}
 
     record ClusterGenerationCore(int desiredSize, List<ClusterGenerationMember> members) {}
 
@@ -663,6 +663,25 @@ public sealed interface ManagementApiResponses {
     record GovernorsResponse(List<GovernorInfo> governors) {}
 
     record GovernorInfo(String governorId, String community, int memberCount, List<String> members) {}
+
+    /// #1652 — `GET /cluster/communities`.
+    record CommunitiesResponse(List<CommunityInfo> communities) {}
+
+    /// #1652 — one community: the union of its committed `CommunityValue` (state, targetSize, role,
+    /// createdAt, dissolvedAt) and its committed roster (governorId, members, communityTerm). A half with
+    /// no committed record is `null`, never a fabricated default. `liveMembers` is the LEADER's
+    /// instantaneous observation, not committed state — `null` when the serving node cannot observe it.
+    record CommunityInfo(String communityId,
+                         Option<String> state,
+                         Option<Integer> targetSize,
+                         Option<String> role,
+                         Option<Long> createdAt,
+                         Option<Long> dissolvedAt,
+                         Option<String> governorId,
+                         List<String> members,
+                         int memberCount,
+                         Option<Long> communityTerm,
+                         Option<Integer> liveMembers) {}
 
     record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 

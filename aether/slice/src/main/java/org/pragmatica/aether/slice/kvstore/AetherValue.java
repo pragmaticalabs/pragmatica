@@ -1041,7 +1041,7 @@ public sealed interface AetherValue {
                                                  newTcpAddress,
                                                  System.currentTimeMillis(),
                                                  nextTerm,
-                                                 Epoch.epoch(nextTerm, 0L),
+                                                 Epoch.epoch(communityEpoch.incarnation(), nextTerm, 0L),
                                                  newObservedCoreEpoch,
                                                  newTransitionedAt,
                                                  false);
@@ -1106,27 +1106,33 @@ public sealed interface AetherValue {
     /// The cluster's lineage and incarnation, under [AetherKey.ClusterIncarnationKey] (#1529 part 1).
     /// `lineageId` names the cluster's history across cold restarts; `incarnation` counts those restarts
     /// and dominates any per-incarnation counter (a consensus revision restarts with the cluster).
+    /// `incarnationId` is a ULID minted fresh at every genesis mint and every restore (#1529 part 2,
+    /// #1625): unlike the number, it is never reused, so two histories that happen to reach the same
+    /// incarnation number (a restore whose predecessor never reached the backup, or two lineages) stay
+    /// distinguishable. It is an identity, compared for equality only — ordering is the number's job.
     ///
     /// [VersionFenced] on `incarnation`, which gives two per-operation guarantees and no more: a genesis
     /// mint against an absent key is first-wins, and a Put through the fence is accepted only as the
     /// immediate successor of the committed value. A Remove is NOT fenced, and a restore deliberately goes
     /// Remove-then-Put to bypass the fence; a restore's monotonicity comes from the floor in
     /// `ClusterIncarnation.restoreCommands`, not from this fence.
-    record ClusterIncarnationValue(String lineageId, long incarnation) implements AetherValue, VersionFenced {
+    record ClusterIncarnationValue(String lineageId, long incarnation, String incarnationId) implements AetherValue, VersionFenced {
         public static final long GENESIS = 1L;
 
-        public static ClusterIncarnationValue clusterIncarnationValue(String lineageId, long incarnation) {
-            return new ClusterIncarnationValue(lineageId, incarnation);
+        public static ClusterIncarnationValue clusterIncarnationValue(String lineageId,
+                                                                      long incarnation,
+                                                                      String incarnationId) {
+            return new ClusterIncarnationValue(lineageId, incarnation, incarnationId);
         }
 
-        /// A brand-new cluster: a fresh lineage at the first incarnation.
-        public static ClusterIncarnationValue genesis(String lineageId) {
-            return new ClusterIncarnationValue(lineageId, GENESIS);
+        /// A brand-new cluster: a fresh lineage at the first incarnation, with a fresh incarnation id.
+        public static ClusterIncarnationValue genesis(String lineageId, String incarnationId) {
+            return new ClusterIncarnationValue(lineageId, GENESIS, incarnationId);
         }
 
-        /// The same lineage, one incarnation later — what a restore commits.
-        public ClusterIncarnationValue next() {
-            return new ClusterIncarnationValue(lineageId, incarnation + 1);
+        /// The same lineage, one incarnation later, under a fresh incarnation id — what a restore commits.
+        public ClusterIncarnationValue next(String freshIncarnationId) {
+            return new ClusterIncarnationValue(lineageId, incarnation + 1, freshIncarnationId);
         }
 
         @Override
@@ -1546,8 +1552,8 @@ public sealed interface AetherValue {
 
     /// Consensus-visible consumer cursor (#488), guarded TWICE by the applier: `token` names the committed
     /// assignment it was written under (#1271 — admitted only while that token is the committed
-    /// [ConsumerAssignmentValue]'s, `AssignmentGuarded`), and `rewindGeneration`/`rewindSequence` are the
-    /// [RewindEpoch] it was committed under (#1333 — through [EpochBearing] a put stamped with a STRICTLY
+    /// [ConsumerAssignmentValue]'s, `AssignmentGuarded`), and `rewindIncarnation`/`rewindGeneration`/
+    /// `rewindSequence` are the [RewindEpoch] it was committed under (#1333 — through [EpochBearing] a put stamped with a STRICTLY
     /// older epoch is refused, so a zombie consumer's pre-rewind checkpoint cannot move the cursor forward
     /// again; `0/0` for a group never rewound). The two arms are pure predicates the applier ORs, so a
     /// checkpoint lands only when BOTH admit it, whichever is evaluated first.
@@ -1560,6 +1566,7 @@ public sealed interface AetherValue {
     record StreamCursorCheckpointValue(long committedOffset,
                                        long commitTimestamp,
                                        ConsumerAssignmentValue.AssignmentToken token,
+                                       long rewindIncarnation,
                                        long rewindGeneration,
                                        long rewindSequence,
                                        boolean rewind) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
@@ -1579,6 +1586,7 @@ public sealed interface AetherValue {
             return new StreamCursorCheckpointValue(committedOffset,
                                                    System.currentTimeMillis(),
                                                    token,
+                                                   epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
                                                    false);
@@ -1592,13 +1600,14 @@ public sealed interface AetherValue {
             return new StreamCursorCheckpointValue(fromOffset,
                                                    System.currentTimeMillis(),
                                                    token,
+                                                   epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
                                                    true);
         }
 
         public RewindEpoch rewindEpoch() {
-            return RewindEpoch.rewindEpoch(rewindGeneration, rewindSequence);
+            return RewindEpoch.rewindEpoch(rewindIncarnation, rewindGeneration, rewindSequence);
         }
 
         @Override
@@ -2031,7 +2040,7 @@ public sealed interface AetherValue {
     /// leader advances on every owner change, so the append fence (1d-ii) can reject a deposed owner.
     ///
     /// There is no `ownerCommunityId` — streams have no community arc (that field is DHT-specific). The
-    /// `ownerEpoch` is sourced from the committed generation epoch (`Epoch.epoch(rabiaTerm, 0)`); the
+    /// `ownerEpoch` is sourced from the committed generation epoch (`Epoch.epoch(incarnation, rabiaTerm, 0)`); the
     /// `ownershipTerm` is a monotonic per-partition takeover counter, bumped on each owner change.
     record StreamPartitionOwnershipValue(NodeId owner,
                                          Epoch ownerEpoch,

@@ -43,6 +43,7 @@ class ClusterSyncCollectorPingRosterRetentionTest {
         return new ClusterSyncPing(LEADER,
                                    metricsFor(roster),
                                    term,
+                                   0L,
                                    term,
                                    0L,
                                    Set.of(),

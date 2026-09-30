@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
 import org.pragmatica.consensus.StateMachine;
@@ -27,8 +28,23 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
+    private static final Logger log = LoggerFactory.getLogger(KVStore.class);
+
+    /// How often a burst of repeated refusals is summarised in the log.
+    private static final long REFUSAL_SUMMARY_INTERVAL_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+
+    private final AtomicLong staleEpochRefusals = new AtomicLong();
+
+    private final ThrottledWarning refusalWarning = ThrottledWarning.throttledWarning(log::warn,
+                                                                                      System::nanoTime,
+                                                                                      REFUSAL_SUMMARY_INTERVAL_NANOS,
+                                                                                      "stale-epoch write refusals");
+
     /// Serializes writers and notification delivery without blocking read-only store captures.
     private final Object mutationLock = new Object();
     private final java.util.ArrayDeque<PendingNotification> notifications = new java.util.ArrayDeque<>();
@@ -234,6 +250,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     private Option<V> handlePut(Put<K, V> put) {
         if (staleWrite(put.key(), put.value())) {
+            reportStaleEpochRefusal(put.key(), put.value());
+
             return Option.option(storage.get(put.key()));
         }
 
@@ -305,6 +323,36 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// #1333: a write that MINTS its epoch ([EpochBearing#mintsEpoch]) is stale at an EQUAL epoch too —
     /// the mint must be strictly newer than the committed record, so a second minter deriving the same
     /// next epoch from the same committed state is refused rather than silently accepted.
+    /// A plain `Put` refused by the epoch fence leaves no other trace: no notification, and the caller's
+    /// apply still succeeds. A writer whose epoch source lags (#1529: an incarnation mirror behind the commit)
+    /// would refuse itself on every retry in silence, so each refusal is counted ([#staleEpochRefusals]). The WARN
+    /// is throttled: after a failover every in-flight write of the deposed writer is a refusal on every replica,
+    /// which is normal, so the first refusal of each (incoming, committed) epoch pair is logged in full and the
+    /// repeats are summarised at most once per interval.
+    private void reportStaleEpochRefusal(K key, Object incoming) {
+        if (incoming instanceof EpochBearing<?> in && storage.get(key) instanceof EpochBearing<?> stored && incomingEpochIsStale(in,
+                                                                                                                                 stored)) {
+            var refusals = staleEpochRefusals.incrementAndGet();
+
+            refusalWarning.report(List.of(in.fenceEpoch(), stored.fenceEpoch()),
+                                  () -> "Refused a stale-epoch write to " + key
+                                       + ": incoming epoch " + in.fenceEpoch()
+                                       + " is older than the committed " + stored.fenceEpoch()
+                                       + " (refusals: " + refusals
+                                       + ")");
+        }
+    }
+
+    /// The throttled WARN behind [#reportStaleEpochRefusal], for tests and diagnostics.
+    ThrottledWarning refusalWarning() {
+        return refusalWarning;
+    }
+
+    /// How many plain `Put`s this replica's epoch fence has refused (see [#reportStaleEpochRefusal]).
+    public long staleEpochRefusals() {
+        return staleEpochRefusals.get();
+    }
+
     private boolean staleEpochWrite(K key, Object incoming) {
         return incoming instanceof EpochBearing<?> in
                && storage.get(key) instanceof EpochBearing<?> stored

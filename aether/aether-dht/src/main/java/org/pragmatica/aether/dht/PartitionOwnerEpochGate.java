@@ -49,19 +49,22 @@ public final class PartitionOwnerEpochGate implements OwnerEpochGate {
     }
 
     @Override
-    public boolean isStale(byte[] key, long epochTerm, long epochCounter) {
+    public boolean isStale(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
         return EntityPartitionArc.arcOf(key)
-                                 .map(arc -> isStaleForArc(arc, epochTerm, epochCounter))
+                                 .map(arc -> isStaleForArc(arc, epochIncarnation, epochTerm, epochCounter))
                                  .or(false);
     }
 
     @Contract
     @Override
-    public void advance(byte[] key, long epochTerm, long epochCounter) {
-        EntityPartitionArc.arcOf(key).onPresent(arc -> highWater.advance(arc, Epoch.epoch(epochTerm, epochCounter)));
+    public void advance(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        EntityPartitionArc.arcOf(key).onPresent(arc -> highWater.advance(arc,
+                                                                         Epoch.epoch(epochIncarnation,
+                                                                                     epochTerm,
+                                                                                     epochCounter)));
     }
 
-    private boolean isStaleForArc(StreamPartition arc, long epochTerm, long epochCounter) {
-        return highWater.isStale(arc, Epoch.epoch(epochTerm, epochCounter));
+    private boolean isStaleForArc(StreamPartition arc, long epochIncarnation, long epochTerm, long epochCounter) {
+        return highWater.isStale(arc, Epoch.epoch(epochIncarnation, epochTerm, epochCounter));
     }
 }

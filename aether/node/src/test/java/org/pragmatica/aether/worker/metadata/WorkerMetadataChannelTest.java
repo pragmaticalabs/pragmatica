@@ -49,7 +49,7 @@ class WorkerMetadataChannelTest {
             (org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut<AetherKey, AetherValue> put) -> {
                 if (captured.compareAndSet(false, true)) {
                     assertThat(fixture.core.committedRevision()).isEqualTo(2);
-                    fixture.server.onManifestRequest(new WorkerMetadataMessage.ManifestRequest(WORKER, 42, 2));
+                    fixture.server.onManifestRequest(new WorkerMetadataMessage.ManifestRequest(WORKER, 42, 2, 0L));
                     var response = (WorkerMetadataMessage.Manifest) fixture.responses.remove();
                     assertThat(response.error()).isEqualTo("projection-unavailable-or-oversize");
                     assertThat(response.scopes()).isEmpty();
@@ -78,7 +78,7 @@ class WorkerMetadataChannelTest {
         var fixture = new Fixture();
 
         fixture.seed(1, "initial");
-        fixture.server.onManifestRequest(new WorkerMetadataMessage.ManifestRequest(FOREIGN, 1, 0));
+        fixture.server.onManifestRequest(new WorkerMetadataMessage.ManifestRequest(FOREIGN, 1, 0, 0L));
         assertThat(fixture.responses).isEmpty();
         assertThat(fixture.server.manifestCount()).isZero();
         fixture.client.tick();
@@ -90,6 +90,7 @@ class WorkerMetadataChannelTest {
                                                                      valid.incarnation(),
                                                                      valid.generation(),
                                                                      valid.committedRevision(),
+                                                                     0L,
                                                                      valid.scopes(),
                                                                      ""));
         assertThat(fixture.requests).isEmpty();
@@ -114,10 +115,11 @@ class WorkerMetadataChannelTest {
                                               () -> Set.of(CORE),
                                               _ -> List.of(),
                                               LIMITS,
-                                              (_, _) -> {});
+                                              (_, _) -> {},
+                                              () -> 0L);
 
         for (int index = 0; index < 100; index++) {
-            server.onManifestRequest(new WorkerMetadataMessage.ManifestRequest(new NodeId("worker-" + index), 1, 0));
+            server.onManifestRequest(new WorkerMetadataMessage.ManifestRequest(new NodeId("worker-" + index), 1, 0, 0L));
         }
 
         assertThat(server.manifestCount()).isEqualTo(LIMITS.manifests());
@@ -227,7 +229,8 @@ class WorkerMetadataChannelTest {
                                               () -> Set.of(CORE),
                                               _ -> List.of(),
                                               LIMITS,
-                                              (_, _) -> {});
+                                              (_, _) -> {},
+                                              () -> 0L);
 
         server.onManifestRequest(request);
         var response = (WorkerMetadataMessage.Manifest) replies.getFirst();
@@ -431,7 +434,8 @@ class WorkerMetadataChannelTest {
                                                                      () -> Set.of(CORE),
                                                                      _ -> List.of(),
                                                                      serverLimits,
-                                                                     (_, reason) -> coreRejections.add(reason));
+                                                                     (_, reason) -> coreRejections.add(reason),
+                                                                     () -> 0L);
 
         client = new WorkerMetadataClient(WORKER,
                                                                      worker,

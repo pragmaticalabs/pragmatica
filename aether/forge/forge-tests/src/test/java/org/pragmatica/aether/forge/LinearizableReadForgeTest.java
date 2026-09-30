@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -88,6 +89,9 @@ class LinearizableReadForgeTest {
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesReady);
+        // #1529: epochs are read from the live incarnation; read it only once every node carries the genesis
+        // incarnation, or a read that races the genesis commit captures 0 and the fixture literal returns as a flake.
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::genesisIncarnationObserved);
         log.info("LINEARIZABLE-READ: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
     }
 
@@ -104,12 +108,13 @@ class LinearizableReadForgeTest {
 
         var owner = hrwOwner(STREAM, PARTITION);
         var ownerNode = resolveNode(owner);
-        var term = leaderNode().currentGenerationEpoch().rabiaTerm();
+        var generation = leaderNode().currentGenerationEpoch();
+        var term = generation.rabiaTerm();
         log.info("LINEARIZABLE-READ: committed owner={} term={}", owner.id(), term);
 
         // Commit ownership through the production writer + REAL consensus, so the LINEARIZABLE arm has a
         // committed StreamPartitionOwnershipValue.owner to route to.
-        var writer = liveWriter(term, owner);
+        var writer = liveWriter(generation.incarnation(), term, owner);
         commitOwnershipVia(writer, STREAM, PARTITION);
         await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
                .until(() -> committedOwner(PARTITION).map(v -> v.owner().equals(owner)).or(false));
@@ -161,9 +166,9 @@ class LinearizableReadForgeTest {
     /// Minimal carrier so the read result is a plain immutable value the awaitility predicate can size.
     private record OffHeapRingEvent(long offset) {}
 
-    private StreamPartitionOwnershipWriter liveWriter(long term, NodeId owner) {
+    private StreamPartitionOwnershipWriter liveWriter(long incarnation, long term, NodeId owner) {
         return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
-                                                                             () -> term,
+                                                                             () -> Epoch.epoch(incarnation, term, 0L),
                                                                              HlcClock.hlcClock(leaderNode().self()),
                                                                              (stream, partition) -> committedOwner(partition),
                                                                              (stream, partition) -> Option.some(owner));
@@ -220,6 +225,12 @@ class LinearizableReadForgeTest {
 
     private AetherNode leaderNode() {
         return cluster.currentLeader().flatMap(cluster::getNode).or(cluster.allNodes().getFirst());
+    }
+
+    private boolean genesisIncarnationObserved() {
+        return cluster.allNodes()
+                      .stream()
+                      .allMatch(node -> node.currentGenerationEpoch().incarnation() >= 1L);
     }
 
     private boolean allNodesReady() {

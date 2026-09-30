@@ -31,6 +31,8 @@ package org.pragmatica.dht;
 /// public `DHTClient` write API unchanged: the stamp is a per-node property of the owner, not of the
 /// individual call site.
 public interface OwnerEpochSource {
+    /// This node's current ownership-epoch cluster `incarnation` (#1529) for stamping outgoing puts.
+    long currentEpochIncarnation();
     /// This node's current ownership-epoch `rabiaTerm` for stamping outgoing puts.
     long currentEpochTerm();
     /// This node's current ownership-epoch `localCounter` for stamping outgoing puts.
