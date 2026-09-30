@@ -17,6 +17,7 @@ class CommunityReportTest {
 
         var report = new CommunityReport("pool-a",
                                          3L,
+                                         0L,
                                          7L,
                                          42L,
                                          governor,
@@ -44,7 +45,7 @@ class CommunityReportTest {
     void construct_nullPartitions_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport("pool-a", 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L);
+        var report = new CommunityReport("pool-a", 0L, 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L);
 
         assertThat(report.partitionsHeld()).isEmpty();
     }
@@ -53,7 +54,7 @@ class CommunityReportTest {
     void construct_nullCommunityId_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport(null, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L);
+        var report = new CommunityReport(null, 0L, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L);
 
         assertThat(report.communityId()).isEmpty();
     }

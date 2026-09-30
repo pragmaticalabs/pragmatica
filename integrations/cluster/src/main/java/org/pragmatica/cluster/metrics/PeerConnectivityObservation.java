@@ -13,12 +13,14 @@ import org.pragmatica.serialization.Codec;
 ///
 /// @param peerId                node the observation is about
 /// @param state                 observed connectivity state
+/// @param observedEpochIncarnation observer's epoch cluster incarnation (#1529) at the time of the observation
 /// @param observedEpochTerm     observer's epoch term at the time of the observation
 /// @param observedEpochCounter  observer's epoch counter at the time of the observation
 /// @param producedAtMs          observer's wall-clock millis when the observation was produced
 @Codec
 public record PeerConnectivityObservation(NodeId peerId,
                                           ConnectivityState state,
+                                          long observedEpochIncarnation,
                                           long observedEpochTerm,
                                           long observedEpochCounter,
                                           long producedAtMs) {}

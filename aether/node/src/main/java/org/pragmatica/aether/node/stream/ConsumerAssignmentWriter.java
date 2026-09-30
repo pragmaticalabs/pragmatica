@@ -41,8 +41,9 @@ import org.pragmatica.lang.Option;
 ///   - **no assignee computable** (the slice is ACTIVE nowhere) → nothing: the old record stands, and its
 ///     assignee cannot deliver anyway.
 ///
-/// The epoch is `Epoch(rabiaTerm, assignmentTerm)`, exactly as the stream-ownership writer builds it: it
-/// advances on a leader change and on every same-term reassignment, and the applier's `EpochBearing`
+/// The epoch is `Epoch(incarnation, rabiaTerm, assignmentTerm)`, exactly as the stream-ownership writer
+/// builds it from the committed generation epoch: it advances on a restore (#1529), on a leader change and
+/// on every same-term reassignment, and the applier's `EpochBearing`
 /// fence rejects a deposed leader's stale write to the record.
 ///
 /// `assignmentTerm + 1` is derived from the leader's OWN mirror, and the epoch fence accepts an EQUAL
@@ -67,22 +68,22 @@ public interface ConsumerAssignmentWriter {
     }
 
     static ConsumerAssignmentWriter consumerAssignmentWriter(BooleanSupplier isLeader,
-                                                             Supplier<Long> rabiaTerm,
+                                                             Supplier<Epoch> generationEpoch,
                                                              HlcClock clock,
                                                              CommittedAssignments committed) {
         return (stream, group, assignments) -> isLeader.getAsBoolean()
-                                               ? changes(rabiaTerm, clock, committed, stream, group, assignments)
+                                               ? changes(generationEpoch, clock, committed, stream, group, assignments)
                                                : List.of();
     }
 
-    private static List<KVCommand<AetherKey>> changes(Supplier<Long> rabiaTerm,
+    private static List<KVCommand<AetherKey>> changes(Supplier<Epoch> generationEpoch,
                                                       HlcClock clock,
                                                       CommittedAssignments committed,
                                                       String stream,
                                                       String group,
                                                       List<PartitionAssignment> assignments) {
         return assignments.stream()
-                          .flatMap(assignment -> decide(rabiaTerm.get(),
+                          .flatMap(assignment -> decide(generationEpoch.get(),
                                                         clock,
                                                         committed,
                                                         stream,
@@ -91,14 +92,14 @@ public interface ConsumerAssignmentWriter {
                           .toList();
     }
 
-    private static Option<KVCommand<AetherKey>> decide(long term,
+    private static Option<KVCommand<AetherKey>> decide(Epoch generation,
                                                        HlcClock clock,
                                                        CommittedAssignments committed,
                                                        String stream,
                                                        String group,
                                                        PartitionAssignment assignment) {
         return assignment.consumerNode()
-                         .flatMap(assignee -> decideFor(term,
+                         .flatMap(assignee -> decideFor(generation,
                                                         clock,
                                                         committed.assignmentOf(stream,
                                                                                assignment.partition(),
@@ -109,16 +110,16 @@ public interface ConsumerAssignmentWriter {
                                                         assignee));
     }
 
-    private static Option<KVCommand<AetherKey>> decideFor(long term,
+    private static Option<KVCommand<AetherKey>> decideFor(Epoch generation,
                                                           HlcClock clock,
                                                           Option<ConsumerAssignmentValue> current,
                                                           ConsumerAssignmentKey key,
                                                           NodeId assignee) {
-        return current.fold(() -> Option.some(put(key, assignee, term, 1L, clock)),
-                            record -> rewriteIfMoved(term, clock, record, key, assignee));
+        return current.fold(() -> Option.some(put(key, assignee, generation, 1L, clock)),
+                            record -> rewriteIfMoved(generation, clock, record, key, assignee));
     }
 
-    private static Option<KVCommand<AetherKey>> rewriteIfMoved(long term,
+    private static Option<KVCommand<AetherKey>> rewriteIfMoved(Epoch generation,
                                                                HlcClock clock,
                                                                ConsumerAssignmentValue record,
                                                                ConsumerAssignmentKey key,
@@ -126,18 +127,17 @@ public interface ConsumerAssignmentWriter {
         return record.assignee()
                      .equals(assignee)
                ? Option.none()
-               : Option.some(put(key, assignee, term, record.assignmentTerm() + 1L, clock));
+               : Option.some(put(key, assignee, generation, record.assignmentTerm() + 1L, clock));
     }
 
     private static KVCommand<AetherKey> put(ConsumerAssignmentKey key,
                                             NodeId assignee,
-                                            long term,
+                                            Epoch generation,
                                             long assignmentTerm,
                                             HlcClock clock) {
         return new KVCommand.Put<AetherKey, AetherValue>(key,
                                                          ConsumerAssignmentValue.consumerAssignmentValue(assignee,
-                                                                                                         Epoch.epoch(term,
-                                                                                                                     assignmentTerm),
+                                                                                                         generation.withCounter(assignmentTerm),
                                                                                                          assignmentTerm,
                                                                                                          clock.now()));
     }

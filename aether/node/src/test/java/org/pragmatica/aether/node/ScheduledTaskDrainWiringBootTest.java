@@ -203,7 +203,7 @@ class ScheduledTaskDrainWiringBootTest {
 
     /// The leader's heartbeat naming this node in `drainNodes` — the operator-drain wire form.
     private ClusterSyncPing drainPing() {
-        return new ClusterSyncPing(node.self(), Map.of(), 1L, 0L, 0L, Set.of(), Set.of(node.self()), Map.of(), Set.of(), true, true);
+        return new ClusterSyncPing(node.self(), Map.of(), 1L, 0L, 0L, 0L, Set.of(), Set.of(node.self()), Map.of(), Set.of(), true, true);
     }
 
     private void apply(KVCommand<AetherKey> command) {

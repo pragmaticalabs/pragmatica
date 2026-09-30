@@ -23,12 +23,12 @@ import org.pragmatica.lang.Contract;
 enum NoOpOwnerEpochGate implements OwnerEpochGate {
     INSTANCE;
     @Override
-    public boolean isStale(byte[] key, long epochTerm, long epochCounter) {
+    public boolean isStale(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
         return false;
     }
     @Contract
     @Override
-    public void advance(byte[] key, long epochTerm, long epochCounter) {
+    public void advance(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
     // No ownership plane to fence against — nothing to record.
     }
     @Override

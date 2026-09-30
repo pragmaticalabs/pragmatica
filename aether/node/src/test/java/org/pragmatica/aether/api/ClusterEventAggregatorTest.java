@@ -840,7 +840,7 @@ class ClusterEventAggregatorTest {
     }
 
     private static ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> ownershipPut(String stream, int partition) {
-        var epoch = Epoch.epoch(7, 3);
+        var epoch = Epoch.epoch(0L, 7, 3);
 
         return new ValuePut<>(new KVCommand.Put<>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
                                                   StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,

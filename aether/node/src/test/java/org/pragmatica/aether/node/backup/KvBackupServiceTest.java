@@ -141,7 +141,7 @@ class KvBackupServiceTest {
             var remote = bareRemote(temp.resolve("remote.git"));
             var service = leaderService(Option.some(remote));
 
-            put(service, ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 2));
+            put(service, ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 2, "id-" + LINEAGE + "-2"));
             scheduler.advance(0);
 
             assertThat(commitCount(remote)).as("flushed without waiting out the quiet period").isEqualTo(2);
@@ -570,6 +570,26 @@ class KvBackupServiceTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(10);
         }
 
+        /// #1625 meets #1532: the declared incarnation is a new incarnation, so it carries a fresh
+        /// incarnation id — reusing the superseded one would make incarnations 9 and 10 compare equal.
+        @Test
+        void declareGenesis_commitsAFreshIncarnationId_notTheSupersededOne() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            var service = leaderService(Option.some(remote), 9);
+            var superseded = ClusterIncarnation.currentId(kvStore)
+                                               .unwrap();
+
+            settle(BackupGenesis.backupGenesis(service)
+                         .declare(commands -> applyAndNotify(service, commands)))
+                         .unwrap();
+
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(10);
+            assertThat(ClusterIncarnation.currentId(kvStore)
+                                         .unwrap()).isNotEqualTo(superseded);
+        }
+
         /// N3: the supersede is witnessed on the incarnation it read. A concurrent write landing first (a
         /// restore, another declaration) makes it refuse, and the concurrent value survives.
         @Test
@@ -578,7 +598,7 @@ class KvBackupServiceTest {
 
             seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
             var service = leaderService(Option.some(remote), 1);
-            var concurrent = ClusterIncarnationValue.clusterIncarnationValue("restored-lineage", 3);
+            var concurrent = ClusterIncarnationValue.clusterIncarnationValue("restored-lineage", 3, "id-restored-lineage-3");
 
             var refused = settle(BackupGenesis.backupGenesis(service)
                                        .declare(commands -> concurrentWriteThenApply(service, concurrent, commands)));
@@ -707,7 +727,7 @@ class KvBackupServiceTest {
 
     private void incarnation(long incarnation) {
         applyOnly(ClusterIncarnationKey.clusterIncarnationKey(),
-                  ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, incarnation));
+                  ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, incarnation, "id-" + LINEAGE + "-" + incarnation));
     }
 
     private void put(KvBackupService service, AetherKey key, AetherValue value) {
@@ -860,7 +880,8 @@ class KvBackupServiceTest {
                                            ConfigValue.configValue("seed", "x"),
                                            ClusterIncarnationKey.clusterIncarnationKey(),
                                            ClusterIncarnationValue.clusterIncarnationValue(header.lineageId(),
-                                                                                           header.incarnation())))
+                                                                                           header.incarnation(),
+                                                                                           "id-" + header.lineageId() + "-" + header.incarnation())))
                             .unwrap();
 
         if (onTopOfExisting) {

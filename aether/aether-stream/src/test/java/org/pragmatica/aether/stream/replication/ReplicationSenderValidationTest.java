@@ -34,7 +34,7 @@ class ReplicationSenderValidationTest {
     private static final NodeId OTHER_REPLICA = new NodeId("other-replica");
     private static final String STREAM = "events";
     private static final int PARTITION = 0;
-    private static final Epoch COMMITTED_EPOCH = Epoch.epoch(2L, 3L);
+    private static final Epoch COMMITTED_EPOCH = Epoch.epoch(0L, 2L, 3L);
 
     private final List<ReplicationMessage.ReplicateAck> acks = new ArrayList<>();
     private final AtomicInteger appends = new AtomicInteger();
@@ -83,7 +83,7 @@ class ReplicationSenderValidationTest {
 
     @Test
     void onReplicateEvents_refused_whenBatchEpochIsOlderThanTheCommittedRecord() {
-        handler(0L, committedTo(OWNER)).onReplicateEvents(batch(OWNER, 0L, Epoch.epoch(2L, 2L)));
+        handler(0L, committedTo(OWNER)).onReplicateEvents(batch(OWNER, 0L, Epoch.epoch(0L, 2L, 2L)));
 
         assertThat(appends.get()).isZero();
         assertThat(acks).isEmpty();

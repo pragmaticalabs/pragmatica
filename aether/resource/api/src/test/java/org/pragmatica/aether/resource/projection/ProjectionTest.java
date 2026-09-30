@@ -268,7 +268,7 @@ class ProjectionTest {
         public Promise<ProjectionStore.RewindToken> mintRewindToken(long generation) {
             calls.add("mint@gen" + store.generation.get() + "/resets" + store.resets.get());
 
-            return Promise.success(new ProjectionStore.RewindToken(generation, mints.incrementAndGet()));
+            return Promise.success(new ProjectionStore.RewindToken(0L,generation, mints.incrementAndGet()));
         }
 
         @Override
@@ -281,7 +281,7 @@ class ProjectionTest {
 
         /// The token this rewind handed the consumer — what a cursor report must carry.
         ProjectionStore.RewindToken token() {
-            return token.or(new ProjectionStore.RewindToken(-1L, -1L));
+            return token.or(new ProjectionStore.RewindToken(0L,-1L, -1L));
         }
     }
 

@@ -86,7 +86,7 @@ class LowCandidateVerifierProbeTest {
 
     private boolean promote() {
         var rings = Map.of(A, a, C, c, D, d);
-        var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(D, Epoch.epoch(3, 0), 3, HlcTimestamp.ZERO));
+        var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(D, Epoch.epoch(0L, 3, 0), 3, HlcTimestamp.ZERO));
         var gate = OwnerActivation.ownerActivation(D,
                                                    (_, _) -> record,
                                                    (_, _) -> true,

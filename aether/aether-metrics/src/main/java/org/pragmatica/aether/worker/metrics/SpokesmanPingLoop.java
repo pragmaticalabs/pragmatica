@@ -336,6 +336,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         var ping = new ClusterSyncPing(self,
                                        observations,
                                        rabiaTerm,
+                                       epoch.incarnation(),
                                        epoch.rabiaTerm(),
                                        epoch.localCounter(),
                                        Set.of(),
@@ -359,6 +360,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         var members = lifecycleCount(pong);
         var report = new CommunityReport(communityId,
                                          0L,
+                                         pong.observedEpochIncarnation(),
                                          pong.observedEpochTerm(),
                                          pong.observedEpochCounter(),
                                          pong.sender(),

@@ -492,7 +492,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                                                     routes.get(index)))
                                     .toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
-        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
+        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochIncarnation(),
+                                       snapshotSource.observedEpochRabiaTerm(),
+                                       0L);
         var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
 

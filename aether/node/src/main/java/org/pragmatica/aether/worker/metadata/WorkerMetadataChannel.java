@@ -3,6 +3,7 @@
 package org.pragmatica.aether.worker.metadata;
 
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.List;
 import java.util.Set;
 import java.util.function.BiConsumer;
@@ -50,7 +51,8 @@ public record WorkerMetadataChannel(boolean worker,
                                                               Runnable projectionReady,
                                                               Consumer<String> report,
                                                               BiConsumer<NodeId, String> reportRejection,
-                                                              WorkerMetadataLimits limits) {
+                                                              WorkerMetadataLimits limits,
+                                                              LongSupplier clusterIncarnation) {
         return new WorkerMetadataChannel(worker,
                                          coreReady,
                                          new WorkerMetadataServer(self,
@@ -61,7 +63,8 @@ public record WorkerMetadataChannel(boolean worker,
                                                                   cores,
                                                                   directory,
                                                                   limits,
-                                                                  reportRejection),
+                                                                  reportRejection,
+                                                                  clusterIncarnation),
                                          new WorkerMetadataClient(self,
                                                                   store,
                                                                   codec,
