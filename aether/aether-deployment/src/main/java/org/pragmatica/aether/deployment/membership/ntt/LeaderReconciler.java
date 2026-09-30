@@ -1208,8 +1208,8 @@ public final class LeaderReconciler {
 
         inFlightProvisioning.entrySet()
                             .stream()
-                            .filter(entry -> !entry.getValue()
-                                                   .isUnjoinedPastGrace(now, joinGraceWindow))
+                            .filter(entry -> entry.getValue()
+                                                  .countsTowardCapacity(now, joinGraceWindow))
                             .map(Map.Entry::getKey)
                             .forEach(union::add);
 
@@ -2159,8 +2159,8 @@ public final class LeaderReconciler {
             return state == InFlightState.DISPATCHING;
         }
 
-        boolean isUnjoinedPastGrace(long nowNanos, TimeSpan grace) {
-            return state == InFlightState.CONFIRMED && nowNanos - sinceNanos > grace.nanos();
+        boolean countsTowardCapacity(long nowNanos, TimeSpan grace) {
+            return state != InFlightState.CONFIRMED || nowNanos - sinceNanos <= grace.nanos();
         }
 
         boolean isPastCeiling(long nowNanos) {
