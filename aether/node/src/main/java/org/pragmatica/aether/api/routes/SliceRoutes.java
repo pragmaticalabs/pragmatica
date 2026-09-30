@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -160,10 +161,21 @@ public final class SliceRoutes implements RouteSource {
                        .map(artifact -> new ValidatedScale(params, artifact));
     }
 
+    /// The floor comes first: a count below it is a malformed request whatever the slice's state, so it is
+    /// refused before any cluster lookup.
     private Promise<ValidatedScale> guardScaleConstraints(ValidatedScale vs) {
-        return guardBlueprintMembership(vs.artifact()).flatMap(_ -> guardMinInstances(vs.artifact(),
-                                                                                      vs.params().instances()))
-                                       .map(_ -> vs);
+        return guardInstanceFloor(vs.params().instances()).async()
+                                 .flatMap(_ -> guardBlueprintMembership(vs.artifact()))
+                                 .flatMap(_ -> guardMinInstances(vs.artifact(),
+                                                                 vs.params().instances()))
+                                 .map(_ -> vs);
+    }
+
+    /// #1495 (owner ruling): no slice is scaled below [SliceSpec#MIN_INSTANCES] at runtime either.
+    private static Result<Unit> guardInstanceFloor(int requestedInstances) {
+        return requestedInstances < SliceSpec.MIN_INSTANCES
+               ? ScaleRouteError.InstancesBelowFloor.FACTORY.apply(requestedInstances).result()
+               : Result.unitResult();
     }
 
     private Promise<ScaleResponse> executeScale(ValidatedScale vs) {
@@ -174,13 +186,7 @@ public final class SliceRoutes implements RouteSource {
                                                                                       vs.params().instances()));
     }
 
-    private static final Cause BELOW_MIN_INSTANCES = Causes.cause("Requested instances is below blueprint minimum");
-
     private Promise<Unit> guardMinInstances(Artifact artifact, int requestedInstances) {
-        if (requestedInstances < 1) {
-            return BELOW_MIN_INSTANCES.promise();
-        }
-
         var node = nodeSupplier.get();
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
 
@@ -190,8 +196,7 @@ public final class SliceRoutes implements RouteSource {
                    .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
                    .map(min -> requestedInstances >= min
                                ? Promise.unitPromise()
-                               : Causes.cause("Requested " + requestedInstances
-                                             + " instances but blueprint minimum is " + min).<Unit> promise())
+                               : ScaleRouteError.InstancesBelowMinAvailable.FACTORY.apply(requestedInstances, min).<Unit> promise())
                    .or(Promise.unitPromise());
     }
 

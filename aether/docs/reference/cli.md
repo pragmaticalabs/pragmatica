@@ -502,7 +502,7 @@ aether scale org.example:order:1.0.0 -n 5 -p WORKER_PREFERRED
 
 | Option | Description |
 |--------|-------------|
-| `-n, --instances` | Target number of instances (required) |
+| `-n, --instances` | Target number of instances (required). At least 3 and at least the slice's `minAvailable`; fewer is refused with `400` (#1495) |
 | `-p, --placement` | Placement strategy: `CORE_ONLY`, `WORKER_PREFERRED`, `WORKER_ONLY` (optional) |
 
 > **Note:** Individual deploy/undeploy commands have been removed. Use `blueprint apply` and `blueprint delete` instead.
@@ -619,7 +619,7 @@ instances = 3
 
 [slices.inventory]
 artifact = "org.example:inventory:1.0.0"
-instances = 2
+instances = 3
 ```
 
 Example workflow:
@@ -699,7 +699,7 @@ aether deploy <group:artifact:version> --blue-green
 aether deploy <group:artifact:version> --rolling
 
 # Common options (all strategies):
-#   -n, --instances <n>      Number of new version instances (default: 1)
+#   -n, --instances <n>      Number of new version instances (default: 3; fewer is refused, #1495)
 #   --error-rate <rate>      Max error rate threshold 0.0-1.0 (default: 0.01)
 #   --latency <ms>           Max latency threshold in ms (default: 500)
 #   --manual-approval        Require manual approval for routing changes

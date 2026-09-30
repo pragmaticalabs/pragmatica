@@ -80,30 +80,30 @@ class ControlLoopScaleDownFloorTest {
         /// production feeder, then a scale-down that has to actually reduce the count.
         @Test
         void scaleUpThenScaleDown_actuallyReducesTheInstanceCount() {
-            deploy(2, 1);
+            deploy(3, 2);
 
             var scaledUp = evaluate(new BlueprintChange.ScaleUp(SLICE, 2));
 
             assertThat(scaledUp.targetInstances()).as("the scale-up must have happened, or the scale-down below is vacuous")
-                                                  .isEqualTo(4);
+                                                  .isEqualTo(5);
 
             observe(scaledUp);
 
             var scaledDown = evaluate(new BlueprintChange.ScaleDown(SLICE, 2));
 
             assertThat(scaledDown.targetInstances()).as("#936: the floor must not have ratcheted up to the scaled count")
-                                                    .isEqualTo(2);
+                                                    .isEqualTo(3);
         }
 
         /// The producer half of the same defect, asserted directly on the emitted record: the
         /// operator's floor is what the autoscaler writes back, never the count it just chose.
         @Test
         void scaleUp_leavesTheOperatorFloorUntouched() {
-            deploy(2, 1);
+            deploy(3, 2);
 
             assertThat(evaluate(new BlueprintChange.ScaleUp(SLICE, 2)).minInstances())
                     .as("#936: minInstances is the operator's policy, not the autoscaler's new count")
-                    .isEqualTo(1);
+                    .isEqualTo(2);
         }
 
         /// Opposite polarity, and the reason the fix is not "stop consulting `minInstances`". A
@@ -127,7 +127,7 @@ class ControlLoopScaleDownFloorTest {
     class FlooredScaleDownIsVisible {
         @Test
         void flooredScaleDown_recordsTheFloorGuardAndThePreFloorRequest() {
-            deploy(2, 2);
+            deploy(4, 4);
 
             evaluateExpectingNoCommand(new BlueprintChange.ScaleDown(SLICE, 1));
 
@@ -137,15 +137,15 @@ class ControlLoopScaleDownFloorTest {
                                         .isEqualTo(ScalingDecisionRecord.Guard.MIN_INSTANCES);
             assertThat(decision.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.HELD);
             assertThat(decision.requestedInstances()).as("the count that was wanted, not the floored one")
-                                                     .isEqualTo(1);
-            assertThat(decision.cappedInstances()).isEqualTo(2);
+                                                     .isEqualTo(3);
+            assertThat(decision.cappedInstances()).isEqualTo(4);
         }
 
         /// Opposite polarity: a scale-down the floor does not touch must not claim the floor fired,
         /// or the guard above would be a constant rather than a diagnostic.
         @Test
         void unflooredScaleDown_recordsNoGuard() {
-            deploy(3, 1);
+            deploy(5, 2);
 
             evaluate(new BlueprintChange.ScaleDown(SLICE, 1));
 
@@ -153,6 +153,37 @@ class ControlLoopScaleDownFloorTest {
 
             assertThat(decision.guard()).isEqualTo(ScalingDecisionRecord.Guard.NONE);
             assertThat(decision.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.SCALED_DOWN);
+        }
+    }
+
+    /// #1495 (owner ruling): the instance floor holds at runtime. The autoscaler CLAMPS a scale-down at three
+    /// even where the slice's own `minAvailable` (2 by default) would allow fewer.
+    @Nested
+    class InstanceFloorAtRuntime {
+        @Test
+        void scaleDownBelowTheInstanceFloor_isClampedToThree() {
+            deploy(5, 2);
+
+            var scaledDown = evaluate(new BlueprintChange.ScaleDown(SLICE, 4));
+
+            assertThat(scaledDown.targetInstances()).as("#1495: never below three, whatever minAvailable allows")
+                                                    .isEqualTo(3);
+            assertThat(scaledDown.minInstances()).as("the clamp is the autoscaler's floor; the operator's minAvailable is left as written")
+                                                 .isEqualTo(2);
+        }
+
+        @Test
+        void scaleDownAtTheInstanceFloor_isHeldAndNamesTheFloor() {
+            deploy(3, 2);
+
+            evaluateExpectingNoCommand(new BlueprintChange.ScaleDown(SLICE, 1));
+
+            var decision = ctx.scalingDecisions().get(SLICE);
+
+            assertThat(decision.guard()).isEqualTo(ScalingDecisionRecord.Guard.MIN_INSTANCES);
+            assertThat(decision.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.HELD);
+            assertThat(decision.requestedInstances()).isEqualTo(2);
+            assertThat(decision.cappedInstances()).isEqualTo(3);
         }
     }
 

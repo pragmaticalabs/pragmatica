@@ -265,6 +265,7 @@ class BlueprintServiceInstance implements BlueprintService {
     @Override
     public Promise<PublishedBlueprint> publish(String dsl) {
         return BlueprintParser.parse(dsl)
+                              .mapError(BlueprintRejected.FACTORY)
                               .async()
                               .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
                               .flatMap(this::validatePubSub)
@@ -287,7 +288,9 @@ class BlueprintServiceInstance implements BlueprintService {
                      .async()
                      .flatMap(artifact -> resolveArtifactBytes(artifact,
                                                                parsed.classifier()))
-                     .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
+                     .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
+                                                                 .mapError(BlueprintRejected.FACTORY)
+                                                                 .async())
                      .flatMap(artifact -> expandAndStoreArtifact(artifact,
                                                                  parsed.baseCoords(),
                                                                  registerOnly))

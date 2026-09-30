@@ -35,7 +35,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
 | MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
 | DeclarativeStreamConsumerTest | 18000     | 18100          | 0          | 5 nodes (shared cluster, app-http 18200; #488 declarative consumer delivery + #526 app-typed round trip) |
-| DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
+| DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 7 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice; 3 instances since #1495) |
 | DurableTopicDeliveryForgeTest | 19000     | 19100          | 0          | 5 nodes (shared cluster, app-http 19200; #386 composed durable pub/sub path, Heavy) |
 | DurableEntityForgeTest        | 24300     | 24320          | 0          | 5 nodes (shared cluster, app-http 24340, SWIM UDP 24400-24404; durable entities, Heavy). Moved off 19000, which it shared unregistered with the row above (#1627) |
 | ClusterEventOwnerFailoverTest | 24210     | 24230          | 0          | 5 nodes (single method, app-http 24250, SWIM UDP 24310-24314; #1640 events survive the cluster-events owner and leader dying) |
@@ -48,7 +48,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | EmberInstanceTagRoundTripTest | 22350     | 22450          | 0          | 3 nodes (app-http 22550) — registered late |
 | MultiSourceCommunitySmokeTest | 22650     | 22750          | 0          | 5 core nodes initially (app-http 22850) — registered late |
 | EmberSameIdentityRelaunchTest (aether/ember) | 23000-23300 scan | base+40 | 5 | 3 nodes + relaunch, app-http base+80; scans 100-port blocks from 23000 to 23300 for a free one (#1528/#1558 — below the 32768 ephemeral floor). Moved off 22000-23800, which overlapped the four rows above and the next one |
-| BlueprintSecurityOverrideClusterWideTest | 23500 | 23600    | 0          | 3 nodes (app-http 23700) — registered late |
+| BlueprintSecurityOverrideClusterWideTest | 23500 | 23600    | 0          | 5 nodes (app-http 23700; 5 since #1495's floor, so three instances leave two non-hosting nodes for #1659) — registered late |
 | LeaderTermFailoverTest        | 24000     | 24100          | 0          | 5 nodes (single method, app-http 24200; #1527/#1559 leader term strictly increases across two leader kills, and the re-election pre-latch fires). Moved off 37400, which is inside the Linux ephemeral range 32768-60999 |
 | CommunityObservabilityForgeTest | 12800 | 12950 | 0 | 6 nodes (3 cores + 3 workers, single method, app-http 13300, SWIM UDP 12900-12905; #1652 community route and lifecycle events) |
 | StreamConfirmationFactorOwnerKillTest | 14500 | 14600 | 0 | 5 nodes (app-http 14700; #1564 RF 3 / CF 2: an acked record survives the owner's loss) |

@@ -131,7 +131,7 @@ Aether borrows the reconciliation model from Kubernetes but strips away the comp
 
 ```
 slice org.example:order-service:1.0.0 instances=3
-slice org.example:inventory-service:1.0.0 instances=2
+slice org.example:inventory-service:1.0.0 instances=3
 ```
 
 The runtime continuously reconciles actual state with desired state. If a node fails, instances are automatically redistributed. If you scale up, new instances appear on available nodes. The system converges toward what you declared, handling the messy details internally.

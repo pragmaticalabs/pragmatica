@@ -199,15 +199,16 @@ class SliceTargetValueTest {
     /// #1497 — the one availability floor: `ceil(n/2)`, the same number a blueprint slice gets when it
     /// omits `minAvailable`. The blueprint parser keeps its own `Math.ceilDiv` (it cannot import this
     /// package without a cycle), so the parity is pinned here rather than shared.
+    /// Parity is checked from the #1495 floor up: a blueprint below 3 instances is refused, so it has no default to
+    /// compare with.
     @Test
     void defaultMinInstances_isCeilHalf_andMatchesTheBlueprintDefault() {
         java.util.stream.IntStream.rangeClosed(1, 9)
-                                  .forEach(n -> {
-                                      assertThat(SliceTargetValue.defaultMinInstances(n)).as("n=" + n)
-                                                                                        .isEqualTo((n + 1) / 2);
-                                      assertThat(SliceTargetValue.defaultMinInstances(n)).as("blueprint parity, n=" + n)
-                                                                                        .isEqualTo(blueprintMinAvailable(n));
-                                  });
+                                  .forEach(n -> assertThat(SliceTargetValue.defaultMinInstances(n)).as("n=" + n)
+                                                                                                  .isEqualTo((n + 1) / 2));
+        java.util.stream.IntStream.rangeClosed(org.pragmatica.aether.slice.blueprint.SliceSpec.MIN_INSTANCES, 9)
+                                  .forEach(n -> assertThat(SliceTargetValue.defaultMinInstances(n)).as("blueprint parity, n=" + n)
+                                                                                                  .isEqualTo(blueprintMinAvailable(n)));
     }
 
     /// #1497 — both factories that take no explicit floor use the default, so a writer that reaches for them

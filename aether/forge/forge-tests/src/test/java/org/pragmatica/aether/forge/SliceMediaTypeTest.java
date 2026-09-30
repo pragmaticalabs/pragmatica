@@ -145,7 +145,7 @@ class SliceMediaTypeTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(BLUEPRINT_ID, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         return postBlueprintWithRetry(leaderPort, blueprint);

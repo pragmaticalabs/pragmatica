@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
@@ -27,7 +28,8 @@ public enum DeployRouteError implements Cause, HttpStatusAware {
     MISSING_BLUEPRINT("Missing required field: blueprint", HttpStatus.BAD_REQUEST),
     MISSING_STRATEGY("Missing required field: strategy", HttpStatus.BAD_REQUEST),
     INVALID_STRATEGY("Invalid strategy; must be one of: canary, blue_green, rolling", HttpStatus.BAD_REQUEST),
-    MISSING_CANARY_STAGES("Canary strategy requires at least one stage", HttpStatus.BAD_REQUEST);
+    MISSING_CANARY_STAGES("Canary strategy requires at least one stage", HttpStatus.BAD_REQUEST),
+    INSTANCES_BELOW_MINIMUM("instances must be at least " + SliceSpec.MIN_INSTANCES + " (#1495)", HttpStatus.BAD_REQUEST);
     private final String msg;
     private final HttpStatus status;
     DeployRouteError(String msg, HttpStatus status) {

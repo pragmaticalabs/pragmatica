@@ -822,22 +822,13 @@ Start Forge for local testing with simulated cluster conditions. Forge requires 
 
 ## Rollback Strategy
 
-If something goes wrong, scale the slice down via CLI or Management API:
+If something goes wrong, take the slice out by removing its blueprint. Scaling cannot do it: `aether scale`
+refuses any count below the slice's `minAvailable` (2 by default for the minimum of 3 instances), and never
+accepts 0.
 
 ```bash
-# Scale to zero instances via CLI
-aether scale com.example:order-processor:1.0.0 -n 0
-
-# Or via Management API
-curl -X POST http://localhost:5150/api/scale \
-  -H "Content-Type: application/json" \
-  -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 0}'
-
-# Or use the CLI:
-aether -c localhost:5150 scale com.example:order-processor:1.0.0 -n 0
-
-# Or remove the blueprint entirely
-aether blueprints delete order-system:1.0.0
+# Remove the blueprint; its slices are undeployed
+aether -c localhost:5150 blueprints delete order-system:1.0.0
 
 # Traffic automatically falls back to monolith
 # (if you kept the feature flag or fallback logic)

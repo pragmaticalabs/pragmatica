@@ -336,16 +336,16 @@ id = "org.example:commerce:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 1
+instances = 3
 # transitive dependency
 
 [[slices]]
 artifact = "org.example:payment-service:1.0.0"
-instances = 1
+instances = 3
 
 [[slices]]
 artifact = "org.example:commerce-order-service:1.0.0"
-instances = 1
+instances = 3
 ```
 
 ### Blueprint Properties
@@ -355,7 +355,7 @@ instances = 1
 | `id` | Blueprint identifier (Maven coordinates of source project) |
 | `[[slices]]` | Array of slice entries |
 | `artifact` | Full Maven coordinates (groupId:artifactId:version) |
-| `instances` | Number of instances to deploy (default: 1) |
+| `instances` | Number of instances to deploy (default: 3). At least 3; fewer is refused when the blueprint is parsed (#1495), so one drain or node failure leaves a slice at two or more instances `[mechanism: placement puts at most one instance of a slice on a node]` |
 | `timeout_ms` | Request timeout in milliseconds (optional) |
 | `memory_mb` | Memory allocation per instance (optional) |
 | `load_balancing` | Load balancing strategy: `round_robin`, `least_connections` (optional) |
@@ -399,7 +399,7 @@ affinity_key = "customerId"
 
 | Section | Property | Type | Default | Description |
 |---------|----------|------|---------|-------------|
-| `[blueprint]` | `instances` | int | `1` | Number of slice instances |
+| `[blueprint]` | `instances` | int | `3` | Number of slice instances (at least 3, see above) |
 | `[blueprint]` | `timeout_ms` | int | - | Request timeout |
 | `[blueprint]` | `memory_mb` | int | - | Memory per instance |
 | `[blueprint]` | `load_balancing` | string | - | Load balancing strategy |
@@ -408,7 +408,7 @@ affinity_key = "customerId"
 ### Default Behavior
 
 If no config file exists for a slice, defaults are used:
-- `instances = 1`
+- `instances = 3`
 - No timeout (uses runtime default)
 - No memory limit
 - Default load balancing
