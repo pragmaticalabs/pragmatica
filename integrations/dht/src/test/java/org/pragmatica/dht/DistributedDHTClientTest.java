@@ -514,6 +514,165 @@ class DistributedDHTClientTest {
         }
     }
 
+    /// Opt-in absent grace (`ReadOptions.absentGrace`): after R empty answers the read waits up to the grace for
+    /// the remaining original replica; without the option the read is the plain quorum read (absent at R empties).
+    @Nested
+    class AbsentGraceWindow {
+        private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, timeSpan(10).seconds());
+        private static final ReadOptions GRACE = ReadOptions.absentGrace(timeSpan(400).millis());
+
+        private ConsistentHashRing<NodeId> ring;
+        private CapturingNetwork network;
+        private DistributedDHTClient client;
+
+        private void useRing(int replicas) {
+            ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            for (var i = 1; i <= replicas; i++) {
+                ring.addNode(new NodeId("replica-" + i));
+            }
+            var node = dhtNode(LOCAL_NODE, memoryStorageEngine(), ring, CONFIG);
+            network = new CapturingNetwork();
+            client = distributedDHTClient(node, network, CONFIG);
+        }
+
+        private List<CapturedMessage> requests() {
+            return network.captured.stream()
+                                   .filter(m -> m.message() instanceof DHTMessage.GetRequest)
+                                   .toList();
+        }
+
+        private void reply(CapturedMessage request, Option<byte[]> value) {
+            var req = (DHTMessage.GetRequest) request.message();
+
+            client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), request.target(), value));
+        }
+
+        @Test
+        void get_isFound_whenValueOnThirdOriginalArrivesWithinGrace() {
+            useRing(3);
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            assertThat(read.isResolved()).isFalse();
+            reply(initial.get(2), Option.some(value("v1")));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected the in-grace value to be found: " + c.message()))
+                .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("v1")))
+                                     .onEmpty(() -> fail("Value discarded: read reported absent")));
+        }
+
+        @Test
+        void get_isAbsentAtOnce_whenEveryOriginalAnswersEmpty() {
+            useRing(3);
+            var read = client.get(key("k1"), ReadOptions.absentGrace(timeSpan(5).seconds()));
+
+            requests().forEach(m -> reply(m, Option.none()));
+
+            // the grace is 5s: an answer inside 1s proves no grace wait once every original has answered
+            read.await(timeSpan(1).seconds())
+                .onFailure(c -> fail("Expected absent: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+
+        @Test
+        void get_isAbsentAfterGrace_whenThirdOriginalStaysSilent() {
+            useRing(3);
+            var started = System.nanoTime();
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+
+            // bounded by the grace (400ms), not the 10s operation deadline
+            read.await(timeSpan(3).seconds())
+                .onFailure(c -> fail("Expected absent after the grace: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+            var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+            assertThat(elapsedMillis).isBetween(300L, 2500L);
+        }
+
+        @Test
+        void get_isFound_whenHolderAnswersAfterAnotherOriginalDepartedAndReplacementWasEmpty() {
+            useRing(4);
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            ring.removeNode(initial.get(0).target());
+            var replacement = requests().get(3);
+            reply(initial.get(1), Option.none());
+            // the replacement holds no copy yet: its empty answer is a failed slot, never a vote
+            reply(replacement, Option.none());
+            assertThat(read.isResolved()).isFalse();
+            reply(initial.get(2), Option.some(value("v1")));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected the holder's value: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+        }
+
+        @Test
+        void get_isAbsent_whenValueOnThirdArrivesAfterGrace() throws InterruptedException {
+            useRing(3);
+            var read = client.get(key("k1"), ReadOptions.absentGrace(timeSpan(150).millis()));
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            Thread.sleep(700);
+            reply(initial.get(2), Option.some(value("v1")));
+
+            // documents the bound: a value later than the grace is not waited for
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected absent: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+
+        @Test
+        void get_isAbsentAtTwoEmpties_withoutTheOption() {
+            useRing(3);
+            var read = client.get(key("k1"));
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            // the value is on the third replica and arrives at once; a caller that did not opt in keeps today's
+            // absent, decided at the second empty answer
+            reply(initial.get(2), Option.some(value("v1")));
+
+            read.await(timeSpan(1).seconds())
+                .onFailure(c -> fail("Expected absent at once: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+
+        @Test
+        void get_doesNotResurrectRemovedValue_withoutTheOption() {
+            useRing(3);
+            // remove acked by two replicas; the third keeps the value (the DHT has no tombstones)
+            var removal = client.remove(key("k1"));
+            var removes = network.captured.stream()
+                                          .filter(m -> m.message() instanceof DHTMessage.RemoveRequest)
+                                          .toList();
+            removes.subList(0, 2).forEach(m -> client.onRemoveResponse(
+                new DHTMessage.RemoveResponse(((DHTMessage.RemoveRequest) m.message()).requestId(), m.target(), true)));
+            removal.await(timeSpan(2).seconds())
+                   .onFailure(c -> fail("Expected the remove to reach quorum: " + c.message()));
+            var stale = removes.get(2).target();
+
+            var read = client.get(key("k1"));
+            var reads = requests();
+            reads.stream().filter(m -> !m.target().equals(stale)).forEach(m -> reply(m, Option.none()));
+            reads.stream().filter(m -> m.target().equals(stale)).forEach(m -> reply(m, Option.some(value("stale"))));
+
+            read.await(timeSpan(1).seconds())
+                .onFailure(c -> fail("Expected absent: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+    }
+
     // --- Test infrastructure ---
 
     /// Captured message: target node and the sent message.

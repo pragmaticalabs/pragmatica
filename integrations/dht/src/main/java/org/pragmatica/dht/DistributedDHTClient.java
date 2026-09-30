@@ -30,9 +30,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.IdGenerator;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Distributed DHT client with quorum-based reads and writes.
@@ -115,6 +117,11 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
+        return get(key, ReadOptions.DEFAULT);
+    }
+
+    @Override
+    public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
@@ -130,8 +137,9 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         Promise<Option<byte[]>> promise = Promise.promise();
-        var collector = QuorumCollector.<Option<byte[]>> quorumCollector(quorum, targets.size(), promise);
-        var read = InFlightRead.inFlightRead(key, collector, readDeadlineNanos(), DEFAULT_READ_REISSUE_LIMIT);
+        var deadlineNanos = readDeadlineNanos();
+        var collector = readCollector(quorum, targets.size(), promise, options, deadlineNanos);
+        var read = InFlightRead.inFlightRead(key, collector, deadlineNanos, DEFAULT_READ_REISSUE_LIMIT);
         var unsubscribe = node.ring().onNodeRemoved(departed -> reissueAfterDeparture(read, departed));
         // every original target is addressed before the first dispatch, so a departure landing mid-loop can
         // never pick a not-yet-dispatched target as its replacement (one replica must never fill two slots)
@@ -287,6 +295,36 @@ public final class DistributedDHTClient implements DHTClient {
     private long readDeadlineNanos() {
         return System.nanoTime() + config.operationTimeout()
                                          .nanos();
+    }
+
+    /// The collector for one read: plain quorum-count by default, grace mode only when the caller opted
+    /// in through [ReadOptions#absentGrace].
+    private static QuorumCollector<Option<byte[]>> readCollector(int quorum,
+                                                                 int total,
+                                                                 Promise<Option<byte[]>> promise,
+                                                                 ReadOptions options,
+                                                                 long deadlineNanos) {
+        return options.hasAbsentGrace()
+               ? QuorumCollector.<byte[]> graceCollector(quorum,
+                                                         total,
+                                                         promise,
+                                                         collector -> scheduleAbsentGrace(collector,
+                                                                                          options,
+                                                                                          deadlineNanos))
+               : QuorumCollector.<Option<byte[]>> quorumCollector(quorum, total, promise);
+    }
+
+    /// R empty answers are in: give the remaining original replica(s) at most the grace window, never
+    /// longer than what is left of the read's own deadline, then report absent.
+    private static Unit scheduleAbsentGrace(QuorumCollector<Option<byte[]>> collector,
+                                            ReadOptions options,
+                                            long deadlineNanos) {
+        var delay = Math.max(0,
+                             Math.min(options.absentGrace().nanos(),
+                                      deadlineNanos - System.nanoTime()));
+        var _ = SharedScheduler.schedule(collector::resolveWithBest, timeSpan(delay).nanos());
+
+        return unit();
     }
 
     private void dispatchRead(InFlightRead read, NodeId target) {
