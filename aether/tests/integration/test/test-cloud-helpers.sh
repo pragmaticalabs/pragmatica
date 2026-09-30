@@ -462,7 +462,7 @@ unset -f hcloud api_get ssh
 unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
 
 # --- 02w: a transient entity refusal is retried, not classified (#1501) --------------------
-# The suite's own read_amount / entity_post_any / transient_failure_type are extracted verbatim and
+# The suite's own read_amount / entity_post_status / entity_post_any / transient_failure_type are extracted verbatim and
 # driven by a stub `_api_call` that pops one body per call from a queue file (`__DOWN__` = transport
 # failure). The FoldInProgress body is the one captured in the s27 cluster-B run log (line 1428),
 # byte for byte — including its truncation at 200 bytes by the suite's own `head -c 200`.
@@ -472,13 +472,13 @@ W_WORK="$(mktemp -d)"
 w_defs() {
     grep -E '^(KEY_PREFIX|ENTITY_TRANSIENT_FAILURE_TYPES|TRANSIENT_READ_DEADLINE_S|TRANSIENT_READ_BACKOFF_S)=' "$W02"
     local fn
-    for fn in key_for amount_for entity_post_any transient_failure_type read_amount \
+    for fn in key_for amount_for entity_post_any entity_post_status transient_failure_type read_amount \
               test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
         awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$W02"
     done
 }
 w_defs > "${W_WORK}/defs.sh"
-for fn in entity_post_any transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+for fn in entity_post_any entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
     grep -q "^${fn}() {" "${W_WORK}/defs.sh" || fail "W0 ${fn} not extracted from the 02w suite (examined NOTHING)"
 done
 w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; stderr -> $W_WORK/err
@@ -494,8 +494,14 @@ w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; s
       _api_call() {
           local b; printf "%s\n" "$3" >> "${W_WORK}/calls"
           b=$(head -1 "${W_WORK}/queue"); tail -n +2 "${W_WORK}/queue" > "${W_WORK}/queue.n"; mv "${W_WORK}/queue.n" "${W_WORK}/queue"
-          [ "$b" = "__DOWN__" ] || [ -z "$b" ] && return 1
+          # Honour want_status ($4) like the real _api_call: the 02w reads keep the status (entity_post_status).
+          if [ "$b" = "__DOWN__" ] || [ -z "$b" ]; then
+              [ -n "${4:-}" ] && printf 'curl failed\n__API_HTTP_STATUS:000__'
+              return 1
+          fi
           printf '%s' "$b"
+          [ -n "${4:-}" ] && printf '\n__API_HTTP_STATUS:200__'
+          return 0
       }
       out=$(eval "$snippet"); rc=$?
       printf 'rc=%s out=%s calls=%s' "$rc" "$out" "$(grep -c . "${W_WORK}/calls")" ) 2> "${W_WORK}/err"
@@ -506,7 +512,7 @@ got=$(w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" "$FOLD_BODY" "$FOUND3")
     && ok "W1 captured FoldInProgress body is retried until the key reads back (rc 0, amount 24)" \
     || fail "W1 FoldInProgress retry: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
 got=$(W_DEADLINE=0 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY")
-if [ "$got" = "rc=5 out= calls=1" ] && grep -q 'transient FoldInProgress until the 0s retry deadline' "${W_WORK}/err" \
+if [ "$got" = "rc=5 out= calls=1" ] && grep -q 'transient (HTTP 200, FoldInProgress) until the 0s retry deadline' "${W_WORK}/err" \
    && grep -q 'still replaying its log' "${W_WORK}/err" && ! grep -q 'no node answered' "${W_WORK}/err"; then
     ok "W2 FoldInProgress past the deadline is rc 5, reported with the true last body, never 'no node answered'"
 else fail "W2 transient at deadline: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"; fi
