@@ -313,7 +313,9 @@ public interface RemoteRepository extends Repository {
         record CachedArtifactChecksumMismatch(String artifact, String path) implements RemoteRepositoryError {
             @Override
             public String message() {
-                return "Cached artifact " + artifact + " at " + path + " does not match its Maven checksum and was not written by"
+                return "Cached artifact " + artifact
+                     + " at " + path
+                     + " does not match its Maven checksum and was not written by"
                      + " this node; it was left untouched and not loaded. Rebuild or reinstall it, or remove it so it can be fetched";
             }
         }

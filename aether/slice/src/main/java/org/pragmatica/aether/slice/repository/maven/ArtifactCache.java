@@ -42,8 +42,10 @@ final class ArtifactCache {
     private static final Logger log = LoggerFactory.getLogger(ArtifactCache.class);
     /// This node's sidecar: its checksum AND its mark that the node wrote the jar.
     private static final Sidecar OWN_SIDECAR = new Sidecar(".aether-sha256", "SHA-256");
+
     /// Maven's sidecars: checked, never grounds for deleting anything.
-    private static final List<Sidecar> MAVEN_SIDECARS = List.of(new Sidecar(".sha256", "SHA-256"), new Sidecar(".sha1", "SHA-1"));
+    private static final List<Sidecar> MAVEN_SIDECARS = List.of(new Sidecar(".sha256", "SHA-256"),
+                                                                new Sidecar(".sha1", "SHA-1"));
 
     /// What a cache hit may do with the jar it found.
     enum CacheState {
@@ -125,7 +127,7 @@ final class ArtifactCache {
         }
 
         log.error("Artifact {} in the local Maven repository does not match its {} checksum ({}). This node did not write it, so it is "
-                  + "left untouched and NOT loaded; rebuild or reinstall it, or remove it so the node can fetch it",
+                 + "left untouched and NOT loaded; rebuild or reinstall it, or remove it so the node can fetch it",
                   jar,
                   sidecar.algorithm(),
                   sidecar.of(jar).getFileName());

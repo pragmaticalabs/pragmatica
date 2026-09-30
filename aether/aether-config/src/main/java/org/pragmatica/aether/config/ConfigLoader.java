@@ -20,6 +20,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +33,7 @@ public final class ConfigLoader {
     /// The only key a `[storage.streams]` section carries (#634-3); the `streams` instance is built from the
     /// node's stream settings, not from this section.
     private static final Set<String> STREAMS_SECTION_KEYS = Set.of("wal_path");
+
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
