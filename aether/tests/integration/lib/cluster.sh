@@ -1258,7 +1258,7 @@ slices_total_instances() {
 # ManagementApiResponses.ClusterSliceInfo):
 #   { "slices": [
 #       { "artifact": "<group>:<artifact>:<version>",
-#         "targetInstances": N, "minInstances": M, "currentVersion": "...",
+#         "targetInstances": N, "minInstances": M, "version": "...",
 #         "instances": [
 #           { "nodeId": "hetzner-eu-core-3", "state": "ACTIVE", "failureReason": "" },
 #           ...
@@ -4134,17 +4134,20 @@ _restore_active_counted_gate() {
 }
 
 # One line per artifact entry in a /api/v1/slices body (stdin), layout-independent (the body may be
-# pretty-printed or one line):  <artifact>\t<targetInstances>\t<currentVersion>\t<node>=<STATE> <node>=<STATE> ...
-# currentVersion is non-empty ONLY when a SliceTarget backs the artifact (SliceRoutes.toClusterSliceInfo takes
-# it from the SliceTarget and falls back to ""), and targetInstances falls back to instances.size() without one:
-# so an UNDEPLOYED artifact with a lingering non-ACTIVE row reads as target > 0, and only currentVersion tells
-# a deployed artifact from such a row.
+# pretty-printed or one line):  <artifact>\t<targetInstances>\t<version>\t<node>=<STATE> <node>=<STATE> ...
+# `version` is the JSON key of ManagementApiResponses.ClusterSliceInfo's 4th component (`currentVersion()` is the
+# Java accessor on the SliceTarget value, NOT a key; a parser on it matches nothing and the gate passes
+# vacuously — test-restore-slices-gate.sh derives its fixtures from the record and pins the key). It is
+# non-empty ONLY when a SliceTarget backs the artifact (SliceRoutes.toClusterSliceInfo takes it from the
+# SliceTarget and falls back to ""), and targetInstances falls back to instances.size() without one: so an
+# UNDEPLOYED artifact with a lingering non-ACTIVE row reads as target > 0, and only `version` tells a deployed
+# artifact from such a row.
 _slices_by_artifact() {
     tr '\n' ' ' | sed 's/"artifact"/\
 "artifact"/g' | grep '^"artifact"' | while IFS= read -r chunk; do
         local art tgt ver states
         art=$(printf '%s' "$chunk" | sed -E 's/^"artifact"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
-        ver=$(printf '%s' "$chunk" | grep -oE '"currentVersion"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
+        ver=$(printf '%s' "$chunk" | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
         tgt=$(printf '%s' "$chunk" | grep -oE '"targetInstances"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)
         states=$(printf '%s' "$chunk" \
             | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"[^}]*"state"[[:space:]]*:[[:space:]]*"[A-Z_]+"' \
@@ -4156,7 +4159,7 @@ _slices_by_artifact() {
 
 # Every DEPLOYED slice artifact must have >= 1 ACTIVE instance (any version of it: during a rolling update
 # the old version legitimately drains while the new one is ACTIVE). "Deployed" means a SliceTarget backs it
-# (currentVersion non-empty): an undeployed artifact can linger as a non-ACTIVE row, and with target read back
+# (`version` non-empty): an undeployed artifact can linger as a non-ACTIVE row, and with target read back
 # as instances.size() it would fail every later restore. Artifacts are keyed group:artifact (version
 # stripped); one with targetInstances 0 is not required to run anything. Prints, on stdout, the per-artifact
 # instance states of each starved artifact, and nothing when all are fine.
@@ -4169,7 +4172,7 @@ _slices_missing_active() {
             if ($3 != "") deployed[key] = 1
             n = split($4, inst, " ")
             for (i = 1; i <= n; i++) if (inst[i] ~ /=ACTIVE$/) active[key]++
-            states[key] = states[key] " [" $1 " target=" $2 " currentVersion=" $3 ": " $4 "]"
+            states[key] = states[key] " [" $1 " target=" $2 " version=" $3 ": " $4 "]"
         }
         END { for (k in seen) if (deployed[k] && target[k] > 0 && active[k] == 0) print k ":" states[k] }'
 }
@@ -4200,7 +4203,7 @@ _restore_slices_gate() {
         [ "$SECONDS" -ge "$deadline" ] && break
         sleep "$poll"
     done
-    log_fail "restore_cluster_baseline: deployed slice artifact(s) (SliceTarget-backed: currentVersion set) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
+    log_fail "restore_cluster_baseline: deployed slice artifact(s) (SliceTarget-backed: `version` set) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
     return 1
 }
 

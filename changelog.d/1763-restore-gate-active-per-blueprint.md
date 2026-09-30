@@ -4,7 +4,7 @@
   owner". A bounded wait (60s x TIMEOUT_SCALE) covers a legitimate rolling update; on a miss it fails naming each
   starved artifact with every instance's state, so the cause is visible at the restore. Keyed per
   `group:artifact` (an old version may drain while the new one is ACTIVE); only SliceTarget-backed artifacts
-  (`currentVersion` set) are gated, because `/api/v1/slices` reads an undeployed artifact's lingering non-ACTIVE
+  (`version` set) are gated, because `/api/v1/slices` reads an undeployed artifact's lingering non-ACTIVE
   row back as `targetInstances` > 0; an unreadable `/api/v1/slices` fails.
-  [verified: `aether/tests/integration/test/test-restore-slices-gate.sh` (11 stub tests on the real functions);
+  [verified: `aether/tests/integration/test/test-restore-slices-gate.sh` (15 stub tests; fixtures built from the wire record `ClusterSliceInfo` and the literal body in `ScaleWaitTest`, with a tripwire on the parsed key);
   removing the per-artifact check reddens 3, removing the call 1, removing the bounded wait 1. No cloud run.]
