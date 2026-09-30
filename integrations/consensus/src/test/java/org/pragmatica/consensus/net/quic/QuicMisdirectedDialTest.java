@@ -90,6 +90,9 @@ class QuicMisdirectedDialTest {
         bNet.dialForTests(nodeInfo(a, aNet.boundPort().unwrap()), true);
         awaitTrue(() -> connected(aNet, b) && connected(bNet, a), "A and B CONNECTED on B's link");
 
+        // B's own dial to A counts its handshake AFTER its phase reads CONNECTED, so a snapshot taken
+        // right at "CONNECTED" can predate that increment and be mistaken for the ghost dial's attach.
+        awaitTrue(() -> bNet.quicMetrics().handshakeTotalCount() == 1, "B counted its own dial's handshake");
         var bLinkToA = bNet.activeConnectionForTests(a).unwrap();
         var aLinkToB = aNet.activeConnectionForTests(b).unwrap();
         var bAttachedBefore = bNet.quicMetrics().handshakeTotalCount();
