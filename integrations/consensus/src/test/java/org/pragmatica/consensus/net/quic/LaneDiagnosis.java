@@ -147,7 +147,7 @@ final class LaneDiagnosis {
         String describe() {
             var udpNow = udpQueues(List.of(localPort(dialer), localPort(acceptor)));
 
-            return "sockets{dialer{" + channel(dialer) + " " + dialerDatagrams + " udp=" + udp(localPort(dialer), udpNow)
+            return "sockets(since attach){dialer{" + channel(dialer) + " " + dialerDatagrams + " udp=" + udp(localPort(dialer), udpNow)
                    + "} acceptor{" + channel(acceptor) + " " + acceptorDatagrams + " udp=" + udp(localPort(acceptor), udpNow)
                    + "} snmpUdp(host-wide)=" + snmpDeltas() + "}";
         }

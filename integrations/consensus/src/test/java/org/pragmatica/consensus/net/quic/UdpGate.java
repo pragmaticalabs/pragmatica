@@ -171,7 +171,7 @@ final class UdpGate implements AutoCloseable {
     }
 
     String describe() {
-        return "relay{toTarget=" + toTarget.get() + " toClient=" + toClient.get() + " discarded=" + discarded.get()
+        return "relay(since relay start){toTarget=" + toTarget.get() + " toClient=" + toClient.get() + " discarded=" + discarded.get()
                + " exitsBeforeClose=" + exits + "}";
     }
 
