@@ -5170,6 +5170,16 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/info
 }
 ```
 
+- `totalEvents`: sum of the per-partition `eventCount` values, each reported by the partition's ring holder
+  (the answering node's own ring when it holds one, otherwise the owner). Reflects visible events only.
+- `partitionDetails[]`: `headOffset` is the owner's visible head and `eventCount` the span from `tailOffset` to it,
+  as the partition OWNER reports them — never a replica ring on the answering node, which may not have
+  backfilled yet. An empty partition reads `-1 / -1 / 0`.
+- `totalBytes`: the answering node's allocation — NOT a stream total. Bytes are not forwarded from owners,
+  so on a node that holds no ring for the stream this is small or zero while `totalEvents` is complete.
+- `503`: a partition owner could not answer (unreachable, still materializing). Retry; the response never
+  substitutes an empty partition, so a zero `totalEvents` is a measured zero.
+
 ### Partition Details
 
 ```

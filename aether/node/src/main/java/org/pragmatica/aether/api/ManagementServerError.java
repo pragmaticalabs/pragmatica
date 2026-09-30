@@ -82,6 +82,23 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1478: `/info` asks each partition's owner for its head; an owner that cannot answer (unreachable,
+    /// still materializing, no forward path) fails the request with 503 — retryable — never a 500 and
+    /// never an empty partition read as zero events.
+    record StreamInfoUnavailable(String streamName, int partition, Cause cause) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream '" + streamName
+                 + "' partition " + partition
+                 + " owner did not answer, retry: " + cause.message();
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
     /// #524: an explicit `partition` on a Management-API publish named a partition the stream does not
     /// declare. Names the valid range rather than silently writing to partition 0 or 500ing.
     record InvalidPartition(int requested, int partitionCount) implements ManagementServerError {

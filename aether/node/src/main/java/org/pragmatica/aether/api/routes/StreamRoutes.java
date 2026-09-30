@@ -30,10 +30,12 @@ import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.HydrationSnapshot;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
+import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamHydration;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaView;
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
@@ -85,11 +87,32 @@ public final class StreamRoutes implements RouteSource {
                               int partitions,
                               long totalEvents,
                               long totalBytes,
-                              List<PartitionDetail> partitionDetails) {}
+                              List<PartitionDetail> partitionDetails) {
+        /// #1478: `totalEvents` is the sum of the per-partition counts, so the total and the breakdown
+        /// cannot disagree about which node answered for a partition.
+        static StreamInfoResponse streamInfoResponse(StreamInfo info, List<PartitionDetail> details) {
+            return new StreamInfoResponse(info.name(),
+                                          info.partitions(),
+                                          details.stream().mapToLong(PartitionDetail::eventCount).sum(),
+                                          info.totalBytes(),
+                                          details);
+        }
+    }
 
     record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
         static PartitionDetail fromPartitionInfo(PartitionInfo info) {
             return new PartitionDetail(info.partition(), info.headOffset(), info.tailOffset(), info.eventCount());
+        }
+
+        /// #1478: the owner-reported view. `VisibleBounds` carries no count, so it is derived from the
+        /// retained span; an empty partition uses the same `(-1, -1, 0)` encoding as a ring-less one.
+        static PartitionDetail fromBounds(int partition, VisibleBounds bounds) {
+            return bounds.isEmpty()
+                   ? new PartitionDetail(partition, -1L, -1L, 0L)
+                   : new PartitionDetail(partition,
+                                         bounds.visibleHead(),
+                                         bounds.earliestRetained(),
+                                         bounds.visibleHead() - bounds.earliestRetained() + 1);
         }
     }
 
