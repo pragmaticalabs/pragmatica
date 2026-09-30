@@ -111,7 +111,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// deficit it was masking re-opens and the next pass re-dispatches, well before the ceiling. The entry itself
 /// is kept (polled, bounded by the ceiling): if the late node then joins, the identity-match clear removes it
 /// and the existing surplus path ([`#computePeersToDrain`], the surplus follow-up) converges the cluster back
-/// to the configured count. The grace runs from the entry's `sinceNanos` — dispatch, or the ULID mint time for
+/// to the configured count. A provision dispatched while a discounted entry exists is a substitute (generation 1)
+/// and is never itself discounted, so one missing slot has at most two in flight per ceiling window (#1786). The
+/// bound is per leader: an inherited entry restarts at generation 0. The grace runs from the entry's `sinceNanos` — dispatch, or the ULID mint time for
 /// an inherited entry — so a leader change neither restarts nor shortens it.
 ///
 /// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
@@ -342,6 +344,9 @@ public final class LeaderReconciler {
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
+    /// Generation of a provision dispatched as a substitute for a discounted entry (#1786). Such an entry is
+    /// never itself discounted, which bounds one missing slot to an original plus one substitute in flight.
+    private static final int SUBSTITUTE_GENERATION = 1;
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
     /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
     /// provider never accumulates stacked queries for the same replacement across poll ticks.
@@ -1634,16 +1639,30 @@ public final class LeaderReconciler {
                      peersToProvision);
         }
 
-        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers));
+        var generation = substituteGeneration(nowNanos);
+
+        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers, generation));
+    }
+
+    /// #1786 — a provision dispatched while a discounted (unjoined past the join grace) entry is still in flight
+    /// is a SUBSTITUTE for it: generation 1. Every other dispatch — the first, or the re-dispatch after the
+    /// ceiling evicted the stale entry — is generation 0.
+    private int substituteGeneration(long nowNanos) {
+        return inFlightProvisioning.values()
+                                   .stream()
+                                   .anyMatch(entry -> entry.isDiscounted(nowNanos, joinGraceWindow))
+               ? SUBSTITUTE_GENERATION
+               : 0;
     }
 
     @Contract
-    private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
+    private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers, int generation) {
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
                                                              ctm.replacementCeiling(NodeRole.CORE),
                                                              InFlightState.DISPATCHING,
-                                                             nowNanos));
+                                                             nowNanos,
+                                                             generation));
         armInFlightSweep();
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
@@ -2135,32 +2154,48 @@ public final class LeaderReconciler {
                                  TimeSpan ceiling,
                                  InFlightState state,
                                  long pollableSinceNanos,
-                                 int absentListings) {
+                                 int absentListings,
+                                 int generation) {
         static InFlightEntry inFlightEntry(long sinceNanos,
                                            TimeSpan ceiling,
                                            InFlightState state,
                                            long pollableSinceNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0);
+            return inFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0);
+        }
+
+        static InFlightEntry inFlightEntry(long sinceNanos,
+                                           TimeSpan ceiling,
+                                           InFlightState state,
+                                           long pollableSinceNanos,
+                                           int generation) {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0, generation);
         }
 
         InFlightEntry withState(InFlightState next) {
-            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings);
+            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation);
         }
 
         InFlightEntry pollableFrom(long nowNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0);
+            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation);
         }
 
         InFlightEntry withAbsentListing() {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1);
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1, generation);
         }
 
         boolean isDispatching() {
             return state == InFlightState.DISPATCHING;
         }
 
+        /// Only a generation-0 entry can be discounted by the join grace: a substitute keeps counting until it
+        /// joins, fails or hits its ceiling, so one missing slot has at most an original and one substitute in
+        /// flight per ceiling window.
+        boolean isDiscounted(long nowNanos, TimeSpan grace) {
+            return generation < SUBSTITUTE_GENERATION && state == InFlightState.CONFIRMED && nowNanos - sinceNanos > grace.nanos();
+        }
+
         boolean countsTowardCapacity(long nowNanos, TimeSpan grace) {
-            return state != InFlightState.CONFIRMED || nowNanos - sinceNanos <= grace.nanos();
+            return !isDiscounted(nowNanos, grace);
         }
 
         boolean isPastCeiling(long nowNanos) {

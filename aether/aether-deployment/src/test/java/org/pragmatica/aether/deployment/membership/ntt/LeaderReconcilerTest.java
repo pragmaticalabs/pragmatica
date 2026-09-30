@@ -1985,6 +1985,28 @@ class LeaderReconcilerTest {
                 .contains(minted);
         }
 
+        /// #1786 — replacements the provider lists but that never join (Addendum 7's shape, repeating): one
+        /// missing slot mints at most an original and ONE substitute per ceiling window, never a chain of them —
+        /// the ceiling forgets an entry without terminating its instance, so each mint is a paid server.
+        /// Worst case in flight for the slot: 2. (Adopted from v1770's P1 probe.)
+        @Test
+        void inFlightEntry_neverJoiningConfirmedReplacements_mintAtMostOneSubstitutePerSlot() {
+            dispatchOneReplacement();
+            var peakInFlight = reconciler.inFlightProvisioningCount();
+
+            for (var i = 0; i < 42; i++) {
+                ctm.provisionReplacementCalls()
+                   .forEach(id -> ctm.reportInstanceState(id, ReplacementInstanceState.PRESENT));
+                advanceOnePollInterval();
+                peakInFlight = Math.max(peakInFlight, reconciler.inFlightProvisioningCount());
+            }
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("mints for ONE missing slot over ~630s (more than the 600s ceiling)")
+                .hasSizeLessThanOrEqualTo(2);
+            assertThat(peakInFlight).as("peak concurrent in-flight entries for one slot").isLessThanOrEqualTo(2);
+        }
+
         /// #1783 — the discounted replacement then joins late, after its substitute was dispatched. The cluster
         /// must converge to the configured count, not sit at target + 1: the late joiner clears its entry, the
         /// substitute is still in flight (counted), and once the substitute joins as well the existing surplus
