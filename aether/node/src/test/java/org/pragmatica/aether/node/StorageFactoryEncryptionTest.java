@@ -89,11 +89,14 @@ class StorageFactoryEncryptionTest {
                                  .unwrap();
     }
 
+    /// Each instance gets its OWN snapshot directory beside its disk directory. This fixture used to hand every
+    /// instance the one `tempDir/snapshots` -- the shared-directory configuration #856 now refuses at boot, so
+    /// it was encoding that defect rather than testing encryption.
     private StorageConfig storageConfigAt(Path diskPath, boolean encrypted) {
         return StorageConfig.storageConfig(MEMORY_MAX_BYTES,
                                             DISK_MAX_BYTES,
                                             diskPath.toString(),
-                                            tempDir.resolve("snapshots").toString(),
+                                            diskPath.resolveSibling(diskPath.getFileName() + "-snapshots").toString(),
                                             1000,
                                             "60s",
                                             5,

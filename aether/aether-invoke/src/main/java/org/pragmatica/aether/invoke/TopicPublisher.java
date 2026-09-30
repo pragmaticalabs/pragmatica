@@ -81,6 +81,7 @@ public record TopicPublisher<T>(String topicName,
                                                                     "slice",
                                                                     publisherSlice));
         // Constant configuration (one permit per WARN_PERIOD): always representable, so the #1316 refusal cannot occur.
+        // A null injected `timeSource` is the only refusal left: it now fails here, at construction, where it used to fail on first use.
         var warnLimiter = RateLimiter.builder().rate(1).period(WARN_PERIOD).timeSource(timeSource).unwrap();
 
         return new TopicPublisher<>(topicName,
