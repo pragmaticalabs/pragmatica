@@ -7,7 +7,8 @@
 - **A refused `system:cluster-events` registration had no REST-visible surface**: its OperatorWarning event goes into
   the very stream whose registration was refused. It is also a CRITICAL alert on the leader's `/api/alerts/active`
   again — local to the leader, never replicated to the cluster log, so the clear that runs once a corrected cluster
-  config commits the stream removes it completely.
+  config commits the stream removes it completely. A node that loses leadership clears its own alert and re-arms the
+  refused registration, so no former leader keeps a stale CRITICAL alert.
   [mechanism: pinned by `SystemStreamRegistrarTest`, `AlertManagerInjectTest` (with a bound cluster-events source),
   `OperatorWarningWiringTest`]
 - **The LOUD warning (an explicitly declared `replication_factor` below 3) shared one code and level with the others.**
