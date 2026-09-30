@@ -92,6 +92,24 @@ class DistributedDHTClientDerivedReplyTest {
     }
 
     @Test
+    void cacheScopedFromBase_resolves_whenReplyRoutedToObserverSibling() {
+        // production shape (AetherNode): replies are routed to the observer-derived client, cache reads come
+        // from a sibling scoped from the un-observed base (v1770 probe)
+        var routed = base.withResolveFallbackObserver(ResolveFallbackObserver.noop());
+        var cache = base.scoped(SCOPED_CONFIG);
+        var read = cache.get(bytes("k"));
+
+        assertThat(gets).hasSize(1);
+        routed.onGetResponse(new DHTMessage.GetResponse(gets.getFirst().requestId(),
+                                                        new NodeId("replica-1"),
+                                                        Option.some(bytes("v"))));
+
+        read.await(timeSpan(2).seconds())
+            .onFailure(cause -> Assertions.fail("cache read failed: " + cause.message()))
+            .onSuccess(value -> assertThat(text(value)).isEqualTo("v"));
+    }
+
+    @Test
     void baseRead_resolves_whenReplyArrivesViaBaseClient() {
         var read = base.get(bytes("k"));
 
