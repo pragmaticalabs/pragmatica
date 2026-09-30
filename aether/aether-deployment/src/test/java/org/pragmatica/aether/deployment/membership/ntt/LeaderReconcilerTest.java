@@ -657,7 +657,9 @@ class LeaderReconcilerTest {
     /// leadership loss must be visible to the operator.
     @Nested
     class ProvisioningSnapshotAcrossTerms {
-        private static final int DEBOUNCE_MILLIS_MARGIN = 1000;
+        private static final long WARN_WINDOW_MILLIS = 60_000L;
+        private static final long OBSERVED_TENURE_MILLIS = 10_000L;
+        private static final long MARGIN_MILLIS = 1000L;
 
         @Test
         void currentProvisioningSnapshot_reportsNotEvaluated_afterReElectionUntilFirstPass() {
@@ -679,7 +681,7 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void deactivate_warns_whenLeadershipLostThreeTimesInsideDebounceWindowWithDeficit() {
+        void deactivate_warns_whenLeadershipLostThreeTimesInsideWarnWindowWithDeficit() {
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A);
 
@@ -689,7 +691,17 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void deactivate_doesNotWarn_whenLossesAreSpreadBeyondDebounceWindow() {
+        void deactivate_warns_whenLossesAreTenSecondsApartAsInTheObservedFlap() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A);
+
+            var warns = capturingReconcilerWarns(this::loseLeadershipThreeTimesTenSecondsApart);
+
+            assertThat(warns).anyMatch(line -> line.contains("leadership lost 3 times"));
+        }
+
+        @Test
+        void deactivate_doesNotWarn_whenLossesAreSpreadBeyondWarnWindow() {
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A);
 
@@ -716,8 +728,14 @@ class LeaderReconcilerTest {
 
         private void loseLeadershipThreeTimesOutsideWindow() {
             loseLeadership(1L);
-            loseLeadership(EXPECTED_DEBOUNCE_WINDOW.millis() + DEBOUNCE_MILLIS_MARGIN);
-            loseLeadership(EXPECTED_DEBOUNCE_WINDOW.millis() + DEBOUNCE_MILLIS_MARGIN);
+            loseLeadership(WARN_WINDOW_MILLIS + MARGIN_MILLIS);
+            loseLeadership(WARN_WINDOW_MILLIS + MARGIN_MILLIS);
+        }
+
+        private void loseLeadershipThreeTimesTenSecondsApart() {
+            loseLeadership(1L);
+            loseLeadership(OBSERVED_TENURE_MILLIS);
+            loseLeadership(OBSERVED_TENURE_MILLIS);
         }
 
         private void loseLeadership(long advanceMillis) {

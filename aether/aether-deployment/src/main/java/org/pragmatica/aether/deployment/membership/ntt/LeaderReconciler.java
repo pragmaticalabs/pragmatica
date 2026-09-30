@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
@@ -166,6 +167,11 @@ public final class LeaderReconciler {
     /// failover, the third is the first count that cannot be a single hand-over plus one retry, and it is
     /// still early enough to warn while a tenure (~4-10s in the observed flap) fits the window several times.
     private static final int LEADERSHIP_LOSS_WARN_THRESHOLD = 3;
+    /// Fixed, deliberately NOT the debounce window: the observed flap loses leadership every 4-10s per
+    /// node, so three losses span up to ~20s and a 15s debounce window would stay silent at a 10s
+    /// cadence. Sixty seconds covers that cadence with margin while still separating churn from an
+    /// isolated failover.
+    private static final long LEADERSHIP_LOSS_WARN_WINDOW_NANOS = timeSpan(60).seconds().nanos();
 
     private final MembershipConfig membershipConfig;
     private final TimeSpan leaderActivationDelay;
@@ -275,7 +281,7 @@ public final class LeaderReconciler {
     /// term's reason beside a live (reset) deficit age.
     private volatile ProvisioningDecisionSnapshot lastProvisioningDecision = null;
     /// Nanosecond stamps of leadership losses that happened while a core deficit existed, pruned to
-    /// the last [`#deficitDebounceWindow`]. Feeds the churn WARN in [`#recordLeadershipLoss`]; guarded
+    /// the last [`#LEADERSHIP_LOSS_WARN_WINDOW_NANOS`]. Feeds the churn WARN in [`#recordLeadershipLoss`]; guarded
     /// by its own monitor. Observability only — never read by the decision logic.
     private final ArrayDeque<Long> deficitLeadershipLossNanos = new ArrayDeque<>();
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
@@ -547,7 +553,7 @@ public final class LeaderReconciler {
     }
 
     /// Operator WARN for M1-class leadership churn: each loss suffered while a core deficit exists is
-    /// stamped, and [`#LEADERSHIP_LOSS_WARN_THRESHOLD`] of them inside one [`#deficitDebounceWindow`]
+    /// stamped, and [`#LEADERSHIP_LOSS_WARN_THRESHOLD`] of them inside [`#LEADERSHIP_LOSS_WARN_WINDOW_NANOS`]
     /// means the debounce clock (reset on every loss) can never mature, so auto-heal cannot fire. A loss
     /// with no deficit clears the history — the churn is then not blocking a heal.
     @Contract
@@ -556,7 +562,7 @@ public final class LeaderReconciler {
         var deficit = effectiveCapacity(membershipFsm.coreCountedMembers()) < configuredCoreCountSupplier.getAsInt();
 
         synchronized (deficitLeadershipLossNanos) {
-            deficitLeadershipLossNanos.removeIf(stamp -> now - stamp > deficitDebounceWindow.nanos());
+            deficitLeadershipLossNanos.removeIf(stamp -> now - stamp > LEADERSHIP_LOSS_WARN_WINDOW_NANOS);
             if (!deficit) {
                 deficitLeadershipLossNanos.clear();
 
@@ -565,9 +571,9 @@ public final class LeaderReconciler {
 
             deficitLeadershipLossNanos.addLast(now);
             if (deficitLeadershipLossNanos.size() >= LEADERSHIP_LOSS_WARN_THRESHOLD) {
-                log.warn("LeaderReconciler: leadership lost {} times within one deficit debounce window ({} ms) while a core deficit exists — the debounce clock resets on every loss, so auto-heal cannot provision until leadership stabilises",
+                log.warn("LeaderReconciler: leadership lost {} times within {} ms while a core deficit exists — the debounce clock resets on every loss, so auto-heal cannot provision until leadership stabilises",
                          deficitLeadershipLossNanos.size(),
-                         deficitDebounceWindow.millis());
+                         TimeUnit.NANOSECONDS.toMillis(LEADERSHIP_LOSS_WARN_WINDOW_NANOS));
             }
         }
     }
