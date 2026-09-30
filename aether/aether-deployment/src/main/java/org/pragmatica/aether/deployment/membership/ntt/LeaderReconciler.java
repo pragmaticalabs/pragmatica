@@ -348,6 +348,7 @@ public final class LeaderReconciler {
     /// Generation of a provision dispatched as a substitute for a discounted entry (#1786). Such an entry is
     /// never itself discounted, which bounds one missing slot to an original plus one substitute in flight.
     private static final int SUBSTITUTE_GENERATION = 1;
+
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
     /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
     /// provider never accumulates stacked queries for the same replacement across poll ticks.
@@ -1642,7 +1643,10 @@ public final class LeaderReconciler {
 
         var generation = substituteGeneration(nowNanos);
 
-        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers, generation));
+        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos,
+                                                                        placeholder,
+                                                                        currentMembers,
+                                                                        generation));
     }
 
     /// #1786 — a provision dispatched while a discounted (unjoined past the join grace) entry is still in flight
@@ -1657,7 +1661,10 @@ public final class LeaderReconciler {
     }
 
     @Contract
-    private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers, int generation) {
+    private void dispatchSingleProvision(long nowNanos,
+                                         NodeId placeholder,
+                                         Set<NodeId> currentMembers,
+                                         int generation) {
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
                                                              ctm.replacementCeiling(NodeRole.CORE),
@@ -2192,11 +2199,13 @@ public final class LeaderReconciler {
         /// joins, fails or hits its ceiling, so one missing slot has at most an original and one substitute in
         /// flight per ceiling window.
         boolean isDiscounted(long nowNanos, TimeSpan grace) {
-            return generation < SUBSTITUTE_GENERATION && state == InFlightState.CONFIRMED && nowNanos - sinceNanos > grace.nanos();
+            return generation < SUBSTITUTE_GENERATION
+                   && state == InFlightState.CONFIRMED
+                   && nowNanos - sinceNanos > grace.nanos();
         }
 
         boolean countsTowardCapacity(long nowNanos, TimeSpan grace) {
-            return !isDiscounted(nowNanos, grace);
+            return ! isDiscounted(nowNanos, grace);
         }
 
         boolean isPastCeiling(long nowNanos) {
