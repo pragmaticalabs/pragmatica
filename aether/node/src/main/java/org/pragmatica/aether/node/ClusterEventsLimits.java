@@ -4,8 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -16,7 +20,6 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
-import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -28,6 +31,10 @@ import static org.pragmatica.lang.Result.success;
 /// stream never came up while its registrar retried. Now a set value must be a whole number from 1 to the
 /// bound's maximum, or the node refuses to boot with [InvalidLimit] naming the variable. Unset or blank
 /// means the default.
+///
+/// #1571: the count's maximum is also the aggregator's read window, [AetherNode#CLUSTER_EVENTS_MAX_RETAINED].
+/// A retained count above it was accepted, and the read window then silently failed to cover everything
+/// retained; such a value now refuses the boot, naming both the variable and the window.
 public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, long maxEventSizeBytes) {
     public static final String MAX_COUNT_VARIABLE = "CLUSTER_EVENTS_MAX_COUNT";
     public static final String MAX_BYTES_VARIABLE = "CLUSTER_EVENTS_MAX_BYTES";
@@ -46,20 +53,43 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
     public static final long DEFAULT_MAX_EVENT_SIZE_BYTES = 64L * 1024;
 
     public static Result<ClusterEventsLimits> clusterEventsLimits(Fn1<Option<String>, String> environment) {
-        return Result.all(limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, OffHeapRingBuffer.MAX_CAPACITY),
+        return Result.all(limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, OffHeapRingBuffer.MAX_CAPACITY).flatMap(ClusterEventsLimits::withinReadWindow),
                           limit(environment, MAX_BYTES_VARIABLE, DEFAULT_MAX_BYTES, Long.MAX_VALUE),
                           limit(environment, MAX_AGE_MS_VARIABLE, DEFAULT_MAX_AGE_MS, Long.MAX_VALUE),
-                          limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, Long.MAX_VALUE)).map(ClusterEventsLimits::new);
-    }
-
-    /// Read from the process environment.
-    public static Result<ClusterEventsLimits> clusterEventsLimits() {
-        return clusterEventsLimits(variable -> option(System.getenv(variable)));
+                          limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, Long.MAX_VALUE))
+                     .map(ClusterEventsLimits::new);
     }
 
     /// Bounded on count, bytes (off-heap hard cap) and age, mode ANY.
     public RetentionPolicy retention() {
         return RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAgeMs, RetentionMode.ANY);
+    }
+
+    private static Result<Long> withinReadWindow(long count) {
+        return count <= AetherNode.CLUSTER_EVENTS_MAX_RETAINED
+               ? success(count)
+               : InvalidLimit.READ_WINDOW_FACTORY.apply(MAX_COUNT_VARIABLE,
+                                                        String.valueOf(count),
+                                                        AetherNode.CLUSTER_EVENTS_MAX_RETAINED)
+                                                 .result();
+    }
+
+    /// #1564 (N2): the `system:cluster-events` stream config this node builds at construction, for its local
+    /// partition. It carries the SAME factors the `SystemStreamRegistrar` commits — those of the committed
+    /// `[replication.cluster_events]` ([ClusterReplication#clusterEventsFactors]) — never a separate hardcoded CF.
+    /// With no committed config (a fresh node), or an unresolvable one (refused at apply since B1, and reported by
+    /// the registrar), it is [ClusterReplication#CLUSTER_EVENTS_BUILT_IN].
+    public StreamConfig streamConfig(String streamName, Option<ClusterConfigValue> committed) {
+        var factors = ClusterReplication.clusterEventsFactors(committed).or(ClusterReplication.CLUSTER_EVENTS_BUILT_IN);
+
+        return StreamConfig.streamConfig(streamName,
+                                         1,
+                                         retention(),
+                                         "earliest",
+                                         maxEventSizeBytes,
+                                         ConsistencyMode.EVENTUAL,
+                                         factors.confirmationFactor())
+                           .withReplication(factors);
     }
 
     private static Result<Long> limit(Fn1<Option<String>, String> environment,
@@ -90,5 +120,10 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
                                                                                             + " system:cluster-events:1.0.0 with a bound its stream engine refuses. Unset it for the"
                                                                                             + " default, or set a value in range.",
                                                                                              InvalidLimit::new);
+
+        static final Fn3<InvalidLimit, String, String, Long> READ_WINDOW_FACTORY = Causes.forThreeValues("%s='%s' exceeds the cluster-events read window CLUSTER_EVENTS_MAX_RETAINED=%d; a read of"
+                                                                                                        + " system:cluster-events:1.0.0 would silently miss the oldest retained events, so the"
+                                                                                                        + " node refuses to boot. Unset it for the default, or set a value up to the window.",
+                                                                                                         InvalidLimit::new);
     }
 }

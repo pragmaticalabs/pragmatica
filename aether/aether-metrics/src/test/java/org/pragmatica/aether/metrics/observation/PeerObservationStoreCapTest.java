@@ -109,6 +109,7 @@ class PeerObservationStoreCapTest {
     private static void pushObservation(PeerObservationStore store, int counter) {
         store.pushConnectivity(new PeerConnectivityObservation(PEER,
                                                                 ConnectivityState.CONNECTED,
+                                                                0L,
                                                                 7L,
                                                                 counter,
                                                                 0L));

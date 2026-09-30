@@ -44,7 +44,7 @@ import static org.pragmatica.lang.Option.some;
 /// On {@link #reconcile()} it snapshots the current core members and cluster size, then for each
 /// stream from the {@link StreamCatalog}:
 ///   1. classifies it APP vs SYSTEM ({@code system:*} namespace ⇒ {@link StreamClass#SYSTEM}),
-///   2. computes the effective replication factor (APP ⇒ the configured `replicas` knob — total
+///   2. computes the effective replication factor (APP ⇒ the configured `replication_factor` — total
 ///      copies including the owner — clamped to cluster size;
 ///      SYSTEM ⇒ {@link ReplicaPlacement#systemReplicationFactor(int)}),
 ///   3. for each partition computes {@link ReplicaPlacement#place} and diffs the desired replica
@@ -366,7 +366,7 @@ public final class ReplicaSetController implements AutoCloseable {
                                  int clusterSize,
                                  List<PartitionKey> reconciled) {
         var streamClass = classify(spec.name());
-        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.replicas(), clusterSize);
+        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.replicationFactor(), clusterSize);
 
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
@@ -498,7 +498,7 @@ public final class ReplicaSetController implements AutoCloseable {
                                .stream()
                                .filter(spec -> spec.name()
                                                    .equals(streamName))
-                               .mapToInt(StreamCatalog.StreamSpec::replicas)
+                               .mapToInt(StreamCatalog.StreamSpec::replicationFactor)
                                .findFirst()
                                .orElse(0);
 

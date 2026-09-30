@@ -38,7 +38,7 @@ test_blue_green_promote() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
+    assert_ne "$did" "" "Got deployment ID" || return 1
     deploy_promote "$did"
     if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
         log_fail "Blue-green promote of ${did} did not quiesce within 30s"
@@ -92,7 +92,7 @@ test_blue_green_rollback() {
     local start_result did
     start_result=$(deploy_start "$BLUEPRINT_V2" blue-green --instances 2)
     did=$(deploy_extract_id "$start_result")
-    assert_ne "$did" "" "Captured deployment ID for rollback scenario"
+    assert_ne "$did" "" "Captured deployment ID for rollback scenario" || return 1
     # Capture pre-rollback state: deployment should be in DEPLOYING/DEPLOYED before
     # promote. Rollback from a non-terminal pre-promote state.
     local pre_state pre_status
@@ -137,7 +137,7 @@ test_blue_green_complete() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
+    assert_ne "$did" "" "Got deployment ID" || return 1
     local result
     result=$(deploy_complete "$did")
     assert_contains "$result" "COMPLETED" "Blue-green completed"

@@ -14,6 +14,7 @@ import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
@@ -126,7 +127,9 @@ class PublisherFactoryTest {
                                                  .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
                                                                 manager)
                                                  .withExtension(org.pragmatica.serialization.Serializer.class,
-                                                                NOOP_SERIALIZER);
+                                                                NOOP_SERIALIZER)
+                                                 .withExtension(ReplicationContext.Source.class,
+                                                                ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN));
                 var publisher = factory.provision(config, context)
                                        .await()
                                        .onFailure(cause -> fail(cause.message()))
@@ -146,13 +149,91 @@ class PublisherFactoryTest {
             var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
 
             try {
-                // Canonical-constructor bypass with replicas=1 — the §3-invalid shape the factory rejects.
+                // #1564: canonical-constructor bypass with confirmation_factor > replication_factor — the one
+                // shape the engine refuses (1 <= CF <= RF). The context carries a Source, so the refusal is the
+                // policy's own and not a missing extension.
                 var config = new TopicConfig("orders",
                                              org.pragmatica.aether.resource.TopicDurability.DURABLE,
                                              Option.none(),
-                                             Option.some(1),
-                                             Option.none(),
+                                             Option.some(2),
+                                             Option.some(3),
                                              Option.none());
+                var context = ProvisioningContext.provisioningContext()
+                                                 .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
+                                                                manager)
+                                                 .withExtension(org.pragmatica.serialization.Serializer.class,
+                                                                NOOP_SERIALIZER)
+                                                 .withExtension(ReplicationContext.Source.class,
+                                                                ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN));
+
+                factory.provision(config, context)
+                       .await()
+                       .onSuccess(_ -> fail("a durable declaration with CF > RF must not provision"))
+                       .onFailure(cause -> assertTrue(cause instanceof org.pragmatica.aether.resource.TopicConfigError.ReplicationRefused,
+                                                      cause.message()));
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// #1564 / #1617 (R10): a durable topic's replication warnings are raised as `replication-policy-warning`
+        /// operator warnings through the sink the node supplies in the provisioning context.
+        @Test
+        void provision_durableTopicDeclaringFactorOne_raisesReplicationPolicyOperatorWarnings() throws Exception {
+            var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
+            var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+
+            try {
+                var config = TopicConfig.topicConfig("orders",
+                                                     org.pragmatica.aether.resource.TopicDurability.DURABLE,
+                                                     Option.none(),
+                                                     Option.some(1),
+                                                     Option.none(),
+                                                     Option.none())
+                                        .unwrap();
+                var context = ProvisioningContext.provisioningContext()
+                                                 .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
+                                                                manager)
+                                                 .withExtension(org.pragmatica.serialization.Serializer.class,
+                                                                NOOP_SERIALIZER)
+                                                 .withExtension(ReplicationContext.Source.class,
+                                                                ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN))
+                                                 .withExtension(org.pragmatica.utility.warning.OperatorWarningSink.class,
+                                                                org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+                factory.provision(config, context)
+                       .await()
+                       .onFailure(cause -> fail(cause.message()));
+                var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+                while (events.size() < 3 && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+
+                assertEquals(3, events.size(), "RF 1 declared raises all three warnings");
+                events.forEach(event -> {
+                    assertEquals(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING, event.code());
+                    assertEquals("topic 'orders'", event.subject());
+                });
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// #1564: a durable topic resolves its policy against the cluster defaults, so a context without the
+        /// [ReplicationContext.Source] refuses provisioning instead of guessing the built-in defaults.
+        @Test
+        void provision_durableTopic_failsLoudly_whenReplicationSourceMissing() throws Exception {
+            var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
+
+            try {
+                var config = TopicConfig.topicConfig("orders",
+                                                     org.pragmatica.aether.resource.TopicDurability.DURABLE,
+                                                     Option.none(),
+                                                     Option.none(),
+                                                     Option.none(),
+                                                     Option.none())
+                                        .unwrap();
                 var context = ProvisioningContext.provisioningContext()
                                                  .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
                                                                 manager)
@@ -161,7 +242,10 @@ class PublisherFactoryTest {
 
                 factory.provision(config, context)
                        .await()
-                       .onSuccess(_ -> fail("a §3-invalid durable declaration must not provision"));
+                       .onSuccess(_ -> fail("a durable topic must not provision without the replication context"))
+                       .onFailure(cause -> assertTrue(cause instanceof org.pragmatica.aether.resource.TopicConfigError.ReplicationContextUnavailable,
+                                                      cause.message()));
+                assertTrue(manager.partitionBuffer("topic:default:orders:1.0.0", 0).isEmpty());
             } finally {
                 manager.close();
             }

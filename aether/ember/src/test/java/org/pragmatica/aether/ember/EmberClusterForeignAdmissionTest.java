@@ -46,6 +46,11 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// value mirrored independently at construction time — so reverting either production wiring line
 /// alone (leaving the other untouched) still flips the corresponding test red.
 class EmberClusterForeignAdmissionTest {
+    /// #1189: probed blocks (disjoint from every other Ember test's range), and a start that loses a port between the
+    /// probe and the bind moves to a fresh block. Test 1 never starts a cluster, so it binds nothing.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(47100, 48900, 200, 3, 40, 80);
+    private static final TimeSpan START_BOUND = TimeSpan.timeSpan(90).seconds();
+
     private static final NodeId CLIENT_NODE = NodeId.randomNodeId();
     private static final NodeAddress CLIENT_ADDRESS = new NodeAddress("127.0.0.1", 19291);
     private static final NodeAddress SERVER_ADDRESS = new NodeAddress("127.0.0.1", 19290);
@@ -102,11 +107,9 @@ class EmberClusterForeignAdmissionTest {
     @Test
     @Timeout(120)
     void constructedNode_hasCertificateProviderWired() {
-        clusterA = emberCluster(3, 25320, 25420, 25520, "foreign-c");
-
-        clusterA.start()
-                .await()
-                .onFailure(cause -> fail("cluster start: " + cause.message()));
+        clusterA = EmberTestPorts.startedCluster(PORTS,
+                                                 base -> emberCluster(3, base, base + 40, base + 80, "foreign-c"),
+                                                 START_BOUND);
 
         assertThat(clusterA.wiredCertificateProvider().isPresent())
             .as("#715: a constructed node's certificateProvider must be present, or SWIM gossip "
@@ -124,15 +127,12 @@ class EmberClusterForeignAdmissionTest {
     @Test
     @Timeout(120)
     void clientFromDifferentEmberInstance_isRejected() {
-        clusterA = emberCluster(3, 25330, 25430, 25530, "foreign-d");
-        clusterB = emberCluster(3, 25340, 25440, 25540, "foreign-e");
-
-        clusterA.start()
-                .await()
-                .onFailure(cause -> fail("cluster A start: " + cause.message()));
-        clusterB.start()
-                .await()
-                .onFailure(cause -> fail("cluster B start: " + cause.message()));
+        clusterA = EmberTestPorts.startedCluster(PORTS,
+                                                 base -> emberCluster(3, base, base + 40, base + 80, "foreign-d"),
+                                                 START_BOUND);
+        clusterB = EmberTestPorts.startedCluster(PORTS,
+                                                 base -> emberCluster(3, base, base + 40, base + 80, "foreign-e"),
+                                                 START_BOUND);
 
         var codec = codec();
         var serverNode = NodeId.randomNodeId();
@@ -177,17 +177,12 @@ class EmberClusterForeignAdmissionTest {
         var sharedSecret = new byte[32];
         new SecureRandom().nextBytes(sharedSecret);
 
-        clusterA = emberCluster(3, 25350, 25450, 25550, "foreign-f");
-        clusterB = emberCluster(3, 25360, 25460, 25560, "foreign-g");
-        clusterA.withClusterSecret(sharedSecret);
-        clusterB.withClusterSecret(sharedSecret);
-
-        clusterA.start()
-                .await()
-                .onFailure(cause -> fail("cluster A start: " + cause.message()));
-        clusterB.start()
-                .await()
-                .onFailure(cause -> fail("cluster B start: " + cause.message()));
+        clusterA = EmberTestPorts.startedCluster(PORTS,
+                                                 base -> sharingSecret(emberCluster(3, base, base + 40, base + 80, "foreign-f"), sharedSecret),
+                                                 START_BOUND);
+        clusterB = EmberTestPorts.startedCluster(PORTS,
+                                                 base -> sharingSecret(emberCluster(3, base, base + 40, base + 80, "foreign-g"), sharedSecret),
+                                                 START_BOUND);
 
         var codec = codec();
         var serverNode = NodeId.randomNodeId();
@@ -229,5 +224,10 @@ class EmberClusterForeignAdmissionTest {
     private static QuicSslContext clientSsl(TlsConfig config) {
         return QuicTlsProvider.clientContext(config)
                               .fold(cause -> fail("client context: " + cause.message()), ssl -> ssl);
+    }
+    private static EmberCluster sharingSecret(EmberCluster cluster, byte[] secret) {
+        cluster.withClusterSecret(secret);
+
+        return cluster;
     }
 }

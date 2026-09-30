@@ -652,6 +652,23 @@ aether blueprints publish org.example:my-app:1.0.0
 aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
+**Publish output — rejected bindings and warnings.** Under the default TABLE format `publish` prints
+`Published blueprint: <coords>` and then one line per entry of the response's `rejectedStreamBindings`
+(#1336) and one line per entry of its `warnings` (#1564), in response order:
+
+```
+Published blueprint: org.example:my-app:1.0.0
+WARNING [streams.orders] [replication-factor-below-three]: stream 'orders' (replication_factor=2, confirmation_factor=2): replication_factor is below 3
+```
+
+A warning line reads `WARNING <field> [<rule>]: <message>`. The replication warnings are
+`replication-factor-below-three` (an explicit `replication_factor` below 3 — LOUD),
+`confirmation-equals-replication-factor` (losing any one replica refuses writes) and
+`confirmation-factor-owner-only` (`confirmation_factor = 1`: the owner's death loses records it
+acknowledged but had not replicated); see `guarantees.md` §4a. A warning never fails the command. With
+`--quiet`, or any non-TABLE format, nothing extra is printed — JSON output already carries both keys.
+`deploy` and `apply` print the whole response body, so the same keys appear there as JSON.
+
 **Single-migrator gate.** `deploy` and `publish` (the artifact-based paths) are refused with
 HTTP 409 when the artifact declares migrations for a datasource that a **different** blueprint
 already migrates; a refused request writes nothing. Republishing the *same* blueprint at a newer
@@ -1584,12 +1601,12 @@ aether streams list
 
 ### `aether streams status <name-or-address>`
 
-Show detailed stream info including per-partition details. Bare name defaults to
-`system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream. Wraps
-`GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
+Show detailed stream info including per-partition details. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
 
 ```bash
-aether streams status my-events                  # -> system:my-events:1.0.0
+aether streams status system:my-events:1.0.0
 aether streams status orders:order-events:1.0.0
 ```
 
@@ -1624,9 +1641,9 @@ See [Management API — Declarative Stream Consumers](management-api.md#declarat
 
 ### `aether streams publish <name-or-address> <message> [--partition N]`
 
-Publish a text message to a stream. The message is base64-encoded automatically. Bare name
-defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream.
-Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
+Publish a text message to a stream. The message is base64-encoded automatically. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
 
 `--partition N` targets a specific partition; omitted, it defaults to **partition 0** (unchanged
 behavior). This command does no key-based routing — Management-API publish writes untyped bytes
@@ -1635,22 +1652,22 @@ is a direct, deliberate target choice, not a routing key. Naming a partition out
 declared range fails with `400 Bad Request` naming the valid range.
 
 ```bash
-aether streams publish my-events "Hello, world!"
+aether streams publish system:my-events:1.0.0 "Hello, world!"
 aether streams publish orders:order-events:1.0.0 "Hello, world!"
-aether streams publish my-events "Hello, world!" --partition 2
+aether streams publish orders:order-events:1.0.0 "Hello, world!" --partition 2
 ```
 
 ### `aether streams read <name-or-address> <partition>`
 
-Read events from a specific partition of a stream. Bare name defaults to `system:<name>:1.0.0`;
-a `namespace:stream:version` address targets any stream. Optional `--since <offset>` selects the
+Read events from a specific partition of a stream. Takes the full `namespace:stream:version`
+address; a bare name is refused (spell a system stream `system:<name>:1.0.0`). Optional `--since <offset>` selects the
 starting offset (maps to `?from=`), and `--limit <N>` caps the number of events returned (maps to
 `?max=`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}`.
 
 ```bash
-aether streams read my-events 0                  # -> system:my-events:1.0.0
+aether streams read system:my-events:1.0.0 0
 aether streams read orders:order-events:1.0.0 0
-aether streams read my-events 0 --since 100 --limit 50
+aether streams read orders:order-events:1.0.0 0 --since 100 --limit 50
 ```
 
 ### `aether streams create <name> [--partitions N]`
@@ -1660,12 +1677,12 @@ catalog entry. Use [`aether stream create`](#aether-stream-create-namespacestrea
 
 ### `aether streams delete <name-or-address> [--force]`
 
-Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Bare
-name defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any
-stream. Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
+Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Takes the
+full `namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
 
 ```bash
-aether streams delete my-events
+aether streams delete system:my-events:1.0.0
 aether streams delete orders:order-events:1.0.0 --force
 ```
 
@@ -1705,13 +1722,13 @@ aether streams consumer-group status orders-workers orders
 aether streams list
 
 # Check stream details
-aether streams status user-events
+aether streams status system:user-events:1.0.0
 
 # Publish a message
-aether streams publish user-events "order_created:12345"
+aether streams publish system:user-events:1.0.0 "order_created:12345"
 
 # Read events from partition 0, starting at offset 100, max 50 events
-aether streams read user-events 0 --since 100 --limit 50
+aether streams read system:user-events:1.0.0 0 --since 100 --limit 50
 ```
 
 ---
@@ -1865,6 +1882,8 @@ aether stream tail orders:order-events:1.0.0 --no-follow   # one-shot drain, the
 Create a stream at a catalog address and register it in the catalog. Idempotent: an address that
 already exists reports `exists`. `--partitions N` overrides the server-side default partition count.
 Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}`.
+There is no replication option: the stream takes the committed cluster `[replication]` defaults (#1564;
+built-in `replication_factor` 3, `confirmation_factor` 2), so a publish to it needs one registered peer.
 
 An address in the `topic` or `entity` namespace is refused with `400` (`ReservedStreamName`), because
 those stream kinds are created only by internal provisioning (durable topics, entity keyspaces). The
@@ -2232,6 +2251,21 @@ Example output (`--format json`):
 {"mismatches": [{"nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE"}]}
 ```
 
+### `aether cluster communities`
+
+Show worker communities: lifecycle state (`FORMING` / `ACTIVE` / `DEGRADED` / `DISSOLVED`), target size,
+roster and the leader's live-member count. Wraps `GET /api/cluster/communities`, or
+`GET /api/cluster/communities/{id}` when an id is given.
+
+```bash
+aether cluster communities
+aether cluster communities default:local:0
+```
+
+`liveMembers` is the leader's instantaneous observation, not committed state, and is `null` when it cannot
+be observed. A worker that fenced itself after losing the core is shown as `DEGRADED`, never `DISSOLVED`;
+see `GET /api/v1/cluster/communities` in the management API reference.
+
 ### `aether cluster governors`
 
 Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.
@@ -2294,7 +2328,7 @@ strict=2  threshold=3  below=true  armed=true
 
 ### `aether cluster ownership`
 
-Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-TERM`/`HW-CTR`, and `FENCED`). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/ownership/{domain}`.
+Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-INC`/`HW-TERM`/`HW-CTR`, and `FENCED`; the cluster incarnation leads each epoch, #1529). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/ownership/{domain}`.
 
 The `<domain>` argument is one of `community` (governor ownership — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Any other value is rejected with an error.
 
@@ -2314,13 +2348,13 @@ aether cluster ownership community --format json
 | `<domain>` | Ownership domain: `community`, `dht`, or `stream` (required positional argument) |
 | `--format` | Output format: `table` (default), `json`, `value`, `csv` |
 
-`FENCED` is `true` when the local high-water is strictly after the committed epoch — this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here. In steady state `HW-TERM`/`HW-CTR` equal `EPOCH-TERM`/`EPOCH-CTR` and `FENCED` is `false`.
+`FENCED` is `true` when the local high-water is strictly after the committed epoch — this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here. In steady state `HW-INC`/`HW-TERM`/`HW-CTR` equal `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR` and `FENCED` is `false`.
 
 Example output (table):
 ```
-IDENTITY  OWNER   EPOCH-TERM  EPOCH-CTR  HW-TERM  HW-CTR  FENCED
-orders:0  core-1  7           3          7        3       false
-orders:1  core-2  7           1          8        0       true
+IDENTITY  OWNER   EPOCH-INC  EPOCH-TERM  EPOCH-CTR  HW-INC  HW-TERM  HW-CTR  FENCED
+orders:0  core-1  1          7           3          1       7        3       false
+orders:1  core-2  1          7           1          1       8        0       true
 ```
 
 ### `aether cluster journal`
@@ -2435,7 +2469,7 @@ Example:
 aether cluster generation
 
 # Output (table):
-# Epoch:              7:142
+# Epoch:              1:7:142
 # Mode:               HIERARCHICAL
 # Quiescence:         QUIESCED
 # Rabia term:         7
@@ -2452,12 +2486,12 @@ JSON output returns the full snapshot shape exposed by `GET /api/cluster/generat
 Block until the queried node observes the requested cluster generation epoch AND the snapshot reports cluster-wide quiescence. Use this in test harnesses or operator scripts that depend on a deterministic settled state before proceeding.
 
 ```bash
-aether cluster await-quiesced --epoch <T:C> [--timeout 30s]
+aether cluster await-quiesced --epoch <I:T:C> [--timeout 30s]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--epoch` | Required, epoch in `term:counter` form (e.g. `7:142`). |
+| `--epoch` | Required, epoch in `incarnation:term:counter` form (e.g. `1:7:142`); the cluster incarnation leads (#1529). |
 | `--timeout` | Optional, default `30s`, capped at `120s`. |
 | `--format` | Output format: `table` (default) — concise one-liner; `json` — raw response body. |
 
@@ -2465,8 +2499,8 @@ Exit codes: `0` on success, non-zero on timeout (HTTP 408) or other failure.
 
 Example:
 ```bash
-aether cluster await-quiesced --epoch 7:142 --timeout 60s
-# Output: Quiesced at 7:142 (response: {"epoch":"7:142","quiescence":"QUIESCED","waitedMs":1234})
+aether cluster await-quiesced --epoch 1:7:142 --timeout 60s
+# Output: Quiesced at 1:7:142 (response: {"epoch":"1:7:142","quiescence":"QUIESCED","waitedMs":1234})
 ```
 
 See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
@@ -2582,8 +2616,8 @@ aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--res
 | `--cluster <name>` | Target the named cluster instead of the active-context one, and rewrite the file's `[cluster].name` to `<name>` before applying — the same rewrite as `aether cluster bootstrap --cluster`, so a cluster bootstrapped under an override accepts its own TOML (`cluster.name` is immutable) |
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
-| `--resume` | Resume a halted apply from first unfinished wave |
-| `--rollback` | Rollback completed waves to pre-apply state |
+| `--resume` | Resume a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below) |
+| `--rollback` | Roll back a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below); even when reached, it lists the recorded resources and destroys nothing |
 | `--full-check` | Run full network pre-flight checks |
 
 **Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
@@ -2612,6 +2646,14 @@ state for the cluster and abort without it (`No apply state found for cluster '<
 resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
 rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
 options report that message and the wave executor is unreachable end to end.
+
+**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
+- `destroyed`: gone, nothing to do;
+- `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
+  --wait --yes`, then the provider's delete (for Hetzner, `hcloud server delete <server-id>`);
+- `kept` (created by an earlier, completed step, so it belongs to the desired configuration): keep it if it joined
+  (`aether nodes`), or remove it the same way.
 
 ### `aether cluster rotate-key`
 

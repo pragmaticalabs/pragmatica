@@ -6,6 +6,7 @@ import java.util.HexFormat;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -56,6 +57,7 @@ public final class WorkerMetadataServer {
     private final Function<Set<NodeId>, List<NodeInfo>> directory;
     private final WorkerMetadataLimits limits;
     private final BiConsumer<NodeId, String> reportRejection;
+    private final LongSupplier clusterIncarnation;
     private final String incarnation = UUID.randomUUID().toString();
     private final WorkerMetadataIndex index = WorkerMetadataIndex.workerMetadataIndex();
     private final Map<String, byte[]> blobs = new LinkedHashMap<>();
@@ -79,7 +81,8 @@ public final class WorkerMetadataServer {
                                 Supplier<Set<NodeId>> cores,
                                 Function<Set<NodeId>, List<NodeInfo>> directory,
                                 WorkerMetadataLimits limits,
-                                BiConsumer<NodeId, String> reportRejection) {
+                                BiConsumer<NodeId, String> reportRejection,
+                                LongSupplier clusterIncarnation) {
         this.self = self;
         this.store = store;
         this.codec = codec;
@@ -89,6 +92,7 @@ public final class WorkerMetadataServer {
         this.directory = directory;
         this.limits = limits;
         this.reportRejection = reportRejection;
+        this.clusterIncarnation = clusterIncarnation;
     }
 
     public Unit put(StructuredKey key, Object value) {
@@ -127,7 +131,7 @@ public final class WorkerMetadataServer {
             return Unit.unit();
         }
 
-        if (store.committedRevision() < request.minimumRevision()) {
+        if (coreBehind(request)) {
             failManifest(request, "core-behind-worker", now);
 
             return Unit.unit();
@@ -280,6 +284,15 @@ public final class WorkerMetadataServer {
         return new WorkerMetadataMessage.ScopeContent(scope, hash, bytes.length);
     }
 
+    /// The worker has seen state this core has not: a newer cluster incarnation (#1529), or a higher
+    /// revision of this one. A worker from an OLDER incarnation survived a cold restart; its revision
+    /// belongs to the previous run and bounds nothing here.
+    private boolean coreBehind(WorkerMetadataMessage.ManifestRequest request) {
+        var current = clusterIncarnation.getAsLong();
+
+        return request.knownIncarnation() > current || request.knownIncarnation() == current && store.committedRevision() < request.minimumRevision();
+    }
+
     private void publish(WorkerMetadataMessage.ManifestRequest request,
                          List<WorkerMetadataMessage.ScopeContent> contents,
                          long revision,
@@ -289,6 +302,7 @@ public final class WorkerMetadataServer {
                                                           incarnation,
                                                           ++generation,
                                                           revision,
+                                                          clusterIncarnation.getAsLong(),
                                                           contents,
                                                           "");
 
@@ -312,6 +326,7 @@ public final class WorkerMetadataServer {
                                                         incarnation,
                                                         0,
                                                         store.committedRevision(),
+                                                        clusterIncarnation.getAsLong(),
                                                         List.of(),
                                                         error),
                      request.sender(),

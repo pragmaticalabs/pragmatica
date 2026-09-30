@@ -4,16 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
-import java.io.IOException;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
@@ -41,6 +37,13 @@ class EmberPartitionedCoreSelfFenceTest {
     private static final int FIRST_CANDIDATE_BASE = 38100;
     private static final int LAST_CANDIDATE_BASE = 39900;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     /// Past AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS (75 s), measured from cluster start.
@@ -48,8 +51,14 @@ class EmberPartitionedCoreSelfFenceTest {
     /// The pre-#1390 measurement was ~18 s; the bound leaves room for a loaded CI host.
     private static final long FENCE_BOUND_MS = 30_000L;
     private static final long OBSERVE_MS = 60_000L;
-    /// Below the observed ~7 s black-hole-to-FAULTY interval, above the ~1–2 s black-hole-to-SUSPECT one.
-    private static final long FLAP_ON_MS = 4_000L;
+    /// How long one flap may stay black-holed while it arms. A flap is armed when a survivor sees the flapper
+    /// SUSPECT AND the flapper's own quorum-loss detector has gone below threshold (it sees its peers SUSPECT
+    /// too) — the path the #1560 re-check guards. It is healed the moment both hold, so it never reaches
+    /// FAULTY, which in the black-hole tests follows SUSPECT by several seconds more. Round-robin probing
+    /// (1 s period over four peers, 800 ms ack timeout, then an indirect round) can take about 5 s to suspect
+    /// a peer. A fixed 4 s flap missed that in all five cycles of one CI run: the 12 s flap period is a
+    /// multiple of the probe round, so every cycle landed on the same late phase.
+    private static final long SUSPECT_BOUND_MS = 10_000L;
     private static final long FLAP_OFF_MS = 8_000L;
     private static final int FLAP_CYCLES = 5;
 
@@ -86,10 +95,9 @@ class EmberPartitionedCoreSelfFenceTest {
     }
 
     /// The false-fence guard for the #1560 re-check: a healthy five-core cluster in which ONE non-leader
-    /// flaps — black-holed for [#FLAP_ON_MS], shorter than the SWIM suspicion bound, then healed for
-    /// [#FLAP_OFF_MS], [#FLAP_CYCLES] times — must never fence any node. Armed by requiring that some
-    /// survivor saw the flapping peer SUSPECT at least once and that every survivor sees it MEMBER at the
-    /// end, so the test cannot pass by never disturbing the cluster. (Which survivor suspects it varies:
+    /// flaps — black-holed until it is armed (bounded by [#SUSPECT_BOUND_MS]), then healed for [#FLAP_OFF_MS],
+    /// [#FLAP_CYCLES] times — must never fence any node. Armed on every cycle, and at the end by every
+    /// survivor seeing it MEMBER again, so the test cannot pass by never disturbing the cluster. (Which survivor suspects it varies:
     /// SWIM probes a random member per interval, and the leader alone missed every flap in one run.) Partition mechanism: Ember `blackhole` (#1563: it still lets a
     /// QUIC Hello through, which is irrelevant here because no flap is long enough to reach DEAD).
     @Test
@@ -106,18 +114,24 @@ class EmberPartitionedCoreSelfFenceTest {
                                .stream()
                                .filter(node -> node != flapper)
                                .toList();
-        var sawSuspect = false;
 
         for (int cycle = 0; cycle < FLAP_CYCLES; cycle++) {
             flapper.blackhole(true);
-            sawSuspect |= observeSuspect(survivors, flapper, FLAP_ON_MS);
+            var armed = awaitArmed(survivors, flapper, SUSPECT_BOUND_MS);
             flapper.blackhole(false);
+            assertThat(armed.suspectedBySurvivor())
+                .as("arming, cycle %d: a survivor must see the black-holed peer SUSPECT within %d ms", cycle, SUSPECT_BOUND_MS)
+                .isTrue();
+            assertThat(armed.flapperBelowThreshold())
+                .as("arming, cycle %d: the flapper's quorum-loss detector must go below threshold within %d ms",
+                    cycle,
+                    SUSPECT_BOUND_MS)
+                .isTrue();
             sleep(FLAP_OFF_MS);
             assertThat(cluster.nodeCount()).as("no node fenced after flap cycle %d", cycle).isEqualTo(CLUSTER_SIZE);
         }
         sleep(OBSERVE_MS);
 
-        assertThat(sawSuspect).as("arming: the flaps must drive the peer SUSPECT on some survivor").isTrue();
         survivors.forEach(node -> assertThat(node.membershipFsm().memberStates().get(flapper.self()))
                                       .as("the flapping peer refuted on %s", node.self().id())
                                       .isEqualTo("Member"));
@@ -125,25 +139,36 @@ class EmberPartitionedCoreSelfFenceTest {
                                        .isEqualTo(CLUSTER_SIZE);
     }
 
-    private static boolean observeSuspect(List<AetherNode> observers, AetherNode peer, long forMs) {
-        var deadline = System.currentTimeMillis() + forMs;
-        var seen = false;
+    private record Armed(boolean suspectedBySurvivor, boolean flapperBelowThreshold) {}
 
-        while (System.currentTimeMillis() < deadline) {
-            seen |= observers.stream()
-                             .anyMatch(observer -> "Suspect".equals(observer.membershipFsm().memberStates().get(peer.self())));
-            sleep(100);
+    private static Armed awaitArmed(List<AetherNode> observers, AetherNode flapper, long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+        var suspected = false;
+        var below = false;
+
+        while (!(suspected && below) && System.currentTimeMillis() < deadline) {
+            suspected |= observers.stream()
+                                  .anyMatch(observer -> "Suspect".equals(observer.membershipFsm().memberStates().get(flapper.self())));
+            below |= flapper.quorumLossSnapshot().map(QuorumLossSnapshot::belowThreshold).or(false);
+            if (!(suspected && below)) {
+                sleep(100);
+            }
         }
 
-        return seen;
+        return new Armed(suspected, below);
     }
 
     private void startCluster() {
-        var basePort = freeBasePort();
-        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "psf");
         var startedAt = System.currentTimeMillis();
 
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        // #1667: a port lost between the probe and the bind moves the start to a fresh block instead of failing.
+        cluster = EmberTestPorts.startedCluster(PORTS,
+                                                basePort -> emberCluster(CLUSTER_SIZE,
+                                                                         basePort,
+                                                                         basePort + MGMT_OFFSET,
+                                                                         basePort + APP_HTTP_OFFSET,
+                                                                         "psf"),
+                                                START_BOUND);
         awaitCondition("a leader is elected", 60_000L, () -> cluster.currentLeader().isPresent());
         sleep(Math.max(0, COLD_BOOT_CLEARANCE_MS - (System.currentTimeMillis() - startedAt)));
         assertThat(cluster.nodeCount()).as("control: no node fenced before the black-hole").isEqualTo(CLUSTER_SIZE);
@@ -198,46 +223,4 @@ class EmberPartitionedCoreSelfFenceTest {
         }
     }
 
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!(udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
-                  && tcpFree(base + APP_HTTP_OFFSET + slot))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
-    }
 }

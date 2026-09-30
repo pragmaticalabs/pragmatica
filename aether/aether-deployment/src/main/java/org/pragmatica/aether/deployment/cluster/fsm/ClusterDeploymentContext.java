@@ -327,6 +327,12 @@ public final class ClusterDeploymentContext {
         return communityLiveness;
     }
 
+    /// `true` once a real observed liveness view is wired (#1652). While unwired, every member reads as
+    /// present — a count taken then would claim liveness nobody observed.
+    public boolean hasCommunityLiveness() {
+        return communityLiveness != CommunityLivenessView.unwired();
+    }
+
     /// Inject the observed community-liveness view. The pre-wiring default is
     /// [CommunityLivenessView#unwired]; pass that explicitly to restore it rather than clearing.
     @Contract

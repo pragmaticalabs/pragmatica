@@ -37,6 +37,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
 | DurableTopicDeliveryForgeTest | 19000     | 19100          | 0          | 5 nodes (shared cluster, app-http 19200; #386 composed durable pub/sub path, Heavy) |
 | DurableEntityForgeTest        | 24300     | 24320          | 0          | 5 nodes (shared cluster, app-http 24340, SWIM UDP 24400-24404; durable entities, Heavy). Moved off 19000, which it shared unregistered with the row above (#1627) |
+| ClusterEventOwnerFailoverTest | 24210     | 24230          | 0          | 5 nodes (single method, app-http 24250, SWIM UDP 24310-24314; #1640 events survive the cluster-events owner and leader dying) |
 | CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
@@ -48,6 +49,9 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | EmberSameIdentityRelaunchTest (aether/ember) | 23000-23300 scan | base+40 | 5 | 3 nodes + relaunch, app-http base+80; scans 100-port blocks from 23000 to 23300 for a free one (#1528/#1558 — below the 32768 ephemeral floor). Moved off 22000-23800, which overlapped the four rows above and the next one |
 | BlueprintSecurityOverrideClusterWideTest | 23500 | 23600    | 0          | 3 nodes (app-http 23700) — registered late |
 | LeaderTermFailoverTest        | 24000     | 24100          | 0          | 5 nodes (single method, app-http 24200; #1527/#1559 leader term strictly increases across two leader kills, and the re-election pre-latch fires). Moved off 37400, which is inside the Linux ephemeral range 32768-60999 |
+| CommunityObservabilityForgeTest | 12800 | 12950 | 0 | 6 nodes (3 cores + 3 workers, single method, app-http 13300, SWIM UDP 12900-12905; #1652 community route and lifecycle events) |
+| StreamConfirmationFactorOwnerKillTest | 14500 | 14600 | 0 | 5 nodes (app-http 14700; #1564 RF 3 / CF 2: an acked record survives the owner's loss) |
+| StreamConfirmationEqualsFactorAvailabilityTest | 16500 | 16600 | 0 | 3 nodes (app-http 16700; #1564 RF 3 / CF 3: one lost core refuses writes until a replacement is placed) |
 
 ## Per-Method Offset Pattern
 
@@ -86,6 +90,11 @@ When adding a new test class:
 3. Add an entry to this table
 4. Implement the `getPortOffset()` pattern
 5. Use `@Execution(ExecutionMode.SAME_THREAD)` annotation
+
+CI enforces step 3 at the pull request's merge ref: `tools/check-test-ports.py` fails when two rows overlap. It compares
+per protocol: cluster/QUIC and SWIM (cluster + 100) are UDP; management and app-http are TCP. It also lists fixed ports
+in `*/src/test` that no row covers. Keep the Notes column parseable: it must state `N nodes`, and may state
+`app-http N` or `app-http base+N`, and `SWIM UDP a-b`.
 
 ## This table is not exhaustive
 

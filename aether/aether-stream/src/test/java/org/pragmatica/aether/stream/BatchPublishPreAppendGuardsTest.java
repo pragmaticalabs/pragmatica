@@ -84,7 +84,7 @@ class BatchPublishPreAppendGuardsTest {
                                                                                                             noopSerializer(),
                                                                                                             noopDeserializer()));
 
-        highWater.advance(OwnershipDomain.streamPartition(STREAM, P), Epoch.epoch(1, 3));
+        highWater.advance(OwnershipDomain.streamPartition(STREAM, P), Epoch.epoch(0L, 1, 3));
         manager = streamPartitionManager(Long.MAX_VALUE,
                                          EvictionListener.NOOP,
                                          ReplicationManager.NONE,

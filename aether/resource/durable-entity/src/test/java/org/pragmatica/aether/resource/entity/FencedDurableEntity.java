@@ -145,6 +145,7 @@ final class FencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEn
         return storage.putVersioned(dhtKey(key),
                                     serializer.encode(next),
                                     versionSequencer.incrementAndGet(),
+                                    ownerEpoch.currentEpochIncarnation(),
                                     ownerEpoch.currentEpochTerm(),
                                     ownerEpoch.currentEpochCounter())
                       .map(_ -> next)

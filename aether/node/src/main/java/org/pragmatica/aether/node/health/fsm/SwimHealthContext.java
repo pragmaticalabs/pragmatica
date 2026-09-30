@@ -249,6 +249,7 @@ public final class SwimHealthContext {
 
         observationStore.pushHealth(new PeerHealthObservation(nodeId,
                                                               toWire(hint),
+                                                              epoch.incarnation(),
                                                               epoch.rabiaTerm(),
                                                               epoch.localCounter(),
                                                               nowMs()));

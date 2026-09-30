@@ -72,7 +72,7 @@ class ClusterQuiescenceEvaluatorTest {
 
     @Test
     void evaluateCommunity_returnsDissolving_whenGovernorDissolved() {
-        var result = ClusterQuiescenceEvaluator.evaluateCommunity(announcement(Epoch.epoch(1L, 0L), true), Epoch.ZERO);
+        var result = ClusterQuiescenceEvaluator.evaluateCommunity(announcement(Epoch.epoch(0L, 1L, 0L), true), Epoch.ZERO);
 
         assertThat(result.state()).isEqualTo(CommunityQuiescence.DISSOLVING);
         assertThat(result.detail()).isEqualTo("community dissolved");
@@ -80,7 +80,7 @@ class ClusterQuiescenceEvaluatorTest {
 
     @Test
     void evaluateCommunity_returnsConverging_whenLastAckBelowCommunityEpoch() {
-        var communityEpoch = Epoch.epoch(5L, 0L);
+        var communityEpoch = Epoch.epoch(0L, 5L, 0L);
         var result = ClusterQuiescenceEvaluator.evaluateCommunity(announcement(communityEpoch, false), Epoch.ZERO);
 
         assertThat(result.state()).isEqualTo(CommunityQuiescence.CONVERGING);
@@ -89,7 +89,7 @@ class ClusterQuiescenceEvaluatorTest {
 
     @Test
     void evaluateCommunity_returnsQuiesced_whenLastAckReachedCommunityEpoch() {
-        var communityEpoch = Epoch.epoch(5L, 0L);
+        var communityEpoch = Epoch.epoch(0L, 5L, 0L);
         var result = ClusterQuiescenceEvaluator.evaluateCommunity(announcement(communityEpoch, false), communityEpoch);
 
         assertThat(result.state()).isEqualTo(CommunityQuiescence.QUIESCED);

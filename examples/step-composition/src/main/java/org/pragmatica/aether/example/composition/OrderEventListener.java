@@ -34,7 +34,6 @@ import org.pragmatica.lang.Unit;
 /// At runtime, when an OrderPlacedEvent arrives on the "order-events"
 /// topic, Aether invokes `listenerOnOrderPlaced`, which writes an audit record.
 public interface OrderEventListener {
-
     @OnOrderEvent
     Promise<Unit> onOrderPlaced(OrderPlacedEvent event);
 

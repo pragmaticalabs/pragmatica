@@ -85,7 +85,7 @@ Aether takes the second view. Empirically, the second view is right for distribu
 
 The single argument for `--restart unless-stopped` is "if the Docker daemon restarts (host reboot), the container should come back automatically."
 
-Aether's answer: that's a host-level concern, handled at host level. If the host reboots, CTM observes the node missing and provisions a replacement. If the operator wants the same VM to come back, they provision a systemd unit at host level — but that systemd unit must also have `Restart=no`. The job of "make the host bring up an aether-node on boot" is distinct from "auto-restart the process if it exits."
+Aether's answer: a reboot is a process death, and a dead NodeId never returns under the same id. If the host reboots, CTM observes the node missing and provisions a replacement under a FRESH node id. A host-level unit must therefore neither restart the process (`Restart=no`) nor start it on boot (`systemctl start`, never `enable`) while the node id is fixed per host. Relaunching under the old id is refused once the node has been removed (§4.4). A host that should serve again after a reboot rejoins under a NEW node id.
 
 In practice, most production deployments use immutable VMs/pods: hosts are cattle, not pets. A host that needs to be rebooted to restore a service is replaced, not nursed.
 
@@ -115,7 +115,7 @@ A Docker `--restart unless-stopped` short-circuits steps 1–3, prevents step 4,
 `aether cluster bootstrap` produces:
 - For Hetzner / AWS / GCP / Azure — VMs whose cloud-init runs `docker run --restart no aether-node ...` (current implementation as of `1.0.0-rc1`).
 - For docker / docker-compose test fixtures — `restart: "no"` on the aether-node service.
-- For JVM mode (`type = "jvm"`) — no container at all; cloud-init runs `nohup java -jar aether-node.jar` directly. Process supervision is via `pkill` for restart, not a supervisor.
+- For JVM mode (`type = "jvm"`) — no container. Cloud-init installs an `aether-node.service` systemd unit with `Restart=no`, whose launcher (`/opt/aether/run-node.sh`) runs `exec java -XX:+ExitOnOutOfMemoryError …` (§4.5). The bootstrap's peer re-injection rewrites the unit's env file and runs `systemctl restart aether-node`; nothing pattern-matches a `java` process (#1021).
 
 If you write your own deployment manifests (Kubernetes Pod spec, Nomad job, ECS task definition), apply the equivalent setting. See §5 for k8s.
 
@@ -153,7 +153,7 @@ Restart=no
 # DO NOT use Restart=on-failure or Restart=always
 ```
 
-The operator-supplied systemd may be appropriate for launching aether-node on host boot (same role as cloud-init's `docker run`), but it must not respawn on exit.
+The unit must not respawn on exit, and it must not start on host boot either (`systemctl start`, never `enable`) while the node id is fixed per host. A node that has been gone long enough is removed for good, so a rebooted host that relaunched it under the same id would be refused and never rejoin (#1467, #1543). A host that should come back after a reboot rejoins under a NEW node id. Aether's own cloud-init starts the unit without enabling it, and runs its container with `--restart no`.
 
 ### 4.5 Heap exhaustion exits the process — exit code 3
 

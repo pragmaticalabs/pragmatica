@@ -114,7 +114,7 @@ class PromotedOwnerReplicaAckTest {
 
     private OwnerActivation gate() {
         var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(X,
-                                                                                             Epoch.epoch(3, 0),
+                                                                                             Epoch.epoch(0L, 3, 0),
                                                                                              3,
                                                                                              HlcTimestamp.ZERO));
 
@@ -150,7 +150,7 @@ class PromotedOwnerReplicaAckTest {
                                          "earliest",
                                          1_048_576L,
                                          ConsistencyMode.EVENTUAL,
-                                         StreamConfig.MIN_REPLICAS,
+                                         org.pragmatica.aether.slice.ReplicationFactors.BUILT_IN.replicationFactor(),
                                          2,
                                          StreamCompression.NONE,
                                          Option.none());

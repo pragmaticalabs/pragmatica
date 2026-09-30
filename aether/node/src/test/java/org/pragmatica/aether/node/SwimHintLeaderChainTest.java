@@ -186,7 +186,7 @@ class SwimHintLeaderChainTest {
         assertThat(protocol.members().get(VICTIM).state()).isEqualTo(MemberState.SUSPECT);
 
         wiring.collector().onClusterSyncPong(new ClusterSyncPong(VICTIM, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
-                                   0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
+                                   0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
         assertThat(hints).contains(new TransportObservation.PeerResponsive(VICTIM));
         var elapsed = awaitVerdict(wiring, hintedAt);
 
@@ -213,7 +213,7 @@ class SwimHintLeaderChainTest {
         var network = new ConnectedPeersNetwork(connected);
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF, network, collector, interval,
-                                                                  () -> 7L, PING_TIMEOUT_THRESHOLD, () -> Epoch.epoch(7L, 0L));
+                                                                  () -> 7L, PING_TIMEOUT_THRESHOLD, () -> Epoch.epoch(0L, 7L, 0L));
         collector.setPeerLocallyAlive(swimTrusts);
         collector.addPongListener(pong -> scheduler.onPongReceived(pong.sender()));
         collector.setUnreachableReporter(AetherNode.pingTimeoutReporter(this::deliver));
@@ -262,7 +262,7 @@ class SwimHintLeaderChainTest {
     private void pongUntilInterrupted(Wiring wiring) {
         while (!Thread.currentThread().isInterrupted()) {
             wiring.collector().onClusterSyncPong(new ClusterSyncPong(VICTIM, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
-                                   0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
+                                   0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
             try {
                 Thread.sleep(50);
             } catch (InterruptedException e) {

@@ -259,17 +259,13 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    /// An APP stream created with fewer than `StreamConfig.MIN_REPLICAS` copies (#1547). The engine
-    /// backstop behind every mint path — blueprint parser, durable topics, durable entities and the
-    /// management defaults each refuse or default above it first, so this names a path that bypassed
-    /// them. Rejected PRE-COMMIT on the creating node, never clamped; a fatal config error, never retried.
-    /// System streams are exempt: their factor is the cluster size.
-    record ReplicasBelowMinimum(String streamName, int replicas, int minimum) implements StreamError {
+    /// A stream config whose replication factors the engine refuses (#1564): `1 <= CF <= RF` fails, or a declared
+    /// stream is redeclared with factors different from its committed ones. `cause` is the typed
+    /// [org.pragmatica.aether.slice.ReplicationFactorsError].
+    record ReplicationRefused(String streamName, Cause cause) implements StreamError {
         @Override
         public String message() {
-            return "Stream '%s' declares replicas=%d, below the stream replication minimum of %d".formatted(streamName,
-                                                                                                            replicas,
-                                                                                                            minimum);
+            return "Stream '" + streamName + "': " + cause.message();
         }
     }
 

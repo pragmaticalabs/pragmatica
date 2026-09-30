@@ -29,6 +29,8 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -164,6 +166,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final PlacementRoleSupplier ALWAYS_OWNER = (_, _) -> ReplicaSetController.Role.OWNER;
 
     private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
+    /// #1564 (R8): the config of every `StreamConfigKey` Put this node has APPLIED, by stream name — the committed
+    /// value exactly as KV holds it, independent of whether (or with which factors) a local entry exists. A local
+    /// entry can lag or differ: a native-OOM hydrate leaves none, and [#adoptIfMoreDurable] keeps a stronger local
+    /// config over a weaker committed one.
+    private final ConcurrentHashMap<String, StreamConfig> appliedConfigs = new ConcurrentHashMap<>();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     private final long maxTotalBytes;
     private final EvictionListener evictionListener;
@@ -289,7 +296,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
     /// owner-write admission (#1230) — only the epoch fence applies to them.
     private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
-    /// A publish with no min-sync barrier: the floor check is trivially met.
+    /// A publish with no confirmation barrier: the floor check is trivially met.
     private static final int NO_REPLICA_FLOOR = 0;
     /// The base of every partition log's owner-epoch history (#1596, spec #1569 §7.5.2): 0 until operator
     /// resolution (AD14) can start a copy at a `BASE(d)` entry.
@@ -547,10 +554,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// As above, with a [ReplicationManager] instead of the explicit durable bound — the seal → WAL →
-    /// recovery chain behind a REAL min-sync acknowledgement gate, which is the only wiring in which a
+    /// recovery chain behind a REAL confirmation-factor acknowledgement gate, which is the only wiring in which a
     /// restart's visibility watermark is observable (#1387). An RF=1 or no-replication setup cannot see it:
     /// [org.pragmatica.aether.stream.replication.ReplicationManager#replicatedThrough] answers
-    /// `Long.MAX_VALUE` for `minSyncReplicas <= 1`, so visible and durable coincide there.
+    /// `Long.MAX_VALUE` for `confirmationFactor <= 1`, so visible and durable coincide there.
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 EvictionListener evictionListener,
                                                                 ReplicationManager replicationManager,
@@ -872,6 +879,34 @@ public final class StreamPartitionManager implements AutoCloseable {
         return createStream(config, CommitMode.ASYNC);
     }
 
+    /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)
+    /// or a durable entity's log — whose factors its caller resolved from the declaration through
+    /// [org.pragmatica.aether.slice.ReplicationDeclaration]. Identical to [#createStream(StreamConfig)], except that
+    /// a stream whose committed factors differ is refused ([ReplicationFactorsError.ChangedOnLiveResource], R8): a
+    /// live resource's replication policy is not changed in place, and keeping the old one silently would leave
+    /// the operator believing the new one holds. "Committed" is the value this node has APPLIED from KV
+    /// ([#appliedConfigs]), else a locally committed entry — so a node that never materialized the stream, or holds
+    /// it uncommitted, refuses rather than publishing its own factors over the committed ones; equal factors
+    /// proceed and re-publish the identical value. Not covered: two nodes declaring different factors for a stream
+    /// neither has yet seen committed — the later `Put` wins in KV (no compare-and-set exists for non-leader
+    /// writers). Both declarations come from one blueprint, so this needs two blueprint versions activating at once.
+    /// The management and system create paths keep [#createStream(StreamConfig)]: they carry no declaration.
+    public Result<Unit> createDeclaredStream(StreamConfig config) {
+        return committedReplication(config.name()).map(committed -> config.replication()
+                                                                          .sameAsCommitted("stream '" + config.name()
+                                                                                          + "'",
+                                                                                           committed)
+                                                                          .map(_ -> unit()))
+                                   .or(success(unit()))
+                                   .flatMap(_ -> createStream(config, CommitMode.SYNC));
+    }
+
+    private Option<ReplicationFactors> committedReplication(String streamName) {
+        return option(appliedConfigs.get(streamName)).orElse(() -> option(streams.get(streamName)).filter(StreamEntry::isCommitted)
+                                                                         .map(StreamEntry::config))
+                     .map(StreamConfig::replication);
+    }
+
     private Result<Unit> createStream(StreamConfig config, CommitMode commitMode) {
         return option(streams.get(config.name())).fold(() -> createFreshStream(config, commitMode),
                                                        existing -> ensureConfigCommitted(config, existing, commitMode));
@@ -909,13 +944,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       .flatMap(_ -> materializeFreshStream(config, commitMode));
     }
 
-    /// #1547 engine backstop: an APP stream is never created below `StreamConfig.MIN_REPLICAS` copies,
-    /// whichever path minted its config. System streams are exempt — their factor is the cluster size.
-    /// Applied on the create path only; a config already committed is adopted as-is.
+    /// #1564 engine backstop (R5): whichever path minted the config, its factors satisfy `1 <= CF <= RF`
+    /// ([ReplicationFactors#replicationFactors]). "RF below 3 only when declared, with a loud warning" is a
+    /// DECLARATION rule ([org.pragmatica.aether.slice.ReplicationDeclaration]) — the engine cannot know what was
+    /// declared. Applied on the create path only; a config already committed is adopted as-is.
     private static Result<Unit> checkReplicationMinimum(StreamConfig config) {
-        return isSystemStream(config.name()) || config.replicas() >= StreamConfig.MIN_REPLICAS
-               ? success(unit())
-               : new StreamError.ReplicasBelowMinimum(config.name(), config.replicas(), StreamConfig.MIN_REPLICAS).result();
+        return ReplicationFactors.replicationFactors(config.replicationFactor(),
+                                                     config.confirmationFactor())
+                                 .map(_ -> unit())
+                                 .mapError(cause -> new StreamError.ReplicationRefused(config.name(),
+                                                                                       cause));
     }
 
     /// #1549: every retention bound is at least 1, and the count is one the ring can index — refused before
@@ -978,7 +1016,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> enforceAggregateGuard(StreamConfig config, int clusterSize) {
-        var maxReplicas = Math.max(config.replicas(), maxDeclaredReplicas());
+        var maxReplicas = Math.max(config.replicationFactor(), maxDeclaredReplicas());
         var guard = (long) CLUSTER_PARTITION_GUARD_FACTOR * clusterSize * maxReplicas;
         var projected = currentAggregateSlots() + partitionSlots(config);
 
@@ -1235,6 +1273,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var streamName = put.cause().key().streamName();
         var config = put.cause().value().config();
 
+        appliedConfigs.put(streamName, config);
         streams.compute(streamName, (_, existing) -> reconcileCommittedConfig(config, existing));
     }
 
@@ -1250,10 +1289,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// A committed config for an ALREADY-materialized stream. The publish auto-create path
-    /// (`StreamRoutes.ensureStreamExists`) can win a race and materialize a `replicas=1/min-sync=0`
-    /// management DEFAULT before this committed app/blueprint config's notification is applied here; when
-    /// the incoming config carries STRICTLY STRONGER durability (more `replicas` or a higher
-    /// `minSyncReplicas`) AND the same partition count, its replication knobs are adopted onto the SAME
+    /// (`StreamRoutes.ensureStreamExists`) can win a race and materialize a management DEFAULT (the cluster's
+    /// replication defaults, #1564) before this committed app/blueprint config's notification is applied here;
+    /// when the incoming config carries STRICTLY STRONGER durability (a higher replication factor or a higher
+    /// confirmation factor) AND the same partition count, its replication factors are adopted onto the SAME
     /// partition rings / WALs — no data drop, no re-allocation. The comparison is monotonic-up so a stray
     /// later default never re-weakens an adopted app config (no ping-pong), and a live partition-count
     /// change — which cannot be re-shaped onto existing rings — is never adopted (the current entry is
@@ -1267,18 +1306,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
-        log.info("Adopting committed config for stream '{}' over prior local default: replicas {}->{}, minSyncReplicas {}->{}",
+        log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}",
                  config.name(),
-                 existing.config().replicas(),
-                 config.replicas(),
-                 existing.config().minSyncReplicas(),
-                 config.minSyncReplicas());
+                 existing.config().replicationFactor(),
+                 config.replicationFactor(),
+                 existing.config().confirmationFactor(),
+                 config.confirmationFactor());
 
         return existing.withConfig(config);
     }
 
     private static boolean strongerDurability(StreamConfig incoming, StreamConfig existing) {
-        return incoming.replicas() > existing.replicas() || incoming.minSyncReplicas() > existing.minSyncReplicas();
+        return incoming.replicationFactor() > existing.replicationFactor() || incoming.confirmationFactor() > existing.confirmationFactor();
     }
 
     @Contract
@@ -1286,6 +1325,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> remove) {
         var streamName = remove.cause().key().streamName();
 
+        appliedConfigs.remove(streamName);
         removeAndReleaseIfPresent(streamName);
     }
 
@@ -1436,7 +1476,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// through {@link #publishLocalAtFloor} — AFTER the owner admission, so a forward that lands on a
     /// non-owner is answered with the retryable [StreamError.NotOwnerAppend], never with a
     /// `NOT_ENOUGH_REPLICAS` about replication this node does not own. The caller reads `minAcks` from the
-    /// stream it knows; on the lazy-materialization path that stream was unknown (`min-sync` 0), so the
+    /// stream it knows; on the lazy-materialization path that stream was unknown (a confirmation factor of 0), so the
     /// retry takes its floor from the committed config it materializes from (#1290 review M1).
     ///
     /// The owner re-checks the stream's consistency ({@link #ensureWritableConsistency}, #1262) on BOTH
@@ -1478,7 +1518,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                            timestamp));
     }
 
-    /// The retry's replica floor is the committed config's own `min-sync - 1`: the caller's floor was read
+    /// The retry's replica floor is the committed config's own `CF - 1`: the caller's floor was read
     /// before the stream existed here and is therefore always 0 on this path.
     private Result<Long> materializeThenPublish(StreamConfig config,
                                                 String streamName,
@@ -1489,7 +1529,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                             partition,
                                                                             payload,
                                                                             timestamp,
-                                                                            config.minSyncReplicas() - 1));
+                                                                            config.confirmationFactor() - 1));
     }
 
     private Result<Long> writableAppend(String streamName, int partition, byte[] payload, long timestamp, int minAcks) {
@@ -1546,7 +1586,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// fsyncs. A publish whose fsync then fails has already been replicated.
     ///
     /// Visibility (#1235): the appended event is NOT readable by consumers and wakes no push listener
-    /// until it is durable here AND acknowledged by `minSyncReplicas - 1` distinct peers ([#refreshVisible]).
+    /// until it is durable here AND acknowledged by `confirmationFactor - 1` distinct peers ([#refreshVisible]).
     /// A failed frame write or fsync therefore never exposes the event, even when a peer acks it later.
     ///
     /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] when the committed owner of
@@ -1587,7 +1627,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
     /// offset order, so the whole prefix is. Visibility is recomputed BEFORE the publish returns, so an
-    /// owner-only (`minSyncReplicas <= 1`) publisher can read its own write. A ring released in the
+    /// owner-only (`confirmationFactor <= 1`) publisher can read its own write. A ring released in the
     /// meantime has no reader left to expose the event to, so its absence is ignored.
     @Contract
     private void ownerDurable(String streamName, int partition, long offset) {
@@ -1612,7 +1652,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
         ring.advanceVisible(Math.min(ring.durableOffset(),
-                                     replicationManager.replicatedThrough(ack, minSyncReplicasFor(ack.streamName()) - 1)));
+                                     replicationManager.replicatedThrough(ack,
+                                                                          confirmationFactorFor(ack.streamName()) - 1)));
     }
 
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
@@ -1620,10 +1661,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// is persisted — the production [ReplicaRegistry] writes through `WatermarkStore.NOOP` — so on an
     /// OWNER every peer is blind after a restart and the tail stays at the seed (the sealed bound) until a
     /// live ack covers it, exactly its state before the restart; a stream with no peer barrier
-    /// (`minSyncReplicas <= 1`) sees the whole tail at once, as before. A REPLICA's visible position is its
+    /// (`confirmationFactor <= 1`) sees the whole tail at once, as before. A REPLICA's visible position is its
     /// OWN durability (#1235 replica side), so its tail is visible at once. `NONE` — the role unresolved —
-    /// takes the owner rule: an unresolved role must not expose more than the owner would. The min-sync
-    /// count is read from `config`, not [#minSyncReplicasFor]: on a fresh create the entry is not in
+    /// takes the owner rule: an unresolved role must not expose more than the owner would. The confirmation
+    /// count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is not in
     /// `streams` yet, and the lookup would report `0` — no barrier — and expose the tail.
     @Contract
     private void restoreVisible(StreamConfig config, int partition, OffHeapRingBuffer ring) {
@@ -1632,7 +1673,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
                                                              replicationManager.replicatedThrough(config.name(),
                                                                                                   partition,
-                                                                                                  config.minSyncReplicas() - 1)));
+                                                                                                  config.confirmationFactor() - 1)));
         }
     }
 
@@ -1644,7 +1685,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                   materialized.ring()));
     }
 
-    /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
+    /// visible = min(durable, the highest offset `confirmationFactor - 1` distinct peers have acknowledged).
     /// Both inputs cover a contiguous prefix — group commit resolves in offset order, and a replica acks
     /// only its verified contiguous run (#260) — so the minimum is a prefix too. No advance is lost to a
     /// race between the fsync path and the ack path. The fsync path writes `durable` and then reads the
@@ -1656,12 +1697,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private long peerAcknowledgedThrough(String streamName, int partition) {
-        return replicationManager.replicatedThrough(streamName, partition, minSyncReplicasFor(streamName) - 1);
+        return replicationManager.replicatedThrough(streamName, partition, confirmationFactorFor(streamName) - 1);
     }
 
     /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE the
     /// in-section [#logAndReplicate] callback runs, so a dropped event is never WAL-written or replicated. The drop
-    /// FAILS the publish for any stream with durability semantics: `minSyncReplicas >= 2`, a partition
+    /// FAILS the publish for any stream with durability semantics: `confirmationFactor >= 2`, a partition
     /// WAL, an entity keyspace log (`entity:`), or a durable-topic / DLQ stream (`topic:`) — the last two by
     /// name, so an RF=1 entity keyspace without a WAL can never ack a lost write. The refusal is counted in
     /// [#refusedPublishDropsSinceBoot] and logged. `StreamConfig` carries no explicit best-effort flag, so
@@ -1681,7 +1722,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private boolean isBestEffort(String streamName, int partition) {
         return ! isDurableByName(streamName)
-               && minSyncReplicasFor(streamName) < 2
+               && confirmationFactorFor(streamName) < 2
                && walFor(streamName, partition).isEmpty();
     }
 
@@ -1725,7 +1766,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Replicated appends refused since boot because this replica's frozen ring could not fit the event
     /// (#1233). Each one stalls the partition on this replica: the receive handler stops the batch there,
-    /// backfill hits the same refusal and keeps the replica SYNCING, and an owner whose min-sync barrier
+    /// backfill hits the same refusal and keeps the replica SYNCING, and an owner whose confirmation barrier
     /// needs this replica times out its publishes — until the ring is rebuilt with pool budget.
     public long refusedReplicaDropsSinceBoot() {
         return refusedReplicaDropsSinceBoot.get();
@@ -2159,13 +2200,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         return replicationManager.ensureReplicaFloor(streamName, partition, minAcks);
     }
 
-    /// The configured `min-sync-replicas` write-ack requirement for `streamName` (in-sync count incl.
+    /// The configured `confirmation_factor` write-ack requirement for `streamName` (in-sync count incl.
     /// owner), or `0` when the stream is unknown. `<= 1` means no peer-ack barrier; `>= 2` means a
-    /// publish must await `minSyncReplicas - 1` distinct non-self replica acks. Read straight from the
+    /// publish must await `confirmationFactor - 1` distinct non-self replica acks. Read straight from the
     /// stream's committed config so the REST publish path can gate on the stream's durability setting.
-    public int minSyncReplicasFor(String streamName) {
+    public int confirmationFactorFor(String streamName) {
         return option(streams.get(streamName)).map(entry -> entry.config()
-                                                                 .minSyncReplicas())
+                                                                 .confirmationFactor())
                      .or(0);
     }
 
@@ -2262,7 +2303,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// WAL write is durable — at once when the partition has no WAL, otherwise at the batch barrier
     /// ([#syncReplicated]), which advances visibility to the offset it committed. A replica does not learn
     /// the owner's visible position, so this bounds a replica-local read by the replica's durability, not
-    /// by the owner's min-sync acks.
+    /// by the owner's confirmation acks.
     ///
     /// #1235 × #1244: requesting the record's own group commit here — one commit request per record — made
     /// the barrier's "one fsync per batch" hold only when the async commits happened to coalesce, so the
@@ -2397,7 +2438,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// #634 item 1: a replicated/backfilled record enters the SAME per-partition WAL the owner's publish
-    /// path uses, so the "replicated" half of `minSyncReplicas` is crash-durable rather than RAM-until-seal
+    /// path uses, so the "replicated" half of `confirmationFactor` is crash-durable rather than RAM-until-seal
     /// — before this, correlated power loss inside the unsealed window lost acked entity writes at ANY RF.
     ///
     /// Runs inside the partition's ordered append section, so frames land in offset order, and writes the
@@ -3114,8 +3155,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    long sealedThroughOffset) {}
 
     /// Adapt this manager to the narrow {@link org.pragmatica.aether.stream.replication.StreamCatalog}
-    /// consumed by `ReplicaSetController`. Exposes `(name, partitions, replicas, minSyncReplicas)` per
-    /// stream — placement uses `replicas` (the replication factor), while `minSyncReplicas` (the write-
+    /// consumed by `ReplicaSetController`. Exposes `(name, partitions, replicationFactor, confirmationFactor)` per
+    /// stream — placement uses `replicationFactor`, while `confirmationFactor` (the write-
     /// ack requirement) is carried for the in-sync gate. Neither is carried by {@link StreamInfo}, so
     /// the controller cannot be fed by `listStreams()` alone; this accessor reads them straight from
     /// each stream's config.
@@ -3128,8 +3169,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                              .map(entry -> entry.config())
                                              .map(config -> new StreamSpec(config.name(),
                                                                            config.partitions(),
-                                                                           config.replicas(),
-                                                                           config.minSyncReplicas()))
+                                                                           config.replicationFactor(),
+                                                                           config.confirmationFactor()))
                                              .toList();
             }
         };
@@ -3475,15 +3516,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static long partitionSlots(StreamConfig config) {
-        return (long) config.partitions() * config.replicas();
+        return (long) config.partitions() * config.replicationFactor();
     }
 
-    /// Largest declared `replicas` across known streams (min 1) — the `maxDeclaredReplicas` factor of the
+    /// Largest declared `replication_factor` across known streams (min 1) — the `maxDeclaredReplicas` factor of the
     /// aggregate guard `100 × nodes × maxDeclaredReplicas` (spec §10).
     private int maxDeclaredReplicas() {
         return Math.max(1,
                         streams.values().stream().mapToInt(entry -> entry.config()
-                                                                         .replicas()).max().orElse(1));
+                                                                         .replicationFactor()).max().orElse(1));
     }
 
     /// The aggregate partition guard `100 × clusterSize × maxDeclaredReplicas`, or `-1` when the cluster size
@@ -3828,7 +3869,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                           ? StreamClass.SYSTEM
                           : StreamClass.APP;
 
-        return ReplicaPlacement.replicationFactor(streamClass, config.replicas(), clusterSizeSupplier.getAsInt());
+        return ReplicaPlacement.replicationFactor(streamClass,
+                                                  config.replicationFactor(),
+                                                  clusterSizeSupplier.getAsInt());
     }
 
     /// Release a single materialized partition's ring on confirmed role loss (#265 increment 5). Atomic remove
@@ -4636,7 +4679,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         /// The record is placed DURABLE and NOT VISIBLE (#1387): it was read back from the fsynced WAL, so
         /// it is durable by construction, but nothing about its acks survived the restart. The plain
-        /// `append` exposed every replayed offset at once — an owner then served records its min-sync
+        /// `append` exposed every replayed offset at once — an owner then served records its confirmation
         /// peers never confirmed. Visibility is restored per role once the ring is installed
         /// ([StreamPartitionManager#restoreVisible]).
         private static Result<Unit> placeRecord(String streamName,

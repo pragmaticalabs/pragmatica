@@ -169,6 +169,33 @@ class StreamApiRoutesPublishPartitionTest {
         }
     }
 
+    /// #1564 (R3, v1680 N6): the FIRST publish to a stream that publish auto-creates takes the cluster default CF 2,
+    /// and no peer has registered for the new partition yet, so it is refused before the append. Over REST that is a
+    /// typed 503 (retryable), not a 500, and nothing is written. The manager's replication manager has an empty
+    /// registry — exactly the state right after creation.
+    @Test
+    void publish_firstToAnAutoCreatedStream_beforeAnyPeerRegisters_is503Retryable_andWritesNothing() {
+        var registry = org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry();
+        var replication = org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager(new org.pragmatica.consensus.NodeId("node-0"),
+                                                                                                        registry);
+        var manager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> org.pragmatica.lang.Result.unitResult(), replication);
+        try {
+            routesFor(manager).publishEvent(NAMESPACE, STREAM, VERSION, new StreamApiRoutes.PublishRequest("payload", null))
+                              .await()
+                              .onSuccess(response -> fail("with no registered peer a CF 2 publish must be refused, got offset "
+                                                          + response.offset()))
+                              .onFailure(cause -> {
+                                  assertThat(cause).isInstanceOf(ManagementServerError.PublishRetryable.class);
+                                  assertThat(((ManagementServerError.PublishRetryable) cause).httpStatus())
+                                          .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                              });
+
+            assertThat(manager.nextExpectedOffset(STREAM_ADDRESS, 0)).as("refused before the append").isZero();
+        } finally {
+            manager.close();
+        }
+    }
+
     private static RetentionPolicy retention() {
         return RetentionPolicy.retentionPolicy();
     }

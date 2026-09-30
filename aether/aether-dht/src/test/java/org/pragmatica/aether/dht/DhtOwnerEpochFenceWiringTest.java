@@ -91,10 +91,10 @@ class DhtOwnerEpochFenceWiringTest {
         @Test
         void putVersioned_deposedOwnerStaleEpoch_rejectedAtReplica() {
             // A new owner took over at epoch 8:0 — the replica observes that committed ownership.
-            commitOwnership(CURRENT, Epoch.epoch(8, 0), 2L);
+            commitOwnership(CURRENT, Epoch.epoch(0L, 8, 0), 2L);
 
             // The deposed owner (still believing it owns "core") writes at its old epoch 7:0.
-            engine.putVersioned(key("k"), value("deposed-write"), 9_999L, 7L, 0L)
+            engine.putVersioned(key("k"), value("deposed-write"), 9_999L, 0L, 7L, 0L)
                   .await()
                   .onSuccess(_ -> fail("Deposed owner's stale-epoch write must be rejected at the replica"))
                   .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.StaleEpochWrite.class));
@@ -102,9 +102,9 @@ class DhtOwnerEpochFenceWiringTest {
 
         @Test
         void putVersioned_currentOwnerEpoch_acceptedAtReplica() {
-            commitOwnership(CURRENT, Epoch.epoch(8, 0), 2L);
+            commitOwnership(CURRENT, Epoch.epoch(0L, 8, 0), 2L);
 
-            engine.putVersioned(key("k"), value("current-write"), 100L, 8L, 0L)
+            engine.putVersioned(key("k"), value("current-write"), 100L, 0L, 8L, 0L)
                   .await()
                   .onFailure(c -> fail("Current owner's write must be accepted: " + c.message()))
                   .onSuccess(written -> assertThat(written).isTrue());
@@ -115,7 +115,7 @@ class DhtOwnerEpochFenceWiringTest {
     class WriterStamping {
         @Test
         void kvOwnerEpochSource_readsCommittedOwnerEpoch_forStamping() {
-            commitOwnership(CURRENT, Epoch.epoch(8, 3), 2L);
+            commitOwnership(CURRENT, Epoch.epoch(0L, 8, 3), 2L);
 
             var source = KvOwnerEpochSource.kvOwnerEpochSource(store, CORE);
 
@@ -133,17 +133,17 @@ class DhtOwnerEpochFenceWiringTest {
 
         @Test
         void stampThenEnforce_currentOwnerStampAccepted_thenDeposedStampRejected() {
-            commitOwnership(CURRENT, Epoch.epoch(8, 0), 2L);
+            commitOwnership(CURRENT, Epoch.epoch(0L, 8, 0), 2L);
             var source = KvOwnerEpochSource.kvOwnerEpochSource(store, CORE);
 
             // Current owner stamps with the source and is accepted.
-            engine.putVersioned(key("k"), value("v1"), 100L, source.currentEpochTerm(), source.currentEpochCounter())
+            engine.putVersioned(key("k"), value("v1"), 100L, source.currentEpochIncarnation(), source.currentEpochTerm(), source.currentEpochCounter())
                   .await()
                   .onFailure(c -> fail("Current owner stamp must be accepted: " + c.message()))
                   .onSuccess(written -> assertThat(written).isTrue());
 
             // A deposed owner at the prior epoch is rejected even with a newer HLC version.
-            engine.putVersioned(key("k"), value("v2"), 999L, 7L, 9L)
+            engine.putVersioned(key("k"), value("v2"), 999L, 0L, 7L, 9L)
                   .await()
                   .onSuccess(_ -> fail("Deposed stamp must be rejected"))
                   .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.StaleEpochWrite.class));
@@ -155,10 +155,10 @@ class DhtOwnerEpochFenceWiringTest {
         @Test
         void notificationFedHighWater_thenStaleWriteRejected() {
             // Drive the high-water via the same notification path AetherNode wires (onDhtOwnershipPut).
-            var ownership = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(CURRENT, CORE, Epoch.epoch(8, 0), 2L, HlcTimestamp.ZERO);
+            var ownership = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(CURRENT, CORE, Epoch.epoch(0L, 8, 0), 2L, HlcTimestamp.ZERO);
             highWater.advance(OwnershipDomain.dhtPartition(CORE), ownership.fenceEpoch());
 
-            engine.putVersioned(key("k"), value("stale"), 1L, 7L, 0L)
+            engine.putVersioned(key("k"), value("stale"), 1L, 0L, 7L, 0L)
                   .await()
                   .onSuccess(_ -> fail("Stale epoch below the advanced high-water must be rejected"))
                   .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.StaleEpochWrite.class));

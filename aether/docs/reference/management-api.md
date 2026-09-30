@@ -403,7 +403,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 ]
 ```
 
-**Event Types** (the 32 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
+**Event Types** (the 36 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
 
 - `NODE_JOINED` -- a node joined the cluster (sourced from the transport `PeerJoined` handshake; leader-gated). Severity INFO.
 - `NODE_LEFT` -- a node gracefully departed (consensus-committed decommission/drain decision; leader-gated). Severity WARNING.
@@ -421,7 +421,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `AUTO_ROLLBACK` -- the leader committed an automatic rollback. `details`: `artifact`, `from`, `to`, `rollbackNumber`, `windowMs`, `requestId`, and `defects.<nodeId>` per hosting node. Severity CRITICAL.
 - `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
 - `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
-- `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
+- `COMMUNITY_SCALE_REQUEST` -- **not currently produced** (#927): no code emits it; the type stays wire-pinned (tag 263) and never appears.
 - `COMMUNITY_METRICS_SNAPSHOT` -- a community-tier metrics snapshot was recorded. Severity INFO.
 - `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
 - `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
@@ -429,14 +429,25 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `BACKUP_CREATED` / `BACKUP_RESTORED` -- no producer since the backup API was removed (#676); the types stay wire-pinned (tags 258/259) and never appear.
 - `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
 - `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
-- `STREAM_REGISTERED` -- a stream was registered (carries the stream `ResourceAddress`). Severity INFO.
-- `STREAM_DELETED` -- a stream was deleted (carries the stream `ResourceAddress`). Severity INFO.
+- `STREAM_REGISTERED` / `STREAM_DELETED` -- **not currently produced** (#927): the stream-lifecycle emission points were never wired, so neither appears; the types (carrying the stream `ResourceAddress`) stay wire-pinned (tags 288/286).
 - `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/v1/alerts`. Severity per inject.
 - `TRACE_INJECTED` -- an operator-injected synthetic invocation trace, replicated cluster-wide so every node serves it on `/api/v1/traces`.
 - `SELF_DRAIN_INITIATED` -- the draining node reports its own drain start (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
+- `THRESHOLD_BREACHED` -- a metric crossed an alert threshold (owner-gated; `details` carries `metric`, `nodeId`, `value`, `threshold`, `alertSeverity`). The durable alert HISTORY, not the source of truth for what is firing now. Severity follows the alert (WARNING or CRITICAL).
+- `THRESHOLD_CLEARED` -- a breached metric fell below its hysteresis-adjusted clear point (owner-gated; `details` carries `metric`, `nodeId`, `value`, `clearedFrom`, `clearPoint`). Severity INFO.
+- `COMMUNITY_MINTED` -- the leader minted a worker community: its committed `CommunityValue` appeared (`details`: `communityId`, `state`, `targetSize`, `role`). Severity INFO.
+- `COMMUNITY_STATE_CHANGED` -- a community's committed lifecycle state changed; one event per edge (`details`: `communityId`, `from`, `to`, `targetSize`). `FORMING -> ACTIVE` is "formed", `ACTIVE -> DEGRADED` (severity WARNING, the only non-INFO edge) is live membership falling below the viability floor, `DEGRADED -> ACTIVE` is recovery, `-> DISSOLVED` is retirement by placement policy. Severity INFO otherwise.
+- `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO. A force-killed worker did not produce `COMMUNITY_MEMBER_LEFT` within 180 s of the kill (one Ember run, #1652; the core raised no worker leave, #1717). From the source, not measured: the roster shrinks only when the core deletes the member's activation directive (a worker leave, a decommission or a self-shutdown) and the governor's next authority write commits the smaller roster. [unverified: no live trigger of `COMMUNITY_MEMBER_LEFT` is demonstrated yet; the roster diff that emits it is pinned at unit level]
+- `OPERATOR_WARNING` -- a condition an operator needs to see, raised by the node that observed it (per-node fact, NOT leader-gated; see below). Severity WARNING or CRITICAL, fixed per code.
+
+The four community events are derived from committed records, so every node observes them and only the cluster-events owner publishes
+them, not every node. Delivery is the owner-gated contract of `guarantees.md` row 14b: at-least-once across an ownership handover (a raise
+on both sides appears twice, with distinct `eventId`s), and dropped and counted while ownership is unresolvable. They record what the core
+can see. A worker that loses the core fences itself locally and writes nothing, so no `-> DISSOLVED` event exists for
+that case; see [`GET /api/v1/cluster/communities`](#get-apiv1clustercommunities) for how that boundary looks.
 
 `GENERATION_CHANGED` no longer exists (#722). It was documented and consumer-wired but never produced: the
 v1 spec's leader-resident reconciler that would have emitted it was never built, and the epoch the cluster
@@ -445,9 +456,13 @@ event per advance would be a 1 Hz stream with no information beyond "the leader 
 changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on demand from
 `GET /api/v1/cluster/generation`.
 
+**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
+
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
+
+`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node; `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes: `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused), `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally), `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy). Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
@@ -760,7 +775,8 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint **
 
 `rejectedStreamBindings` (#1336) appears only when the publish accepted the blueprint WITHOUT binding one
 or more `[streams.*]` declarations — it is **omitted when empty**, so read it as absent-or-list. Shape and
-rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy).
+rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy). `warnings` (#1564) follows
+the same absent-or-list rule; see the same section.
 
 > **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
@@ -951,9 +967,28 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
       "rule": "version-and-source-mutually-exclusive",
       "message": "Stream resource 'audit-events' must not set both 'source' and 'version'"
     }
+  ],
+  "warnings": [
+    {
+      "field": "[streams.orders]",
+      "rule": "replication-factor-below-three",
+      "message": "stream 'orders' (replication_factor=2, confirmation_factor=2): replication_factor is below 3"
+    }
   ]
 }
 ```
+
+#1564 — **`warnings` lists every deploy-time warning**, each by its TOML `field`, the `rule` (the warning's
+code) and the `message`; like `rejectedStreamBindings` it is omitted when empty. A warning never blocks
+the publish. Besides the stream validator's own warnings it carries the replication-policy warnings of every
+stream, durable topic and durable entity declaration (`guarantees.md` §4a):
+`replication-factor-below-three` (an explicitly declared `replication_factor` below 3 — LOUD: under
+terminal removal it loses the partition when that many nodes die), `confirmation-equals-replication-factor`
+(losing any one replica refuses writes) and `confirmation-factor-owner-only` (`confirmation_factor = 1`: the
+owner's death loses records it acknowledged but had not replicated). Each is also logged at WARN on the
+node that handled the publish. The cluster event for the LOUD warnings is not emitted yet (it is wired by
+#1617). The same key is returned by [`POST /api/v1/blueprints`](#post-apiv1blueprints) and
+`POST /api/v1/blueprints/publish`.
 
 #1336 — **`rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
 blueprint WITHOUT binding**, each by its TOML `field` (the section the parser refused, `[streams.<alias>]`),
@@ -970,7 +1005,7 @@ by one `[rule] field — message` line per failure (not the structured triples a
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
 exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
-`partitions-over-ceiling`, `replicas-below-minimum` (`replicas` under 3, #1547), `replication-invalid`, `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
+`partitions-over-ceiling`, `replication-policy-invalid` (#1564: `1 <= confirmation_factor <= replication_factor` does not hold, or a `replication_factor` below 3 came from the cluster default rather than the declaration), `replication-exceeds-core-count` (#1564: `replication_factor` above the cluster's desired core count), `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549; the removed #1564 keys `replicas`, `min-sync-replicas` and `min_sync_replicas` land here, naming `replication_factor` / `confirmation_factor`), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
 names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
@@ -2833,7 +2868,7 @@ Complete the deployment (finalize new version, decommission old). Requires leade
 
 Get live cluster topology with per-node details. Returns core/passive/worker counts from the actual connected topology (not static boot-time config).
 
-When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.reportedActiveNodeCount()` and the `epoch` field is omitted.
+When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"incarnation:rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.reportedActiveNodeCount()` and the `epoch` field is omitted.
 
 The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul spec item 6) exposes the queried node's authoritative per-member `MembershipFsm` truth: lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`), the SWIM incarnation high-water mark, and the last-known descriptor `role` / `source` labels. DEAD members are included (retained for incarnation-fenced rejoin), so a remote run reads membership truth without `docker logs`.
 
@@ -2869,7 +2904,7 @@ Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted
       "address": "0.0.0.0:7000"
     }
   ],
-  "epoch": "7:142",
+  "epoch": "1:7:142",
   "fsmMembers": [
     {
       "nodeId": "node-1",
@@ -3009,8 +3044,8 @@ Committed ownership + fence diagnostics (#345 item 1f) — for every partition/k
 {
   "domain": "stream",
   "entries": [
-    {"identity": "orders:0", "owner": "core-1", "epoch": {"rabiaTerm": 7, "localCounter": 3}, "highWater": {"rabiaTerm": 7, "localCounter": 3}, "fenced": false},
-    {"identity": "orders:1", "owner": "core-2", "epoch": {"rabiaTerm": 7, "localCounter": 1}, "highWater": {"rabiaTerm": 8, "localCounter": 0}, "fenced": true}
+    {"identity": "orders:0", "owner": "core-1", "epoch": {"incarnation": 1, "rabiaTerm": 7, "localCounter": 3}, "highWater": {"incarnation": 1, "rabiaTerm": 7, "localCounter": 3}, "fenced": false},
+    {"identity": "orders:1", "owner": "core-2", "epoch": {"incarnation": 1, "rabiaTerm": 7, "localCounter": 1}, "highWater": {"incarnation": 1, "rabiaTerm": 8, "localCounter": 0}, "fenced": true}
   ]
 }
 ```
@@ -3021,8 +3056,8 @@ Committed ownership + fence diagnostics (#345 item 1f) — for every partition/k
 | `entries[]` | One row per committed ownership atom, sorted by `identity` |
 | `entries[].identity` | Domain-specific partition/key: community id (`community`), partition id (`dht`), or `{stream}:{partition}` (`stream`) |
 | `entries[].owner` | Committed owner `NodeId` (governor id for `community`) |
-| `entries[].epoch` | Committed fence `Epoch` (`fenceEpoch`) as `{rabiaTerm, localCounter}` — the fencing token |
-| `entries[].highWater` | This node's LOCAL per-domain monotonic epoch high-water as `{rabiaTerm, localCounter}`; equals `epoch` in steady state, floors to `epoch` when the arc has not been observed |
+| `entries[].epoch` | Committed fence `Epoch` (`fenceEpoch`) as `{incarnation, rabiaTerm, localCounter}` — the fencing token |
+| `entries[].highWater` | This node's LOCAL per-domain monotonic epoch high-water as `{incarnation, rabiaTerm, localCounter}`; equals `epoch` in steady state, floors to `epoch` when the arc has not been observed |
 | `entries[].fenced` | `true` when `highWater` is strictly after `epoch` — the deposed-owner window in which this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here (`false` in steady state) |
 
 ### GET /api/v1/cluster/generation
@@ -3034,7 +3069,7 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
 **Response (snapshot present):**
 ```json
 {
-  "epoch": { "rabiaTerm": 7, "localCounter": 142 },
+  "epoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 142 },
   "rabiaTerm": 7,
   "mode": "HIERARCHICAL",
   "quiescence": "QUIESCED",
@@ -3048,8 +3083,8 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
         "port": 6000,
         "lifecycle": "ON_DUTY",
         "healthHint": "HEALTHY",
-        "joinedEpoch": { "rabiaTerm": 7, "localCounter": 0 },
-        "lastSeenEpoch": { "rabiaTerm": 7, "localCounter": 142 }
+        "joinedEpoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 0 },
+        "lastSeenEpoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 142 }
       }
     ]
   },
@@ -3058,11 +3093,11 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
       "communityId": "worker-pool-a",
       "governorNodeId": "node-6",
       "communityTerm": 3,
-      "communityEpoch": { "rabiaTerm": 3, "localCounter": 42 },
+      "communityEpoch": { "incarnation": 1, "rabiaTerm": 3, "localCounter": 42 },
       "memberCount": 4,
       "health": { "healthy": 4, "suspected": 0, "faulty": 0 },
       "partitions": ["worker-pool-a"],
-      "lastAckAtCore": { "rabiaTerm": 7, "localCounter": 140 },
+      "lastAckAtCore": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 140 },
       "quiescence": "QUIESCED",
       "quiescenceDetail": ""
     }
@@ -3072,7 +3107,7 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
       "partitionId": "core",
       "ownerNodeId": "node-1",
       "ownerCommunityId": "core",
-      "ownerEpoch": { "rabiaTerm": 7, "localCounter": 0 },
+      "ownerEpoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 0 },
       "ownershipTerm": 1
     }
   ]
@@ -3098,7 +3133,7 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
 Block until the queried node has `observedEpoch >= requested` AND the local snapshot reports cluster-wide quiescence at that epoch. Useful for tests and operators that need to wait for a known steady state before proceeding.
 
 **Query parameters:**
-- `epoch` — required, in `term:counter` form (e.g. `7:142`).
+- `epoch` — required, in `incarnation:term:counter` form (e.g. `1:7:142`); the cluster incarnation leads (#1529), and the pre-#1529 `term:counter` form is refused with `400`.
 - `timeout` — optional, default `30s`, max `120s`. Plain numbers are treated as seconds; suffix `s` is permitted.
 
 **Status codes:**
@@ -3109,7 +3144,7 @@ Block until the queried node has `observedEpoch >= requested` AND the local snap
 **Response (success):**
 ```json
 {
-  "epoch": "7:142",
+  "epoch": "1:7:142",
   "quiescence": "QUIESCED",
   "waitedMs": 1234
 }
@@ -3136,6 +3171,51 @@ List active community governors (worker pool leaders elected via SWIM).
 ```
 
 Returns empty list if no worker communities exist (all nodes are core).
+
+### GET /api/v1/cluster/communities
+
+List worker communities: lifecycle state, target size, roster and the leader's live-member count (#1652).
+Served by the leader. `GET /api/v1/cluster/communities/{id}` returns one entry, or 404 when no committed
+record exists for the id.
+
+**Response:**
+```json
+{
+  "communities": [
+    {
+      "communityId": "default:local:0",
+      "state": "ACTIVE",
+      "targetSize": 4,
+      "role": "WORKER",
+      "createdAt": 1759000000000,
+      "dissolvedAt": null,
+      "governorId": "node-6",
+      "members": ["node-6", "node-7", "node-8", "node-9"],
+      "memberCount": 4,
+      "communityTerm": 2,
+      "liveMembers": 3
+    }
+  ]
+}
+```
+
+Each entry is the union of two committed records: `CommunityValue` (`state`, `targetSize`, `role`,
+`createdAt`, `dissolvedAt`) and the governor's roster (`governorId`, `members`, `communityTerm`). A
+community known to only one of them shows the other half as `null`.
+
+- `state` is one of `FORMING`, `ACTIVE`, `DEGRADED`, `DISSOLVED`. `DISSOLVING` exists in the state enum
+  but nothing writes it today (#1656), so it is not a state you will see.
+- `liveMembers` is **the leader's instantaneous view, not committed state**: roster members still directed
+  to the community that the leader has not observed absent. It is the same count the leader compares
+  against the viability floor to move a community between `ACTIVE` and `DEGRADED`. It is `null` when the
+  serving node cannot observe it (not the leader, or no roster), never a stand-in `0`.
+
+**What the core cannot see.** A worker that loses contact with the core fences itself locally: it stops
+serving and writes nothing, because it cannot reach the core. The core therefore never records that
+community as `DISSOLVED`. What it shows is the consequence it observes: `liveMembers` drops and the
+community moves to `DEGRADED` once live membership falls below the floor. The worker's own fence is visible
+only on that worker, in the `coreAbsence` field of its `GET /api/v1/cluster/membership` (a LOCAL route; ask
+the worker directly).
 
 ---
 
@@ -5525,6 +5605,10 @@ through consensus. The created stream is then visible in `GET /api/v1/streams` a
 `GET /api/v1/streams/namespaces` on every node. (Before #968 this route only materialized the stream's
 ring buffers and answered `"created"` for a stream no catalog read could find.)
 
+The body carries no replication factors: a stream created here takes the committed cluster
+`[replication]` defaults (#1564; built-in `replication_factor` 3, `confirmation_factor` 2), so a publish
+to it needs one registered peer. See `bootstrap-config.md` and `guarantees.md` §4a.
+
 Outcomes, by status:
 
 | Outcome | Status | Body |
@@ -5799,6 +5883,13 @@ never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemRespons
 dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
 `NOT_ATTEMPTED` with `200` — see below.
 
+A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
+for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
+registers only after its config commits (the default `confirmation_factor` is 2 since #1564) — answers
+**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. The batch form
+reports the item `OUTCOME_UNKNOWN` with the cause. `[mechanism: ManagementServerError.PublishRetryable; pinned by
+StreamApiRoutesPublishPartitionTest]`
+
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
@@ -5954,7 +6045,7 @@ refusal as the routes above, instead of the earlier silent empty-bindings publis
 `system`-namespace source is unaffected, because its engine key is the bare name.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
-(partitions, replicas, min-sync, retention) that the resource later finds already in place. For
+(partitions, replication factors, retention) that the resource later finds already in place. For
 `entity:`, the name can even exactly match a real keyspace log, because keyspace names may contain `:`.
 `[mechanism: the prefixes are declared once as StreamEngineKey.RESERVED_KIND_PREFIXES and pinned against
 their canonical owners; ReservedStreamNames.requireUnreserved runs before each Management-API mint, and

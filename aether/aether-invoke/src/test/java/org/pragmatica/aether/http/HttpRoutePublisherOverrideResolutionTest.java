@@ -183,6 +183,41 @@ class HttpRoutePublisherOverrideResolutionTest {
         }
     }
 
+    /// #1659 layer B, through the PRODUCTION publisher (v1670 F5: the node-level tests reach layer B through a stub).
+    @Nested
+    class IngressLayerProductionPath {
+        /// The published entry carries the DECLARED policy beside the enforced one, so a non-hosting ingress can
+        /// re-apply ITS committed overrides to the declared policy -- and a relaxed override relaxes there. Were the
+        /// declared field the enforced one, the ingress would only ever see the override-strengthened policy.
+        @Test
+        void publishedEntry_carriesTheDeclaredPolicy_besideTheOverriddenOne() {
+            publisher.updateSecurityOverrides(lockdownToAdmin());
+
+            assertThat(cluster.lastPublishedSecurity()).as("enforced").isEqualTo("ROLE:admin");
+            assertThat(cluster.lastPublishedDeclaredSecurity()).as("declared, before any override").isEqualTo("PUBLIC");
+        }
+
+        /// A route this node does NOT host is judged by this node's committed overrides, applied to its declared
+        /// policy -- the answer `AppHttpServer.remoteRoutePolicy` reads.
+        @Test
+        void committedOverride_appliesThisNodesOverrides_toARouteItDoesNotHost() {
+            publisher.updateSecurityOverrides(SecurityOverrides.securityOverrides(List.of(SecurityOverrides.Entry.entry("GET /elsewhere/*",
+                                                                                                                         "role:admin")),
+                                                                                  SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(publisher.committedOverride("GET", "/elsewhere/", SecurityPolicy.unspecified()).or(SecurityPolicy.publicRoute()))
+                    .isEqualTo(SecurityPolicy.roleRequired("admin"));
+        }
+
+        /// CONTROL: no committed override matches -- empty, so the ingress falls back to the replicated policy.
+        @Test
+        void committedOverride_isEmpty_whenNoOverrideMatches() {
+            publisher.updateSecurityOverrides(lockdownToAdmin());
+
+            assertThat(publisher.committedOverride("GET", "/elsewhere/", SecurityPolicy.unspecified()).isEmpty()).isTrue();
+        }
+    }
+
     /// SF-4. `updateSecurityOverrides` is called by `SecurityOverrideSynchronizer.resync`, which runs
     /// once per KV notification ON EVERY NODE. An unconditional republish therefore turns one
     /// `AppBlueprintKey` put anywhere in the cluster into "every node rewrites every local artifact's
@@ -314,6 +349,16 @@ class HttpRoutePublisherOverrideResolutionTest {
                           .map(NodeRoutesValue.class::cast)
                           .reduce((first, second) -> second)
                           .map(value -> value.routes().getFirst().security())
+                          .orElseThrow(() -> new AssertionError("no route entry was ever published"));
+        }
+
+        String lastPublishedDeclaredSecurity() {
+            return applied.stream()
+                          .filter(CapturingCluster::isRoutePut)
+                          .map(command -> ((KVCommand.Put<?, ?>) command).value())
+                          .map(NodeRoutesValue.class::cast)
+                          .reduce((first, second) -> second)
+                          .map(value -> value.routes().getFirst().declaredSecurity())
                           .orElseThrow(() -> new AssertionError("no route entry was ever published"));
         }
 

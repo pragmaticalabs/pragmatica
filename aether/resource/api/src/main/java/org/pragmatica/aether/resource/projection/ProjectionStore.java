@@ -106,7 +106,8 @@ public interface ProjectionStore<S> {
 
     /// Identifies ONE rebuild's rewind. Only cursor reports stamped with the current rewind's token are
     /// honoured, so a report produced before it — however late it arrives — cannot move the replay.
-    record RewindToken(long generation, long rewind) {}
+    /// `incarnation` is the cluster incarnation (#1529) the rewind was minted in.
+    record RewindToken(long incarnation, long generation, long rewind) {}
 
     /// Begin `generation`'s rewind under `token` — minted by the RUNTIME from the group's committed
     /// cursor state (`Projection.ReplayCursor#mintRewindToken`), never by the store: a store-local counter

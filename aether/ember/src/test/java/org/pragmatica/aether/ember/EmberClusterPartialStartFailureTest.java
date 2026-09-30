@@ -31,9 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// too, and that is exactly the old behaviour. Reverting `EmberCluster.abortStart` turns this red
 /// with a 60-second `Timeout` cause instead of the bind failure.
 class EmberClusterPartialStartFailureTest {
-    private static final int BASE_PORT = 25600;
-    private static final int BASE_MGMT_PORT = 25640;
-    private static final int BASE_APP_HTTP_PORT = 25680;
+    /// #939: a probed block, not fixed ports: a fixed port collides with whatever else holds it (CI runs a
+    /// module-parallel reactor), and this test's own failure mode IS a bind failure, so a collision would read as
+    /// the behaviour under test. The two management ports it occupies on purpose are bound by the test itself.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(49100, 49900, 200, 3, 40, 80);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(30).seconds();
 
@@ -56,16 +57,19 @@ class EmberClusterPartialStartFailureTest {
     @Test
     @Timeout(150)
     void start_settlesWithTheBindFailure_whenTwoOfThreeNodesCannotBindTheirManagementPort() throws IOException {
-        // Slots are assigned in node order: node 1 -> BASE_MGMT_PORT, node 2 -> +1, node 3 -> +2.
-        try (var taken1 = new ServerSocket(BASE_MGMT_PORT); var taken2 = new ServerSocket(BASE_MGMT_PORT + 1)) {
-            cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "partial");
+        var base = EmberTestPorts.freeBase(PORTS);
+        var baseMgmtPort = base + PORTS.mgmtOffset();
+
+        // Slots are assigned in node order: node 1 -> baseMgmtPort, node 2 -> +1, node 3 -> +2.
+        try (var taken1 = new ServerSocket(baseMgmtPort); var taken2 = new ServerSocket(baseMgmtPort + 1)) {
+            cluster = emberCluster(3, base, baseMgmtPort, base + PORTS.appOffset(), "partial");
             var outcome = cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started");
 
             assertThat(outcome).contains("Address already in use");
             assertStartFailureSnapshotSurvivedTheAbort();
         }
         // The survivor was stopped as part of the abort: its management port is reclaimable.
-        try (var reclaimed = new ServerSocket(BASE_MGMT_PORT + 2)) {
+        try (var reclaimed = new ServerSocket(baseMgmtPort + 2)) {
             assertThat(reclaimed.isBound()).isTrue();
         }
     }

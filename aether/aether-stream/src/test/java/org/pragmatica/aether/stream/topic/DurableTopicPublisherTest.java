@@ -104,8 +104,7 @@ class DurableTopicPublisherTest {
                                              .withExtension(StreamPartitionManager.class, manager)
                                              .withExtension(Serializer.class, STRING_BYTES);
             var spec = DurableTopicSpec.durableTopicSpec(2,
-                                                         3,
-                                                         3,
+                                                         new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), java.util.List.of()),
                                                          TimeSpan.timeSpan("7d").unwrap()).unwrap();
 
             DurableTopicSubstrate.durablePublisher("org.example:orders:1.0.0", spec, context)

@@ -20,9 +20,9 @@ import static org.pragmatica.lang.Result.success;
 /// #430 publish-under-reshuffle chaos test.
 ///
 /// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.multipart-events`
-/// resource (declared in `resources.toml` with partitions=4, replicas=3, min-sync-replicas=2 and
-/// count-based retention so a slow consumer is never evicted). The declared min-sync-replicas=2 is meant
-/// to make each publish await one replica ack; it does not reach the runtime until #1549. Exposes two
+/// resource (declared in `resources.toml` with partitions=4, replication_factor=3,
+/// confirmation_factor=2 and count-based retention so a slow consumer is never evicted). The declared
+/// confirmation_factor=2 makes each publish await one replica ack. Exposes two
 /// app-HTTP routes:
 ///
 ///   - `POST /api/stream-mp/publish` — append one payload; a keyless publish round-robins across the

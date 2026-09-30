@@ -289,9 +289,10 @@ public interface SystemTags {
         // so the clear edge must be its own event.
         pin(table, 290, "org.pragmatica.aether.api.ClusterEvent.ThresholdBreached");
         pin(table, 291, "org.pragmatica.aether.api.ClusterEvent.ThresholdCleared");
+        // #1574: generic operator warning; the condition is a `details.code`, not a wire type.
+        pin(table, 292, "org.pragmatica.aether.api.ClusterEvent.OperatorWarning");
         // #1573: appended, like 290/291 — the committed automatic rollback, CRITICAL, with its evidence.
-        // 293, not 292: open PR branch feat/1574-operator-warning pins 292 (OperatorWarning); skipping it
-        // keeps the two appends from colliding whichever merges first.
+        // 293, not 292: 292 was reserved for #1574's OperatorWarning, which merged after it.
         pin(table, 293, "org.pragmatica.aether.api.ClusterEvent.AutoRollback");
         // HTTP handling and forwarding  [base 512]
         pin(table, 512, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest");
@@ -557,6 +558,11 @@ public interface SystemTags {
         pin(table, 1715, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryState");
         pin(table, 1716, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReason");
         pin(table, 1717, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind");
+        // community lifecycle cluster events (#1652) — claimed range from 1740
+        pin(table, 1740, "org.pragmatica.aether.api.ClusterEvent.CommunityMinted");
+        pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");
+        pin(table, 1742, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined");
+        pin(table, 1743, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // ---- 2114..16383 RESERVED ----

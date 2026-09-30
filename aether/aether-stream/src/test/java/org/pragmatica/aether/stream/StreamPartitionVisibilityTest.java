@@ -273,7 +273,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void failedFrameWrite_eventNeverBecomesVisible() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 3, 0);
+            createStream(manager, 3, 1);
             var notifications = listen(manager);
             var channel = FailingChannel.inject(walOf(manager));
 
@@ -290,7 +290,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void failedFsync_eventNeverBecomesVisible() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 3, 0);
+            createStream(manager, 3, 1);
             var notifications = listen(manager);
             var channel = FailingChannel.inject(walOf(manager));
 
@@ -404,7 +404,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void walPublish_isVisibleWhenPublishReturns() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 3, 0);
+            createStream(manager, 3, 1);
 
             publish(manager, "e0");
 

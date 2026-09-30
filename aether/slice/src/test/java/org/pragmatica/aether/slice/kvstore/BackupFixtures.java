@@ -230,7 +230,7 @@ final class BackupFixtures {
                        new Fixture(EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5),
                                    EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab")),
                        new Fixture(ClusterIncarnationKey.clusterIncarnationKey(),
-                                   ClusterIncarnationValue.clusterIncarnationValue("01K4ZT9Q6W3X8Y2B7C5D1E0F9G", 3)),
+                                   ClusterIncarnationValue.clusterIncarnationValue("01K4ZT9Q6W3X8Y2B7C5D1E0F9G", 3, "01K4ZTA0000000000000000000")),
                        new Fixture(ScheduledTaskPauseKey.scheduledTaskPauseKey("orders.cleanup",
                                                                                artifact("org.example:orders-slice:1.2.3"),
                                                                                MethodName.methodName("purgeExpired")
