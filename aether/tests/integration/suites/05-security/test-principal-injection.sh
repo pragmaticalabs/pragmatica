@@ -69,11 +69,11 @@ test_different_keys_different_identity() {
 # key and 200 with admin key on the SAME auth-required path.
 test_app_endpoint_principal() {
     # No API key → must be rejected with 401 (auth required).
-    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/nodes/status" "401" \
+    assert_http_status "$(_resolve_live_endpoint)/api/v1/nodes/status" "401" \
         "GET /api/v1/nodes/status without API key returns 401"
 
     # Admin API key → must be accepted with 200.
-    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/nodes/status" "200" \
+    assert_http_status "$(_resolve_live_endpoint)/api/v1/nodes/status" "200" \
         "GET /api/v1/nodes/status with admin API key returns 200" \
         -H "X-API-Key: ${ADMIN_API_KEY}"
 }
@@ -85,12 +85,12 @@ test_app_endpoint_principal() {
 test_unauthenticated_response_format() {
     # Strict status assertion — no API key → must be 401.
     local status
-    status=$(curl -s -o /dev/null -w "%{http_code}" "${CLUSTER_ENDPOINT}/api/v1/nodes/status")
+    status=$(curl -s -o /dev/null -w "%{http_code}" "$(_resolve_live_endpoint)/api/v1/nodes/status")
     assert_eq "$status" "401" "Unauthenticated GET /api/v1/nodes/status returns 401"
 
     # Strict header assertion — RFC 7235 mandates WWW-Authenticate on 401 responses.
     local headers
-    headers=$(curl -s -D - -o /dev/null "${CLUSTER_ENDPOINT}/api/v1/nodes/status")
+    headers=$(curl -s -D - -o /dev/null "$(_resolve_live_endpoint)/api/v1/nodes/status")
     if echo "$headers" | grep -qi "WWW-Authenticate"; then
         log_pass "401 response includes WWW-Authenticate header"
     else

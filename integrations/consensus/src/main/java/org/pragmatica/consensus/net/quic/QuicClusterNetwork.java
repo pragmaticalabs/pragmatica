@@ -82,6 +82,7 @@ import static org.pragmatica.consensus.net.NetworkServiceMessage.ConnectNode;
 import static org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import static org.pragmatica.consensus.net.quic.QuicClusterNetwork.ViewChangeOperation.*;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.consensus.net.quic.QuicTransportError.General.NETWORK_STOPPED;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -136,6 +137,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final long DROP_WARN_INTERVAL_NANOS = 30_000_000_000L;
 
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    /// #1461: set by the first `stop()`, whether or not the network had started, and never cleared. A stop that
+    /// arrived before `startOnPort` used to be a silent no-op (its CAS on `isRunning` failed), and the later start
+    /// then armed a server, reconciler and keepalive nothing could stop. `isRunning` still says whether the
+    /// transport is up; `closed` says the network must never come up again. Cert rotation is not a stop and does
+    /// not touch it.
+    private final AtomicBoolean closed = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
     /// Transport-ready callbacks (registered via [#whenReady(Runnable)]) and the latch that
     /// gates them. `transportReady` is distinct from `isRunning`: `isRunning` flips true at the
@@ -630,6 +637,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Package-private to allow tests to bind to port 0 (OS-assigned).
     @SuppressWarnings("JBCT-PAT-01")  // Lifecycle: server start then client creation
     Promise<Unit> startOnPort(int port) {
+        if (closed.get()) {
+            return NETWORK_STOPPED.promise();
+        }
+
         if (!isRunning.compareAndSet(false, true)) {
             return Promise.unitPromise();
         }
@@ -655,14 +666,38 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      Option.empty(),
                                                      this::onMessageReceived,
                                                      bootTokens);
+        // #1461: a stop() that overtook this start (after the check above) may have read `server`/`client`
+        // before they were assigned and released nothing. Re-checked after the assignment, this start then
+        // releases what it just created itself.
+        if (closed.get()) {
+            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit> promise());
+        }
 
-        return server.start(port)
-                     .map(this::captureLoopbackLoop)
-                     .onSuccess(_ -> startMissingPeerReconciler())
-                     .onSuccess(_ -> startKeepalive())
-                     .onSuccess(_ -> fireReadyHooks())
-                     .onFailure(this::onStartFailed)
-                     .mapToUnit();
+        var serverRef = server;
+        // #1461: arming is a DEPENDENT step (`withSuccess`), not an `onSuccess` handler, which runs asynchronously and
+        // may land after the returned promise resolves: a completed start then implies the periodic tasks are armed.
+        return serverRef.start(port)
+                        .map(unit -> captureLoopbackLoop(serverRef, unit))
+                        .withSuccess(_ -> armPeriodicTasks())
+                        .onSuccess(_ -> fireReadyHooks())
+                        .onFailure(this::onStartFailed)
+                        .mapToUnit();
+    }
+
+    /// #1461: the reconciler and keepalive are armed only while the network is not closed, and cancelled again
+    /// if a stop landed while they were being armed; `stop()` sets `closed` before it cancels them, so one of
+    /// the two sides always sees the other.
+    private void armPeriodicTasks() {
+        if (closed.get()) {
+            return;
+        }
+
+        startMissingPeerReconciler();
+        startKeepalive();
+        if (closed.get()) {
+            reconcilerTask.cancel();
+            keepaliveTask.cancel();
+        }
     }
 
     @Override
@@ -688,14 +723,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// the start promise the caller awaits resolves, otherwise a send-to-self racing start-completion
     /// finds no pinned loop and drops. Re-run after each (re)start: cert rotation ([#rebuildAndStart])
     /// rebuilds the server and its event loop group, invalidating the previously pinned loop.
-    private Unit captureLoopbackLoop(Unit unit) {
-        loopbackLoop = server.loopbackEventLoop();
+    /// Reads the server started by the caller, not the field: a stop racing the start nulls `server` (#1366's
+    /// shape, one step later).
+    private Unit captureLoopbackLoop(QuicClusterServer startedServer, Unit unit) {
+        loopbackLoop = startedServer.loopbackEventLoop();
 
         return unit;
     }
 
     @Override
     public Promise<Unit> stop() {
+        closed.set(true);
         if (!isRunning.compareAndSet(true, false)) {
             return Promise.unitPromise();
         }
@@ -1093,13 +1131,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      Option.empty(),
                                                      this::onMessageReceived,
                                                      bootTokens);
+        var serverRef = server;
 
-        return server.start(port)
-                     .map(this::captureLoopbackLoop)
-                     .onSuccess(_ -> log.info("QUIC server restarted on port {} with renewed certificate", port))
-                     .onFailure(cause -> log.error("Failed to restart QUIC server after certificate rotation: {}",
-                                                   cause.message()))
-                     .mapToUnit();
+        return serverRef.start(port)
+                        .map(unit -> captureLoopbackLoop(serverRef, unit))
+                        .onSuccess(_ -> log.info("QUIC server restarted on port {} with renewed certificate", port))
+                        .onFailure(cause -> log.error("Failed to restart QUIC server after certificate rotation: {}",
+                                                      cause.message()))
+                        .mapToUnit();
     }
 
     private void onStartFailed(Cause cause) {
@@ -1295,19 +1334,29 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // it defaults to peer.address() for non-SWIM-discovered peers, so behavior is unchanged
         // there. peer.address() remains the identity/reporting address everywhere below.
         var dialAddress = peer.resolvedAddress();
+        // #1366: `client` is nulled by stop(); read it ONCE. A stopped network does not dial (no phase
+        // change, so nothing is left CONNECTING), and a stop racing past this read closes the instance
+        // captured here, which fails the dial through the ordinary failure path instead of an NPE.
+        var clientRef = client;
+
+        if (clientRef == null) {
+            log.debug("Not dialing {}: the network is stopped", peerId);
+
+            return;
+        }
         // Resolve the hostname FRESH at dial time, non-blocking, on the Netty resolver. On success
         // we begin CONNECTING and dial the resolved InetAddress (the (InetAddress, port) constructor
         // never re-resolves). On failure we leave the peer untouched (no phase change) — the next
         // reconciler tick re-attempts under the existing backoff.
-        client.resolve(dialAddress.host())
-              .onSuccess(inetAddress -> dialResolved(peer,
-                                                     inetAddress,
-                                                     dialAddress.port()))
-              .onFailure(cause -> log.info("Missing-peer reconciler: dial to {} DEFERRED — address {} "
-                                          + "did not resolve ({}); next tick re-attempts under backoff",
-                                           peerId,
-                                           dialAddress.asString(),
-                                           cause.message()));
+        clientRef.resolve(dialAddress.host())
+                 .onSuccess(inetAddress -> dialResolved(peer,
+                                                        inetAddress,
+                                                        dialAddress.port()))
+                 .onFailure(cause -> log.info("Missing-peer reconciler: dial to {} DEFERRED — address {} "
+                                             + "did not resolve ({}); next tick re-attempts under backoff",
+                                              peerId,
+                                              dialAddress.asString(),
+                                              cause.message()));
     }
 
     /// Resolution-success continuation: now that a real IP is in hand, begin CONNECTING (so the
@@ -1317,6 +1366,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback chain
     private void dialResolved(NodeInfo peer, InetAddress inetAddress, int port) {
         var peerId = peer.id();
+        // #1366: the resolve can complete after stop() nulled `client`. Read it once, BEFORE the peer is
+        // marked CONNECTING, so a stopped network leaves no CONNECTING peer behind and never dereferences null.
+        var clientRef = client;
+
+        if (clientRef == null) {
+            log.debug("Not dialing {} after its address resolved: the network is stopped", peerId);
+
+            return;
+        }
+
         var state = getOrCreatePeer(peerId);
 
         if (!state.beginConnecting(System.nanoTime())) {
@@ -1340,9 +1399,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // over another link first, which abandons this attempt while its QUIC handshake is
         // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
         // it only restarts the attach-grace phase age, see PeerState#markInbound.
-        client.connect(peerId, address)
-              .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
-              .onFailure(cause -> onDialFailed(peer, cause, attempt));
+        clientRef.connect(peerId, address)
+                 .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
+                 .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
     }
 
@@ -1470,8 +1529,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (cause instanceof QuicTransportError.IdentityMismatch mismatch) {
             journalDialerHelloRejected(peer, mismatch);
         }
+        // #1489: every failed dial is a dial failure; only a TLS handshake failure is a handshake failure.
+        quicMetrics.onDialFailure();
+        if (cause instanceof QuicTransportError.HandshakeFailed) {
+            quicMetrics.onHandshakeFailure();
+        }
 
-        quicMetrics.onHandshakeFailure();
         log.warn("Failed to connect from {} to {}: {}", self, peer, cause.message());
         // Reset phase to EVICTED so a subsequent retry (via topology reconciler) can re-enter
         // CONNECTING. The dial failed from CONNECTING, so use `evictStaleConnecting`
@@ -2949,6 +3012,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     void dialForTests(NodeInfo peer, boolean forceInitiate) {
         connectPeer(peer, forceInitiate);
+    }
+
+    /// Package-private test seam (#1461) — whether the reconciler or the keepalive is scheduled.
+    boolean periodicTasksScheduledForTests() {
+        return reconcilerTask.isScheduled() || keepaliveTask.isScheduled();
+    }
+
+    /// Package-private test seam — the resolve-success continuation, so a test can run it after stop() (#1366).
+    @Contract
+    void dialResolvedForTests(NodeInfo peer, InetAddress inetAddress, int port) {
+        dialResolved(peer, inetAddress, port);
     }
 
     /// Package-private test seam — the #1578 abandon an attach performs, invoked directly, so a test can aim it at
