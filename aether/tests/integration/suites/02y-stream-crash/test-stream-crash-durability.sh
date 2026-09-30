@@ -149,8 +149,9 @@ pick_publish_endpoint() {
 #     endpoint, PUBLISH_503_DELAY_S doubling up to PUBLISH_503_MAX_DELAY_S, for PUBLISH_503_BUDGET_S.
 #     Nothing was written, so a resend cannot duplicate. 30s because s29's 37/40 saw a >=18s refusal
 #     (a zombie link to a p0 holder, #1762) and the budget must cover one link TTL plus the 5s reconcile.
-#   - a 500 is NEVER retried: "Publish outcome unknown" may have landed, there is no message id, and a
-#     resend would double-publish and corrupt the count this suite asserts (#1750).
+#   - a 500 is NEVER retried: "Publish outcome unknown" may have landed and there is no message id, so a
+#     resend can duplicate the event. That yields an at-least-once WARN and hides whether the first
+#     write landed (#1750).
 #   - only 000 (nothing answered: a dead pin) re-picks an endpoint, once.
 # An outage the retry absorbs must stay visible: each retried publish appends "idx retries wait_s
 # outcome" to PUBLISH_503_LOG (a file, because the concurrent publisher runs in a background subshell)
