@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net;
 import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -38,7 +39,15 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// `role` label) so receiving nodes can add dynamically provisioned nodes to their topology
     /// with full metadata, and the sender's per-process random `bootToken` (`0` = none), which the
     /// receiver admits through [BootTokens] before attaching the connection (terminal removal).
-    record Hello(NodeId sender, NodeAddress address, Map<String, String> labels, long bootToken) implements NetworkMessage {}
+    /// `intendedPeer` is the identity the DIALER meant to reach (empty on the acceptor's response and
+    /// where the dialer named nobody): an acceptor that is not that identity refuses the Hello before
+    /// attaching, so a dial aimed at a peer whose address was recycled to another node never attaches
+    /// to, or supersedes a healthy link of, whichever node now answers there.
+    record Hello(NodeId sender,
+                 NodeAddress address,
+                 Map<String, String> labels,
+                 long bootToken,
+                 Option<NodeId> intendedPeer) implements NetworkMessage {}
 
     /// Explicit refusal of a Hello by the boot-token gate (terminal removal): the acceptor tells the
     /// dialing process that its NodeId belongs to a retired or different process, so the refused

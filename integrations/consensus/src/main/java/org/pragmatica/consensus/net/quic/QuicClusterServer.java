@@ -38,6 +38,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoop;
@@ -185,6 +186,8 @@ public sealed interface QuicClusterServer {
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
     private static final long HELLO_TIMEOUT_MS = 15_000;
+    /// Grace before the acceptor closes a refused misdirected connection: the dialer must read our Hello first.
+    private static final long MISDIRECTED_CLOSE_DELAY_MS = 5_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0;  // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 64_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
@@ -536,6 +539,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         /// admission path downstream (fresh attach, RECONNECT of an EVICTED/SUSPECT peer, tombstone
         /// re-admission) is ever reached by a refused process.
         private void admitHello(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
+            if (isMisdirected(hello)) {
+                refuseMisdirectedHello(ctx, hello);
+
+                return;
+            }
+
             var admission = bootTokens.admit(hello.sender(), hello.bootToken());
 
             if (!admission.admitted()) {
@@ -551,6 +560,38 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
             sendHelloResponse(ctx);
             registerPeerConnection(ctx, hello);
+        }
+
+        /// A Hello naming a different intended peer than this node was dialed at an address that now
+        /// belongs to us (recycled IP, stale DNS). An absent `intendedPeer` is never misdirected.
+        private boolean isMisdirected(NetworkMessage.Hello hello) {
+            return hello.intendedPeer()
+                        .filter(intended -> !intended.equals(selfId))
+                        .isPresent();
+        }
+
+        /// The dialer verifies identity only AFTER the acceptor has attached, and the acceptor's attach
+        /// can supersede a healthy incumbent link (`PeerState.attachOverConnected`). So answer with our
+        /// own Hello (the dialer's existing identity check then fails the dial on the ordinary
+        /// connect-failure path) but NEVER register the connection. We must not close it ourselves: a
+        /// close raced with the Hello's delivery can reach the dialer first, and the dialer has no
+        /// close-before-Hello handler, so the dial would stay pinned CONNECTING until the staleness
+        /// sweep. The dialer closes its side on the mismatch; we close after a grace period as the
+        /// backstop (QUIC idle timeout is disabled, so nothing else would reap it). Deliberately NOT a
+        /// [NetworkMessage.HelloRefused] — that tells the dialer its own identity is retired and makes
+        /// it exit.
+        private void refuseMisdirectedHello(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
+            log.warn("QUIC acceptor refused misdirected Hello from {}: intended={} self={}",
+                     hello.sender(),
+                     hello.intendedPeer(),
+                     selfId);
+            sendHelloResponse(ctx);
+            ctx.executor()
+               .schedule(() -> ctx.channel()
+                                  .parent()
+                                  .close(),
+                         MISDIRECTED_CLOSE_DELAY_MS,
+                         TimeUnit.MILLISECONDS);
         }
 
         /// Answer a refused Hello with an explicit [NetworkMessage.HelloRefused] — in place of the Hello
@@ -574,16 +615,18 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             return deserializer.decode(bytes);
         }
 
-        private void sendHelloResponse(ChannelHandlerContext ctx) {
+        private ChannelFuture sendHelloResponse(ChannelHandlerContext ctx) {
             // Responses flowing back from the acceptor carry NO preamble.
             var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId,
                                                                         selfAddress,
                                                                         selfLabels,
-                                                                        bootTokens.self()));
-
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
+                                                                        bootTokens.self(),
+                                                                        Option.none()));
+            var written = ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
             // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.
             quicMetrics.onBytesSent(helloBytes.length);
+
+            return written;
         }
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
