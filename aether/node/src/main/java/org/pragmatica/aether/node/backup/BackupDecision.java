@@ -14,10 +14,16 @@ import org.pragmatica.lang.parse.Number;
 /// **The remote's lineage changes only by an operator declaration.**
 ///
 /// - **No head** — a brand-new backup: write it, which establishes this cluster's lineage.
-/// - **Same lineage** — write unless the head is strictly ahead by `(incarnation, revision)`. A head at
-///   exactly this position is this cluster's own queued write: writing it again commits nothing and
-///   pushes what is pending. A head strictly ahead means this leader is behind the backup (a deposed
-///   leader pushing late), and its state is dropped.
+/// - **Same lineage, same incarnation, ANOTHER incarnation id** — FORKED (#1533): two clusters reached this
+///   `(lineage, incarnation)` independently (restored from the same backup at once). Neither may replace
+///   the other's head, whatever the revisions — revisions of two different incarnation ids are not comparable.
+///   Only `declare-genesis` or a restore (each moves to a new incarnation) resolves it.
+/// - **Same lineage otherwise** — write unless the head is strictly ahead by `(incarnation, revision)`. A
+///   head at exactly this position is this cluster's own queued write: writing it again commits nothing
+///   and pushes what is pending. A head strictly ahead means this leader is behind the backup (a deposed
+///   leader pushing late), and its state is dropped. Within one incarnation id a head the local repository does
+///   not contain is routine — a new leader's repository lacks the old leader's commits — and is written
+///   over; the incarnation-id check is what tells that apart from another cluster's head.
 /// - **Another lineage** — GATED, whatever the incarnations, unless the head carries a [Declaration]
 ///   naming exactly this cluster's `(lineage, incarnation)`. Only `aether backup declare-genesis` writes
 ///   one. Incarnation order alone never replaces another lineage: a node that installed an old snapshot of
@@ -25,7 +31,8 @@ import org.pragmatica.lang.parse.Number;
 public enum BackupDecision {
     WRITE,
     STALE,
-    GATED;
+    GATED,
+    FORKED;
     /// An operator's genesis declaration, as committed in the backup repository.
     public record Declaration(String lineageId, long incarnation) {
         public static Declaration declaration(String lineageId, long incarnation) {
@@ -56,9 +63,13 @@ public enum BackupDecision {
                    .or(WRITE);
     }
     private static BackupDecision decideAgainst(BackupHeader ours, BackupHeader head, Option<Declaration> declaration) {
-        return ours.isSameLineage(head)
-               ? aheadOrStale(ours, head)
-               : declaredOrGated(ours, declaration);
+        if (!ours.isSameLineage(head)) {
+            return declaredOrGated(ours, declaration);
+        }
+
+        return head.isForkOf(ours)
+               ? FORKED
+               : aheadOrStale(ours, head);
     }
     private static BackupDecision aheadOrStale(BackupHeader ours, BackupHeader head) {
         return head.isAhead(ours)

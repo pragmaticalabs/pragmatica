@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
@@ -64,6 +65,11 @@ import static org.pragmatica.lang.Result.success;
 /// **Warnings** are transition-only ([BackupWarning]).
 public final class KvBackupService {
     private static final Logger LOG = LoggerFactory.getLogger(KvBackupService.class);
+    private static final String SUBJECT_PREFIX = "kv backup";
+
+    /// The subject every backup commit carries ([#commitMessage]): `kv backup lineage=… incarnation=… revision=…`.
+    private static final Pattern SUBJECT = Pattern.compile("kv backup lineage=(\\S*) incarnation=(\\d+) revision=(\\d+)");
+
     /// The operator action that resolves a gated backup.
     public static final String DECLARE_GENESIS_COMMAND = "aether backup declare-genesis";
 
@@ -147,6 +153,7 @@ public final class KvBackupService {
     public enum Status {
         CURRENT,
         GATED,
+        FORKED,
         HEAD_AHEAD,
         HEAD_UNREADABLE,
         PUSH_FAILING,
@@ -191,10 +198,11 @@ public final class KvBackupService {
 
     /// The production service: its own single-threaded worker (so a slow or hung git never delays another
     /// component), a monotonic clock (every bound here is a duration, which a wall-clock step would make
-    /// fire early or never), logged warnings, default timing. [#stop] shuts the worker down.
+    /// fire early or never), the node's warning sink, default timing. [#stop] shuts the worker down.
     public static KvBackupService kvBackupService(KVStore<AetherKey, AetherValue> kvStore,
                                                   BackupEntryCodec codec,
-                                                  GitBackupRepository repository) {
+                                                  GitBackupRepository repository,
+                                                  BackupWarning.Sink warnings) {
         var worker = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform()
                                                                       .name("kv-backup")
                                                                       .daemon(true)
@@ -205,7 +213,7 @@ public final class KvBackupService {
                                    repository,
                                    (task, delay) -> worker.schedule(task, delay, TimeUnit.MILLISECONDS),
                                    KvBackupService::monotonicMillis,
-                                   BackupWarning.Sink.logging(),
+                                   warnings,
                                    Timing.DEFAULT,
                                    worker::shutdownNow);
     }
@@ -308,6 +316,56 @@ public final class KvBackupService {
 
     BackupEntryCodec codec() {
         return codec;
+    }
+
+    /// The incarnation floor for `lineageId`: the highest incarnation the backup's history records for it,
+    /// never below `floor`. Both paths that move the incarnation off the successor step clear it — a
+    /// restore (#1533) and `declare-genesis` (#1532) — so neither reuses an incarnation this backup has
+    /// already recorded for the lineage. Worker thread only.
+    Result<Long> highestRecordedForLineage(String lineageId, long floor) {
+        return repository.fetchRestoreRef()
+                         .flatMap(ref -> ref.map(present -> highestRecorded(present, lineageId, floor))
+                                            .or(() -> success(floor)));
+    }
+
+    /// As [#highestRecordedForLineage], over the history reachable from `ref`. Read from the commit subjects
+    /// this service writes ([#commitMessage]); a backup commit whose subject is not in that form is decoded
+    /// from its document instead, so it is never silently left out.
+    Result<Long> highestRecorded(String ref, String lineageId, long floor) {
+        return repository.history(ref)
+                         .flatMap(lines -> Result.allOf(lines.stream().map(this::recordedHeader).toList()))
+                         .map(headers -> headers.stream()
+                                                .flatMap(Option::stream)
+                                                .filter(recorded -> recorded.lineageId()
+                                                                            .equals(lineageId))
+                                                .mapToLong(BackupHeader::incarnation)
+                                                .reduce(floor, Math::max));
+    }
+
+    /// `<sha> <subject>` → the header that commit recorded, absent for a commit that is not a backup.
+    private Result<Option<BackupHeader>> recordedHeader(String line) {
+        var separator = line.indexOf(' ');
+        var commit = separator < 0
+                     ? line
+                     : line.substring(0, separator);
+        var subject = separator < 0
+                      ? ""
+                      : line.substring(separator + 1);
+        var matcher = SUBJECT.matcher(subject);
+
+        if (matcher.matches()) {
+            // The subject names no incarnation id; the floor reads only lineage and incarnation.
+            return success(Option.some(BackupHeader.backupHeader(matcher.group(1),
+                                                                 Long.parseLong(matcher.group(2)),
+                                                                 "",
+                                                                 Long.parseLong(matcher.group(3)))));
+        }
+
+        return subject.startsWith(SUBJECT_PREFIX)
+               ? repository.documentAt(commit)
+                           .flatMap(codec::decode)
+                           .map(document -> Option.some(document.header()))
+               : success(Option.none());
     }
 
     // --- triggers (applier / router threads) ---
@@ -503,6 +561,7 @@ public final class KvBackupService {
         return switch (BackupDecision.decide(header, existing, head.declaration())) {
             case STALE -> success(Outcome.stale(existing.unwrap(), header));
             case GATED -> success(Outcome.gated(existing.unwrap(), header));
+            case FORKED -> success(Outcome.forked(existing.unwrap(), header));
             case WRITE -> write(document, body, head, pushAttempts);
         };
     }
@@ -560,11 +619,12 @@ public final class KvBackupService {
     }
 
     private static String commitMessage(String document) {
-        return "kv backup " + document.lines()
-                                      .skip(1)
-                                      .limit(3)
-                                      .reduce((left, right) -> left + " " + right)
-                                      .orElse("");
+        return SUBJECT_PREFIX
+             + " " + document.lines()
+                             .skip(1)
+                             .limit(3)
+                             .reduce((left, right) -> left + " " + right)
+                             .orElse("");
     }
 
     private Boolean rememberWritten(String body) {
@@ -616,6 +676,7 @@ public final class KvBackupService {
             case STALE -> onHeadAhead(outcome);
             case AWAITING_GENESIS -> scheduleRetry();
             case GATED -> enter(Status.GATED, gatedDetail(outcome));
+            case FORKED -> enter(Status.FORKED, forkedDetail(outcome));
             case HEAD_UNREADABLE -> enter(Status.HEAD_UNREADABLE,
                                           "the backup head cannot be read as a backup document (written by a newer" + " version, or corrupted); inspect the backup repository and repair or move" + " the head — this cluster will not overwrite what it cannot read");
             case PUSH_FAILED -> onPushFailed();
@@ -632,6 +693,27 @@ public final class KvBackupService {
                                   + "; restore that backup, or run `" + DECLARE_GENESIS_COMMAND
                                   + "` to make this cluster's state the backup head")
                       .or("the backup head belongs to another lineage; run `" + DECLARE_GENESIS_COMMAND + "`");
+    }
+
+    /// #1533: another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation. Neither
+    /// is written over the other; an operator decides which history continues.
+    private static String forkedDetail(Outcome outcome) {
+        return "the backup head was written by ANOTHER cluster (a different incarnation id) at this cluster's own lineage and incarnation"
+             + " (head: incarnation id " + outcome.head()
+                                                  .map(BackupHeader::incarnationId)
+                                                  .or("?")
+             + ", this cluster: incarnation id " + outcome.ours()
+                                                          .map(BackupHeader::incarnationId)
+                                                          .or("?")
+             + ", lineage " + outcome.ours()
+                                     .map(BackupHeader::lineageId)
+                                     .or("?")
+             + ", incarnation " + outcome.ours()
+                                         .map(BackupHeader::incarnation)
+                                         .or(0L)
+             + "): two clusters were restored from the same backup. Nothing is backed up until one is"
+             + " retired; run `" + DECLARE_GENESIS_COMMAND
+             + "` on the cluster whose state should become the head";
     }
 
     /// Never written while behind (the head stays; see [BackupDecision]). A head briefly ahead is routine —
@@ -654,23 +736,33 @@ public final class KvBackupService {
         scheduleRetry();
     }
 
+    /// True in both ways a head of this lineage can stay ahead (v1533 finding 2). At a HIGHER incarnation, another
+    /// cluster moved this lineage on (a `declare-genesis` or a later restore took over the head); this cluster can
+    /// never pass it by revision, so it will not write again. At the SAME incarnation — necessarily this cluster's
+    /// own incarnation id, another one is FORKED — a later revision of it holds the head, and once this cluster's
+    /// revision passes it, its state replaces that head.
     private static String headAheadDetail(Outcome outcome, long seconds) {
-        return "the backup head (incarnation " + outcome.head()
-                                                        .map(BackupHeader::incarnation)
-                                                        .or(0L)
-             + ", revision " + outcome.head()
-                                      .map(BackupHeader::revision)
-                                      .or(0L)
-             + ") has been ahead of this cluster's state (incarnation " + outcome.ours()
-                                                                                 .map(BackupHeader::incarnation)
-                                                                                 .or(0L)
-             + ", revision " + outcome.ours()
-                                      .map(BackupHeader::revision)
-                                      .or(0L)
-             + ") for " + seconds
-             + "s, so nothing is being backed up; this cluster may have been restored from an"
-             + " older snapshot (the old persistence path) while a newer backup head exists — see #1533. Once this"
-             + " cluster's revision passes the head's, its state REPLACES that head (git history keeps it)";
+        var headIncarnation = outcome.head().map(BackupHeader::incarnation).or(0L);
+        var ourIncarnation = outcome.ours().map(BackupHeader::incarnation).or(0L);
+        var positions = "the backup head (incarnation " + headIncarnation
+                      + ", incarnation id " + outcome.head().map(BackupHeader::incarnationId).or("?")
+                      + ", revision " + outcome.head().map(BackupHeader::revision).or(0L)
+                      + ") has been ahead of this cluster's state (incarnation " + ourIncarnation
+                      + ", incarnation id " + outcome.ours().map(BackupHeader::incarnationId).or("?")
+                      + ", revision " + outcome.ours().map(BackupHeader::revision).or(0L)
+                      + ") for " + seconds
+                      + "s, and this cluster does not write while the head is ahead, so nothing is"
+                      + " being backed up";
+
+        return headIncarnation > ourIncarnation
+               ? positions
+                + "; the head is at a HIGHER incarnation of this lineage: another cluster took over this"
+                + " lineage's backup (a declare-genesis or a later restore) and this cluster will never pass it — stop"
+                + " this cluster, or point its [backup] at a different path or remote"
+               : positions
+                + "; a later revision of this same incarnation (the same incarnation id) holds the head (a previous leader's"
+                + " write, or this cluster's state went back). Once this cluster's revision passes the head's, its"
+                + " state REPLACES that head (git history keeps it)";
     }
 
     @Contract
@@ -716,8 +808,8 @@ public final class KvBackupService {
                                                                                                   .or(0L)
              + ", revision " + aheadHead.map(BackupHeader::revision)
                                         .or(0L)
-             + ") it had been waiting behind; git history retains the replaced commit. If this cluster was"
-             + " restored from an older snapshot, the replaced head holds newer state — see #1533";
+             + ") it had been waiting behind; git history retains the replaced commit. If another cluster wrote"
+             + " that head, the replaced commit holds its newer state";
     }
 
     @Contract
@@ -732,6 +824,7 @@ public final class KvBackupService {
     private static Code codeFor(Status status) {
         return switch (status) {
             case GATED -> Code.BACKUP_GATED;
+            case FORKED -> Code.BACKUP_FORKED;
             case HEAD_AHEAD -> Code.BACKUP_HEAD_AHEAD;
             case HEAD_UNREADABLE -> Code.BACKUP_REMOTE_UNREADABLE;
             case PUSH_FAILING -> Code.BACKUP_PUSH_FAILING;
@@ -771,6 +864,7 @@ public final class KvBackupService {
         STALE,
         AWAITING_GENESIS,
         GATED,
+        FORKED,
         HEAD_UNREADABLE,
         PUSH_FAILED
     }
@@ -792,6 +886,10 @@ public final class KvBackupService {
 
         static Outcome gated(BackupHeader head, BackupHeader ours) {
             return new Outcome(OutcomeKind.GATED, Option.some(head), Option.some(ours));
+        }
+
+        static Outcome forked(BackupHeader head, BackupHeader ours) {
+            return new Outcome(OutcomeKind.FORKED, Option.some(head), Option.some(ours));
         }
     }
 }

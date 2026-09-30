@@ -183,7 +183,7 @@ class EmberAddNodeRoleLabelTest {
 
     /// The unchanged half, stated on the live path rather than inferred. `core` is the role the CTM
     /// threads for every auto-heal replacement, so this is what the existing provisioning probes
-    /// (`PostRestartSlowRejoinDeficitFillProbeTest`, `ProvisioningRecoveryAfterFailureBurstProbeTest`,
+    /// (`ProvisioningRecoveryAfterFailureBurstProbeTest`,
     /// `MembershipChaosCycleTest`) now exercise: the label appears where there was none, and the
     /// classification it produces is the SAME core it produced when blank.
     @Test
