@@ -4133,6 +4133,69 @@ _restore_active_counted_gate() {
     return 1
 }
 
+# One line per artifact entry in a /api/v1/slices body (stdin), layout-independent (the body may be
+# pretty-printed or one line):  <artifact>\t<targetInstances>\t<node>=<STATE> <node>=<STATE> ...
+_slices_by_artifact() {
+    tr '\n' ' ' | sed 's/"artifact"/\
+"artifact"/g' | grep '^"artifact"' | while IFS= read -r chunk; do
+        local art tgt states
+        art=$(printf '%s' "$chunk" | sed -E 's/^"artifact"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        tgt=$(printf '%s' "$chunk" | grep -oE '"targetInstances"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)
+        states=$(printf '%s' "$chunk" \
+            | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"[^}]*"state"[[:space:]]*:[[:space:]]*"[A-Z_]+"' \
+            | sed -E 's/"nodeId"[[:space:]]*:[[:space:]]*"([^"]*)".*"state"[[:space:]]*:[[:space:]]*"([A-Z_]+)"/\1=\2/' \
+            | tr '\n' ' ' || true)
+        printf '%s\t%s\t%s\n' "$art" "${tgt:-0}" "$states"
+    done
+}
+
+# Every deployed slice artifact must have >= 1 ACTIVE instance (any version of it: during a rolling
+# update the old version legitimately drains while the new one is ACTIVE). Prints, on stdout, the
+# per-artifact instance states when it does not, and returns 1. Artifacts are keyed group:artifact
+# (version stripped); one with targetInstances 0 is not required to run anything.
+_slices_missing_active() {
+    local report="$1"
+    printf '%s\n' "$report" | awk -F'\t' '
+        NF >= 2 {
+            key = $1; sub(/:[^:]*$/, "", key)
+            seen[key] = 1; target[key] += $2
+            n = split($3, inst, " ")
+            for (i = 1; i <= n; i++) if (inst[i] ~ /=ACTIVE$/) active[key]++
+            states[key] = states[key] " [" $1 " target=" $2 ": " $3 "]"
+        }
+        END { for (k in seen) if (target[k] > 0 && active[k] == 0) print k ":" states[k] }'
+}
+
+# restore_cluster_baseline's slice gate: the cluster is not "at baseline" while a deployed blueprint has
+# NO ACTIVE instance (2026-09-30 S-prime: test-echo 5 x UNLOADING passed the restore, and 02-chaos then failed
+# 90s later with a misleading "no ACTIVE owner"). Bounded wait ($SECONDS-based, AETHER_RESTORE_SLICES_TIMEOUT
+# base 60s x TIMEOUT_SCALE) so a legitimate rolling update, where every instance is briefly LOADING with none
+# ACTIVE, settles first. On a miss it FAILS naming each starved artifact with every instance's state, so the
+# root cause is visible at the restore. An unreadable /api/v1/slices is a failure too, never a pass.
+_restore_slices_gate() {
+    local budget=$(( ${AETHER_RESTORE_SLICES_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
+    local poll="${AETHER_RESTORE_SLICES_POLL:-5}"
+    local deadline=$(( SECONDS + budget ))
+    local body report missing
+    while :; do
+        body=$(api_get "/api/v1/slices" 2>/dev/null) || body=""
+        if printf '%s' "$body" | grep -q '"slices"'; then
+            report=$(printf '%s' "$body" | _slices_by_artifact)
+            missing=$(_slices_missing_active "$report")
+            if [ -z "$missing" ]; then
+                log_info "restore_cluster_baseline: every deployed slice artifact has an ACTIVE instance ($(printf '%s\n' "$report" | grep -c . || true) artifact entries)"
+                return 0
+            fi
+        else
+            missing="/api/v1/slices unreadable or without a slices list: $(printf '%s' "$body" | head -c 200)"
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "$poll"
+    done
+    log_fail "restore_cluster_baseline: deployed slice artifact(s) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
+    return 1
+}
+
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"
@@ -4395,6 +4458,10 @@ restore_cluster_baseline() {
     # 9. ACTIVE == COUNTED == TARGET. Step 8 passes on counted >= target, which cannot see a present
     # core the leader does not count (active 6, counted 5); wait bounded for agreement, else FAIL.
     _restore_active_counted_gate "$target" || return 1
+
+    # 10. EVERY DEPLOYED BLUEPRINT HAS AN ACTIVE INSTANCE. Cores agreeing (step 9) says nothing about the
+    # slices on them; a cluster whose echo slice is 5 x UNLOADING is not at baseline.
+    _restore_slices_gate || return 1
 
     log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
