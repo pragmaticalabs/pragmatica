@@ -1956,6 +1956,103 @@ class LeaderReconcilerTest {
                 .hasSize(2);
         }
 
+        /// #1783 — a replacement the provider lists (CONFIRMED) that never joins membership stops masking the
+        /// deficit once the join grace (6 x splitTimeout = 90s) has passed since its mint: the deficit re-opens and
+        /// re-dispatches one debounce later, at about two minutes, long before the ten-minute ceiling. Inside the
+        /// grace the booting replacement is still counted (no duplicate mint).
+        @Test
+        void inFlightEntry_confirmedButNeverJoins_deficitReappearsAfterJoinGrace_beforeCeiling() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(5);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("75s after its mint, inside the 90s join grace, a booting replacement still counts")
+                .hasSize(1);
+
+            advancePollIntervals(2);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("past the grace the unjoined CONFIRMED entry no longer counts: the deficit re-opens and re-dispatches")
+                .hasSize(2);
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the unjoined instance is kept for adoption, only its count is withdrawn")
+                .contains(minted);
+            assertThat(timeSource.nanoTime() / 1_000_000L)
+                .as("the re-dispatch landed well inside the replacement ceiling")
+                .isLessThan(DEFAULT_REPLACEMENT_CEILING.millis() + EXPECTED_GRACE_WINDOW.millis() * 10);
+        }
+
+        /// #1783 — the discounted replacement then joins late, after its substitute was dispatched. The cluster
+        /// must converge to the configured count, not sit at target + 1: the late joiner clears its entry, the
+        /// substitute is still in flight (counted), and once the substitute joins as well the existing surplus
+        /// path (`computePeersToDrain`) drains exactly one node. Nothing is drained while the substitute has not
+        /// yet joined (the floor holds at the configured count).
+        @Test
+        void inFlightEntry_discountedReplacementJoinsLate_afterSubstituteDispatched_convergesToTarget() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(7);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+            var substitute = ctm.provisionReplacementCalls().getLast();
+
+            seedClusterWithPeers(minted);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the late joiner's entry is cleared by membership; only the substitute remains in flight")
+                .containsExactly(substitute);
+            assertThat(ctm.drainNodeCalls())
+                .as("five members at target: nothing is drained before the substitute joins")
+                .isEmpty();
+
+            seedClusterWithPeers(substitute);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("six members against a target of five: exactly one surplus node is drained")
+                .hasSize(1);
+
+            removePeers(ctm.drainNodeCalls().getFirst());
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("converged: no third provision").hasSize(2);
+            assertThat(ctm.drainNodeCalls()).as("converged: no second drain").hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+
+        /// #1783 — the grace clock survives a leader handover: it runs from the entry's mint (the ULID the
+        /// inherited id carries), not from the moment this leader took over. Minted 60s ago and inherited with
+        /// the provider reporting it listed, the entry is discounted at 105s of age, only 45s after inheritance,
+        /// and re-dispatched one debounce later — a clock restarted at inheritance would keep counting it until
+        /// 90s after the handover.
+        @Test
+        void newLeader_inheritedConfirmedEntry_graceRunsFromMint_notFromInheritance() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - timeSpan(60).seconds().millis()),
+                                               ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(2);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("90s after its mint (30s after inheritance) it is not yet past the grace")
+                .isEmpty();
+
+            advancePollIntervals(1);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("105s after its mint, 45s after inheritance, the unjoined confirmed entry is discounted and replaced")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).contains(inherited);
+        }
+
         @Test
         void inFlightEntry_providerCannotAnswer_fallsBackToDefaultCeiling_notImmediatelyAndNotForever() {
             var minted = dispatchOneReplacement();

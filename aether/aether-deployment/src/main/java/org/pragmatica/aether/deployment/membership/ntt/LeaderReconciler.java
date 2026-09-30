@@ -106,6 +106,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// afresh at inheritance (see [`#inheritedEntry`]). The map is internal — exposed only via observability
 /// accessors.
 ///
+/// **Join grace (#1783).** An entry the provider has CONFIRMED (listed) that has still not joined membership
+/// once [`#joinGraceWindow`] has passed since its mint stops counting toward effective capacity, so the
+/// deficit it was masking re-opens and the next pass re-dispatches, well before the ceiling. The entry itself
+/// is kept (polled, bounded by the ceiling): if the late node then joins, the identity-match clear removes it
+/// and the existing surplus path ([`#computePeersToDrain`], the surplus follow-up) converges the cluster back
+/// to the configured count. The grace runs from the entry's `sinceNanos` — dispatch, or the ULID mint time for
+/// an inherited entry — so a leader change neither restarts nor shortens it.
+///
 /// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
 /// provision a replacement for a configured core peer that has not yet joined (initial
 /// cluster formation / slow join). Provisioning is identity-aware, not count-aware: a
@@ -192,6 +200,9 @@ public final class LeaderReconciler {
     private final TimeSpan drainSafetyGraceWindow;
     /// Status-poll cadence for in-flight replacements (#1049) — see [`#computeInFlightPollInterval`].
     private final TimeSpan inFlightPollInterval;
+    /// How long after its mint a provider-CONFIRMED in-flight replacement may stay unjoined and still count
+    /// toward effective capacity (#1783) — see [`#computeJoinGrace`].
+    private final TimeSpan joinGraceWindow;
     /// Wall floor a never-listed in-flight replacement must stay absent for, since it became pollable,
     /// before it counts as deleted (#1049) — [`SourceProfile#REPLACEMENT_FIRST_LISTING_FLOOR`].
     private final TimeSpan firstListingFloor;
@@ -377,6 +388,7 @@ public final class LeaderReconciler {
         // (role-propagation race window; ≥ deficit debounce; single timing constant).
         this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.splitTimeout());
         this.inFlightPollInterval = computeInFlightPollInterval(membershipConfig.splitTimeout());
+        this.joinGraceWindow = computeJoinGrace(membershipConfig.splitTimeout());
         this.firstListingFloor = SourceProfile.REPLACEMENT_FIRST_LISTING_FLOOR;
         this.requiredAbsentListings = computeRequiredAbsentListings(firstListingFloor, inFlightPollInterval);
         this.presenceSampler = presenceSampler;
@@ -1187,10 +1199,19 @@ public final class LeaderReconciler {
     /// whose in-flight placeholder has not yet expired is present in both sets; counting it
     /// once (via the union) prevents the inflated-surplus → spurious-drain → quorum-loss
     /// dissolution. Never a sum.
+    ///
+    /// A provider-CONFIRMED entry still unjoined past [`#joinGraceWindow`] is left out of the union (#1783):
+    /// it does not hide the deficit, though it stays in the map until it joins, fails or hits its ceiling.
     private int effectiveCapacity(Set<NodeId> currentMembers) {
         var union = new LinkedHashSet<>(currentMembers);
+        var now = timeSource.nanoTime();
 
-        union.addAll(inFlightProvisioning.keySet());
+        inFlightProvisioning.entrySet()
+                            .stream()
+                            .filter(entry -> !entry.getValue()
+                                                   .isUnjoinedPastGrace(now, joinGraceWindow))
+                            .map(Map.Entry::getKey)
+                            .forEach(union::add);
 
         return union.size();
     }
@@ -2020,6 +2041,17 @@ public final class LeaderReconciler {
         return (int) Math.ceilDiv(firstListingFloor.nanos(), inFlightPollInterval.nanos());
     }
 
+    /// Join grace = `nttDepartureTimeout × 6` (90s at the 15s default), configurable through `split_timeout` like
+    /// its neighbours (#1783). A cloud replacement takes 50–63s from mint to membership, so the window must sit
+    /// above that or a healthy boot would be discounted and re-minted; ×6 leaves about 1.4× headroom over the
+    /// slowest observed boot, and is roughly 2× `nttDepartureTimeout` past the provider's confirmation of an
+    /// instance created within the usual minute. Anchored on the mint so it survives a leader change. A
+    /// discounted replacement that then joins is a surplus the drain path removes — it costs a spare node
+    /// for a moment, not correctness — whereas a slot masked for the whole ceiling cost a run its budget.
+    private static TimeSpan computeJoinGrace(TimeSpan splitTimeout) {
+        return timeSpan(splitTimeout.nanos() * 6).nanos();
+    }
+
     /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
     /// field doc for the sizing rationale (role-propagation race window; ≥ the ×1 deficit
     /// debounce; single membership timing constant).
@@ -2125,6 +2157,10 @@ public final class LeaderReconciler {
 
         boolean isDispatching() {
             return state == InFlightState.DISPATCHING;
+        }
+
+        boolean isUnjoinedPastGrace(long nowNanos, TimeSpan grace) {
+            return state == InFlightState.CONFIRMED && nowNanos - sinceNanos > grace.nanos();
         }
 
         boolean isPastCeiling(long nowNanos) {
