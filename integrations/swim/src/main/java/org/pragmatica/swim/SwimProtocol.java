@@ -1715,7 +1715,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                                                               announce.nodeInfo())),
                                                              announce.clusterName(),
                                                              announce.incarnation()));
-        replyWithMembershipSnapshot(sender, announce.nodeInfo().id());
+        replyWithMembershipSnapshot(sender,
+                                    announce.nodeInfo().id());
     }
 
     /// Join ack: answer an accepted ANNOUNCE with this node's current view, so the joiner learns the
@@ -1733,8 +1734,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// larger than one reply.
     @Contract
     private void replyWithMembershipSnapshot(InetSocketAddress sender, NodeId announcer) {
-        PiggybackBuffer.pack(snapshotFor(announcer), config.maxPiggyback(), piggybackBudgetBytes, SYNC_MAX_DATAGRAMS)
-                       .forEach(page -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
+        PiggybackBuffer.pack(snapshotFor(announcer),
+                             config.maxPiggyback(),
+                             piggybackBudgetBytes,
+                             SYNC_MAX_DATAGRAMS)
+                       .forEach(page -> transport.send(sender,
+                                                       Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
     }
 
     /// Live members worth telling a joiner about: ALIVE and SUSPECT (hearsay the joiner's own merge rules
@@ -1743,7 +1748,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     private List<MembershipUpdate> snapshotFor(NodeId announcer) {
         var view = members.values()
                           .stream()
-                          .filter(member -> !member.nodeId().equals(announcer))
+                          .filter(member -> !member.nodeId()
+                                                   .equals(announcer))
                           .filter(member -> member.state() == MemberState.ALIVE || member.state() == MemberState.SUSPECT)
                           .filter(member -> inMembershipScope(member.nodeId()))
                           .map(this::snapshotUpdate)

@@ -144,7 +144,9 @@ public final class PiggybackBuffer {
         var usedBytes = 0;
 
         for (var update : updates) {
-            var candidate = estimatedBytes(update) > budgetBytes ? stripLabels(update) : update;
+            var candidate = estimatedBytes(update) > budgetBytes
+                            ? stripLabels(update)
+                            : update;
             var itemBytes = estimatedBytes(candidate);
 
             if (!page.isEmpty() && (page.size() >= maxPerMessage || usedBytes + itemBytes > budgetBytes)) {
