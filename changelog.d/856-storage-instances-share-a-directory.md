@@ -10,6 +10,7 @@
   — through the real `StorageFactory.createAll`, including the production defaults]
 - **Also fixed: a `[storage.streams]` section crashed the boot.** It is how `wal_path` is set (#634-3),
   but `createAll` built it as a second `streams` instance beside the built-in one, and collecting them
-  threw `IllegalStateException: Duplicate key streams`. The section now only carries `wal_path`.
+  threw `IllegalStateException: Duplicate key streams`. The section now only carries `wal_path`; any other key in
+  it is WARNed as ignored, naming it, instead of being dropped silently.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/node/StorageFactoryStreamsSectionTest.java`
   — the exact `createAll` call `AetherNode` makes; not a full node boot]
