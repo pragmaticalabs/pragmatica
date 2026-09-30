@@ -249,10 +249,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// and carried on every self update, so a peer that never saw our ANNOUNCE still learns them from
     /// steady-state gossip. Empty until the first announce.
     private volatile Map<String, String> selfLabels = Map.of();
+
     /// The only labels gossip carries: what core counting and the member descriptor read (`role`, `source`).
     /// The full label map stays on ANNOUNCE and the QUIC Hello — an update with every label is several times
     /// larger and, at the default eight updates per message, would push EVERY probe past the datagram budget.
     private static final Set<String> GOSSIPED_LABEL_KEYS = Set.of(NodeInfo.LABEL_ROLE, NodeInfo.LABEL_SOURCE);
+
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
