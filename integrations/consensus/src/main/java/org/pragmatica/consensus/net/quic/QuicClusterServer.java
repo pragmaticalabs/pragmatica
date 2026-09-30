@@ -284,9 +284,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         // receives every datagram for it: this node goes deaf mid-stream (#1727) and the BindFailed guard below could
         // never fire. UDP has no TIME_WAIT to escape, so exclusivity costs nothing on restart once the old socket has
         // closed; a port conflict now fails the start with BindFailed naming the port.
-        var bootstrap = new Bootstrap().group(group)
-                                       .channel(NioDatagramChannel.class)
-                                       .handler(codec);
+        var bootstrap = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec);
 
         bootstrap.bind(new InetSocketAddress(port)).addListener(future -> handleBind(port, promise, future));
     }
