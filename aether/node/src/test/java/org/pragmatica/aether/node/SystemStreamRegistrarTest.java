@@ -369,6 +369,86 @@ class SystemStreamRegistrarTest {
             assertThat(recoveries.get()).isEqualTo(1);
         }
 
+        /// v1735 r3: the refusal alert is leader-local, so a node that loses leadership clears it (and un-latches the
+        /// leg, so a re-elected node attempts — and reports — again).
+        @Test
+        void deactivate_withALatchedRefusal_clearsItsReport_andReArmsOnTheNextLeadership() {
+            var calls = new AtomicInteger();
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+                                                                            calls.incrementAndGet();
+                                                                            return new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                      5).result();
+                                                                        },
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(recoveries.get()).as("the former leader clears its report").isEqualTo(1);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireAll();
+            assertThat(calls.get()).as("re-elected, the refused leg is attempted again").isEqualTo(2);
+            assertThat(refusals.get()).as("and a refusal that still holds is reported again").isEqualTo(2);
+        }
+
+        /// v1735 r3, end to end on one node: the refusal alert the leader raised is gone from ITS `/api/alerts/active`
+        /// once it loses leadership. The sinks are wired exactly as `AetherNode` wires them (inject local, clear by name).
+        @Test
+        @SuppressWarnings("unchecked")
+        void formerLeader_alertIsGoneFromActiveAlerts_afterLeadershipLoss() {
+            var alerts = org.pragmatica.aether.api.AlertManager.readOnly(org.mockito.Mockito.mock(org.pragmatica.cluster.state.kvstore.KVStore.class));
+            var name = "cluster-events-registration-refused";
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                5).result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        cause -> alerts.injectLocal(name, "CRITICAL", cause.message())
+                                                                                       .await(),
+                                                                        () -> alerts.clearInjected(name));
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(activeNames(alerts)).as("the leader lists its refusal").contains(name);
+
+            registrar.onLeaderChange(lost());
+            assertThat(activeNames(alerts)).as("a former leader keeps no stale refusal").doesNotContain(name);
+        }
+
+        private static List<String> activeNames(org.pragmatica.aether.api.AlertManager alerts) {
+            return alerts.activeAlertsAsList()
+                         .await()
+                         .or(List.of())
+                         .stream()
+                         .map(org.pragmatica.aether.api.AlertManager.AlertView::name)
+                         .toList();
+        }
+
+        @Test
+        void deactivate_withoutARefusal_clearsNothing() {
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(recoveries.get()).isZero();
+        }
+
         @Test
         void recoverySink_neverRunsForALegThatWasNotRefused() {
             var recoveries = new AtomicInteger();

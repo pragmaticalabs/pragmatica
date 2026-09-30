@@ -122,8 +122,9 @@ public final class SystemStreamRegistrar {
     }
 
     /// Production factory bound to the process-wide [`SharedScheduler`]. `refusalSink` receives each
-    /// replication-policy refusal once, when it latches (#1564 B1); `recoverySink` runs once when a leg the policy
-    /// refused commits after a corrected cluster config re-armed it, so the operator-visible refusal is cleared.
+    /// replication-policy refusal once, when it latches (#1564 B1); `recoverySink` clears the operator-visible refusal
+    /// on this node — once when a refused leg commits after a corrected cluster config re-armed it, and when this node
+    /// loses leadership while a refusal is latched (its report is leader-local).
     public static SystemStreamRegistrar systemStreamRegistrar(Supplier<Result<?>> createStreamLeg,
                                                               Supplier<Result<?>> bootstrapLeg,
                                                               Consumer<Cause> refusalSink,
@@ -229,6 +230,20 @@ public final class SystemStreamRegistrar {
 
         activationEpoch.incrementAndGet();
         cancelPendingRetry();
+        releaseRefusal(createStreamRefused, createStreamDone, createStreamRecovering);
+        releaseRefusal(bootstrapRefused, bootstrapDone, bootstrapRecovering);
+    }
+
+    /// #1564 (v1735): a refusal is reported by the LEADER (its alert is leader-local), so a node that loses leadership
+    /// clears its own report and un-latches the leg: the next leader attempts the registration itself and reports a
+    /// refusal that still holds, and this node re-attempts if it regains leadership. Without this a former leader kept
+    /// a stale CRITICAL alert, and a re-elected one stayed silent over a still-refused leg.
+    private void releaseRefusal(AtomicBoolean refused, AtomicBoolean done, AtomicBoolean recovering) {
+        if (refused.compareAndSet(true, false)) {
+            done.set(false);
+            recovering.set(false);
+            recoverySink.run();
+        }
     }
 
     /// Observability — both legs committed/terminal (no further work).
