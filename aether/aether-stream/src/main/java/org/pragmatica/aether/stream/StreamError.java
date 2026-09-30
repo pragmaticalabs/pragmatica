@@ -5,11 +5,13 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
+import java.util.regex.Pattern;
 
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 
 public sealed interface StreamError extends Cause {
@@ -199,6 +201,50 @@ public sealed interface StreamError extends Cause {
             return "Materialize of %s[%d] paced: node already has %d partitions in materialize+backfill (reshuffle_concurrency)".formatted(streamName,
                                                                                                                                            partition,
                                                                                                                                            inFlightLimit);
+        }
+    }
+
+    /// A replication-class read (catch-up or watermark probe) reached a partition this node HOLDS but has not
+    /// materialized — paced ([ReshufflePaced]) or budget-deferred ([MaterializeBudgetExceeded]) — so there is no
+    /// ring to read. The node is REACHABLE and knows what it durably holds: `watermark` is its durable local head
+    /// (WAL or sealed tier; `-1` when none). DISTINCT from {@link General#PARTITION_NOT_LOCAL}, a genuine
+    /// non-holder: a prober treats this as an answer, that as no information. A remote failure travels as its
+    /// message only, so the prober recovers `watermark` from the message ([#watermarkOf]), the way a
+    /// `CursorExpired` refusal names the oldest available offset. Still a failure to a CATCH-UP pull, which has
+    /// nothing to pull from a partition with no ring and redrives.
+    record PartitionHeldNotMaterialized(String streamName, int partition, long watermark, boolean budgetExhausted) implements StreamError {
+        private static final String BUDGET_SUFFIX = " (off-heap budget exhausted)";
+
+        private static final Pattern DURABLE_WATERMARK = Pattern.compile("held but not materialized on this node, durable watermark (-?\\d+)");
+
+        /// A holder that is merely paced (`reshuffle_concurrency`).
+        public PartitionHeldNotMaterialized(String streamName, int partition, long watermark) {
+            this(streamName, partition, watermark, false);
+        }
+
+        @Override
+        public String message() {
+            return "Stream partition %s[%d] is held but not materialized on this node, durable watermark %d%s".formatted(streamName,
+                                                                                                                         partition,
+                                                                                                                         watermark,
+                                                                                                                         budgetExhausted
+                                                                                                                         ? BUDGET_SUFFIX
+                                                                                                                         : "");
+        }
+
+        /// Whether the peer said it is deferred because its off-heap budget is exhausted: no slot frees it, only budget does.
+        public static boolean isBudgetExhausted(Cause cause) {
+            return cause.message()
+                        .contains(BUDGET_SUFFIX);
+        }
+
+        /// The durable watermark a peer reported with this refusal, or none when `cause` is any other failure.
+        public static Option<Long> watermarkOf(Cause cause) {
+            var matcher = DURABLE_WATERMARK.matcher(cause.message());
+
+            return matcher.find()
+                   ? Option.some(Long.parseLong(matcher.group(1)))
+                   : Option.none();
         }
     }
 

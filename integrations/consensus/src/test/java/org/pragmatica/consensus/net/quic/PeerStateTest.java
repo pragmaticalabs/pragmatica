@@ -31,6 +31,8 @@ import static org.mockito.Mockito.when;
 class PeerStateTest {
     private static final NodeId PEER = new NodeId("peer-1");
     private static final long T0 = 1_000_000_000L;
+    private static final NodeId LOWER = new NodeId("aaa");
+    private static final NodeId HIGHER = new NodeId("zzz");
 
     private PeerState state() {
         return PeerState.peerState(PEER, T0);
@@ -172,6 +174,63 @@ class PeerStateTest {
         assertThat(s.activeConnection().or((QuicPeerConnection) null))
             .as("incumbent connection unchanged").isSameAs(young);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
+    void attach_lowerIdDialOverRecentlyHeardHigherIdIncumbent_isDuplicate() {
+        // Ghost dial (recycled IP): the acceptor attached a handshake aimed at another peer. The
+        // incumbent was initiated by the HIGHER id, is 1s old and was heard from 500ms ago, so the
+        // lower-id link must not displace it (the #1390 convergence applies to silent incumbents only).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(HIGHER);
+        s.attach(incumbent, T0 + 2);
+        var oneSecond = TimeUnit.SECONDS.toNanos(1);
+        s.markInbound(T0 + 2 + oneSecond / 2);
+        var result = s.attach(initiatedBy(LOWER), T0 + 2 + oneSecond);
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(result.superseded().isEmpty()).as("heard-from incumbent is not displaced").isTrue();
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).as("incumbent unchanged").isSameAs(incumbent);
+    }
+
+    @Test
+    void attach_lowerIdDialInsideTheRaceWindow_supersedesEvenAfterTheIncumbentWasHeard() {
+        // Formation dual-dial race: receipts are not symmetric across the two ends, so a heard-from
+        // incumbent that is only 100ms old must still yield to the lower-id link (#1390 convergence).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(HIGHER);
+        s.attach(incumbent, T0 + 2);
+        var hundredMillis = TimeUnit.MILLISECONDS.toNanos(100);
+        s.markInbound(T0 + 2 + hundredMillis / 2);
+        var fresh = initiatedBy(LOWER);
+        var result = s.attach(fresh, T0 + 2 + hundredMillis);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(incumbent);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
+    }
+
+    @Test
+    void attach_lowerIdDialOverReceiptSilentHigherIdIncumbent_supersedes() {
+        // Control for the floor above: same shapes, but the incumbent has been silent for more than
+        // SUPERSEDE_MIN_AGE, so the lower-id link is adopted and the old one handed back to close.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(HIGHER);
+        s.attach(incumbent, T0 + 2);
+        s.markInbound(T0 + 3);
+        var silent = TimeUnit.SECONDS.toNanos(3) + 10L;
+        var fresh = initiatedBy(LOWER);
+        var result = s.attach(fresh, T0 + 3 + silent);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(incumbent);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
+    }
+
+    private static QuicPeerConnection initiatedBy(NodeId initiator) {
+        var chan = mock(QuicChannel.class);
+        when(chan.isActive()).thenReturn(true);
+        return QuicPeerConnection.quicPeerConnection(PEER, initiator, chan);
     }
 
     @Test

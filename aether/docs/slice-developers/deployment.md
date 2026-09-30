@@ -52,12 +52,12 @@ id = "org.example:commerce:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 1
+instances = 3
 # transitive dependency
 
 [[slices]]
 artifact = "org.example:commerce-payment-service:1.0.0"
-instances = 2
+instances = 3
 timeout_ms = 30000
 load_balancing = "round_robin"
 
@@ -85,13 +85,25 @@ affinity_key = "customerId"
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `instances` | int | `1` | Number of slice instances |
+| `instances` | int | `3` | Number of slice instances. At least 3; fewer is refused when the blueprint is parsed (#1495), so one drain or node failure leaves a slice at two or more instances `[mechanism: placement puts at most one instance of a slice on a node]`. The floor also holds at runtime: `aether scale` refuses fewer than 3, and the autoscaler never scales a slice below 3 |
+| `minAvailable` | int | `ceil(instances/2)` | Fewest ACTIVE instances a scale-down or an automatic drain may leave. At least 2 and at most `instances`; fewer is refused when the blueprint is parsed (#1495) |
 | `timeout_ms` | int | - | Request timeout in milliseconds |
 | `memory_mb` | int | - | Memory allocation per instance |
 | `load_balancing` | string | - | Load balancing strategy (`round_robin`, `least_connections`) |
 | `affinity_key` | string | - | Request field for sticky routing |
 
 If a slice config file is missing, default values are used (logged as info message).
+
+How far each operation can take a running slice down (#1495):
+
+| Operation | Lower bound | Mechanism |
+|-----------|-------------|-----------|
+| `aether scale` / `POST /api/v1/scale` | 3, and the slice's `minAvailable` | refused with `400` before the node is read |
+| Autoscaler scale-down | `max(minAvailable, 3)` | clamped; the decision is recorded `HELD` by the `MIN_INSTANCES` guard |
+| Automatic drain (leader reconciler) | `minAvailable` ACTIVE instances on the remaining nodes | the victim is deferred `[mechanism: SliceOwnershipQuery.minAvailableDrainGuard, SliceOwnershipQuery.java:104]` |
+| Operator drain or shutdown (`aether nodes drain`, `POST /api/v1/nodes/drain\|shutdown`) | **none yet**: only the core disruption budget is checked | see #1720 `[unverified-gap: #1720]` |
+| Automatic rollback (#1573) | 3 when it has to create the slice target; otherwise the existing count | a missing target is written at `SliceSpec.MIN_INSTANCES` |
+| A/B test (known exception) | **1**: A/B tests currently write a 1-instance target | see #1721 `[unverified-gap: #1721]` |
 
 ### Topological Ordering
 
@@ -495,11 +507,11 @@ id = "org.example:commerce-system:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 2
+instances = 3
 
 [[slices]]
 artifact = "org.example:payment-service:1.0.0"
-instances = 1
+instances = 3
 
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
@@ -515,7 +527,7 @@ Modify `instances` in blueprint for different environments:
 # Development
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
-instances = 1
+instances = 3
 
 # Production
 [[slices]]
@@ -563,7 +575,7 @@ Response:
     {
       "artifact": "org.example:order-service:1.0.0",
       "status": "running",
-      "instances": 1
+      "instances": 3
     }
   ]
 }

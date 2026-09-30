@@ -300,7 +300,7 @@ SHAPE org.pragmatica.consensus.StateMachine$Batch (id:org.pragmatica.consensus.S
 SHAPE org.pragmatica.consensus.StateMachine$Batch$Id (id:java.lang.String)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$DiscoverNodes (self:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$DiscoveredNodes (target:org.pragmatica.consensus.NodeId,nodes:java.util.List<org.pragmatica.consensus.net.NodeInfo>)
-SHAPE org.pragmatica.consensus.net.NetworkMessage$Hello (sender:org.pragmatica.consensus.NodeId,address:org.pragmatica.net.tcp.NodeAddress,labels:java.util.Map<java.lang.String, java.lang.String>,bootToken:long)
+SHAPE org.pragmatica.consensus.net.NetworkMessage$Hello (sender:org.pragmatica.consensus.NodeId,address:org.pragmatica.net.tcp.NodeAddress,labels:java.util.Map<java.lang.String, java.lang.String>,bootToken:long,intendedPeer:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$HelloRefused (sender:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest (sender:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse (target:org.pragmatica.consensus.NodeId,snapshot:byte[])

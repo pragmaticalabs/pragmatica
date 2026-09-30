@@ -42,7 +42,7 @@ id = "org.example:commerce:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 2
+instances = 3
 # transitive dependency
 
 [[slices]]
@@ -71,7 +71,7 @@ Each `[[slices]]` entry supports:
 | Property | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
 | `artifact` | string | Yes | - | Full Maven coordinates `groupId:artifactId:version` |
-| `instances` | integer | Yes | 1 | Number of slice instances to deploy |
+| `instances` | integer | Yes | 3 | Number of slice instances to deploy (minimum 3, #1495) |
 | `timeout_ms` | integer | No | runtime default | Request timeout in milliseconds |
 | `memory_mb` | integer | No | runtime default | Memory allocation per instance |
 | `load_balancing` | string | No | `round_robin` | Load balancing strategy |
@@ -121,7 +121,7 @@ External slice dependencies are automatically included with comment marker:
 ```toml
 [[slices]]
 artifact = "org.example:external-service:2.0.0"
-instances = 1
+instances = 3
 # transitive dependency
 ```
 
@@ -136,7 +136,7 @@ src/main/resources/slices/OrderService.toml
 ```
 
 If no config file exists, defaults are used:
-- `instances = 1`
+- `instances = 3`
 - No timeout override
 - No memory limit
 - Default load balancing
@@ -164,7 +164,7 @@ id = "org.example:my-app:1.0.0"
 
 [[slices]]
 artifact = "org.example:my-service:1.0.0"
-instances = 1
+instances = 3
 ```
 
 ### Full-Featured Blueprint
@@ -180,7 +180,7 @@ memory_mb = 256
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 2
+instances = 3
 memory_mb = 512
 # transitive dependency
 

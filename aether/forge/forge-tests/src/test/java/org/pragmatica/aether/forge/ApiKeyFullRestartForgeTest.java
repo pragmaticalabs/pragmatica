@@ -198,7 +198,7 @@ class ApiKeyFullRestartForgeTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(BLUEPRINT_ID, SLICE);
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + leaderMgmtPort() + "/api/v1/blueprints"))

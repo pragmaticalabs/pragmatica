@@ -13,6 +13,7 @@ import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,53 @@ class OwnerPeerReadsTest {
         OwnerPeerReads.PageRead notHeld = (_, _, _, _, _) -> new StreamForwardError.ReadForwardFailed(StreamError.General.PARTITION_NOT_LOCAL.message()).promise();
 
         assertThat(OwnerPeerReads.appendedWatermark(notHeld, PEER, STREAM, PARTITION, PAGE).await().unwrap()).isEqualTo(-1L);
+    }
+
+    private static OwnerPeerReads.PageRead refusing(Cause cause) {
+        return (_, _, _, _, _) -> new StreamForwardError.ReadForwardFailed(cause.message()).promise();
+    }
+
+    /// A peer that HOLDS the partition but has not materialized it (paced, deferred) answers a gate probe with its
+    /// durable watermark, not with the `-1` of a peer that holds nothing.
+    @Test
+    void appendedWatermark_heldNotMaterialized_reportsTheDurableWatermark() {
+        var held = refusing(new StreamError.PartitionHeldNotMaterialized(STREAM, PARTITION, 41L));
+
+        assertThat(OwnerPeerReads.appendedWatermark(held, PEER, STREAM, PARTITION, PAGE).await().unwrap()).isEqualTo(41L);
+    }
+
+    /// F1a: the backfill's probe reads a held-unmaterialized peer as REACHABLE, at its durable watermark.
+    @Test
+    void replicaWatermark_heldNotMaterialized_isReachableAtItsDurableWatermark() {
+        var held = refusing(new StreamError.PartitionHeldNotMaterialized(STREAM, PARTITION, 41L));
+        var empty = refusing(new StreamError.PartitionHeldNotMaterialized(STREAM, PARTITION, -1L));
+
+        assertThat(OwnerPeerReads.replicaWatermark(held, PEER, STREAM, PARTITION, PAGE).await().unwrap()).isEqualTo(41L);
+        assertThat(OwnerPeerReads.replicaWatermark(empty, PEER, STREAM, PARTITION, PAGE).await().unwrap()).isEqualTo(-1L);
+    }
+
+    /// A genuine non-holder stays "no information" for the backfill's probe: the owner must not promote past a peer
+    /// it cannot read, unlike the gate's probe, which has the committed replica set to say the peer holds nothing.
+    @Test
+    void replicaWatermark_partitionNotLocal_staysAFailure() {
+        var notHeld = refusing(StreamError.General.PARTITION_NOT_LOCAL);
+
+        assertThat(OwnerPeerReads.replicaWatermark(notHeld, PEER, STREAM, PARTITION, PAGE).await().isFailure()).isTrue();
+    }
+
+    @Test
+    void replicaWatermark_transportFailure_staysAFailure() {
+        var timedOut = refusing(StreamForwardError.General.STREAM_FORWARD_UNAVAILABLE);
+
+        assertThat(OwnerPeerReads.replicaWatermark(timedOut, PEER, STREAM, PARTITION, PAGE).await().isFailure()).isTrue();
+    }
+
+    /// The probe pages like the gate's: a peer whose offset 0 has aged out is probed from its oldest offset.
+    @Test
+    void replicaWatermark_offsetZeroExpired_resumesAtOldestAndReportsTheHead() {
+        var head = OwnerPeerReads.replicaWatermark(retaining(100, 109), PEER, STREAM, PARTITION, PAGE).await();
+
+        assertThat(head.unwrap()).isEqualTo(109L);
     }
 
     /// R1: a window whose start the peer has evicted is read from the peer's oldest offset — the records it still

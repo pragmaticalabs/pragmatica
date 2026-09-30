@@ -403,16 +403,16 @@ id = "org.example:commerce:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 1
+instances = 3
 # transitive dependency
 
 [[slices]]
 artifact = "org.example:commerce-payment-service:1.0.0"
-instances = 1
+instances = 3
 
 [[slices]]
 artifact = "org.example:commerce-order-service:1.0.0"
-instances = 1
+instances = 3
 ```
 
 ## Version Resolution

@@ -228,6 +228,12 @@ public final class EmberCluster {
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
     private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
+
+    /// The `[streaming]` section every node is created with. Defaults to [StreamingConfig#streamingConfig()];
+    /// [#withStreamingConfig] overrides it (e.g. `reshuffle_concurrency = 1` to make a partition's
+    /// materialization queue behind another).
+    private final AtomicReference<StreamingConfig> streamingConfig = new AtomicReference<>(StreamingConfig.streamingConfig());
+
     /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
     /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
@@ -455,6 +461,13 @@ public final class EmberCluster {
     @Contract
     public void withRaisedSwimTimeouts() {
         raisedSwimTimeouts.set(true);
+    }
+
+    /// TEST SEAM (#1735 sibling, F1a) — the `[streaming]` section for EVERY node in this cluster. MUST be called
+    /// before [#start]. Harness-scoped; production paths never call this.
+    @Contract
+    public void withStreamingConfig(StreamingConfig config) {
+        streamingConfig.set(config);
     }
 
     /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
@@ -1409,7 +1422,7 @@ public final class EmberCluster {
 
         // membership-config override: raised split-timeout ONLY for the #491 pinned convergence variant
         // (via withRaisedSwimTimeouts); otherwise none — forge nodes use MembershipConfig defaults
-        StreamingConfig.streamingConfig(),
+        streamingConfig.get(),
                                           ClusterFormationConfig.defaults(),
 
         // #298 — in-process nodes never pass through Main, so no cluster

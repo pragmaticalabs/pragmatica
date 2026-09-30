@@ -22,9 +22,18 @@ public record SliceSpec(Artifact artifact,
                         Option<Integer> maxInstances,
                         Option<Double> scaleUpThreshold,
                         Option<Double> scaleDownThreshold) {
-    private static final Fn1<Cause, Integer> INVALID_INSTANCES = Causes.forOneValue("Instance count must be positive: %s");
+    /// Floor on a blueprint slice's `instances` (#1495): one drain or node failure must leave the slice
+    /// running. See [SliceSpecError.InstancesBelowMinimum].
+    public static final int MIN_INSTANCES = 3;
+    /// `instances` applied when a blueprint entry omits it (#1495; was 1).
+    public static final int DEFAULT_INSTANCES = MIN_INSTANCES;
+    /// Floor on `minAvailable` (#1495, owner ruling: the floor is a runtime invariant). The scale-down and
+    /// drain guards read `minAvailable` as the fewest ACTIVE instances they may leave, so a floor of 1 would
+    /// let them take a slice to one instance, where the next drain or failure takes it to zero.
+    /// See [SliceSpecError.MinAvailableBelowFloor].
+    public static final int MIN_AVAILABLE = 2;
 
-    private static final Fn1<Cause, String> INVALID_MIN_AVAILABLE = Causes.forOneValue("minAvailable must be >= 1 and <= instances: %s");
+    private static final Fn1<Cause, String> INVALID_MIN_AVAILABLE = Causes.forOneValue("minAvailable must be <= instances: %s");
 
     private static final Fn1<Cause, String> INVALID_MAX_INSTANCES = Causes.forOneValue("maxInstances must be >= instances: %s");
 
@@ -48,11 +57,15 @@ public record SliceSpec(Artifact artifact,
                                               Option<Integer> maxInstances,
                                               Option<Double> scaleUpThreshold,
                                               Option<Double> scaleDownThreshold) {
-        if (instances <= 0) {
-            return INVALID_INSTANCES.apply(instances).result();
+        if (instances < MIN_INSTANCES) {
+            return SliceSpecError.InstancesBelowMinimum.FACTORY.apply(artifact, instances).result();
         }
 
-        if (minAvailable < 1 || minAvailable > instances) {
+        if (minAvailable < MIN_AVAILABLE) {
+            return SliceSpecError.MinAvailableBelowFloor.FACTORY.apply(artifact, minAvailable).result();
+        }
+
+        if (minAvailable > instances) {
             return INVALID_MIN_AVAILABLE.apply("minAvailable=" + minAvailable + ", instances=" + instances).result();
         }
 
@@ -77,6 +90,6 @@ public record SliceSpec(Artifact artifact,
     }
 
     public static Result<SliceSpec> sliceSpec(Artifact artifact) {
-        return sliceSpec(artifact, 1, 1);
+        return sliceSpec(artifact, DEFAULT_INSTANCES);
     }
 }

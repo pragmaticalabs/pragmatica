@@ -108,7 +108,8 @@ class SliceVersionLifecycleTest {
     /// `GET /versions` is declared `LOCAL` (`ManagementRoute:114`) and projects only **this node's**
     /// `HttpRoutePublisher.versionRegistries()`, so a node hosting no versioned slice answers `{}` —
     /// that is the endpoint's documented contract, not a failure. The blueprint here deploys
-    /// `instances = 1`, so exactly ONE of the three nodes ever holds that registry, and the app-HTTP
+    /// `instances = 3` (the #1495 floor), so on this 3-node cluster every node holds that registry; on a
+    /// larger cluster some nodes would not, which is why the gate still polls every port. The app-HTTP
     /// route does not help identify it: that one IS forwarded (`AppHttpServer`'s `HttpForwarder`), so
     /// `deployVersionedSlice()`'s readiness gate is satisfied by any node. The previous
     /// `anyMgmtPort()` — `status().nodes().getFirst()` over a `ConcurrentHashMap`, i.e. hash order,
@@ -125,7 +126,7 @@ class SliceVersionLifecycleTest {
         return await().atMost(WAIT_TIMEOUT)
                       .pollInterval(POLL_INTERVAL)
                       .alias("no node's LOCAL /api/v1/versions named " + TEST_ARTIFACT
-                             + " — with instances=1 exactly one node holds that registry, so ask every node, "
+                             + " — only the nodes hosting the slice hold that registry, so ask every node, "
                              + "never one node twice; the quoted input below is every management port's body "
                              + "joined by ' | '")
                       .until(this::hostingNodeVersionsBody, body -> body.contains(TEST_ARTIFACT));
@@ -209,7 +210,7 @@ class SliceVersionLifecycleTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(BLUEPRINT_ID, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         return postBlueprintWithRetry(leaderPort, blueprint);

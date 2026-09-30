@@ -47,7 +47,7 @@ class BlueprintTest {
                                             .flatMap(SliceSpec::sliceSpec)
                                             .flatMap(specA ->
                                                              Artifact.artifact("org.example:slice-b:2.0.0")
-                                                                     .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 2))
+                                                                     .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 4))
                                                                      .map(specB -> List.of(specA, specB))
                                                     )
                                             .flatMap(slices -> Blueprint.blueprint(id, slices))
@@ -56,8 +56,8 @@ class BlueprintTest {
                    .onSuccess(blueprint -> {
                        assertThat(blueprint.id().asString()).isEqualTo("org.example:my-app:1.0.0");
                        assertThat(blueprint.slices()).hasSize(2);
-                       assertThat(blueprint.slices().get(0).instances()).isEqualTo(1);
-                       assertThat(blueprint.slices().get(1).instances()).isEqualTo(2);
+                       assertThat(blueprint.slices().get(0).instances()).isEqualTo(SliceSpec.DEFAULT_INSTANCES);
+                       assertThat(blueprint.slices().get(1).instances()).isEqualTo(4);
                    });
     }
 }

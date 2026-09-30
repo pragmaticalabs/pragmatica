@@ -109,7 +109,8 @@ class ControlLoopContextAttributionTest {
     /// (without eviction the stale active=100 would persist and no scale-down could ever occur).
     @Test
     void onNodeDeparted_evictsDepartedNodeMetrics_enablesScaleDown() {
-        ctx.putBlueprint(HOT, target(HOT, 3, 1));
+        // Four instances, so the scale-down this proves has room above the #1495 runtime floor of three.
+        ctx.putBlueprint(HOT, target(HOT, 4, 2));
         for (int i = 0; i < WINDOW; i++) {
             ingest(100, 0);
             ctx.runEvaluationCycle();
@@ -123,17 +124,17 @@ class ControlLoopContextAttributionTest {
                                    NodeId.nodeId("n5").unwrap()));
         ctx.runEvaluationCycle();
         assertThat(cluster.putBases()).contains(HOT.base());
-        assertThat(cluster.lastTargetInstances()).isEqualTo(2);
+        assertThat(cluster.lastTargetInstances()).isEqualTo(3);
     }
 
     @Test
     void workerDeparture_removesLoadWithoutReplacingCoreTopology() {
-        ctx.putBlueprint(HOT, target(HOT, 3, 1));
+        ctx.putBlueprint(HOT, target(HOT, 4, 2));
         for (int i = 0; i < WINDOW; i++) { ingest(100, 0); ctx.runEvaluationCycle(); }
         ctx.removeNodeMetrics(WORKER);
         ctx.runEvaluationCycle();
         assertThat(cluster.putBases()).contains(HOT.base());
-        assertThat(cluster.lastTargetInstances()).isEqualTo(2);
+        assertThat(cluster.lastTargetInstances()).isEqualTo(3);
     }
 
     /// #424 leader cap: `maxInstances` bounds the autoscaler's requested instance count BEFORE the
