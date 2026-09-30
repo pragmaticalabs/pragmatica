@@ -59,7 +59,7 @@ test_leader_elected() {
 }
 
 test_health_probes() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/live" "200" "Liveness probe after bootstrap"
+    assert_http_status "$(_resolve_live_endpoint)/health/live" "200" "Liveness probe after bootstrap"
     assert_cluster_healthy "Cluster healthy after bootstrap"
 }
 

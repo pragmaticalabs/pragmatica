@@ -302,34 +302,73 @@ test_pick_minority() {
     log_info "Leader (majority): ${leader} | Minority (to partition): ${m1}, ${m2}"
 }
 
+# One read of the majority's view: prints "<leaderId|none> <quorate>" on a SUCCESSFUL read and nothing
+# when the read failed or the body is unusable (unknown — not evidence either way).
+_majority_sample() {
+    local ep="$1" body leader quorate
+    body=$(curl -sk -m 5 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/nodes/status" 2>/dev/null) || return 0
+    [ -n "$body" ] || return 0
+    printf '%s' "$body" | grep -qE '"leaderId"[[:space:]]*:' || return 0
+    leader=$(printf '%s' "$body" | grep -oE '"leaderId"[[:space:]]*:[[:space:]]*("[^"]*"|null)' | head -1 \
+             | sed -E 's/.*:[[:space:]]*//; s/"//g')
+    quorate=$(printf '%s' "$body" | grep -oE '"quorate"[[:space:]]*:[[:space:]]*(true|false)' | head -1 | grep -oE '(true|false)$')
+    [ -n "$leader" ] && [ "$leader" != "null" ] || leader="none"
+    printf '%s %s' "$leader" "${quorate:-unknown}"
+}
+
 # Poll the MAJORITY's health for the partition window. Returns 1 on an S05 violation.
+#
+# The read goes to the LEADER's own endpoint (the leader stays in the majority), never to whichever
+# node the pinned endpoint happens to be: a partitioned minority node keeps mgmt open and answers
+# with ITS view (leaderless, not quorate), which S05 once scored as a majority failure (harness
+# false positive: the pinned node was the minority victim). A FAILED read is UNKNOWN — retried at the
+# next poll; only a SUCCESSFUL read that reports no leader or quorate=false is a violation. Unknown is
+# BOUNDED so it cannot mask a real loss: S05_MAX_CONSECUTIVE_UNKNOWN (default 3) failed reads in a row
+# mean the leader is unreachable and fail the test, and fewer than S05_MIN_OK_READS (default 3)
+# successful reads across the window is inconclusive and fails too — never a pass.
 monitor_majority_during_partition() {
     local leader="$1"
-    # Continuous monitoring during the partition: poll the MAJORITY's health at
-    # ~1Hz. The protective property under a dual-signal (transport + SWIM-faulty)
-    # split is that the 3-node majority MUST stay quorate with a STABLE leader —
-    # a 2-node minority partition can never be allowed to topple the majority.
-    # Prompt eviction of the dual-signal minority is INTENDED (LeaderReconciler
-    # two-signal co-confirmation) and is NOT asserted against here. The earlier
-    # "minority must remain present for the full window" expectation was wrong
-    # for a dual-signal injection and produced a false FAIL.
+    local ep
+    ep=$(node_mgmt_endpoint "$leader")
+    if [ -z "$ep" ]; then
+        ep=$(_resolve_live_endpoint)
+        log_warn "S05: could not derive the leader's (${leader:-?}) management endpoint; reading through ${ep} (it may be a partitioned node)"
+    fi
     local deadline=$((SECONDS + PARTITION_DURATION_S))
+    local ok_reads=0 unknown_reads=0 consecutive_unknown=0 sample cur_leader quorate
+    local max_unknown="${S05_MAX_CONSECUTIVE_UNKNOWN:-3}" min_ok="${S05_MIN_OK_READS:-3}"
     while [ $SECONDS -lt $deadline ]; do
-        local quorate cur_leader
-        quorate=$(cluster_quorate 2>/dev/null || true)
+        sample=$(_majority_sample "$ep")
+        if [ -z "$sample" ]; then
+            unknown_reads=$((unknown_reads + 1))
+            consecutive_unknown=$((consecutive_unknown + 1))
+            if [ "$consecutive_unknown" -ge "$max_unknown" ]; then
+                log_fail "S05 leader-unreachable: ${consecutive_unknown} consecutive failed reads of the majority leader's endpoint ${ep} (${ok_reads} successful before) — the leader may be down, which S05 must not report as a pass"
+                return 1
+            fi
+            sleep "${S05_POLL_S:-1}"
+            continue
+        fi
+        consecutive_unknown=0
+        ok_reads=$((ok_reads + 1))
+        cur_leader="${sample%% *}"
+        quorate="${sample##* }"
         if [ "$quorate" = "false" ]; then
-            log_fail "S05 violation: cluster reported NOT quorate during a 2-vs-3 minority partition. The 3-node majority must retain quorum throughout — a minority split must never cost the majority its quorum."
+            log_fail "S05 violation: the majority (read from ${ep}) reported NOT quorate during a 2-vs-3 minority partition. The 3-node majority must retain quorum throughout — a minority split must never cost the majority its quorum."
             return 1
         fi
-        cur_leader=$(cluster_leader 2>/dev/null || true)
-        if [ -z "$cur_leader" ] || [ "$cur_leader" = "none" ]; then
-            log_fail "S05 violation: majority lost its leader during the minority partition. The leader stayed in the majority partition; a 2-node minority split must not trigger re-election or leaderlessness on the majority side."
+        if [ "$cur_leader" = "none" ]; then
+            log_fail "S05 violation: the majority (read from ${ep}) reported NO leader during the minority partition. The leader stayed in the majority partition; a 2-node minority split must not trigger re-election or leaderlessness on the majority side."
             return 1
         fi
-        sleep 1
+        sleep "${S05_POLL_S:-1}"
     done
+    if [ "$ok_reads" -lt "$min_ok" ]; then
+        log_fail "S05 inconclusive: only ${ok_reads} successful read(s) of the majority (${ep}) in ${PARTITION_DURATION_S}s, need ${min_ok} (${unknown_reads} failed) — cannot claim the majority stayed quorate and led"
+        return 1
+    fi
 
-    log_pass "S05: majority stayed quorate with a stable leader (${leader:-?}) throughout the ${PARTITION_DURATION_S}s dual-signal partition; prompt minority eviction (if any) is intended co-confirmation behavior"
+    log_pass "S05: majority stayed quorate with a stable leader (${leader:-?}) throughout the ${PARTITION_DURATION_S}s dual-signal partition (${ok_reads} reads, ${unknown_reads} unreadable); prompt minority eviction (if any) is intended co-confirmation behavior"
     return 0
 }
 
