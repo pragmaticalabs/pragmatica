@@ -28,9 +28,10 @@ import java.util.function.Predicate;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
+import org.pragmatica.swim.SwimMember.MemberState;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.pragmatica.swim.SwimMember.MemberState;
 
 
 /// Bounded buffer for membership updates piggybacked on protocol messages.
@@ -137,7 +138,7 @@ public final class PiggybackBuffer {
 
         if (oversizeWarned.add(update.nodeId())) {
             LOG.warn("SWIM update for {} is ~{} B, over the {} B piggyback budget on its own — gossiping it without its"
-                     + " {} label(s); the full labels still travel on ANNOUNCE and the QUIC Hello",
+                    + " {} label(s); the full labels still travel on ANNOUNCE and the QUIC Hello",
                      update.nodeId().id(),
                      itemBytes,
                      budgetBytes,
@@ -159,7 +160,6 @@ public final class PiggybackBuffer {
     public static final int MAX_DATAGRAM_BYTES = 1400;
     /// AES-GCM framing added to every datagram: 4 B key id + 12 B nonce + 16 B tag.
     static final int ENCRYPTION_OVERHEAD_BYTES = 32;
-
     /// Fixed part of the message envelope (type tag, sender-id framing, sequence, list header), rounded up.
     /// The sender's id itself is added per node — see [#piggybackBudgetFor].
     static final int ENVELOPE_FIXED_BYTES = 64;

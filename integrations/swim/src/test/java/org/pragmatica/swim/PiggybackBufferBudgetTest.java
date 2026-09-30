@@ -74,9 +74,9 @@ class PiggybackBufferBudgetTest {
     @Test
     void budget_followsTheSendersActualIdLength() {
         var shortId = PiggybackBuffer.piggybackBudgetFor(new NodeId("s".repeat(60)));
-        var longId = PiggybackBuffer.piggybackBudgetFor(new NodeId("s".repeat(250)));
+        var longId = PiggybackBuffer.piggybackBudgetFor(new NodeId("s".repeat(600)));
 
-        assertThat(shortId - longId).isEqualTo(190);
+        assertThat(shortId - longId).isEqualTo(540);
         assertThat(PiggybackBuffer.piggybackBudgetFor(new NodeId("s".repeat(5000)))).as("floored, never negative").isZero();
     }
 

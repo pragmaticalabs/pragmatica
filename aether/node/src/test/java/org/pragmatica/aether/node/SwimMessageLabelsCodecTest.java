@@ -142,12 +142,12 @@ class SwimMessageLabelsCodecTest {
 
     /// The whole chain on the wire: a real protocol whose members carry huge label maps (a hostname of 1856-3000
     /// characters is the band where ANNOUNCE got through but every self-update Ping was dropped), with sender ids of
-    /// 60 and 250 characters. Whatever it gossips, the ENCODED Ack plus AES-GCM framing stays under the datagram
+    /// 60 and 600 characters. Whatever it gossips, the ENCODED Ack plus AES-GCM framing stays under the datagram
     /// ceiling, and the role still propagates, because gossip carries only role and source and the packer budgets
     /// from the sender's actual id length.
     @Test
     void ack_withHugeLabelMapsAndLongSenderIds_neverExceedsTheDatagramCeiling_andRoleStillPropagates() {
-        for (var idLength : List.of(60, 250)) {
+        for (var idLength : List.of(60, 200, 600)) {
             for (var hostnameLength : List.of(1856, 1870, 1879, 3072)) {
                 var transport = new CapturingTransport();
                 var selfId = new NodeId("s".repeat(idLength));
@@ -183,11 +183,11 @@ class SwimMessageLabelsCodecTest {
     }
 
     /// The same, for the node's OWN steady-state gossip: its self-ALIVE carries role/source of a node whose full
-    /// label map has a 1870-character hostname, from a 250-character id.
+    /// label map has a 1870-character hostname, from a 600-character id.
     @Test
     void selfAlive_withHugeHostnameAndLongId_fitsTheDatagramCeiling() {
         var transport = new CapturingTransport();
-        var selfId = new NodeId("s".repeat(250));
+        var selfId = new NodeId("s".repeat(600));
         var protocol = SwimProtocol.swimProtocol(SwimConfig.swimConfig(TimeSpan.timeSpan(100).millis(), TimeSpan.timeSpan(80).millis(), 3, TimeSpan.timeSpan(5).seconds(), 8, TimeSpan.timeSpan(40).millis())
                                                                       .withJoinGrace(TimeSpan.timeSpan(0).millis()),
                                                  transport,
