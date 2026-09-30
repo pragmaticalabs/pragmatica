@@ -4134,36 +4134,44 @@ _restore_active_counted_gate() {
 }
 
 # One line per artifact entry in a /api/v1/slices body (stdin), layout-independent (the body may be
-# pretty-printed or one line):  <artifact>\t<targetInstances>\t<node>=<STATE> <node>=<STATE> ...
+# pretty-printed or one line):  <artifact>\t<targetInstances>\t<currentVersion>\t<node>=<STATE> <node>=<STATE> ...
+# currentVersion is non-empty ONLY when a SliceTarget backs the artifact (SliceRoutes.toClusterSliceInfo takes
+# it from the SliceTarget and falls back to ""), and targetInstances falls back to instances.size() without one:
+# so an UNDEPLOYED artifact with a lingering non-ACTIVE row reads as target > 0, and only currentVersion tells
+# a deployed artifact from such a row.
 _slices_by_artifact() {
     tr '\n' ' ' | sed 's/"artifact"/\
 "artifact"/g' | grep '^"artifact"' | while IFS= read -r chunk; do
-        local art tgt states
+        local art tgt ver states
         art=$(printf '%s' "$chunk" | sed -E 's/^"artifact"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        ver=$(printf '%s' "$chunk" | grep -oE '"currentVersion"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
         tgt=$(printf '%s' "$chunk" | grep -oE '"targetInstances"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)
         states=$(printf '%s' "$chunk" \
             | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"[^}]*"state"[[:space:]]*:[[:space:]]*"[A-Z_]+"' \
             | sed -E 's/"nodeId"[[:space:]]*:[[:space:]]*"([^"]*)".*"state"[[:space:]]*:[[:space:]]*"([A-Z_]+)"/\1=\2/' \
             | tr '\n' ' ' || true)
-        printf '%s\t%s\t%s\n' "$art" "${tgt:-0}" "$states"
+        printf '%s\t%s\t%s\t%s\n' "$art" "${tgt:-0}" "${ver:-}" "$states"
     done
 }
 
-# Every deployed slice artifact must have >= 1 ACTIVE instance (any version of it: during a rolling
-# update the old version legitimately drains while the new one is ACTIVE). Prints, on stdout, the
-# per-artifact instance states when it does not, and returns 1. Artifacts are keyed group:artifact
-# (version stripped); one with targetInstances 0 is not required to run anything.
+# Every DEPLOYED slice artifact must have >= 1 ACTIVE instance (any version of it: during a rolling update
+# the old version legitimately drains while the new one is ACTIVE). "Deployed" means a SliceTarget backs it
+# (currentVersion non-empty): an undeployed artifact can linger as a non-ACTIVE row, and with target read back
+# as instances.size() it would fail every later restore. Artifacts are keyed group:artifact (version
+# stripped); one with targetInstances 0 is not required to run anything. Prints, on stdout, the per-artifact
+# instance states of each starved artifact, and nothing when all are fine.
 _slices_missing_active() {
     local report="$1"
     printf '%s\n' "$report" | awk -F'\t' '
-        NF >= 2 {
+        NF >= 3 {
             key = $1; sub(/:[^:]*$/, "", key)
             seen[key] = 1; target[key] += $2
-            n = split($3, inst, " ")
+            if ($3 != "") deployed[key] = 1
+            n = split($4, inst, " ")
             for (i = 1; i <= n; i++) if (inst[i] ~ /=ACTIVE$/) active[key]++
-            states[key] = states[key] " [" $1 " target=" $2 ": " $3 "]"
+            states[key] = states[key] " [" $1 " target=" $2 " currentVersion=" $3 ": " $4 "]"
         }
-        END { for (k in seen) if (target[k] > 0 && active[k] == 0) print k ":" states[k] }'
+        END { for (k in seen) if (deployed[k] && target[k] > 0 && active[k] == 0) print k ":" states[k] }'
 }
 
 # restore_cluster_baseline's slice gate: the cluster is not "at baseline" while a deployed blueprint has
@@ -4192,7 +4200,7 @@ _restore_slices_gate() {
         [ "$SECONDS" -ge "$deadline" ] && break
         sleep "$poll"
     done
-    log_fail "restore_cluster_baseline: deployed slice artifact(s) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
+    log_fail "restore_cluster_baseline: deployed slice artifact(s) (SliceTarget-backed: currentVersion set) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
     return 1
 }
 

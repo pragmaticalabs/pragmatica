@@ -10,6 +10,8 @@
 #   G5  the same all-ACTIVE body on ONE line      -> passes (layout independent)
 #   G6  an artifact with targetInstances 0        -> not required
 #   G7  unreadable body                           -> fails (never a pass)
+#   G9  an UNDEPLOYED artifact (no SliceTarget: currentVersion "") with one lingering UNLOADING row -> passes;
+#       the same row on a DEPLOYED artifact fails (G1)
 #   G8  echo LOADING forever                      -> fails after the budget (a stuck LOADING is not ACTIVE)
 #   W1  restore_cluster_baseline itself fails on G1's body (the gate is wired in)
 #   ARTIFACT_UNDER... LIB_UNDER_TEST selects an alternate lib copy (mutation probes).
@@ -28,10 +30,15 @@ trap '[ -n "${KEEP:-}" ] && echo "WORK=$WORK" >&2 || rm -rf "$WORK"' EXIT
 extract() { sed -n "/^$2() {/,/^}/p" "$1"; }
 
 inst() { printf '{"nodeId":"%s","state":"%s","failureReason":""}' "$1" "$2"; }
-slice() {  # <artifact> <target> <inst json ...>
+slice() {  # <artifact> <target> <inst json ...>   (SliceTarget-backed: currentVersion "1.0.0")
     local a="$1" t="$2"; shift 2
     local IFS=,
     printf '{"artifact":"%s","targetInstances":%s,"minInstances":1,"currentVersion":"1.0.0","instances":[%s]}' "$a" "$t" "$*"
+}
+undeployed() {  # <artifact> <inst json ...>: no SliceTarget, so target falls back to instances.size(), currentVersion ""
+    local a="$1"; shift
+    local IFS=,
+    printf '{"artifact":"%s","targetInstances":%s,"minInstances":1,"currentVersion":"","instances":[%s]}' "$a" "$#" "$*"
 }
 ECHO=org.pragmatica.aether.test:test-echo-echo-slice:1.0.0
 PERS=org.pragmatica.aether.test:test-persistence-persistence-slice:1.0.0
@@ -84,6 +91,11 @@ if [ "$(cat "$WORK/grc.g7")" = "1" ] && grep -q 'unreadable' "$WORK/g.g7"; then 
 
 run_gate g8 "$(body "$(slice $ECHO 3 "$(inst n1 LOADING)" "$(inst n2 LOADING)")")"
 if [ "$(cat "$WORK/grc.g8")" = "1" ] && grep -q 'n1=LOADING' "$WORK/g.g8"; then ok "G8 LOADING forever fails after the budget, naming the states"; else fail "G8 rc=$(cat "$WORK/grc.g8") $(head -c 200 "$WORK/g.g8")"; fi
+
+run_gate g9 "$(body "$(slice $PERS 3 "$(inst n1 ACTIVE)")" "$(undeployed org.pragmatica.aether.test:removed-slice:1.0.0 "$(inst n2 UNLOADING)")")"
+if [ "$(cat "$WORK/grc.g9")" = "0" ]; then ok "G9 an undeployed artifact with a lingering UNLOADING row does not fail the gate (only SliceTarget-backed artifacts count)"
+else fail "G9 rc=$(cat "$WORK/grc.g9") $(head -c 240 "$WORK/g.g9")"; fi
+if grep -q 'SliceTarget-backed' "$WORK/g.g1"; then ok "G1b the failure message names the mechanism (SliceTarget-backed, currentVersion set)"; else fail "G1b message: $(head -c 200 "$WORK/g.g1")"; fi
 
 # W1: restore_cluster_baseline with every earlier step stubbed green and the slices from G1
 {
