@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -98,24 +99,25 @@ class QuicLaneFinishUnderLossTest {
         standIn.closeFuture().addListener(_ -> closes.add("dialer@" + (System.nanoTime() - t0) / 1_000_000 + "ms"));
         acceptorStandIn.closeFuture().addListener(_ -> closes.add("acceptor@" + (System.nanoTime() - t0) / 1_000_000 + "ms"));
         var padding = "x".repeat(8 * 1024);
-        var succeeded = new AtomicInteger();
+        // By marker, not by count: a failed write that is delivered anyway must not stand in for an acknowledged one lost.
+        var acked = ConcurrentHashMap.<String>newKeySet();
         var failed = new AtomicInteger();
 
         IntStream.range(0, SENT)
-                 .forEach(i -> burstWrite(standIn, i, padding, SENT / 2, succeeded, failed));
-        awaitTrue(() -> succeeded.get() + failed.get() == SENT, "every write resolves");
+                 .forEach(i -> burstWrite(standIn, i, padding, SENT / 2, acked, failed));
+        awaitTrue(() -> acked.size() + failed.get() == SENT, "every write resolves");
 
         var deadline = System.nanoTime() + AWAIT.nanos();
 
-        while (System.nanoTime() < deadline && finMarkers().size() < succeeded.get()) {
+        while (System.nanoTime() < deadline && !finMarkers().containsAll(acked)) {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
         }
-        if (finMarkers().size() < succeeded.get()) {
+        if (!finMarkers().containsAll(acked)) {
             var at = finMarkers().size();
             var statsAt = stats();
             LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(15));
-            fail("LOST delivered@20s=" + at + " delivered@35s=" + finMarkers().size() + " succeeded=" + succeeded.get()
-                 + " failed=" + failed.get() + " missing=" + missing(succeeded.get()) + " closes=" + closes
+            fail("LOST delivered@20s=" + at + " delivered@35s=" + finMarkers().size() + " succeeded=" + acked.size()
+                 + " failed=" + failed.get() + " missing=" + missing(acked) + " closes=" + closes
                  + " dialerStandIn.active=" + standIn.isActive() + " acceptorStandIn.active=" + acceptorStandIn.isActive()
                  + " statsAt20s=" + statsAt + " statsAt35s=" + stats());
         }
@@ -171,11 +173,11 @@ class QuicLaneFinishUnderLossTest {
         }
     }
 
-    private String missing(int succeeded) {
+    private String missing(Set<String> acked) {
         var got = finMarkers();
         var gaps = IntStream.range(0, SENT)
-                            .filter(i -> !got.contains("fin-" + i))
-                            .boxed()
+                            .mapToObj(i -> "fin-" + i)
+                            .filter(marker -> acked.contains(marker) && !got.contains(marker))
                             .toList();
 
         return gaps.size() > 20
@@ -196,14 +198,20 @@ class QuicLaneFinishUnderLossTest {
         awaitTrue(this::sameStreamAtBothEnds, "the dialer adopts the acceptor's stand-in for FORWARD");
     }
 
-    private void burstWrite(QuicStreamChannel stream, int index, String padding, int pivot, AtomicInteger succeeded, AtomicInteger failed) {
+    private void burstWrite(QuicStreamChannel stream, int index, String padding, int pivot, Set<String> acked, AtomicInteger failed) {
         if (index == pivot) {
             var _ = openLaneAsync(dialerSide);
             // Hold the burst until the finish has really happened, so it lands mid-burst at any drop rate.
             awaitTrue(stream::isOutputShutdown, "the peer finished the stand-in and the dialer answered with its FIN (mid-burst)");
         }
         stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "fin-" + index + "|" + padding))))
-              .addListener(future -> (future.isSuccess() ? succeeded : failed).incrementAndGet());
+              .addListener(future -> {
+                  if (future.isSuccess()) {
+                      acked.add("fin-" + index);
+                  } else {
+                      failed.incrementAndGet();
+                  }
+              });
     }
 
     private Set<String> finMarkers() {
