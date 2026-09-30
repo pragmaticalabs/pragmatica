@@ -69,7 +69,12 @@ cat <<'STUB'
 log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }; log_fail() { echo "FAIL $*"; }
 api_get() {
     case "$1" in
-        /api/v1/schema/status) if [ -f "${SCHEMA:-}" ]; then cat "$SCHEMA"; else echo '{"datasources":[]}'; fi; return 0 ;;
+        /api/v1/schema/status)
+            # the Nth read serves $SCHEMA_LATER once it exists and N > 1 (a FAILED that clears on the next poll)
+            local n=$(( $(cat "${SCHEMA}.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${SCHEMA}.n"
+            if [ "$n" -gt 1 ] && [ -f "${SCHEMA}.later" ]; then cat "${SCHEMA}.later"
+            elif [ -f "${SCHEMA:-}" ]; then cat "$SCHEMA"; else echo '{"datasources":[]}'; fi
+            return 0 ;;
         /api/v1/slices) ;;
         *) return 0 ;;
     esac
@@ -155,18 +160,22 @@ schema_entry() {  # <datasource> <status> <held slice or ''>
         "$SK_DS" "$1" "$SK_VER" "$SK_LM" "$SK_ST" "$2" "$SK_OB" "$SK_HELD" "$held"
 }
 schema_body() { printf '{"datasources":[%s]}' "$(local IFS=,; echo "$*")"; }
-PERS_SLICE=org.pragmatica.aether.test:test-persistence-persistence-slice:1.0.0
+# heldSlices carries artifact BASES (group:artifact, SchemaRoutes.collectIfHeldBySchema: key.artifact().base()), the
+# slices rows carry the versioned coordinate.
+PERS_BASE=org.pragmatica.aether.test:test-persistence-persistence-slice
+PERS_SLICE="${PERS_BASE}:1.0.0"
 LOADED3="$(body "$(slice $ECHO 3 "$(inst n1 ACTIVE)")" "$(slice $PERS_SLICE 3 "$(inst n1 LOADED)" "$(inst n2 LOADED)" "$(inst n3 LOADED)")")"
-timed_gate() {  # <label> <slices> <schema body or ''>  -> elapsed seconds in $WORK/el.<label>
-    printf '%s' "$2" > "$WORK/slices.$1"; rm -f "$WORK/later.$1" "$WORK/schema.$1"
+timed_gate() {  # <label> <slices> <schema body or ''> [schema body from the 2nd read on] -> elapsed seconds in $WORK/el.<label>
+    printf '%s' "$2" > "$WORK/slices.$1"; rm -f "$WORK/later.$1" "$WORK/schema.$1" "$WORK/schema.$1.n" "$WORK/schema.$1.later"
     [ -n "$3" ] && printf '%s' "$3" > "$WORK/schema.$1"
+    [ -n "${4:-}" ] && printf '%s' "$4" > "$WORK/schema.$1.later"
     local t0=$SECONDS
     ( export SLICES="$WORK/slices.$1" SLICES_LATER="$WORK/later.$1" SCHEMA="$WORK/schema.$1" START=$SECONDS \
              AETHER_RESTORE_SLICES_TIMEOUT=6 AETHER_RESTORE_SLICES_POLL=1 TIMEOUT_SCALE=1
       source "$WORK/gate.sh"; _restore_slices_gate ) > "$WORK/g.$1" 2>&1
     echo $? > "$WORK/grc.$1"; echo $(( SECONDS - t0 )) > "$WORK/el.$1"
 }
-timed_gate s1 "$LOADED3" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_SLICE")")"
+timed_gate s1 "$LOADED3" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")"
 if [ "$(cat "$WORK/grc.s1")" = "1" ] && [ "$(cat "$WORK/el.s1")" -lt 5 ] && grep -q 'FAILED schema migration' "$WORK/g.s1" \
    && grep -q 'datasource=database.testpersistence' "$WORK/g.s1" && grep -q 'V900__create_kv.sql' "$WORK/g.s1" && grep -q 'test-persistence-persistence-slice' "$WORK/g.s1"; then
     ok "S1 LOADED slice held by a FAILED schema fails in $(cat "$WORK/el.s1")s (budget 6s), naming the datasource, migration and held slice"
@@ -178,9 +187,26 @@ else fail "S2 rc=$(cat "$WORK/grc.s2") elapsed=$(cat "$WORK/el.s2")s $(head -c 2
 timed_gate s3 "$LOADED3" "$(schema_body "$(schema_entry database.other FAILED "")")"
 if [ "$(cat "$WORK/el.s3")" -ge 5 ] && ! grep -q 'FAILED schema' "$WORK/g.s3"; then ok "S3 a FAILED schema that holds NOTHING (empty heldSlices) does not fast-fail the gate"
 else fail "S3 elapsed=$(cat "$WORK/el.s3")s $(head -c 200 "$WORK/g.s3")"; fi
-timed_gate s4 "$ALLACTIVE" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_SLICE")")"
+timed_gate s4 "$ALLACTIVE" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")"
 if [ "$(cat "$WORK/grc.s4")" = "0" ]; then ok "S4 every artifact ACTIVE passes even with an unrelated FAILED schema record"
 else fail "S4 rc=$(cat "$WORK/grc.s4") $(head -c 200 "$WORK/g.s4")"; fi
+# S5: v1743's probe. persistence is STARVED (LOADED, held by nothing the schema record names), while a FAILED hold
+# sits on an UNRELATED healthy artifact. Blaming it would misattribute: no fast-fail, the gate waits its budget.
+UNRELATED_SLICE=org.pragmatica.aether.test:test-echo-echo-slice
+timed_gate s5 "$LOADED3" "$(schema_body "$(schema_entry database.unrelated FAILED "$UNRELATED_SLICE")")"
+if [ "$(cat "$WORK/grc.s5")" = "1" ] && [ "$(cat "$WORK/el.s5")" -ge 5 ] && grep -q 'NO ACTIVE instance' "$WORK/g.s5" && ! grep -q 'FAILED schema' "$WORK/g.s5"; then
+    ok "S5 a FAILED hold on an UNRELATED artifact does not fast-fail a starved one: it waits the budget ($(cat "$WORK/el.s5")s)"
+else fail "S5 rc=$(cat "$WORK/grc.s5") elapsed=$(cat "$WORK/el.s5")s $(head -c 240 "$WORK/g.s5")"; fi
+# S6: FAILED on poll 1, PENDING on poll 2 (a stale FAILED right after a redeploy) -> no fast-fail
+timed_gate s6 "$LOADED3" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")" "$(schema_body "$(schema_entry database.testpersistence PENDING "$PERS_BASE")")"
+if [ "$(cat "$WORK/grc.s6")" = "1" ] && [ "$(cat "$WORK/el.s6")" -ge 5 ] && ! grep -q 'FAILED schema' "$WORK/g.s6"; then
+    ok "S6 FAILED on poll 1 and PENDING on poll 2 does not fast-fail (2 consecutive polls required)"
+else fail "S6 rc=$(cat "$WORK/grc.s6") elapsed=$(cat "$WORK/el.s6")s $(head -c 240 "$WORK/g.s6")"; fi
+# S7: a FAILED hold on the starved artifact AMONG an unrelated one still fast-fails, naming only the intersection
+timed_gate s7 "$LOADED3" "$(schema_body "$(schema_entry database.unrelated FAILED "$UNRELATED_SLICE")" "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")"
+if [ "$(cat "$WORK/grc.s7")" = "1" ] && [ "$(cat "$WORK/el.s7")" -lt 5 ] && grep -q 'datasource=database.testpersistence' "$WORK/g.s7" && ! grep -q 'datasource=database.unrelated' "$WORK/g.s7"; then
+    ok "S7 with an unrelated and a relevant FAILED record, it fast-fails on the relevant one only"
+else fail "S7 rc=$(cat "$WORK/grc.s7") elapsed=$(cat "$WORK/el.s7")s $(head -c 240 "$WORK/g.s7")"; fi
 # tripwire: the keys the probe parses must be components of the real record
 GATE_SCHEMA_KEYS=$(extract "$LIB" _schema_failed_holds | grep -oE '"(datasource|status|heldSlices|lastMigration|owningBlueprint)"' | tr -d '"' | sort -u | tr '\n' ' ')
 miss=""; for k in $GATE_SCHEMA_KEYS; do schema_components | grep -qx "$k" || miss="$miss $k"; done

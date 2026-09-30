@@ -4181,24 +4181,33 @@ _slices_missing_active() {
         END { for (k in seen) if (deployed[k] && target[k] > 0 && active[k] == 0) print k ":" states[k] }'
 }
 
-# One line per datasource whose schema migration FAILED and is holding slices, from a /api/v1/schema/status body
-# (stdin): SchemaRoutes.SchemaStatusResponse(datasource, currentVersion, lastMigration, status, owningBlueprint,
-# heldSlices). `status` FAILED (AetherValue.SchemaStatus) with a non-empty `heldSlices` (#760: the slices the record
-# blocks) is a PERMANENT hold: waiting on it only burns the budget (2026-09-30 S-double-prime: "Config section not
-# found: database.testpersistence" -> SCHEMA_MIGRATION_FAILED, test-persistence LOADED forever). Layout-independent.
+# One line per datasource whose schema migration FAILED and is holding a STARVED slice, from a
+# /api/v1/schema/status body (stdin); $1 = the starved artifact keys (group:artifact, one per line).
+# SchemaRoutes.SchemaStatusResponse(datasource, currentVersion, lastMigration, status, owningBlueprint, heldSlices):
+# `status` FAILED (AetherValue.SchemaStatus) with `heldSlices` (#760, artifact BASES, i.e. group:artifact) that
+# INTERSECT the starved artifacts is a PERMANENT hold on something the gate is waiting for (2026-09-30
+# S-double-prime: "Config section not found: database.testpersistence" -> SCHEMA_MIGRATION_FAILED, test-persistence
+# LOADED forever). A FAILED record holding only OTHER artifacts says nothing about the starved one and must not
+# be blamed for it. Layout-independent.
 _schema_failed_holds() {
+    local starved="$1"
     tr '\n' ' ' | sed 's/"datasource"/\
 "datasource"/g' | grep '^"datasource"' | while IFS= read -r chunk; do
-        local st ds lm ob held inner
+        local st ds lm ob held inner item hit=""
         st=$(printf '%s' "$chunk" | grep -oE '"status"[[:space:]]*:[[:space:]]*"[A-Z_]+"' | head -1 | sed -E 's/.*:[[:space:]]*"([A-Z_]+)"/\1/' || true)
         [ "$st" = "FAILED" ] || continue
         held=$(printf '%s' "$chunk" | grep -oE '"heldSlices"[[:space:]]*:[[:space:]]*\[[^]]*\]' | head -1 || true)
         inner="${held#*\[}"
-        case "$inner" in *'"'*) ;; *) continue ;; esac
+        inner=$(printf '%s' "${inner%\]}" | tr -d '" ')
+        [ -n "$inner" ] || continue
+        for item in $(printf '%s' "$inner" | tr ',' ' '); do
+            if printf '%s\n' "$starved" | grep -qxF "$item"; then hit="${hit}${hit:+,}${item}"; fi
+        done
+        [ -n "$hit" ] || continue
         ds=$(printf '%s' "$chunk" | sed -E 's/^"datasource"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
         lm=$(printf '%s' "$chunk" | grep -oE '"lastMigration"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
         ob=$(printf '%s' "$chunk" | grep -oE '"owningBlueprint"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
-        printf 'datasource=%s status=FAILED lastMigration=%s owningBlueprint=%s heldSlices=%s\n' "$ds" "${lm:--}" "${ob:--}" "$(printf '%s' "${inner%\]}" | tr -d '" ')"
+        printf 'datasource=%s status=FAILED lastMigration=%s owningBlueprint=%s heldSlices=%s (starved: %s)\n' "$ds" "${lm:--}" "${ob:--}" "$inner" "$hit"
     done
 }
 
@@ -4212,7 +4221,7 @@ _restore_slices_gate() {
     local budget=$(( ${AETHER_RESTORE_SLICES_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
     local poll="${AETHER_RESTORE_SLICES_POLL:-5}"
     local deadline=$(( SECONDS + budget ))
-    local body report missing failed
+    local body report missing failed starved failed_streak=0
     while :; do
         body=$(api_get "/api/v1/slices" 2>/dev/null) || body=""
         if printf '%s' "$body" | grep -q '"slices"'; then
@@ -4226,13 +4235,23 @@ _restore_slices_gate() {
             missing="/api/v1/slices unreadable or without a slices list: $(printf '%s' "$body" | head -c 200)"
         fi
         # A starved artifact held by a FAILED schema migration is a permanent hold: fail NOW and name it, instead
-        # of waiting out the budget and printing only LOADED.
+        # of waiting out the budget and printing only LOADED. Two guards against misattribution: the FAILED
+        # record's heldSlices must INTERSECT the starved artifacts (an unrelated FAILED hold is not this one's
+        # cause), and the condition must hold on 2 CONSECUTIVE polls (a stale FAILED right after a redeploy).
         if [ -n "$missing" ] && printf '%s' "$body" | grep -q '"slices"'; then
-            failed=$(api_get "/api/v1/schema/status" 2>/dev/null | _schema_failed_holds || true)
+            starved=$(printf '%s\n' "$missing" | sed -E 's/: \[.*//' | grep -v '^$')
+            failed=$(api_get "/api/v1/schema/status" 2>/dev/null | _schema_failed_holds "$starved" || true)
             if [ -n "$failed" ]; then
-                log_fail "restore_cluster_baseline: slice(s) held by a FAILED schema migration (permanent: waiting will not clear it; fix the datasource config or migration): $(printf '%s' "$failed" | tr '\n' ' ') — starved artifacts: $(printf '%s' "$missing" | tr '\n' ' ')"
-                return 1
+                failed_streak=$((failed_streak + 1))
+                if [ "$failed_streak" -ge 2 ]; then
+                    log_fail "restore_cluster_baseline: slice(s) held by a FAILED schema migration (permanent: waiting will not clear it; fix the datasource config or migration): $(printf '%s' "$failed" | tr '\n' ' ') — starved artifacts: $(printf '%s' "$missing" | tr '\n' ' ')"
+                    return 1
+                fi
+                # confirm quickly rather than after a full poll interval
+                sleep 1
+                continue
             fi
+            failed_streak=0
         fi
         [ "$SECONDS" -ge "$deadline" ] && break
         sleep "$poll"
