@@ -67,18 +67,19 @@ class ArtifactCacheTest {
         assertThat(ArtifactCache.check(target)).as("a freshly stored jar verifies").isEqualTo(ArtifactCache.CacheState.USABLE);
     }
 
-    /// A jar THIS NODE wrote that no longer matches its sidecar — torn before this fix, or corrupted since — is evicted
-    /// so it is fetched again, instead of being loaded. Mutation that reddens it: make `check` skip the comparison.
+    /// A jar THIS NODE wrote that no longer matches its sidecar — torn before this fix, or corrupted since — is reported
+    /// STALE so it is fetched again instead of being loaded. It is NOT deleted: the refetch replaces it atomically, so a
+    /// failed refetch loses nothing (CodeRabbit on #1725). Mutation that reddens it: make `check` skip the comparison.
     @Test
-    void check_ownJarNotMatchingItsSidecar_isEvicted() throws IOException {
+    void check_ownJarNotMatchingItsSidecar_isStaleAndKeptUntilReplaced() throws IOException {
         var target = dir.resolve("a-1.0.jar");
 
         assertThat(ArtifactCache.store(target, JAR).isSuccess()).isTrue();
         Files.write(target, Arrays.copyOf(JAR, JAR.length / 2));
 
-        assertThat(ArtifactCache.check(target)).as("#1599: a torn jar is not loaded").isEqualTo(ArtifactCache.CacheState.EVICTED);
-        assertThat(target).as("it is evicted so the next resolve fetches it again").doesNotExist();
-        assertThat(dir.resolve("a-1.0.jar.aether-sha256")).doesNotExist();
+        assertThat(ArtifactCache.check(target)).as("#1599: a torn jar is not loaded").isEqualTo(ArtifactCache.CacheState.STALE);
+        assertThat(target).as("it is kept until a refetch replaces it").exists();
+        assertThat(dir.resolve("a-1.0.jar.aether-sha256")).exists();
     }
 
     /// v1617 M1 — a jar in the local Maven repository that fails MAVEN's `.sha1` and carries no mark of this node (the

@@ -61,7 +61,7 @@ public interface RemoteRepository extends Repository {
         if (exists(cachedPath)) {
             return switch (ArtifactCache.check(cachedPath)) {
                 case USABLE -> cacheHit(artifact, cachedPath);
-                case EVICTED -> downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
+                case STALE -> downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
                 case FOREIGN_MISMATCH -> new RemoteRepositoryError.CachedArtifactChecksumMismatch(artifact.asString(),
                                                                                                   cachedPath.toString()).promise();
             };

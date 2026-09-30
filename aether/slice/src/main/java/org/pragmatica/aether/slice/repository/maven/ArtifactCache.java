@@ -33,7 +33,7 @@ import org.slf4j.LoggerFactory;
 /// A `.aether-sha256` sidecar holding the verified digest is published next to the jar. It is this node's
 /// OWNERSHIP mark as well as its checksum, and deliberately not Maven's `.sha256` name, which Maven itself may write.
 /// A cache hit is checked on load ([#check]):
-/// - a jar carrying this node's sidecar that no longer matches it is evicted and fetched again — the node wrote it;
+/// - a jar carrying this node's sidecar that no longer matches it is fetched again and replaced — the node wrote it;
 /// - a jar that fails a Maven `.sha1`/`.sha256` sidecar but carries no mark of ours is NOT the node's to delete (the
 ///   local repository is the operator's `~/.m2` in dev and Forge flows, possibly holding a locally built, never
 ///   published artifact). It is refused, loudly and with a typed cause, and every file is left as it was (v1617, M1);
@@ -51,8 +51,8 @@ final class ArtifactCache {
     enum CacheState {
         /// Load it: it matches its sidecar, or it has none to check against.
         USABLE,
-        /// It was this node's and did not match; it has been removed and must be fetched again.
-        EVICTED,
+        /// It was this node's and does not match: do not load it, fetch it again; the fetch replaces it atomically.
+        STALE,
         /// It fails a Maven checksum and is not this node's: refuse, and leave every file untouched.
         FOREIGN_MISMATCH
     }
@@ -108,17 +108,20 @@ final class ArtifactCache {
                              .orElse(CacheState.USABLE);
     }
 
+    /// A jar of ours that no longer matches is NOT deleted (CodeRabbit on #1725): it is reported STALE, never loaded,
+    /// and [#store]'s atomic rename replaces it once a refetch succeeds. If the refetch fails, the stale jar and its
+    /// sidecar are still there, still mismatched, and the next resolve tries again — nothing is lost before a good
+    /// copy exists.
     private static CacheState checkOwn(Path jar) {
         if (matches(jar, OWN_SIDECAR)) {
             return CacheState.USABLE;
         }
 
-        log.warn("Cached artifact {} no longer matches the checksum this node recorded when it wrote it; evicting it to fetch it again",
+        log.warn("Cached artifact {} no longer matches the checksum this node recorded when it wrote it; fetching it again "
+                 + "(the stale copy is replaced only once the fetch succeeds)",
                  jar);
-        FileOps.deleteIfExists(jar);
-        FileOps.deleteIfExists(OWN_SIDECAR.of(jar));
 
-        return CacheState.EVICTED;
+        return CacheState.STALE;
     }
 
     private static CacheState checkForeign(Path jar, Sidecar sidecar) {

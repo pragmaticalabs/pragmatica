@@ -36,6 +36,7 @@ class RemoteRepositoryCacheWiringTest {
     Path localRepo;
 
     private final AtomicInteger jarRequests = new AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicBoolean failJar = new java.util.concurrent.atomic.AtomicBoolean();
     private HttpServer server;
     private String previousRepoProperty;
 
@@ -50,6 +51,11 @@ class RemoteRepositoryCacheWiringTest {
             var body = path.endsWith(".sha256") ? sha256 : JAR;
             if (!path.endsWith(".sha256")) {
                 jarRequests.incrementAndGet();
+                if (failJar.get()) {
+                    exchange.sendResponseHeaders(503, -1);
+                    exchange.close();
+                    return;
+                }
             }
             exchange.sendResponseHeaders(200, body.length);
             try (var out = exchange.getResponseBody()) {
@@ -107,6 +113,24 @@ class RemoteRepositoryCacheWiringTest {
         location.onFailure(cause -> assertThat(cause).isInstanceOf(RemoteRepository.RemoteRepositoryError.CachedArtifactChecksumMismatch.class));
         assertThat(jarRequests.get()).as("nothing is fetched over it").isZero();
         assertThat(Files.readAllBytes(cachedJar())).as("M1: the operator's jar is untouched").isEqualTo(local);
+    }
+
+    /// CodeRabbit on #1725 — a stale jar of ours is NOT deleted before a good copy exists: when the refetch fails, the
+    /// stale jar and its sidecar are still there (never loaded, retried on the next resolve). Mutation that reddens it:
+    /// delete the stale jar in `ArtifactCache.checkOwn`.
+    @Test
+    void staleCachedJar_whoseRefetchFails_isKept() throws IOException {
+        assertThat(repository().locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
+        var torn = Arrays.copyOf(JAR, JAR.length / 2);
+        Files.write(cachedJar(), torn);
+        failJar.set(true);
+
+        var location = repository().locate(artifact()).await(timeSpan(10).seconds());
+
+        assertThat(location.isFailure()).as("the refetch failed: %s", location).isTrue();
+        assertThat(jarRequests.get()).as("control: the refetch was attempted").isEqualTo(2);
+        assertThat(cachedJar()).as("the stale copy survives a failed refetch").exists();
+        assertThat(cachedJar().resolveSibling("demo-1.0.0.jar.aether-sha256")).exists();
     }
 
     /// CONTROL — an intact cached jar is a cache hit: no second download.
