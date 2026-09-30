@@ -187,6 +187,10 @@ Aether uses a three-tier ClassLoader hierarchy to balance isolation with sharing
 - Tracks loaded artifacts with versions
 - First slice to load a dependency sets the canonical version
 - Subsequent slices check compatibility
+- Version ordering for that check (#1435): a release is newer than any of its pre-releases, and qualifier
+  tokens compare numerically where numeric (`rc9` < `rc10`). So a loaded pre-release never satisfies a
+  requester of the release it precedes: `^1.0.0` against a loaded `1.0.0-SNAPSHOT` is a conflict, while
+  `^1.0.0-SNAPSHOT` against a loaded `1.0.0` is compatible
 
 ### SliceClassLoader
 
