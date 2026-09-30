@@ -76,6 +76,10 @@ refresh_app_endpoints() {
     [ -n "$ENTITY_APP_ENDPOINTS" ]
 }
 
+# NOTE: create_entity and read_amount use entity_post_status below (it keeps a non-2xx answer's status and body).
+# entity_post_any remains for the READINESS PROBE only (wait_for ... entity_post_any get __probe__): it measures
+# "is the entity service answering yet", so a non-2xx (including a 503) SHOULD read as not-ready and be re-polled
+# by wait_for itself; retrying inside it would change what the probe measures.
 # POST to the FIRST REACHABLE endpoint and treat ITS answer as authoritative (#596 acceptance
 # form). The pre-#596 shape swept every node until `matcher` matched the body — harness-side
 # owner-finding that masked the product's missing owner-forwarding, which is exactly what #596
@@ -112,7 +116,7 @@ entity_post_any() {
 # timeout) moves to the next endpoint exactly as entity_post_any does; any node that ANSWERED, whatever the
 # status, is authoritative (the product forwards a create to its owner, so reaching any live node is enough)
 # and its answer is returned. Nothing reachable prints nothing and returns 1.
-entity_create_post() {
+entity_post_status() {
     local path="$1" payload="$2" matcher="$3" pass ep out status body
 
     [ -n "$ENTITY_APP_ENDPOINTS" ] || refresh_app_endpoints || return 1
@@ -166,7 +170,7 @@ create_entity() {
     # cut deleted the inner cause ("... for k") that decides which failure it was.
     local deadline=$((SECONDS + ENTITY_CREATE_RETRY_DEADLINE_S)) delay="$ENTITY_CREATE_RETRY_BACKOFF_S" ft out status
     while :; do
-        if out=$(entity_create_post "/api/entity/create" "$payload" \
+        if out=$(entity_post_status "/api/entity/create" "$payload" \
                                     '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
             return 0
         fi
@@ -271,19 +275,31 @@ read_amount() {
     # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
     # diagnostics must be redirected or they silently corrupt the compared value.
     deadline=$((SECONDS + TRANSIENT_READ_DEADLINE_S))
+    local out status
     while :; do
-        if body=$(entity_post_any "/api/entity/get" "{\"orderId\":\"${key}\"}" \
-                                  '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
+        # The status and body of a non-2xx answer are KEPT (entity_post_status): app routes answer 503 for a
+        # Cause.Transient (#1737/#1765) and `_api_call` prints a body only for a 2xx, so through entity_post_any a
+        # transient refusal read as "no node answered" and was never retried.
+        if out=$(entity_post_status "/api/entity/get" "{\"orderId\":\"${key}\"}" \
+                                    '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
+            body=$(printf '%s' "$out" | sed '$d')
             if printf '%s' "$body" | grep -qE '"outcome"[[:space:]]*:[[:space:]]*"found"'; then
                 printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
                 return 0
             fi
             return 3
         fi
-        ft=$(transient_failure_type "$body") || break
+        status=$(printf '%s' "$out" | grep -oE '__ENTITY_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__ENTITY_HTTP_STATUS://;s/__//')
+        body=$(printf '%s' "$out" | sed '$d')
+        # Retry a 503 or an allow-listed failureType until the deadline; anything else (an answer that is
+        # neither found/absent nor transient, or no HTTP status at all) ends the loop with the full body.
+        ft=$(transient_failure_type "$body") || ft=""
+        if [ -z "$status" ] || { [ "$status" != "503" ] && [ -z "$ft" ]; }; then
+            break
+        fi
         last_transient="$body"
         if [ "$SECONDS" -ge "$deadline" ]; then
-            log_warn "read ${key}: a node answered transient ${ft} until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: ${body}" >&2
+            log_warn "read ${key}: a node answered transient (HTTP ${status}${ft:+, ${ft}}) until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: ${body}" >&2
             return 5
         fi
         sleep "$TRANSIENT_READ_BACKOFF_S"

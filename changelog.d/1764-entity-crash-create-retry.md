@@ -6,8 +6,12 @@
   and body of a non-2xx answer are kept (`_api_call` prints a body only for a 2xx, which would have hidden a 503
   refusal). `ForwardRefused` and `StorageFailed` are deliberately not allow-listed, and an empty answer is not
   retried.
+- **The read path (`read_amount`) gets the same treatment.** Once app routes answer 503 for a transient cause, a
+  transient read refusal (`FoldInProgress`) would have read as "no node answered"; it now keeps the status and body
+  and is retried on a 503 or an allow-listed type until `TRANSIENT_READ_DEADLINE_S`. The readiness probe
+  (`wait_for ... entity_post_any`) is left as it was: it measures "is the service answering yet".
 - **Failure bodies are no longer cut to 200 bytes** in the create and read diagnostics: the truncation deleted the
   inner cause that distinguishes a transient failover refusal from an ownership fault.
-  [verified: `aether/tests/integration/test/test-entity-create-retry.sh` (9 stub tests on the real functions);
+  [verified: `aether/tests/integration/test/test-entity-create-retry.sh` (16 stub tests on the real functions, creates and reads);
   no retry reddens 4, dropping the non-2xx body capture reddens the 503 tests, allow-listing `StorageFailed`
   reddens 2. No cloud run.]

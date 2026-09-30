@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-entity-create-retry.sh — stubs only. The REAL entity_create_post / create_entity / transient_failure_type /
+# test-entity-create-retry.sh — stubs only. The REAL entity_post_status / create_entity / transient_failure_type /
 # key_for / amount_for and the allow-list variables of suites/02w-entity-crash/test-entity-crash-durability.sh run
 # against a stubbed `_api_call` that behaves like the real one when asked for the status (prints
 # `<body>\n__API_HTTP_STATUS:N__`, rc 0 only for 2xx/3xx, rc 1 otherwise; status 000 = no answer).
@@ -15,7 +15,16 @@
 #   E5  no answer (status 000)                                         -> fails, no retry loop (2 = the sweep passes)
 #   E6  200 + EntityAlreadyExists                                      -> succeeds, 1 request (our own lost ack)
 #   E7  200 + StorageFailed (a refusal carried in a 2xx body)          -> fails at once
-#   Mutations: no retry (E1, E1b, E1c, E4); drop the non-2xx body capture (E1b, E1c, E2 body, E4); StorageFailed
+#   R1  READ: 503 + FoldInProgress twice, then found            -> the amount, after 3 requests
+#   R2  READ: 503 with no failureType twice, then found         -> the amount (the status alone is enough)
+#   R3  READ: 200 + FoldInProgress twice, then found            -> the amount (the pre-#1765 shape still works)
+#   R4  READ: 503 forever                                       -> rc 5 at TRANSIENT_READ_DEADLINE_S, full body logged
+#   R5  READ: 500 + StorageFailed                               -> rc 4 after 1 request, full body logged
+#   R6  READ: no answer                                         -> rc 4, no retry loop (2 = the sweep passes)
+#   R7  READ: 200 absent                                        -> rc 3
+#   The readiness probe (wait_for ... entity_post_any) is deliberately left on entity_post_any: it measures "is the
+#   service answering yet", so a non-2xx must read as not-ready and be re-polled by wait_for itself.
+#   Mutations: read path back on entity_post_any (R1, R2, R4); no retry (E1, E1b, E1c, E4); drop the non-2xx body capture (E1b, E1c, E2 body, E4); StorageFailed
 #   allow-listed (E2, E7).   SCRIPT_UNDER_TEST=<path> selects another copy.
 set -uo pipefail
 unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN
@@ -53,7 +62,7 @@ _api_call() {
 }
 STUB
 grep -E '^(ENTITY_TRANSIENT_FAILURE_TYPES|ENTITY_CREATE_RETRY_[A-Z_]*|TRANSIENT_READ_[A-Z_]*)=' "$SUT"
-for f in key_for amount_for transient_failure_type entity_create_post create_entity; do extract "$SUT" "$f"; done
+for f in key_for amount_for transient_failure_type entity_post_any entity_post_status create_entity read_amount; do extract "$SUT" "$f"; done
 } > "$WORK/fns.sh"
 
 run() {  # <label> [VAR=value ...]
@@ -95,7 +104,7 @@ if [ "$(cat "$WORK/rc.e4")" = "1" ] && [ "$(calls e4)" -ge 2 ] && grep -q 'retry
 else fail "E4 rc=$(cat "$WORK/rc.e4") calls=$(calls e4) err=$(tail -1 "$WORK/err.e4" | cut -c1-120)"; fi
 
 run e5 STATUS=000 BODY='curl: (7) Failed to connect'
-# two requests = entity_create_post's own two sweep passes over the endpoints, exactly as entity_post_any did;
+# two requests = entity_post_status's own two sweep passes over the endpoints, exactly as entity_post_any did;
 # create_entity adds no retry loop on top ("retrying" never logged).
 if [ "$(cat "$WORK/rc.e5")" = "1" ] && [ "$(calls e5)" = "2" ] && ! grep -q 'retrying' "$WORK/err.e5"; then ok "E5 no answer (transport failure) is not retried by create_entity (only the two endpoint sweep passes)"
 else fail "E5 rc=$(cat "$WORK/rc.e5") calls=$(calls e5)"; fi
@@ -107,6 +116,45 @@ else fail "E6 rc=$(cat "$WORK/rc.e6") calls=$(calls e6)"; fi
 run e7 STATUS=200 BODY="$STORAGE"
 if [ "$(cat "$WORK/rc.e7")" = "1" ] && [ "$(calls e7)" = "1" ]; then ok "E7 a StorageFailed refusal carried in a 200 body fails at once"
 else fail "E7 rc=$(cat "$WORK/rc.e7") calls=$(calls e7)"; fi
+
+# ---- reads ---------------------------------------------------------------------------------------
+run_read() {  # <label> [VAR=value ...]  -> stdout in out.<label>, rc in rc.<label>
+    local label="$1"; shift
+    : > "$WORK/calls.$label"
+    ( export CALLS="$WORK/calls.$label" TRANSIENT_READ_DEADLINE_S=3 TRANSIENT_READ_BACKOFF_S=1 "$@"
+      source "$WORK/fns.sh"; read_amount ENTDUR-00001-Z ) > "$WORK/out.$label" 2> "$WORK/err.$label"
+    echo $? > "$WORK/rc.$label"
+}
+FOUND='{"outcome":"found","orderId":"ENTDUR-00001-Z","amount":73}'
+FOLD503='{"outcome":"refused","failureType":"FoldInProgress","message":"replaying"}'
+
+run_read r1 STATUS=503 BODY="$FOLD503" STATUS_3=200 BODY_3="$FOUND"
+if [ "$(cat "$WORK/rc.r1")" = "0" ] && [ "$(cat "$WORK/out.r1")" = "73" ] && [ "$(calls r1)" = "3" ]; then ok "R1 read: 503 FoldInProgress twice, then found returns the amount after 3 requests"
+else fail "R1 rc=$(cat "$WORK/rc.r1") out=$(cat "$WORK/out.r1") calls=$(calls r1)"; fi
+
+run_read r2 STATUS=503 BODY='{"title":"Service Unavailable"}' STATUS_3=200 BODY_3="$FOUND"
+if [ "$(cat "$WORK/rc.r2")" = "0" ] && [ "$(cat "$WORK/out.r2")" = "73" ] && [ "$(calls r2)" = "3" ]; then ok "R2 read: a 503 with no failureType is retried (the status alone is enough)"
+else fail "R2 rc=$(cat "$WORK/rc.r2") out=$(cat "$WORK/out.r2") calls=$(calls r2)"; fi
+
+run_read r3 STATUS=200 BODY="$FOLD503" BODY_3="$FOUND"
+if [ "$(cat "$WORK/rc.r3")" = "0" ] && [ "$(cat "$WORK/out.r3")" = "73" ] && [ "$(calls r3)" = "3" ]; then ok "R3 read: a 200 + FoldInProgress body is still retried (pre-#1765 shape)"
+else fail "R3 rc=$(cat "$WORK/rc.r3") out=$(cat "$WORK/out.r3") calls=$(calls r3)"; fi
+
+run_read r4 STATUS=503 BODY="$TRANSIENT503"
+if [ "$(cat "$WORK/rc.r4")" = "5" ] && [ "$(calls r4)" -ge 2 ] && grep -q 'retry deadline; last body: {.*OwnerNotActivated-TAIL' "$WORK/err.r4"; then ok "R4 read: 503 forever returns rc 5 at the deadline ($(calls r4) requests), full body logged"
+else fail "R4 rc=$(cat "$WORK/rc.r4") calls=$(calls r4) err=$(tail -1 "$WORK/err.r4" | cut -c1-120)"; fi
+
+run_read r5 STATUS=500 BODY="$STORAGE"
+if [ "$(cat "$WORK/rc.r5")" = "4" ] && [ "$(calls r5)" = "1" ] && grep -q 'TAIL-MARKER' "$WORK/err.r5"; then ok "R5 read: 500 StorageFailed returns rc 4 after 1 request with the FULL body logged"
+else fail "R5 rc=$(cat "$WORK/rc.r5") calls=$(calls r5) tail-logged=$(grep -c TAIL-MARKER "$WORK/err.r5")"; fi
+
+run_read r6 STATUS=000 BODY='curl: (7) Failed to connect'
+if [ "$(cat "$WORK/rc.r6")" = "4" ] && [ "$(calls r6)" = "2" ] && ! grep -q 'transient' "$WORK/err.r6"; then ok "R6 read: no answer returns rc 4 without a retry loop (only the two sweep passes)"
+else fail "R6 rc=$(cat "$WORK/rc.r6") calls=$(calls r6)"; fi
+
+run_read r7 STATUS=200 BODY='{"outcome":"absent"}'
+if [ "$(cat "$WORK/rc.r7")" = "3" ] && [ "$(calls r7)" = "1" ]; then ok "R7 read: absent returns rc 3"
+else fail "R7 rc=$(cat "$WORK/rc.r7") calls=$(calls r7)"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"
