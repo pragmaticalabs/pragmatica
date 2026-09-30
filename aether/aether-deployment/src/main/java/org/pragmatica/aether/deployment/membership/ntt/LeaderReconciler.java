@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -161,6 +162,10 @@ public final class LeaderReconciler {
     /// timestamps below. `Long.MIN_VALUE` is unreachable by any real `timeSource.nanoTime()`
     /// observation, so a sentinel comparison can never alias a legitimate time.
     private static final long UNSET_NANOS = Long.MIN_VALUE;
+    /// Three deficit-time leadership losses inside one debounce window: one or two are an ordinary
+    /// failover, the third is the first count that cannot be a single hand-over plus one retry, and it is
+    /// still early enough to warn while a tenure (~4-10s in the observed flap) fits the window several times.
+    private static final int LEADERSHIP_LOSS_WARN_THRESHOLD = 3;
 
     private final MembershipConfig membershipConfig;
     private final TimeSpan leaderActivationDelay;
@@ -265,7 +270,14 @@ public final class LeaderReconciler {
     /// until the first pass runs; surfaced via [`#lastProvisioningDecision`] so the management API
     /// can expose WHY a deficit is or is not being filled without log-scraping. Pure observability —
     /// written once per pass, never read by the decision logic.
+    /// Cleared by [`#deactivate`]: the decision belongs to the term that produced it, so a re-elected
+    /// leader reports `reason="NOT_EVALUATED"` until its own first pass rather than the previous
+    /// term's reason beside a live (reset) deficit age.
     private volatile ProvisioningDecisionSnapshot lastProvisioningDecision = null;
+    /// Nanosecond stamps of leadership losses that happened while a core deficit existed, pruned to
+    /// the last [`#deficitDebounceWindow`]. Feeds the churn WARN in [`#recordLeadershipLoss`]; guarded
+    /// by its own monitor. Observability only — never read by the decision logic.
+    private final ArrayDeque<Long> deficitLeadershipLossNanos = new ArrayDeque<>();
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
     /// At most one pending deficit-convergence follow-up (H1 / #257 completion — generalizes
@@ -528,8 +540,36 @@ public final class LeaderReconciler {
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
         statusQueriesOutstanding.clear();
+        recordLeadershipLoss();
         deficitSinceNanos = UNSET_NANOS;
+        lastProvisioningDecision = null;
         reachedFullMembership.set(false);
+    }
+
+    /// Operator WARN for M1-class leadership churn: each loss suffered while a core deficit exists is
+    /// stamped, and [`#LEADERSHIP_LOSS_WARN_THRESHOLD`] of them inside one [`#deficitDebounceWindow`]
+    /// means the debounce clock (reset on every loss) can never mature, so auto-heal cannot fire. A loss
+    /// with no deficit clears the history — the churn is then not blocking a heal.
+    @Contract
+    private void recordLeadershipLoss() {
+        var now = timeSource.nanoTime();
+        var deficit = effectiveCapacity(membershipFsm.coreCountedMembers()) < configuredCoreCountSupplier.getAsInt();
+
+        synchronized (deficitLeadershipLossNanos) {
+            deficitLeadershipLossNanos.removeIf(stamp -> now - stamp > deficitDebounceWindow.nanos());
+
+            if (!deficit) {
+                deficitLeadershipLossNanos.clear();
+                return;
+            }
+            deficitLeadershipLossNanos.addLast(now);
+
+            if (deficitLeadershipLossNanos.size() >= LEADERSHIP_LOSS_WARN_THRESHOLD) {
+                log.warn("LeaderReconciler: leadership lost {} times within one deficit debounce window ({} ms) while a core deficit exists — the debounce clock resets on every loss, so auto-heal cannot provision until leadership stabilises",
+                         deficitLeadershipLossNanos.size(),
+                         deficitDebounceWindow.millis());
+            }
+        }
     }
 
     /// Live-event ingress for presence sampler timer-expiry. Stage 6 wires this from the presence sampler
