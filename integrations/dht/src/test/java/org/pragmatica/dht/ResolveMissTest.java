@@ -66,11 +66,25 @@ class ResolveMissTest {
     @Test
     void observer_lateValue_namesTheReplica() {
         var warns = new ArrayList<String>();
+        var debugs = new ArrayList<String>();
 
-        loggingResolveFallbackObserver(warns::add, _ -> { }).onUnresolvedAfterFallback(resolveMiss("ab12", 3, 3, 3, 4, 0, 0, 12L, "node-2"));
+        loggingResolveFallbackObserver(_ -> true, warns::add, debugs::add, _ -> { }).onUnresolvedAfterFallback(resolveMiss("ab12", 3, 3, 3, 4, 0, 0, 12L, "node-2"));
 
         assertThat(warns).hasSize(1);
         assertThat(warns.getFirst()).contains("verdict=late-value-discarded").contains("lateValueFrom=node-2");
+    }
+
+    @Test
+    void observer_nonWarnableKey_goesToDebugNotWarn() {
+        var warns = new ArrayList<String>();
+        var debugs = new ArrayList<String>();
+        var observer = loggingResolveFallbackObserver(keyHex -> keyHex.startsWith("ab"), warns::add, debugs::add, _ -> { });
+
+        observer.onUnresolvedAfterFallback(resolveMiss("cd34", 3, 3, 3, 4, 0, 0, 12L, ""));
+        observer.onUnresolvedAfterFallback(resolveMiss("ab12", 3, 3, 3, 4, 0, 0, 12L, ""));
+
+        assertThat(debugs).hasSize(1).allMatch(line -> line.contains("key=cd34"));
+        assertThat(warns).hasSize(1).allMatch(line -> line.contains("key=ab12"));
     }
 
     @Test
@@ -82,8 +96,9 @@ class ResolveMissTest {
     @Test
     void observer_allMiss_warnsWithKeyVerdictAndCounts() {
         var warns = new ArrayList<String>();
+        var debugs = new ArrayList<String>();
         var infos = new ArrayList<String>();
-        var observer = loggingResolveFallbackObserver(warns::add, infos::add);
+        var observer = loggingResolveFallbackObserver(_ -> true, warns::add, debugs::add, infos::add);
 
         observer.onUnresolvedAfterFallback(resolveMiss("ab12", 3, 3, 2, 8, 1, 2, 12L, ""));
 
@@ -95,9 +110,10 @@ class ResolveMissTest {
     @Test
     void observer_fallbackHit_infosWithKeyAndProbed() {
         var warns = new ArrayList<String>();
+        var debugs = new ArrayList<String>();
         var infos = new ArrayList<String>();
 
-        loggingResolveFallbackObserver(warns::add, infos::add).onResolvedViaFallback("ab12", 4);
+        loggingResolveFallbackObserver(_ -> true, warns::add, debugs::add, infos::add).onResolvedViaFallback("ab12", 4);
 
         assertThat(warns).isEmpty();
         assertThat(infos).isEqualTo(List.of("DHT resolve via fallback key=ab12 probed=4"));

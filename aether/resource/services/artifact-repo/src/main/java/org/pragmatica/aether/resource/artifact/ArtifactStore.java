@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -43,6 +44,15 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface ArtifactStore {
+    /// Every artifact-store DHT key (metadata, file list, version list) starts with this. The DHT client that
+    /// serves the store also serves other keys, so an all-miss report scopes its WARN by this prefix.
+    String KEY_PREFIX = "artifacts/";
+
+    /// Whether a hex-encoded DHT key belongs to the artifact store.
+    static boolean isArtifactKeyHex(String keyHex) {
+        return keyHex.startsWith(HexFormat.of().formatHex(KEY_PREFIX.getBytes(StandardCharsets.UTF_8)));
+    }
+
     /// The store is keyed per FILE (#281): a coordinate's jar, pom and classified files are
     /// distinct entries. The `Artifact`-typed operations address the coordinate's PRIMARY file
     /// (`jar`, no classifier), which is what slice resolution means by "the artifact".
@@ -174,7 +184,7 @@ public interface ArtifactStore {
             public String message() {
                 return "Artifact not found: " + file.asString()
                      + " (dht key " + keyHex
-                     + ", outcome=answered-empty, elapsedMs=" + elapsedMillis
+                     + ", outcome=dht-returned-empty, elapsedMs=" + elapsedMillis
                      + ")";
             }
         }
@@ -299,6 +309,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     private final TimeSpan resolveBase;
     private final TimeSpan resolvePerChunk;
     private final TimeSpan resolveCeiling;
+    private final Consumer<String> readFailureSink;
     private final AtomicInteger artifactCount = new AtomicInteger(0);
     private final AtomicInteger chunkCount = new AtomicInteger(0);
 
@@ -331,6 +342,18 @@ class ArtifactStoreImpl implements ArtifactStore {
                       TimeSpan resolveBase,
                       TimeSpan resolvePerChunk,
                       TimeSpan resolveCeiling) {
+        this(dht, storage, retryPolicy, resolveBase, resolvePerChunk, resolveCeiling, log::warn);
+    }
+
+    /// `readFailureSink` receives the line for a metadata read that did not complete; production logs it at WARN.
+    ArtifactStoreImpl(DHTClient dht,
+                      StorageInstance storage,
+                      DhtRetryPolicy retryPolicy,
+                      TimeSpan resolveBase,
+                      TimeSpan resolvePerChunk,
+                      TimeSpan resolveCeiling,
+                      Consumer<String> readFailureSink) {
+        this.readFailureSink = readFailureSink;
         this.dht = dht;
         this.storage = storage;
         this.retryPolicy = retryPolicy;
@@ -386,9 +409,9 @@ class ArtifactStoreImpl implements ArtifactStore {
         var startNanos = System.nanoTime();
 
         return dhtGetWithRetry(metaKey(file)).timeout(resolveBase)
-                              .onFailure(cause -> log.warn(readFailureLine(keyHex(file),
-                                                                           cause,
-                                                                           elapsedMillisSince(startNanos))))
+                              .onFailure(cause -> readFailureSink.accept(readFailureLine(keyHex(file),
+                                                                                         cause,
+                                                                                         elapsedMillisSince(startNanos))))
                               .flatMap(metaOpt -> metadataOf(file,
                                                              metaOpt,
                                                              elapsedMillisSince(startNanos)))
@@ -838,7 +861,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// artifact-store contents are cluster DHT state with no pre-GA compatibility promise.
     private byte[] metaKey(ArtifactFile file) {
         var artifact = file.artifact();
-        var key = "artifacts/" + artifact.groupId().id()
+        var key = KEY_PREFIX + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()
                 + "/" + artifact.version().withQualifier()
                 + "/" + file.fileName()
@@ -850,7 +873,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// The files deployed for one version — `artifacts/<group>/<artifact>/<version>/files` — so a
     /// delete can tell whether it removed the version's last file.
     private byte[] filesKey(Artifact artifact) {
-        var key = "artifacts/" + artifact.groupId().id()
+        var key = KEY_PREFIX + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()
                 + "/" + artifact.version().withQualifier()
                 + "/files";
@@ -859,7 +882,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private byte[] versionsKey(GroupId groupId, ArtifactId artifactId) {
-        var key = "artifacts/" + groupId.id() + "/" + artifactId.id() + "/versions";
+        var key = KEY_PREFIX + groupId.id() + "/" + artifactId.id() + "/versions";
 
         return key.getBytes(StandardCharsets.UTF_8);
     }

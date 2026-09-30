@@ -29,6 +29,13 @@ class DhtResolveObserverWiringTest {
     }
 
     @Test
+    void assembly_warnsOnlyForArtifactKeys() throws IOException {
+        var source = Files.readString(SOURCE);
+
+        assertThat(source).contains("ArtifactStore::isArtifactKeyHex");
+    }
+
+    @Test
     void assembly_scopesTheCacheClientFromTheUnobservedBase() throws IOException {
         var source = Files.readString(SOURCE);
 

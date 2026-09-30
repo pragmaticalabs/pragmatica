@@ -16,26 +16,37 @@
 package org.pragmatica.dht;
 
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import org.pragmatica.lang.Contract;
 
 
 /// [ResolveFallbackObserver] that turns each outcome into one greppable line. An all-miss is a WARN carrying the
-/// key hex, the verdict (`lost` or `unreachable`, see [ResolveMiss#verdict]) and the counts behind it; a fallback
-/// hit is an INFO. The sinks are injected so this module keeps no logging-backend dependency and a test can read
-/// exactly what was written.
+/// key hex, the verdict (see [ResolveMiss#verdict]) and the counts behind it; a fallback hit is an INFO. A client
+/// serves keys whose absence is normal traffic, so `isWarnable` (on the key hex) decides which all-misses are
+/// WARN and which go to the `debug` sink. The sinks are injected so this module keeps no logging-backend dependency
+/// and a test can read exactly what was written.
 public final class LoggingResolveFallbackObserver implements ResolveFallbackObserver {
+    private final Predicate<String> isWarnable;
     private final Consumer<String> warn;
+    private final Consumer<String> debug;
     private final Consumer<String> info;
 
-    private LoggingResolveFallbackObserver(Consumer<String> warn, Consumer<String> info) {
+    private LoggingResolveFallbackObserver(Predicate<String> isWarnable,
+                                           Consumer<String> warn,
+                                           Consumer<String> debug,
+                                           Consumer<String> info) {
+        this.isWarnable = isWarnable;
         this.warn = warn;
+        this.debug = debug;
         this.info = info;
     }
 
-    public static LoggingResolveFallbackObserver loggingResolveFallbackObserver(Consumer<String> warn,
+    public static LoggingResolveFallbackObserver loggingResolveFallbackObserver(Predicate<String> isWarnable,
+                                                                                Consumer<String> warn,
+                                                                                Consumer<String> debug,
                                                                                 Consumer<String> info) {
-        return new LoggingResolveFallbackObserver(warn, info);
+        return new LoggingResolveFallbackObserver(isWarnable, warn, debug, info);
     }
 
     @Override
@@ -47,7 +58,11 @@ public final class LoggingResolveFallbackObserver implements ResolveFallbackObse
     @Override
     @Contract
     public void onUnresolvedAfterFallback(ResolveMiss miss) {
-        warn.accept(describe(miss));
+        var sink = isWarnable.test(miss.keyHex())
+                   ? warn
+                   : debug;
+
+        sink.accept(describe(miss));
     }
 
     static String describe(ResolveMiss miss) {

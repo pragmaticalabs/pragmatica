@@ -1815,9 +1815,12 @@ public interface AetherNode extends ManageableNode {
                                                                       KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
                                                                                                             BootstrapModule.CORE_PARTITION_ID));
         // An all-miss resolve reads as a bare "absent" everywhere above the client; this observer writes the WARN that
-        // says whether the key is lost or unreachable. The cache client is scoped from the base client, not from this one:
+        // says whether the key is absent everywhere or unreachable, for artifact keys only (other keys' absence is normal
+        // traffic and logs at DEBUG). The cache client is scoped from the base client, not from this one:
         // a cache miss is normal traffic and must not WARN.
-        var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(LOG::warn,
+        var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(ArtifactStore::isArtifactKeyHex,
+                                                                                                                                LOG::warn,
+                                                                                                                                LOG::debug,
                                                                                                                                 LOG::info));
         var cacheDhtClient = baseDhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
