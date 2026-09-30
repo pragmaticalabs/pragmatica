@@ -49,7 +49,11 @@ import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -1161,6 +1165,29 @@ public final class ClusterEventAggregator {
                       String.valueOf(keysAtRisk),
                       "sampleKeys",
                       String.join(",", sampleKeys));
+    }
+
+    /// #1652 — community mint and lifecycle-state edges, projected from the committed `CommunityValue`
+    /// write by [CommunityLifecycleEvents]. Every node sees the commit; only the owner publishes
+    /// (guarantees.md row 14b).
+    @Contract
+    public void onCommunityPut(ValuePut<CommunityKey, CommunityValue> event) {
+        CommunityLifecycleEvents.fromCommunityPut(hlcClock::now,
+                                                  event.cause().key().communityId(),
+                                                  event.oldValue(),
+                                                  event.cause().value())
+                                .forEach(this::emit);
+    }
+
+    /// #1652 — community roster joins and leaves, projected from the committed `GovernorAnnouncementValue`
+    /// write by [CommunityLifecycleEvents]. Owner-gated like [#onCommunityPut].
+    @Contract
+    public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> event) {
+        CommunityLifecycleEvents.fromRosterPut(hlcClock::now,
+                                               event.cause().key().communityId(),
+                                               event.oldValue(),
+                                               event.cause().value())
+                                .forEach(this::emit);
     }
 
     @Contract

@@ -37,21 +37,52 @@ final class UdpGate implements AutoCloseable {
     private final List<Thread> threads = new CopyOnWriteArrayList<>();
     private volatile boolean open;
     private volatile boolean closed;
+    /// #1727: probability of dropping a relayed datagram, in either direction (0 = none).
+    private volatile double dropRate;
+    private final java.util.Random drops;
 
-    private UdpGate(DatagramSocket front, InetSocketAddress target) {
+    private UdpGate(DatagramSocket front, InetSocketAddress target, long seed) {
         this.front = front;
         this.target = target;
+        this.drops = new java.util.Random(seed);
     }
 
     static UdpGate udpGate(int targetPort) {
         try {
             var gate = new UdpGate(new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0)),
-                                   new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort));
+                                   new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort),
+                                   0L);
 
             gate.spawn(gate::relayFromClients);
             return gate;
         } catch (IOException e) {
             return fail("gate: " + e.getMessage());
+        }
+    }
+
+    /// #1727: an OPEN relay that drops each datagram, in either direction, with probability `dropRate` (seeded, so a run
+    /// is repeatable up to thread scheduling) — QUIC loss and retransmission on demand.
+    static UdpGate lossyRelay(int targetPort, double dropRate, long seed) {
+        try {
+            var gate = new UdpGate(new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0)),
+                                   new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort),
+                                   seed);
+
+            gate.dropRate = dropRate;
+            gate.open = true;
+            gate.spawn(gate::relayFromClients);
+            return gate;
+        } catch (IOException e) {
+            return fail("lossy relay: " + e.getMessage());
+        }
+    }
+
+    private boolean drop() {
+        if (dropRate <= 0) {
+            return false;
+        }
+        synchronized (drops) {
+            return drops.nextDouble() < dropRate;
         }
     }
 
@@ -77,7 +108,7 @@ final class UdpGate implements AutoCloseable {
                 var packet = new DatagramPacket(buffer, buffer.length);
 
                 front.receive(packet);
-                if (open) {
+                if (open && !drop()) {
                     upstream(packet.getSocketAddress()).send(new DatagramPacket(packet.getData(), packet.getLength(), target));
                 }
             } catch (IOException e) {
@@ -109,7 +140,9 @@ final class UdpGate implements AutoCloseable {
                 var packet = new DatagramPacket(buffer, buffer.length);
 
                 socket.receive(packet);
-                front.send(new DatagramPacket(packet.getData(), packet.getLength(), client));
+                if (!drop()) {
+                    front.send(new DatagramPacket(packet.getData(), packet.getLength(), client));
+                }
             } catch (IOException e) {
                 return;
             }

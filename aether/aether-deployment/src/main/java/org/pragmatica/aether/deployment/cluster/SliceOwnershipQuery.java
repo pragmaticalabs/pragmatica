@@ -98,9 +98,10 @@ public sealed interface SliceOwnershipQuery {
     ///   artifact BASE. During a rolling update the old and the new version are each compared with the
     ///   full `minAvailable`, so an owner can be refused even when both versions together would keep
     ///   the slice available. The owner has not ruled on counting per base.
-    /// - A slice whose `minAvailable` equals its instance count (written today by CLI/REST deploy,
-    ///   `addSliceTargetCommand`, A/B test and rollback targets) can never lose an instance, so every
-    ///   owner of it is refused and the surplus is deferred until #1497 changes those writers.
+    /// - A slice whose `minAvailable` equals its instance count can never lose an instance, so every
+    ///   owner of it is refused and the surplus is deferred. Since #1497 every writer without an explicit
+    ///   value uses `ceil(instances/2)`, so this holds only for a single-instance slice (floor 1) or an
+    ///   operator who set the floor to the count.
     static BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> minAvailableDrainGuard(KVStore<AetherKey, AetherValue> kvStore) {
         return (candidate, remainingNodes) -> firstRefusal(kvStore, candidate, remainingNodes);
     }

@@ -51,6 +51,13 @@ class EmberSameIdentityRelaunchTest {
     private static final int FIRST_CANDIDATE_BASE = 23000;
     private static final int LAST_CANDIDATE_BASE = 23300;
     private static final int CANDIDATE_STEP = 100;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan WRITE_BOUND = TimeSpan.timeSpan(20).seconds();
@@ -86,9 +93,7 @@ class EmberSameIdentityRelaunchTest {
     @Test
     @Timeout(480)
     void partitionedLiveProcess_sameToken_healsAndRestoresQuorum() {
-        var basePort = freeBasePort();
-        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        cluster = EmberTestPorts.startedCluster(PORTS, basePort -> emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk"), START_BOUND);
         var survivor = cluster.getNode("btk-1").unwrap();
         var partitioned = cluster.getNode("btk-3").unwrap();
         var partitionedId = partitioned.self();
@@ -124,7 +129,7 @@ class EmberSameIdentityRelaunchTest {
     }
 
     private void relaunchedProcessNeverRestoresQuorum(boolean sameAddress) {
-        var basePort = freeBasePort();
+        var basePort = EmberTestPorts.freeBase(PORTS);
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
         assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
         var survivor = cluster.getNode("btk-1").unwrap();
@@ -181,55 +186,8 @@ class EmberSameIdentityRelaunchTest {
     private static void awaitSlotFree(int base, int slot) {
         var deadline = System.currentTimeMillis() + 60_000L;
 
-        while (!slotFree(base, slot) && System.currentTimeMillis() < deadline) {
+        while (!EmberTestPorts.slotFree(PORTS, base, slot) && System.currentTimeMillis() < deadline) {
             sleep(250);
         }
-    }
-
-    private static boolean slotFree(int base, int slot) {
-        return udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
-               && tcpFree(base + APP_HTTP_OFFSET + slot);
-    }
-
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!slotFree(base, slot)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
     }
 }
