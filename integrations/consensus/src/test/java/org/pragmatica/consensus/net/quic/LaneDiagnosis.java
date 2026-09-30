@@ -81,13 +81,17 @@ final class LaneDiagnosis {
         }
     }
 
-    /// Where acknowledged-but-unread writes stopped: CONNECTION-CLOSED (quiche discarded what it held), RECEIVER-SIDE (the
+    /// Where acknowledged-but-unread writes stopped: CONNECTION-CLOSED (quiche discarded what it held), NOTHING-UNREAD (there
+    /// are none, so a timeout lies elsewhere, e.g. a FIN that never arrived), RECEIVER-SIDE (the
     /// acceptor's QUIC stack received at least the missing bytes beyond what the app read), or SENDER-SIDE (it received
     /// less, so they stopped at or before the dialer's QUIC stack). Received bytes include retransmitted duplicates and the
     /// other lanes, so the verdict leans RECEIVER-SIDE when close; callers print the raw numbers too.
     static String verdict(boolean connected, long receivedBeyondDelivered, long missingBytes) {
         if (!connected) {
             return "CONNECTION-CLOSED";
+        }
+        if (missingBytes == 0) {
+            return "NOTHING-UNREAD (every acknowledged write so far was read)";
         }
         return (receivedBeyondDelivered >= missingBytes ? "RECEIVER-SIDE" : "SENDER-SIDE") + " (acceptor QUIC received "
                + receivedBeyondDelivered + " B beyond what the app read " + (receivedBeyondDelivered >= missingBytes ? ">=" : "<")
