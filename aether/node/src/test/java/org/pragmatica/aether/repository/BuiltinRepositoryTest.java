@@ -26,7 +26,7 @@ class BuiltinRepositoryTest {
     @Test
     void locate_storeNotFound_isAbsent() {
         var store = mock(ArtifactStore.class);
-        when(store.resolveWithMetadata(artifact)).thenReturn(new ArtifactStore.ArtifactStoreError.NotFound(ArtifactFile.primary(artifact)).promise());
+        when(store.resolveWithMetadata(artifact)).thenReturn(new ArtifactStore.ArtifactStoreError.NotFound(ArtifactFile.primary(artifact), "key", 0L).promise());
 
         assertThat(locateFailure(store)).isInstanceOf(Repository.Absent.class);
     }

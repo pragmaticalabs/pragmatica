@@ -29,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTNode.dhtNode;
@@ -105,6 +106,61 @@ class DHTResolveFallbackTest {
     }
 
     @Test
+    void get_allMiss_healthyCluster_reportsAbsentEverywhereWithKeyAndCounts() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 5);
+        var absentKey = key("absent-key");
+        var rSet = fabric.rSetFor(absentKey);
+
+        fabric.client(rSet.getFirst()).get(absentKey).await();
+
+        var miss = observer.lastMiss();
+        assertThat(miss.keyHex()).isEqualTo(java.util.HexFormat.of().formatHex(absentKey));
+        assertThat(miss.rSetSize()).isEqualTo(3);
+        assertThat(miss.rSetLive()).isEqualTo(3);
+        assertThat(miss.rSetAnswered()).isEqualTo(3);
+        assertThat(miss.probesFailed()).isZero();
+        assertThat(miss.unprobed()).isZero();
+        assertThat(miss.verdict()).isEqualTo("absent-everywhere");
+        assertThat(miss.kind()).isEqualTo("quorum-empty");
+    }
+
+    @Test
+    void get_allMiss_fallbackProbeToDepartedHolder_reportsUnreachable() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 5);
+        var absentKey = key("absent-key");
+        var rSet = fabric.rSetFor(absentKey);
+        // A killed holder outside the R-set: its probe times out and the client degrades it to an empty.
+        fabric.depart(fabric.outsiderFor(absentKey));
+
+        fabric.client(rSet.getFirst()).get(absentKey).await();
+
+        var miss = observer.lastMiss();
+        assertThat(miss.probesFailed()).isGreaterThanOrEqualTo(1);
+        assertThat(miss.verdict()).isEqualTo("unreachable");
+        assertThat(miss.kind()).isEqualTo("fallback-degraded");
+        // the dead holder's probe ran to the 2s operation timeout, and the report says so
+        assertThat(miss.elapsedMillis()).isGreaterThanOrEqualTo(1500L);
+    }
+
+    @Test
+    void get_allMiss_thirdRSetReplicaNeverAnswers_reportsUnreachable() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 5);
+        var absentKey = key("absent-key");
+        var rSet = fabric.rSetFor(absentKey);
+        // Quorum (2 of 3) resolves on two empty replies; the third R-set member is gone and never answers.
+        fabric.depart(rSet.getLast());
+
+        fabric.client(rSet.getFirst()).get(absentKey).await();
+
+        var miss = observer.lastMiss();
+        assertThat(miss.rSetAnswered()).isLessThan(miss.rSetSize());
+        assertThat(miss.verdict()).isEqualTo("unreachable");
+    }
+
+    @Test
     void get_fallbackBounded_probesAtMostLimit() {
         var observer = new RecordingResolveFallbackObserver();
         // 12 nodes, RF=3 -> 9 non-R-set candidates, more than the probe bound of 8.
@@ -121,6 +177,9 @@ class DHTResolveFallbackTest {
         assertThat(observer.unresolvedCount()).isEqualTo(1);
         assertThat(observer.lastProbed()).isLessThanOrEqualTo(FALLBACK_PROBE_LIMIT);
         assertThat(observer.lastProbed()).isEqualTo(FALLBACK_PROBE_LIMIT);
+        // the bound left one ring member unread, so an empty here cannot be called lost
+        assertThat(observer.lastMiss().unprobed()).isEqualTo(1);
+        assertThat(observer.lastMiss().verdict()).isEqualTo("unreachable");
     }
 
     @Test
@@ -147,7 +206,7 @@ class DHTResolveFallbackTest {
     }
 
     @Test
-    void get_fullReplication_noFallbackTargets_noOp() {
+    void get_fullReplication_noFallbackTargets_reportsRSetOnlyMiss() {
         var observer = new RecordingResolveFallbackObserver();
         var fabric = fabric(FULL, observer, 5);
         var fullKey = key("full-key");
@@ -158,9 +217,45 @@ class DHTResolveFallbackTest {
               .onFailure(cause -> Assertions.fail(cause.message()))
               .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
 
-        // FULL replication: R-set spans every node, so there is no fallback candidate — a natural no-op.
+        // FULL replication: no fallback candidate, so nothing is probed, but the empty is still reported.
         assertThat(observer.resolvedCount()).isZero();
-        assertThat(observer.unresolvedCount()).isZero();
+        assertThat(observer.unresolvedCount()).isEqualTo(1);
+        assertThat(observer.lastMiss().probed()).isZero();
+        assertThat(observer.lastMiss().rSetSize()).isEqualTo(5);
+        assertThat(observer.lastMiss().verdict()).isEqualTo("absent-everywhere");
+    }
+
+    @Test
+    void get_threeNodeCluster_allMiss_isReported() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 3);
+        var absentKey = key("absent-key");
+
+        fabric.anyClient().get(absentKey).await();
+
+        assertThat(observer.unresolvedCount()).isEqualTo(1);
+        assertThat(observer.lastMiss().probed()).isZero();
+        assertThat(observer.lastMiss().verdict()).isEqualTo("absent-everywhere");
+    }
+
+    @Test
+    void get_valueOnlyOnThirdRSetReplica_returnsEmptyButReportsLateValueDiscarded() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 5);
+        var lateKey = key("late-key");
+        var rSet = fabric.rSetFor(lateKey);
+        var holder = rSet.getLast();
+        fabric.seedOnly(holder, lateKey, value("payload"));
+
+        // read semantics are unchanged: the quorum resolved on two empties, so the read is empty
+        fabric.client(rSet.getFirst())
+              .get(lateKey)
+              .await()
+              .onFailure(cause -> Assertions.fail(cause.message()))
+              .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+
+        assertThat(observer.lastMiss().verdict()).isEqualTo("late-value-discarded");
+        assertThat(observer.lastMiss().lateValueFrom()).isEqualTo(holder.id());
     }
 
     private DhtFabric fabric(DHTConfig config, ResolveFallbackObserver observer, int nodeCount) {
@@ -197,6 +292,11 @@ class DHTResolveFallbackTest {
             DHTNetwork network = this::deliver;
             var client = distributedDHTClient(node, network, config).withResolveFallbackObserver(observer);
             members.put(id, new Member(id, node, client, ring));
+        }
+
+        /// Remove a member from routing while every ring still lists it, as a killed node looks to its peers.
+        void depart(NodeId id) {
+            members.remove(id);
         }
 
         DistributedDHTClient client(NodeId id) {
@@ -272,6 +372,7 @@ class DHTResolveFallbackTest {
         private final AtomicInteger resolvedCount = new AtomicInteger();
         private final AtomicInteger unresolvedCount = new AtomicInteger();
         private final AtomicInteger lastProbed = new AtomicInteger();
+        private final AtomicReference<ResolveMiss> lastMiss = new AtomicReference<>();
 
         @Override
         public void onResolvedViaFallback(String keyHex, int probed) {
@@ -280,9 +381,14 @@ class DHTResolveFallbackTest {
         }
 
         @Override
-        public void onUnresolvedAfterFallback(String keyHex, int probed) {
+        public void onUnresolvedAfterFallback(ResolveMiss miss) {
             unresolvedCount.incrementAndGet();
-            lastProbed.set(probed);
+            lastProbed.set(miss.probed());
+            lastMiss.set(miss);
+        }
+
+        ResolveMiss lastMiss() {
+            return lastMiss.get();
         }
 
         int resolvedCount() {

@@ -614,6 +614,21 @@ class DistributedDHTClientTest {
                 .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
         }
 
+        /// The opt-in is a per-call option on the SAME instance, never a derived client: pendingOps is per instance and
+        /// the node routes replies only to the base client, so a derived client's reads would time out on every reply.
+        @Test
+        void get_withOption_resolvesFromRepliesRoutedToTheBaseClient() {
+            useRing(3);
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            initial.forEach(m -> reply(m, Option.some(value("v1"))));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected the read to resolve through the base client's reply path: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+        }
+
         @Test
         void get_isAbsent_whenValueOnThirdArrivesAfterGrace() throws InterruptedException {
             useRing(3);

@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -43,6 +45,15 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface ArtifactStore {
+    /// Every artifact-store DHT key (metadata, file list, version list) starts with this. The DHT client that
+    /// serves the store also serves other keys, so an all-miss report scopes its WARN by this prefix.
+    String KEY_PREFIX = "artifacts/";
+
+    /// Whether a hex-encoded DHT key belongs to the artifact store.
+    static boolean isArtifactKeyHex(String keyHex) {
+        return keyHex.startsWith(HexFormat.of().formatHex(KEY_PREFIX.getBytes(StandardCharsets.UTF_8)));
+    }
+
     /// The store is keyed per FILE (#281): a coordinate's jar, pom and classified files are
     /// distinct entries. The `Artifact`-typed operations address the coordinate's PRIMARY file
     /// (`jar`, no classifier), which is what slice resolution means by "the artifact".
@@ -167,10 +178,24 @@ public interface ArtifactStore {
     }
 
     sealed interface ArtifactStoreError extends Cause {
-        record NotFound(ArtifactFile file) implements ArtifactStoreError {
+        /// The DHT answered "no metadata" for the key. `keyHex` joins this line to the DHT client's
+        /// all-miss report for the same key, which says whether the key is lost or merely unreachable.
+        record NotFound(ArtifactFile file, String keyHex, long elapsedMillis) implements ArtifactStoreError {
             @Override
             public String message() {
-                return "Artifact not found: " + file.asString();
+                return "Artifact not found: " + file.asString()
+                     + " (dht key " + keyHex
+                     + ", outcome=dht-returned-empty, elapsedMs=" + elapsedMillis
+                     + ")";
+            }
+        }
+
+        /// The DHT returned bytes for the metadata key but they do not parse. The key IS present, so this
+        /// is deliberately not [NotFound]: corruption must not read as absence.
+        record MetadataUnparseable(ArtifactFile file, String keyHex) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "Artifact metadata unparseable: " + file.asString() + " (dht key " + keyHex + ")";
             }
         }
 
@@ -305,6 +330,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     private final TimeSpan resolvePerChunk;
     private final TimeSpan resolveCeiling;
     private final TimeSpan metadataAbsentGrace;
+    private final Consumer<String> readFailureSink;
     private final AtomicInteger artifactCount = new AtomicInteger(0);
     private final AtomicInteger chunkCount = new AtomicInteger(0);
 
@@ -337,7 +363,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                       TimeSpan resolveBase,
                       TimeSpan resolvePerChunk,
                       TimeSpan resolveCeiling) {
-        this(dht, storage, retryPolicy, resolveBase, resolvePerChunk, resolveCeiling, DEFAULT_METADATA_ABSENT_GRACE);
+        this(dht, storage, retryPolicy, resolveBase, resolvePerChunk, resolveCeiling, log::warn);
     }
 
     ArtifactStoreImpl(DHTClient dht,
@@ -347,6 +373,36 @@ class ArtifactStoreImpl implements ArtifactStore {
                       TimeSpan resolvePerChunk,
                       TimeSpan resolveCeiling,
                       TimeSpan metadataAbsentGrace) {
+        this(dht, storage, retryPolicy, resolveBase, resolvePerChunk, resolveCeiling, log::warn, metadataAbsentGrace);
+    }
+
+    /// `readFailureSink` receives the line for a metadata read that did not complete; production logs it at WARN.
+    ArtifactStoreImpl(DHTClient dht,
+                      StorageInstance storage,
+                      DhtRetryPolicy retryPolicy,
+                      TimeSpan resolveBase,
+                      TimeSpan resolvePerChunk,
+                      TimeSpan resolveCeiling,
+                      Consumer<String> readFailureSink) {
+        this(dht,
+             storage,
+             retryPolicy,
+             resolveBase,
+             resolvePerChunk,
+             resolveCeiling,
+             readFailureSink,
+             DEFAULT_METADATA_ABSENT_GRACE);
+    }
+
+    ArtifactStoreImpl(DHTClient dht,
+                      StorageInstance storage,
+                      DhtRetryPolicy retryPolicy,
+                      TimeSpan resolveBase,
+                      TimeSpan resolvePerChunk,
+                      TimeSpan resolveCeiling,
+                      Consumer<String> readFailureSink,
+                      TimeSpan metadataAbsentGrace) {
+        this.readFailureSink = readFailureSink;
         this.dht = dht;
         this.storage = storage;
         this.retryPolicy = retryPolicy;
@@ -400,11 +456,54 @@ class ArtifactStoreImpl implements ArtifactStore {
         // resolveChunksFromStorage with a chunk-count-scaled budget. Placed early per
         // Promise.timeout's contract so a never-resolving dht.get is cancelled rather than a
         // downstream transformation.
+        var startNanos = System.nanoTime();
+
         return dhtGetWithRetry(metaKey(file),
                                ReadOptions.absentGrace(metadataAbsentGrace)).timeout(resolveBase)
-                              .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                                         .async(new ArtifactStoreError.NotFound(file))
-                                                         .flatMap(meta -> resolveChunksFromStorage(file, meta)));
+                              .withResult(read -> reportReadFailure(file, read, startNanos))
+                              .flatMap(metaOpt -> metadataOf(file,
+                                                             metaOpt,
+                                                             elapsedMillisSince(startNanos)))
+                              .flatMap(meta -> resolveChunksFromStorage(file, meta));
+    }
+
+    /// Runs as a dependent step (`withResult`), so the line is in the sink before the resolve chain settles: an
+    /// `onFailure` callback is an independent event and a caller awaiting the chain could observe an empty sink.
+    @Contract
+    private void reportReadFailure(ArtifactFile file, Result<Option<byte[]>> read, long startNanos) {
+        read.onFailure(cause -> readFailureSink.accept(readFailureLine(keyHex(file),
+                                                                       cause,
+                                                                       elapsedMillisSince(startNanos))));
+    }
+
+    private String keyHex(ArtifactFile file) {
+        return HexFormat.of().formatHex(metaKey(file));
+    }
+
+    private static long elapsedMillisSince(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
+    /// The line for a metadata read that did not complete. `outcome=timed-out` is a read the aggregate timeout cut
+    /// (a target that departed mid-read never answers, so nothing reports an all-miss for it); any other failure is
+    /// `read-failed`. Joins by key hex to the DHT client's all-miss line, which covers the reads that DID complete.
+    static String readFailureLine(String keyHex, Cause cause, long elapsedMillis) {
+        return "DHT metadata read did not complete key=" + keyHex
+             + " outcome=" + (cause instanceof CoreError.Timeout
+                              ? "timed-out"
+                              : "read-failed")
+             + " elapsedMs=" + elapsedMillis
+             + " cause=" + cause.message();
+    }
+
+    /// Absent bytes are [ArtifactStoreError.NotFound]; present bytes that do not parse are
+    /// [ArtifactStoreError.MetadataUnparseable] — the two are different facts and stay different causes.
+    private Promise<ArtifactMetadata> metadataOf(ArtifactFile file, Option<byte[]> metaOpt, long elapsedMillis) {
+        var keyHex = keyHex(file);
+
+        return metaOpt.async(new ArtifactStoreError.NotFound(file, keyHex, elapsedMillis))
+                      .flatMap(bytes -> ArtifactMetadata.fromBytes(bytes).async(new ArtifactStoreError.MetadataUnparseable(file,
+                                                                                                                           keyHex)));
     }
 
     @Override
@@ -824,7 +923,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// artifact-store contents are cluster DHT state with no pre-GA compatibility promise.
     private byte[] metaKey(ArtifactFile file) {
         var artifact = file.artifact();
-        var key = "artifacts/" + artifact.groupId().id()
+        var key = KEY_PREFIX + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()
                 + "/" + artifact.version().withQualifier()
                 + "/" + file.fileName()
@@ -836,7 +935,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// The files deployed for one version — `artifacts/<group>/<artifact>/<version>/files` — so a
     /// delete can tell whether it removed the version's last file.
     private byte[] filesKey(Artifact artifact) {
-        var key = "artifacts/" + artifact.groupId().id()
+        var key = KEY_PREFIX + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()
                 + "/" + artifact.version().withQualifier()
                 + "/files";
@@ -845,7 +944,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private byte[] versionsKey(GroupId groupId, ArtifactId artifactId) {
-        var key = "artifacts/" + groupId.id() + "/" + artifactId.id() + "/versions";
+        var key = KEY_PREFIX + groupId.id() + "/" + artifactId.id() + "/versions";
 
         return key.getBytes(StandardCharsets.UTF_8);
     }

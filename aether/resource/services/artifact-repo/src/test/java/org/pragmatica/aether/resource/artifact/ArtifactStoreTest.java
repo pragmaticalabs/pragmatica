@@ -647,6 +647,55 @@ class ArtifactStoreTest {
         }
     }
 
+    /// `DHTClient.get` answers `Option`, so above it absence and corruption look alike. These pin the two
+    /// resolve failures apart, and pin that "not found" names the key the DHT client's all-miss line names.
+    @Nested
+    class MetadataAttributionTests {
+        @Test
+        void resolveWithMetadata_absentKey_notFoundNamesTheDhtKeyHex() {
+            var artifact = Artifact.artifact("org.example:absent:1.0.0").unwrap();
+            var keyHex = java.util.HexFormat.of()
+                                            .formatHex("artifacts/org.example/absent/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> {
+                     assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class);
+                     assertThat(cause.message()).contains("dht key " + keyHex);
+                     assertThat(cause.message()).contains("outcome=dht-returned-empty").contains("elapsedMs=");
+                 });
+        }
+
+        @Test
+        void readFailureLine_timeout_isTimedOutWithKeyAndElapsed() {
+            var line = ArtifactStoreImpl.readFailureLine("ab12", new org.pragmatica.lang.io.CoreError.Timeout("resolve"), 15003L);
+
+            assertThat(line).contains("key=ab12").contains("outcome=timed-out").contains("elapsedMs=15003");
+        }
+
+        @Test
+        void readFailureLine_otherFailure_isReadFailed() {
+            var line = ArtifactStoreImpl.readFailureLine("ab12", DHTError.quorumNotReached(2, 1), 40L);
+
+            assertThat(line).contains("outcome=read-failed").doesNotContain("timed-out");
+        }
+
+        @Test
+        void resolveWithMetadata_unparseableMetadata_isNotNotFound() {
+            var artifact = Artifact.artifact("org.example:garbled:1.0.0").unwrap();
+            dhtStorage.put("artifacts/org.example/garbled/1.0.0/jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> {
+                     assertThat(cause).isInstanceOf(ArtifactStoreError.MetadataUnparseable.class);
+                     assertThat(cause).isNotInstanceOf(ArtifactStoreError.NotFound.class);
+                 });
+        }
+    }
+
     @Nested
     class ResolveTimeoutTests {
         /// Regression for the Hetzner 3h hang: `resolveWithMetadata` had NO aggregate timeout,
@@ -662,6 +711,61 @@ class ArtifactStoreTest {
         private static final TimeSpan FAST_BASE = timeSpan(200).millis();
         private static final TimeSpan FAST_PER_CHUNK = timeSpan(50).millis();
         private static final TimeSpan FAST_CEILING = timeSpan(1).seconds();
+
+        /// The metadata read never completes (a target departed mid-read, so nothing answers). No all-miss line exists
+        /// for it, so the store's own line is the only attribution: it must reach the sink, name the key and say
+        /// `timed-out`. Deleting the sink call (the whole attribution) must redden this.
+        @Test
+        void resolveWithMetadata_neverResolvingMetadataRead_writesTimedOutLineToSink() {
+            var lines = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            DHTClient hangingDht = new DHTClient() {
+                @Override
+                public Promise<Unit> put(byte[] key, byte[] value) {
+                    return Promise.unitPromise();
+                }
+
+                @Override
+                public Promise<Option<byte[]>> get(byte[] key) {
+                    return Promise.promise();  // never resolves
+                }
+
+                @Override
+                public Promise<Boolean> exists(byte[] key) {
+                    return Promise.success(false);
+                }
+
+                @Override
+                public Promise<Boolean> remove(byte[] key) {
+                    return Promise.success(false);
+                }
+
+                @Override
+                public Partition partitionFor(byte[] key) {
+                    return Partition.partition(1).unwrap();
+                }
+            };
+            var storage = StorageInstance.storageInstance("hang-meta", List.of(MemoryTier.memoryTier(1024 * 1024)));
+            var store = new ArtifactStoreImpl(hangingDht, storage, new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())), FAST_BASE, FAST_PER_CHUNK, FAST_CEILING, lines::add);
+            var artifact = Artifact.artifact("org.example:hang-meta:1.0.0").unwrap();
+            var keyHex = java.util.HexFormat.of()
+                                            .formatHex("artifacts/org.example/hang-meta/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+
+            store.resolveWithMetadata(artifact)
+                 .await(timeSpan(10).seconds())
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(CoreError.Timeout.class));
+
+            assertThat(lines).hasSize(1);
+            assertThat(lines.getFirst()).contains("key=" + keyHex).contains("outcome=timed-out").contains("elapsedMs=");
+        }
+
+        @Test
+        void isArtifactKeyHex_recognisesStoreKeysAndNothingElse() {
+            var hex = java.util.HexFormat.of();
+
+            assertThat(ArtifactStore.isArtifactKeyHex(hex.formatHex("artifacts/g/a/1/jar/meta".getBytes(StandardCharsets.UTF_8)))).isTrue();
+            assertThat(ArtifactStore.isArtifactKeyHex(hex.formatHex("stream/x".getBytes(StandardCharsets.UTF_8)))).isFalse();
+        }
 
         @Test
         void resolveWithMetadata_neverResolvingChunkRead_failsWithTimeoutNotHang() {

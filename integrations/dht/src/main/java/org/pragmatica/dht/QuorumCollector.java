@@ -45,6 +45,9 @@ public final class QuorumCollector<T> {
     private final boolean graceMode;
     private final Predicate<T> decisive;
     private final Function<QuorumCollector<T>, Unit> onQuorumNotDecisive;
+    private final long createdNanos = System.nanoTime();
+    private final AtomicReference<String> valueSource = new AtomicReference<>();
+    private final Promise<Unit> allReplied = Promise.promise();
 
     private QuorumCollector(int quorum,
                             int total,
@@ -128,7 +131,20 @@ public final class QuorumCollector<T> {
     /// Record a successful response. Resolves promise when quorum reached.
     @Contract
     public void onSuccess(T value) {
+        onSuccess(value, "");
+    }
+
+    /// Record a successful response and who sent it. The first replica whose reply carried a PRESENT value is
+    /// remembered by [#valueSource]: when the quorum resolved empty, a value that arrives afterwards is a late
+    /// value the read discarded, and this names the replica that held it. Attribution only; the resolved value
+    /// is chosen exactly as before.
+    @Contract
+    public void onSuccess(T value, String source) {
         bestValue.accumulateAndGet(value, this::selectBest);
+        if (value instanceof Option<?> option && option.isPresent()) {
+            valueSource.compareAndSet(null, source);
+        }
+
         var answered = successCount.incrementAndGet();
 
         if (graceMode) {
@@ -136,6 +152,8 @@ public final class QuorumCollector<T> {
         } else if (answered >= quorum) {
             promise.succeed(bestValue.get());
         }
+
+        settleIfAllReplied(answered, failureCount.get());
     }
 
     private void acceptInGraceMode(T value, int answered) {
@@ -166,6 +184,36 @@ public final class QuorumCollector<T> {
         } else if (graceMode && allAnswered(successCount.get(), failures)) {
             promise.succeed(bestValue.get());
         }
+
+        settleIfAllReplied(successCount.get(), failures);
+    }
+
+    private void settleIfAllReplied(int successes, int failures) {
+        if (successes + failures >= total) {
+            allReplied.succeed(Unit.unit());
+        }
+    }
+
+    /// Resolves once every expected reply (success or failure) has arrived. Never resolves if a target never
+    /// answers, so callers bound it with their own timeout.
+    public Promise<Unit> allReplied() {
+        return allReplied;
+    }
+
+    /// The replica whose reply carried a present value, if any did. After a read resolved EMPTY this is a late
+    /// value the read discarded.
+    public Option<String> valueSource() {
+        return Option.option(valueSource.get());
+    }
+
+    /// Milliseconds since this collector was created, i.e. since the read it serves began.
+    public long elapsedMillis() {
+        return (System.nanoTime() - createdNanos) / 1_000_000L;
+    }
+
+    /// Replies recorded so far, including those arriving after the quorum resolved the promise.
+    public int successCount() {
+        return successCount.get();
     }
 
     private T selectBest(T existing, T incoming) {
