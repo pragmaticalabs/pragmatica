@@ -36,9 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EmberClusterHeldBackSwimStartFailureTest {
     /// Above every computed candidate range in this module (the highest, `EmberClusterCurrentLeaderTest`,
     /// ends at base 31500 + 102) and the 31700 block of `EmberClusterSwimStartFailureTest`.
-    private static final int BASE_PORT = 31900;
-    private static final int BASE_MGMT_PORT = 31940;
-    private static final int BASE_APP_HTTP_PORT = 31980;
+    /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with
+    /// another process would read as the behaviour under test. The port it occupies on purpose it binds itself.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(51100, 51900, 200, 3, 40, 80);
     private static final String NODE_PREFIX = "heldswim";
     private static final String HELD_BACK_ID = NODE_PREFIX + "-3";
     private static final int HELD_BACK_SLOT = 2;
@@ -48,6 +48,9 @@ class EmberClusterHeldBackSwimStartFailureTest {
     private static final long RECLAIM_WAIT_MS = 5_000;
 
     private EmberCluster cluster;
+    private final int basePort = EmberTestPorts.freeBase(PORTS);
+    private final int baseMgmtPort = basePort + PORTS.mgmtOffset();
+    private final int baseAppHttpPort = basePort + PORTS.appOffset();
 
     @AfterEach
     void tearDown() {
@@ -61,7 +64,7 @@ class EmberClusterHeldBackSwimStartFailureTest {
     @Test
     @Timeout(300)
     void startHeldBackNodes_stopsTheNodeAndFailsWithTheBindFailure_whenItsSwimPortIsTaken() throws IOException {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
+        cluster = emberCluster(3, basePort, baseMgmtPort, baseAppHttpPort, NODE_PREFIX);
         // The two started nodes are the genesis roster (#1526: a held-back node is not a genesis
         // member, because genesis forms only when every member announces it), so they form alone.
         var formed = cluster.start(Set.of(HELD_BACK_ID)).await(FORMATION_BOUND).fold(Cause::message, _ -> "started");
@@ -69,7 +72,7 @@ class EmberClusterHeldBackSwimStartFailureTest {
         assertThat(formed).describedAs("2-of-3 formation is the fixture; it must succeed or the test proves nothing")
                           .isEqualTo("started");
 
-        var heldSwimPort = BASE_PORT + HELD_BACK_SLOT + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
+        var heldSwimPort = basePort + HELD_BACK_SLOT + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
 
         try (var heldSwim = new DatagramSocket(heldSwimPort)) {
             var startedAt = System.nanoTime();
@@ -89,8 +92,8 @@ class EmberClusterHeldBackSwimStartFailureTest {
         }
         // The failed node was stopped: its management (TCP) and QUIC (UDP) ports are reclaimable
         // while the two formed nodes keep theirs.
-        assertReclaimableTcp(BASE_MGMT_PORT + HELD_BACK_SLOT);
-        assertReclaimableUdp(BASE_PORT + HELD_BACK_SLOT);
+        assertReclaimableTcp(baseMgmtPort + HELD_BACK_SLOT);
+        assertReclaimableUdp(basePort + HELD_BACK_SLOT);
         assertThat(cluster.status().nodes())
             .describedAs("the formed pair keeps running")
             .hasSize(2);

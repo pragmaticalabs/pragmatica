@@ -2882,25 +2882,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         /// Authority rosters describe assignment, not liveness. Count only explicitly fresh
-        /// positive evidence for members still assigned to this community.
+        /// positive evidence for members still assigned to this community. Shared with the
+        /// `/cluster/communities` route through [CommunityLiveMembers] (#1652); no roster counts as zero here.
         private int communityLiveMembers(String communityId) {
-            return ctx.kvStore()
-                      .getTyped(GovernorAnnouncementKey.forCommunity(communityId),
-                                GovernorAnnouncementValue.class)
-                      .filter(value -> !value.dissolved())
-                      .map(value -> (int) value.members()
-                                               .stream()
-                                               .distinct()
-                                               .filter(node -> ctx.kvStore()
-                                                                  .getTyped(ActivationDirectiveKey.activationDirectiveKey(node),
-                                                                            ActivationDirectiveValue.class)
-                                                                  .filter(directive -> directive.communityId()
-                                                                                                .equals(communityId))
-                                                                  .isPresent())
-                                               .filter(node -> !ctx.communityLiveness()
-                                                                   .isAbsent(node))
-                                               .count())
-                      .or(0);
+            return CommunityLiveMembers.communityLiveMembers(ctx.kvStore(),
+                                                             ctx.communityLiveness(),
+                                                             communityId)
+                                       .or(0);
         }
 
         /// Pure per-community state edge (worker-membership-spec §3.3). FORMING/DEGRADED promote to

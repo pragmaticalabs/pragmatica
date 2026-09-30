@@ -45,7 +45,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
     @Test
     void kMissedPings_reportsUnreachableForTarget() {
         // Two facts the old assertion pinned are not carried by `reportUnreachable(NodeId)`:
-        // the missed count (3) and the observation stamp (`Epoch.epoch(7, 0)`). The count is
+        // the missed count (3) and the observation stamp (`Epoch.epoch(0L, 7, 0)`). The count is
         // still pinned one level down by `ClusterSyncFsmTest.CounterBehaviour` via
         // `counterForPeer`; the epoch stamp has no live carrier anywhere.
         var reported = new CopyOnWriteArrayList<NodeId>();
@@ -57,7 +57,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            3,
-                                                           () -> Epoch.epoch(7L, 0L));
+                                                           () -> Epoch.epoch(0L, 7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
@@ -79,7 +79,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            3,
-                                                           () -> Epoch.epoch(7L, 0L));
+                                                           () -> Epoch.epoch(0L, 7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
@@ -100,7 +100,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            3,
-                                                           () -> Epoch.epoch(7L, 0L));
+                                                           () -> Epoch.epoch(0L, 7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
@@ -124,7 +124,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            3,
-                                                           () -> Epoch.epoch(7L, 0L));
+                                                           () -> Epoch.epoch(0L, 7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
@@ -239,7 +239,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                              TimeSpan.timeSpan(1).hours(),
                                              () -> 7L,
                                              3,
-                                             () -> Epoch.epoch(7L, 0L),
+                                             () -> Epoch.epoch(0L, 7L, 0L),
                                              PeerObservationStore.peerObservationStore());
             ctxRef.set(ctx);
             return ctx.dormant();
@@ -255,7 +255,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                                   TimeSpan.timeSpan(1).hours(),
                                                                   () -> 7L,
                                                                   3,
-                                                                  () -> Epoch.epoch(7L, 0L));
+                                                                  () -> Epoch.epoch(0L, 7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
         return scheduler;

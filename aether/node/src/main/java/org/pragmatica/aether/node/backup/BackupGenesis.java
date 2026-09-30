@@ -23,6 +23,7 @@ import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.ULID;
 
 
 /// `aether backup declare-genesis` (#1532): the operator's statement that this cluster's state — not the
@@ -184,7 +185,9 @@ public record BackupGenesis(KvBackupService service) {
     private Promise<GenesisDeclared> commitSupersede(ClusterIncarnationValue current,
                                                      BackupHeader head,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        var next = ClusterIncarnation.superseding(current, head.incarnation());
+        var next = ClusterIncarnation.superseding(current,
+                                                  head.incarnation(),
+                                                  ULID.ulid().encoded());
         var transactionId = "declare-genesis:" + UUID.randomUUID();
 
         return service.kvStore()

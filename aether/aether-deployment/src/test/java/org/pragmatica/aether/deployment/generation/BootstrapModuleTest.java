@@ -82,7 +82,7 @@ class BootstrapModuleTest {
             assertThat(ownership.ownerNodeId()).isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("the initial core-partition ownerEpoch couples rabiaTerm with the initial ownershipTerm 1")
-                .isEqualTo(Epoch.epoch(FIXTURE_RABIA_TERM, 1L));
+                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L));
             assertThat(ownership.ownershipTerm()).isEqualTo(1L);
         }
 
@@ -95,7 +95,7 @@ class BootstrapModuleTest {
             var deposed = new NodeId("node-deposed");
             var existing = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(deposed,
                                                                                  BootstrapModule.CORE_COMMUNITY_ID,
-                                                                                 Epoch.epoch(FIXTURE_RABIA_TERM, 1L),
+                                                                                 Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L),
                                                                                  1L,
                                                                                  HlcTimestamp.ZERO);
             var fixture = newFixture(/* initialCoreSize */ 1);
@@ -109,7 +109,7 @@ class BootstrapModuleTest {
                 .isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("same-term stale-owner takeover advances the epoch via the ownershipTerm local counter")
-                .isEqualTo(Epoch.epoch(FIXTURE_RABIA_TERM, 2L));
+                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 2L));
             assertThat(ownership.ownerEpoch().isStrictlyAfter(existing.ownerEpoch()))
                 .as("(rabiaTerm, 2) strictly dominates the deposed owner's (rabiaTerm, 1) at the SAME term — fence holds")
                 .isTrue();
@@ -284,7 +284,7 @@ class BootstrapModuleTest {
         var isLeader = new AtomicBoolean(true);
         var cluster = new RecordingClusterNode();
         var module = BootstrapModule.bootstrapModule(isLeader::get,
-                                                      () -> FIXTURE_RABIA_TERM,
+                                                      () -> Epoch.epoch(0L, FIXTURE_RABIA_TERM, 0L),
                                                       () -> Option.<Long>none(),
                                                       hlcClock,
                                                       () -> Set.<NodeId>of(),

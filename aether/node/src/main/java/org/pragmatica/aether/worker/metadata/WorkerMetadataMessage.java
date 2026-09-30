@@ -18,7 +18,9 @@ public sealed interface WorkerMetadataMessage extends ProtocolMessage {
         return StreamType.SYNC;
     }
 
-    record ManifestRequest(NodeId sender, long requestId, long minimumRevision) implements WorkerMetadataMessage {
+    /// `knownIncarnation` is the cluster incarnation (#1529) of the worker's installed projection: its
+    /// `minimumRevision` is a revision of THAT incarnation and bounds nothing in a newer one.
+    record ManifestRequest(NodeId sender, long requestId, long minimumRevision, long knownIncarnation) implements WorkerMetadataMessage {
         @Override
         public StreamType streamType() {
             return StreamType.CONTROL;
@@ -30,6 +32,7 @@ public sealed interface WorkerMetadataMessage extends ProtocolMessage {
                     String incarnation,
                     long generation,
                     long committedRevision,
+                    long clusterIncarnation,
                     List<ScopeContent> scopes,
                     String error) implements WorkerMetadataMessage {
         public Manifest {

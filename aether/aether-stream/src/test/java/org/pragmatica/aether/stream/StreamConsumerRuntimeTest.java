@@ -1072,7 +1072,7 @@ class StreamConsumerRuntimeTest {
     /// delivery stops for good), and a fenced or abandoned consumer detaches without a final flush.
     @Nested
     class AssignmentFence {
-        private static final Epoch EPOCH = Epoch.epoch(1L, 1L);
+        private static final Epoch EPOCH = Epoch.epoch(0L, 1L, 1L);
 
         private record SwitchableFence(AtomicBoolean admittedNow) implements ConsumerFence {
             @Override

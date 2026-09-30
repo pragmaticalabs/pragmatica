@@ -121,7 +121,7 @@ class PromotionGateShapesVerifierTest {
 
     private boolean promote(NodeId self, Map<NodeId, StreamPartitionManager> rings, Set<NodeId> evicted) {
         var promoted = rings.get(self);
-        var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(self, Epoch.epoch(3, 0), 3, HlcTimestamp.ZERO));
+        var record = Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(self, Epoch.epoch(0L, 3, 0), 3, HlcTimestamp.ZERO));
         var real = PromotionTestRanges.over(rings);
         OwnerActivation.RecordRange ranges = (node, stream, partition, from, to) -> evicted.contains(node)
                                                                                    ? Promise.success(List.<OffHeapRingBuffer.RawEvent>of())

@@ -183,7 +183,7 @@ class OwnerPromotionGateShapesTest {
     }
 
     private static StreamPartitionOwnershipValue ownedBy(NodeId owner, long term) {
-        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.epoch(term, 0), term, HlcTimestamp.ZERO);
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.epoch(0L, term, 0), term, HlcTimestamp.ZERO);
     }
 
     private static byte[] bytes(String payload) {

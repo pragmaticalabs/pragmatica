@@ -38,8 +38,9 @@ import org.pragmatica.lang.Option;
 ///     advanced `ownerEpoch` and `ownershipTerm + 1`.
 ///
 /// ## Epoch-advance semantics
-/// The `ownerEpoch` is `Epoch.epoch(rabiaTerm, ownershipTerm)`: the committed generation term as the
-/// dominant component, paired with the per-partition `ownershipTerm` as the local counter. Both are a
+/// The `ownerEpoch` is `Epoch.epoch(incarnation, rabiaTerm, ownershipTerm)`: the committed generation
+/// epoch — the cluster incarnation (#1529), which ranks first so a new run outranks a restored one, then
+/// the generation term — paired with the per-partition `ownershipTerm` as the local counter. Both are a
 /// pure function of committed state — the generation term from the committed generation, the
 /// `ownershipTerm` read from (and bumped relative to) the committed `StreamPartitionOwnershipValue` —
 /// so two replicas presented the same committed state reach the IDENTICAL decision and write the
@@ -107,12 +108,12 @@ public interface StreamPartitionOwnershipWriter {
     }
 
     static StreamPartitionOwnershipWriter streamPartitionOwnershipWriter(BooleanSupplier isLeaderSupplier,
-                                                                         Supplier<Long> rabiaTermSupplier,
+                                                                         Supplier<Epoch> generationEpochSupplier,
                                                                          HlcClock hlcClock,
                                                                          CommittedOwnership committedOwnership,
                                                                          HrwOwner hrwOwner) {
         return new StreamPartitionOwnershipWriterRecord(isLeaderSupplier,
-                                                        rabiaTermSupplier,
+                                                        generationEpochSupplier,
                                                         hlcClock,
                                                         committedOwnership,
                                                         hrwOwner);
@@ -132,7 +133,7 @@ public interface StreamPartitionOwnershipWriter {
 }
 
 record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
-                                            Supplier<Long> rabiaTermSupplier,
+                                            Supplier<Epoch> generationEpochSupplier,
                                             HlcClock hlcClock,
                                             StreamPartitionOwnershipWriter.CommittedOwnership committedOwnership,
                                             StreamPartitionOwnershipWriter.HrwOwner hrwOwner) implements StreamPartitionOwnershipWriter {
@@ -172,7 +173,7 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
     }
 
     private Epoch currentEpoch() {
-        return Epoch.epoch(rabiaTermSupplier.get(), 0L);
+        return generationEpochSupplier.get();
     }
 
     private KVCommand<AetherKey> buildCommand(String stream,
@@ -199,6 +200,6 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
     /// (committed generation term + the takeover counter read from the committed record), so two replicas
     /// presented identical committed state mint the IDENTICAL value.
     private static Epoch ownerEpoch(Epoch committedEpoch, long ownershipTerm) {
-        return Epoch.epoch(committedEpoch.rabiaTerm(), ownershipTerm);
+        return committedEpoch.withCounter(ownershipTerm);
     }
 }

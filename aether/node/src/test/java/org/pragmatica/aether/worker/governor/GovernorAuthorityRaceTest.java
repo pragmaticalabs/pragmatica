@@ -122,7 +122,7 @@ class GovernorAuthorityRaceTest {
         assertThat(request(restarted, A, 1).authority().unwrap().governorId()).isEqualTo(A);
         var changed = restarted.reconcile("c", B, 1, "b:9").await().unwrap().unwrap();
         assertThat(changed.communityTerm()).isEqualTo(2);
-        assertThat(changed.communityEpoch()).isEqualTo(Epoch.epoch(2, 0L));
+        assertThat(changed.communityEpoch()).isEqualTo(Epoch.epoch(0L, 2, 0L));
         // And a fresh instance after THAT still cannot be talked back to term 1.
         assertThat(request(authority(), A, 1).authority().unwrap().governorId()).isEqualTo(B);
         assertThat(request(authority(), A, 2).authority().unwrap().governorId()).isEqualTo(B);

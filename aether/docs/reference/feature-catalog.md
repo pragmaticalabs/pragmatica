@@ -285,6 +285,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 84 | CDM pool awareness | Complete | AllocationPool for core + worker node sets. PlacementPolicy (CORE_ONLY, WORKERS_PREFERRED, WORKERS_ONLY, ALL) flows from SliceTargetValue through CDM allocation |
 | 85 | Worker management API | Partial | `GET /api/workers` serves the worker roster from committed governor announcements (node, community, governor, `isGovernor`; dissolved communities excluded); CLI `workers list`. `POST /api/scale` accepts `placement`; CLI `scale --placement`. **Gap (#525):** `GET /api/workers/health` and `GET /api/workers/endpoints` were declared but never built and now return an honest 501 — workers replicate only their community roster, so no per-worker health fact and no per-worker endpoint reaches consensus for the leader to report. Their CLI subcommands were removed. Building either requires workers to publish those facts |
 | 590 | Community core-absence fence | Partial | Core-dependent operation uses identified-core ping/pong evidence and local drain on prolonged core absence. Core-side community availability uses fresh, challenged governor reports and typed observation ages; missing reports do not establish individual worker death. The `core_absence < community_absence` ordering is an operational margin, **not an exclusive-ownership proof**: committed owner/generation fences and invocation admission enforce the boundary. Scoped worker metadata must also remain fresh before new work is admitted. See [hierarchical cluster contract](../specs/hierarchical-cluster-contract-spec.md) and [metrics distribution](../specs/metrics-distribution-spec.md). The hierarchy batch is under implementation and validation; physical asymmetric-partition and WAN limits remain unmeasured. |
+| 1652 | Community state observability | Partial | `GET /api/cluster/communities[/{id}]` serves each worker community's committed lifecycle state (FORMING/ACTIVE/DEGRADED/DISSOLVED), target size and roster, plus `liveMembers` — the leader's instantaneous live-member count, the same number the per-community FSM compares with the viability floor (an observation, `null` where unobservable). CLI `cluster communities`. Cluster events `COMMUNITY_MINTED`, `COMMUNITY_STATE_CHANGED` (from/to), `COMMUNITY_MEMBER_JOINED`/`LEFT`, derived from the committed writes. A worker's local core-absence fence is not recorded on the core, which shows DEGRADED instead. [verified: Ember on cloudbb-2 at af036c27e, 1/1 — `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java` — formation and a worker kill to DEGRADED] The DISSOLVED edge is [mechanism: the applier's `ValuePut` for the retirement write, pinned in `CommunityLifecycleAggregationTest`]. Partial: dashboard slot pending (#494); `DISSOLVING` has no writer (#1656) |
 | 86 | Core-to-core SWIM health | Complete | `CoreSwimHealthDetector` bridges SWIM `FAULTY`/`LEFT` events to `DisconnectNode`. Detection in 1-2s vs TCP disconnect 15s-2min |
 | 87 | Automatic topology growth | Complete | CDM assigns core vs worker role to joining non-seed nodes. `RabiaEngine` activation gating. `coreMax`/`coreMin` configurable via TOML. Management API and CLI |
 | 93 | DHT node cleanup | Complete | **Removed (#943, 2026-09-08).** `DhtNodeCleanup` had **zero production callers** — it was reachable only from its own test and never ran on SWIM DEAD detection or any other path. Deleted with the rest of the unreachable DHT map plane. Dead-node endpoint state is removed by `EndpointRegistry.unregisterEndpointsForNodeArtifact` off `NodeArtifactKey` removal. Status label left as found pending the catalog legend ruling |
@@ -374,7 +375,7 @@ the rows disagree.
 known to have overclaimed at row level: row 39 (`Alert management`) read `Complete` while `AlertForwarder`
 was never constructed in production (#926). It now reads `Partial`, and the wiring was fixed
 in #957 -- which is what correcting ONE row looks like, not evidence that the rest have
-been checked. Read the total as "228 rows asserting a capability", not as 228 working
+been checked. Read the total as "229 rows asserting a capability", not as 229 working
 capabilities.
 
 | Status | Count |
@@ -382,9 +383,9 @@ capabilities.
 | Complete | 169 |
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
-| Partial | 26 |
+| Partial | 27 |
 | Planned | 10 |
-| Total | 228 |
+| Total | 229 |
 <!-- END GENERATED STATISTICS -->
 
 **Highest-priority gap** (a priority, not a status — the row's completion level is in the

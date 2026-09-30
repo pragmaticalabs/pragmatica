@@ -48,6 +48,13 @@ class EmberClusterObservedNodeStateTest {
     private static final int FIRST_CANDIDATE_BASE = 25700;
     private static final int LAST_CANDIDATE_BASE = 27500;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
 
@@ -65,19 +72,13 @@ class EmberClusterObservedNodeStateTest {
     @Test
     @Timeout(240)
     void everyNodeOfAFormedCluster_reportsItsObservedStateAsActive() {
-        var basePort = freeBasePort();
-
-        cluster = emberCluster(CLUSTER_SIZE,
-                               basePort,
-                               basePort + MGMT_OFFSET,
-                               basePort + APP_HTTP_OFFSET,
-                               "obs");
-
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started"))
-            .describedAs("a three-node cluster on a verified-free port block at %d must form within %s",
-                         basePort,
-                         START_BOUND)
-            .isEqualTo("started");
+        cluster = EmberTestPorts.startedCluster(PORTS,
+                                                basePort -> emberCluster(CLUSTER_SIZE,
+                                                                         basePort,
+                                                                         basePort + MGMT_OFFSET,
+                                                                         basePort + APP_HTTP_OFFSET,
+                                                                         "obs"),
+                                                START_BOUND);
 
         var nodes = cluster.status().nodes();
 
@@ -90,55 +91,4 @@ class EmberClusterObservedNodeStateTest {
             .isTrue();
     }
 
-    /// The first candidate base whose whole block — cluster ports (QUIC, so UDP as well as TCP),
-    /// management ports and app-HTTP ports — binds free right now. Not a guarantee: another tenant can
-    /// take a port between this probe and the node's own bind. It removes the standing collision with
-    /// whatever else is running on the box, which is the failure mode actually observed here, and a
-    /// residual race would surface as the named bind failure the start assertion prints.
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free block of " + SLOTS + " consecutive ports found between "
-                                 + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE
-                                 + "; this box is too busy to run a cluster test");
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!udpFree(base + slot)
-                || !tcpFree(base + slot)
-                || !tcpFree(base + MGMT_OFFSET + slot)
-                || !tcpFree(base + APP_HTTP_OFFSET + slot)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
-    }
 }
