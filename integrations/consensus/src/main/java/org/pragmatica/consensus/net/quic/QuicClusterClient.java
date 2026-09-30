@@ -530,7 +530,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // #726: PAYLOAD bytes at the lane boundary — the handshake preamble is a real frame
         // handed to the channel, same honesty boundary as every other write.
         quicMetrics.onBytesSent(preamble.length);
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels, bootTokens.self()));
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId,
+                                                                    selfAddress,
+                                                                    selfLabels,
+                                                                    bootTokens.self(),
+                                                                    Option.some(peerId)));
 
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         quicMetrics.onBytesSent(helloBytes.length);

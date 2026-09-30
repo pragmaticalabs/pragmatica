@@ -190,6 +190,10 @@ public final class PeerState {
     /// Blackholed inbound is intentionally NOT counted (the chaos substrate keeps the link
     /// CONNECTED yet silent), so the sweep still trips.
     private long lastInboundAtNanos;
+    /// True once [#markInbound] has ever fired: distinguishes "never heard from this peer" from a
+    /// receipt at nanoTime zero, so the cross-direction supersede floor protects only an incumbent
+    /// with positive receipt evidence. Guarded by `this`.
+    private boolean inboundObserved;
     /// Wall-clock instant (ms) at which the missing-peer reconciler is next allowed to
     /// attempt a re-dial of this peer. Zero means no reconciler attempt has been made yet
     /// (any reconciler tick may dispatch immediately). Used by `QuicClusterNetwork`'s
@@ -269,6 +273,7 @@ public final class PeerState {
     @Contract
     public synchronized void markInbound(long nowNanos) {
         this.lastInboundAtNanos = nowNanos;
+        this.inboundObserved = true;
     }
 
     /// Nanoseconds since the most recent inbound frame (= now − lastInboundAtNanos). Used by the
@@ -365,11 +370,7 @@ public final class PeerState {
                                            .or(0);
             // Both ends choose the physical link dialed by the lower identity, independently of
             // arrival order. Same-direction reconnects retain the existing age-based policy.
-            if (directionOrder < 0) {
-                return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
-            }
-
-            if (directionOrder == 0 && phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS) {
+            if (isIncumbentKept(directionOrder, nowNanos)) {
                 return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
             }
 
@@ -387,6 +388,25 @@ public final class PeerState {
         notifyTransition(Phase.CONNECTED, Phase.CONNECTED, CAUSE_ATTACH_STALE_REPLACE);
 
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
+    }
+
+    /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). Incumbent initiated by
+    /// the LOWER id always survives a higher-id link; a same-direction link within
+    /// [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial race. A lower-id link
+    /// displaces a higher-id incumbent (the #1390 convergence) only when that incumbent is
+    /// receipt-silent: a peer heard from within [SUPERSEDE_MIN_AGE_NANOS] has a working link, and a
+    /// stray handshake (a dial aimed at a recycled address that reached us anyway) must not tear it
+    /// down. A never-heard incumbent (the cold-start dual-dial race) still converges at once.
+    private boolean isIncumbentKept(int directionOrder, long nowNanos) {
+        return switch (Integer.signum(directionOrder)) {
+            case -1 -> true;
+            case 0 -> phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;
+            default -> isHeardFromRecently(nowNanos);
+        };
+    }
+
+    private boolean isHeardFromRecently(long nowNanos) {
+        return inboundObserved && inboundAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;
     }
 
     /// Transitions CONNECTED → EVICTED. Preserves offline buffer for reconnect drain.

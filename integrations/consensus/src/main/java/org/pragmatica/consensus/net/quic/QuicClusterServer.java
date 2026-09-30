@@ -536,6 +536,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         /// admission path downstream (fresh attach, RECONNECT of an EVICTED/SUSPECT peer, tombstone
         /// re-admission) is ever reached by a refused process.
         private void admitHello(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
+            if (isMisdirected(hello)) {
+                refuseMisdirectedHello(ctx, hello);
+
+                return;
+            }
+
             var admission = bootTokens.admit(hello.sender(), hello.bootToken());
 
             if (!admission.admitted()) {
@@ -551,6 +557,27 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
             sendHelloResponse(ctx);
             registerPeerConnection(ctx, hello);
+        }
+
+        /// A Hello naming a different intended peer than this node was dialed at an address that now
+        /// belongs to us (recycled IP, stale DNS). An absent `intendedPeer` is never misdirected.
+        private boolean isMisdirected(NetworkMessage.Hello hello) {
+            return hello.intendedPeer()
+                        .filter(intended -> !intended.equals(selfId))
+                        .isPresent();
+        }
+
+        /// The dialer verifies identity only AFTER the acceptor has attached, and the acceptor's attach
+        /// can supersede a healthy incumbent link (`PeerState.attachOverConnected`). So refuse BEFORE
+        /// answering or registering: close the connection without a Hello response, which the dialer
+        /// reports as an ordinary failed dial. Deliberately NOT a [NetworkMessage.HelloRefused] — that
+        /// tells the dialer its own identity is retired and makes it exit.
+        private void refuseMisdirectedHello(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
+            log.warn("QUIC acceptor refused misdirected Hello from {}: intended={} self={}",
+                     hello.sender(),
+                     hello.intendedPeer(),
+                     selfId);
+            ctx.channel().parent().close();
         }
 
         /// Answer a refused Hello with an explicit [NetworkMessage.HelloRefused] — in place of the Hello
@@ -579,7 +606,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId,
                                                                         selfAddress,
                                                                         selfLabels,
-                                                                        bootTokens.self()));
+                                                                        bootTokens.self(),
+                                                                        Option.none()));
 
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
             // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.

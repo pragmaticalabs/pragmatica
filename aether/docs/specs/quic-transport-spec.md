@@ -185,7 +185,7 @@ Same protocol, different transport:
 1. Lower NodeId initiates QUIC connection to higher NodeId
 2. TLS 1.3 handshake completes (mutual authentication)
 3. Initiator opens stream 0 (consensus stream)
-4. Sends `NetworkMessage.Hello` with node ID and role
+4. Sends `NetworkMessage.Hello` with node ID and role, and `intendedPeer` (the identity it meant to dial); a responder that is not `intendedPeer` closes the connection before registering it (a dial aimed at a recycled address must not attach to whoever answers there)
 5. Responder sends Hello back on same stream
 6. Connection registered in `peerLinks`
 
