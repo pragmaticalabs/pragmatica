@@ -28,6 +28,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -98,13 +99,13 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     /// @param clusterSecret shared secret for deterministic key derivation
     /// @return configured provider or error
     public static Result<CertificateProvider> selfSignedCertificateProvider(byte[] clusterSecret) {
-        return selfSignedCertificateProvider(clusterSecret, Clock.systemDefaultZone());
+        return selfSignedCertificateProvider(clusterSecret, Clock.systemUTC());
     }
 
     /// Clock seam (#1164): the gossip-key day is read from `clock` at every key access, so a test
-    /// can move a provider across UTC midnights without sleeping through them. `Clock.systemDefaultZone()`
-    /// is what the one-argument factory uses, which keeps the day label identical to the former
-    /// `LocalDate.now()`.
+    /// can move a provider across UTC midnights without sleeping through them. Only the clock's
+    /// INSTANT is used: the day is the UTC day of that instant ([#utcEpochDay], #1415), whatever the
+    /// clock's or the host's zone.
     public static Result<CertificateProvider> selfSignedCertificateProvider(byte[] clusterSecret, Clock clock) {
         return Result.lift(CertificateProviderError.CaGenerationFailed::new, () -> createProvider(clusterSecret, clock));
     }
@@ -148,7 +149,7 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     /// callers on the same day change installs equal keys either way.
     private Result<DayKeys> keysForToday() {
         var cached = dayKeys.get();
-        var today = LocalDate.now(clock).toEpochDay();
+        var today = utcEpochDay(clock);
 
         if (cached.epochDay() == today) {
             return Result.success(cached);
@@ -178,10 +179,19 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         var caKeyPair = deriveKeyPair(clusterSecret);
         var caCert = generateCaCertificate(caKeyPair);
         var caCertPem = toPem(caCert);
-        var bootDayKeys = deriveDayKeys(clusterSecret,
-                                        LocalDate.now(clock).toEpochDay());
+        var bootDayKeys = deriveDayKeys(clusterSecret, utcEpochDay(clock));
 
         return new SelfSignedCertificateProvider(caKeyPair, caCert, caCertPem, bootDayKeys, clusterSecret, clock);
+    }
+
+    /// #1415: the gossip-key day label is the UTC calendar day, as the accept-window reasoning (#256)
+    /// assumes. Reading it in the host's zone put two nodes in different zones a full day apart for
+    /// `|offset|` hours around every local midnight, spending the one-day accept window on the zone
+    /// offset alone.
+    private static long utcEpochDay(Clock clock) {
+        return LocalDate.ofInstant(clock.instant(),
+                                   ZoneOffset.UTC)
+                        .toEpochDay();
     }
 
     /// Derives the previous/current/next-day keys for `epochDay`. Deriving at boot (here) and on a

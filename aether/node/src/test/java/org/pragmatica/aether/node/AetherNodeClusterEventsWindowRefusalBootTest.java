@@ -70,6 +70,7 @@ class AetherNodeClusterEventsWindowRefusalBootTest {
                               NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
                               () -> {},
                               () -> {},
+                              () -> {},
                               variable -> Option.option(environment.get(variable)))
                   .onSuccess(booted -> {
                       node = booted;
