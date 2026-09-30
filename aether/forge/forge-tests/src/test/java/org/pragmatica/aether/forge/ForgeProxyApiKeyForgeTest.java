@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.SecurityMode;
@@ -62,6 +63,8 @@ class ForgeProxyApiKeyForgeTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final long RESPONSE_SECONDS = 20;
+    private static final int POLLS = 20;
+    private static final int CLIENT_SLACK = 3;
 
     private EmberCluster cluster;
     private ForgeApiHandler keyed;
@@ -128,22 +131,71 @@ class ForgeProxyApiKeyForgeTest {
                                   .containsAnyOf("HTTP 401", "HTTP 403");
     }
 
-    /// v1533 F1: Forge's own event poll (`ForgeServer.pollNodeEvents`) carries the operator key too. Under `API_KEY`
-    /// the keyed fetch returns a non-empty event timeline; a keyless fetch of the same route is refused in the same run.
+    /// v1533 F1: Forge's own event poll ([NodeEventPoll], behind `ForgeServer.pollNodeEvents`) carries the operator key
+    /// too. Under `API_KEY` the keyed fetch returns a non-empty event timeline; a keyless fetch of the same route is
+    /// refused in the same run.
     @Test
     void forgeEventPoll_carriesTheOperatorKey_andReadsTheTimeline() {
         var port = cluster.getLeaderManagementPort().unwrap();
+        var keyed = NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY));
 
         await().alias("keyed event poll returns a non-empty timeline")
                .atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> ForgeServer.fetchNodeEvents(() -> Option.some(OPERATOR_KEY), port, "")
-                                       .fold(_ -> false, body -> body.startsWith("[") && body.contains("\"type\"")));
+               .until(() -> keyed.fetch(port, "")
+                                 .fold(_ -> false, body -> body.startsWith("[") && body.contains("\"type\"")));
 
-        var keyless = ForgeServer.fetchNodeEvents(OperatorKey.none(), port, "");
+        var keyless = NodeEventPoll.nodeEventPoll(OperatorKey.none()).fetch(port, "");
 
         assertThat(keyless.isFailure()).as("control: the cluster refuses a keyless event poll").isTrue();
         keyless.onFailure(cause -> assertThat(cause.message()).containsAnyOf("HTTP 401", "HTTP 403"));
+    }
+
+    /// v1533 C1: one poller keeps ONE `HttpClient` across polls. A client per fetch leaves a live selector thread per
+    /// 2 s tick until a GC reclaims it. Counts the JDK client selector threads that appear during the polls.
+    ///
+    /// Two in-run controls keep the bound from passing vacuously: the poller's own client must appear (the count can
+    /// see a client at all), and a client per fetch, exactly the regression, must raise the count past the bound
+    /// in this same JVM (its threads survive long enough to be counted).
+    @Test
+    void forgeEventPoll_reusesOneClient_acrossPolls() {
+        var port = cluster.getLeaderManagementPort().unwrap();
+        var before = selectorThreads();
+        var poll = NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY));
+
+        for (int i = 0; i < POLLS; i++) {
+            assertThat(poll.fetch(port, "").isSuccess()).as("keyed poll %d succeeds", i).isTrue();
+        }
+
+        var created = newSince(before);
+
+        assertThat(created).as("control: the poller's own client selector thread is visible").isNotEmpty();
+        assertThat(created).as("one poller, one client across %d polls (other JVM clients allowed)", POLLS)
+                           .hasSizeLessThanOrEqualTo(CLIENT_SLACK);
+
+        var beforeControl = selectorThreads();
+
+        for (int i = 0; i < POLLS; i++) {
+            NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY)).fetch(port, "");
+        }
+
+        assertThat(newSince(beforeControl)).as("control: a client per fetch is visible above the bound")
+                                           .hasSizeGreaterThan(CLIENT_SLACK);
+    }
+
+    private static Set<Thread> selectorThreads() {
+        return Thread.getAllStackTraces()
+                     .keySet()
+                     .stream()
+                     .filter(thread -> thread.getName().startsWith("HttpClient-")
+                                       && thread.getName().endsWith("-SelectorManager"))
+                     .collect(Collectors.toSet());
+    }
+
+    private static Set<Thread> newSince(Set<Thread> before) {
+        return selectorThreads().stream()
+                                .filter(thread -> !before.contains(thread))
+                                .collect(Collectors.toSet());
     }
 
     private ForgeApiHandler handler(OperatorKey operatorKey) {

@@ -17,13 +17,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.aether.forge.api.OperatorKey;
-import org.pragmatica.aether.forge.api.NodeHttp;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.ClusterStatus;
 import org.pragmatica.aether.ember.EmberCluster.NodeStatus;
@@ -101,6 +97,8 @@ public final class ForgeServer {
     /// exited rather than run an empty cluster that looked healthy. Forge must authenticate to the
     /// cluster it just secured.
     private final AtomicReference<Option<String>> operatorApiKey = new AtomicReference<>(Option.none());
+    /// One poller, so one `HttpClient`, for the server's lifetime (v1533 C1); the key is read at request time.
+    private final NodeEventPoll nodeEventPoll = NodeEventPoll.nodeEventPoll(operatorApiKey::get);
     private final long startTime = System.currentTimeMillis();
     private volatile String lastEventTimestamp = "";
 
@@ -540,27 +538,12 @@ public final class ForgeServer {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
 
-            fetchNodeEvents(operatorApiKey::get, port, lastEventTimestamp).onSuccess(this::parseAndMergeEvents)
-                           .onFailure(this::warnEventPollFailed);
+            nodeEventPoll.fetch(port, lastEventTimestamp)
+                         .onSuccess(this::parseAndMergeEvents)
+                         .onFailure(this::warnEventPollFailed);
         } catch (Exception e) {
             warnEventPollFailed(Causes.fromThrowable(e));
         }
-    }
-
-    /// #1105 follow-up (v1533 F1): Forge's own event poll carries the operator key like every proxied call
-    /// ([NodeHttp]). `/api/v1/events` has no auth exemption, so under `API_KEY` a keyless poll was refused on every
-    /// tick and the dashboard's event timeline stayed silently empty. Package-private so a test drives the real
-    /// request against a keyed cluster.
-    static Result<String> fetchNodeEvents(OperatorKey operatorKey, int port, String since) {
-        var path = since.isEmpty()
-                   ? "/api/v1/events"
-                   : "/api/v1/events?since=" + URLEncoder.encode(since, StandardCharsets.UTF_8);
-        var nodeHttp = NodeHttp.nodeHttp(operatorKey);
-        var request = nodeHttp.request(port, path).GET().timeout(Duration.ofSeconds(2)).build();
-
-        return nodeHttp.sendString(request)
-                       .await(TimeSpan.timeSpan(3).seconds())
-                       .flatMap(HttpResult::toResult);
     }
 
     /// A failed poll is no longer swallowed at TRACE: an empty timeline must be explainable. Rate-limited to one WARN
