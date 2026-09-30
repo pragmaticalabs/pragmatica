@@ -8,5 +8,15 @@
   signature) went through with both numbers logged. A bounded wait follows; on a miss it fails naming both
   numbers and the active core ids. Limitation: the provisioning endpoint exposes no counted ids, so the
   uncounted node is among the ids listed, not computed.
-  [verified: `aether/tests/integration/test/test-harness-endpoint-and-core-count.sh` (6 stub tests against the
-  real functions); removing the gate call reddens 3, reverting the probe reddens 1. No cluster or cloud run.]
+- **`pick_non_leader` no longer offers the node that answered the status read.** Cloud never sets
+  `MGMT_ENTRY_POINT_NODE`, so 12-network's S05 partitioned the node its own leader query went through
+  (`hetzner-eu-core-2`), read the minority's leaderless view and reported a majority failure that never
+  happened. The answering node (top-level `nodeId`) is deferred and offered only when too few other
+  candidates exist (logged fallback).
+- **S05 reads the majority through the leader and tells a failed read from a violation.** A failed read is
+  unknown and retried at the next poll; only a SUCCESSFUL read reporting no leader or `quorate=false` is a
+  violation; a window with no successful read is inconclusive and fails loudly, never a pass.
+  [verified: `aether/tests/integration/test/test-harness-endpoint-and-core-count.sh` (9 stub tests against the
+  real functions) and `test-partition-heal-on-failure.sh` (10); removing the restore gate reddens 3, reverting
+  the probe reddens 1, disabling the entry-point deferral reddens P1 and P2, scoring a failed read as a
+  violation reddens S1 and S2, reading through the pinned endpoint reddens S4. No cluster or cloud run.]
