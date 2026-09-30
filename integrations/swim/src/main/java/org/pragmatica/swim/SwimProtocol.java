@@ -256,7 +256,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// which feeds the anti-affinity placement hint (a decision, and a few bytes). Hostname, pool and instance type stay out.
     /// The full label map stays on ANNOUNCE and the QUIC Hello — an update with every label is several times
     /// larger and, at the default eight updates per message, would push EVERY probe past the datagram budget.
-    private static final Set<String> GOSSIPED_LABEL_KEYS = Set.of(NodeInfo.LABEL_ROLE, NodeInfo.LABEL_SOURCE, NodeInfo.LABEL_ZONE);
+    private static final Set<String> GOSSIPED_LABEL_KEYS = Set.of(NodeInfo.LABEL_ROLE,
+                                                                  NodeInfo.LABEL_SOURCE,
+                                                                  NodeInfo.LABEL_ZONE);
 
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
