@@ -391,6 +391,22 @@ mgmt_entry_point_node() {
     printf ''
 }
 
+# Management endpoint of a NAMED node, or empty when it cannot be derived. Cloud: the VM's public IP at
+# the uniform mgmt port; docker: `node-N` maps to MGMT_PORT + N - 1. For a caller that must read one
+# specific node's view (for example the leader across a partition) rather than whichever node the
+# pinned endpoint happens to be.
+node_mgmt_endpoint() {
+    local node_id="$1" ip
+    [ -n "$node_id" ] || return 0
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        ip=$(cloud_public_ip "$node_id" 2>/dev/null) || return 0
+        [ -n "$ip" ] && printf '%s://%s:%s' "${MGMT_SCHEME:-http}" "$ip" "${CLOUD_MGMT_PORT:-8080}"
+    elif [[ "$node_id" =~ ^node-([0-9]+)$ ]]; then
+        printf 'http://%s:%s' "${TARGET_HOST}" "$((MGMT_PORT + BASH_REMATCH[1] - 1))"
+    fi
+    return 0
+}
+
 # Pick a non-leader node from the cluster's CURRENT live membership.
 # Always excludes the leader. Additionally excludes any explicitly pinned MGMT
 # entry-point node (MGMT_ENTRY_POINT_NODE env override -- empty in normal
@@ -468,6 +484,20 @@ pick_non_leader() {
                 leader="$derived_leader"
             fi
 
+            # The node that ANSWERED this read is the harness's entry point (MGMT_ENTRY_POINT /
+            # CLUSTER_ENDPOINT is pinned to one node and nothing sets MGMT_ENTRY_POINT_NODE on cloud).
+            # A victim that is the entry point can cut the harness off from the cluster it is
+            # observing: S05 partitioned the very node its leader query went through, read a
+            # minority view, and reported a leaderless majority that never existed. The status body
+            # names its own node in the top-level `nodeId`; such a node is offered only if too few
+            # other candidates exist (fallback, logged).
+            local entry_node
+            entry_node=$(printf '%s' "$status_payload" \
+                | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                | head -1 \
+                | sed 's/.*"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)
+            local deferred_entry=""
+
             # Candidate enumeration: server-side READY filter via the aether CLI.
             # The response is a JSON array of `{nodeId, state, updatedAt}` triplets,
             # all already READY post-filter — extract `nodeId` with grep+sed (no jq).
@@ -522,11 +552,24 @@ pick_non_leader() {
                             continue
                         fi
                     fi
+                    if [ -n "$entry_node" ] && [ "$candidate" = "$entry_node" ]; then
+                        pass_diag="${pass_diag} ${candidate}=DEFER-entrypoint"
+                        deferred_entry="$candidate"
+                        continue
+                    fi
                     pass_diag="${pass_diag} ${candidate}=LIVE"
                     attempt_list="${attempt_list}${candidate}"$'\n'
                     attempt_found=$((attempt_found + 1))
                     if [ "$attempt_found" -ge "$count" ]; then break; fi
                 done 3<<< "$current_members"
+
+                # Fallback: the entry-point node is used only when nothing else satisfies the count.
+                if [ "$attempt_found" -lt "$count" ] && [ -n "$deferred_entry" ]; then
+                    log_warn "pick_non_leader: only ${attempt_found}/${count} candidates besides the entry-point node ${deferred_entry}; offering it (harness may lose its view if it is killed or partitioned)" >&2
+                    pass_diag="${pass_diag} ${deferred_entry}=FALLBACK-entrypoint"
+                    attempt_list="${attempt_list}${deferred_entry}"$'\n'
+                    attempt_found=$((attempt_found + 1))
+                fi
 
                 if [ "$attempt_found" -ge "$count" ]; then
                     printf '%s' "$attempt_list" | grep -v '^$' | head -n "$count"
