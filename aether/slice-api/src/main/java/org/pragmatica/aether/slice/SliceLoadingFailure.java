@@ -107,6 +107,17 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// #1195 — a class the slice references is unresolvable although a loader above the slice's own
+        /// SERVES its package. A class-resolution failure, not a parameter mismatch: an operator reading
+        /// "parameter mismatch" investigates the factory's signature, which is not where the problem is.
+        /// `detail` carries the evidence and both causes that reach this state (#758).
+        record ServedPackageLacksClass(String context, String detail) implements Fatal {
+            @Override
+            public String message() {
+                return "Class resolution failed in " + context + ": " + detail;
+            }
+        }
+
         /// #758 — a class the slice references is unresolvable and NO loader above the slice's own
         /// (shared/infra loader, runtime loader) serves its package: none has defined a class in it or
         /// holds its directory. The message states that and asserts no cause; the loader chain is
