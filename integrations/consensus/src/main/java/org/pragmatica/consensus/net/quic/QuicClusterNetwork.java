@@ -228,6 +228,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// leader<->follower links — the transport-owned keepalive is the ONLY guaranteed periodic
     /// inbound on an idle follower<->follower link, so this sweep's correctness depends on it.
     private static final long LIVENESS_TTL_PING_INTERVAL_FACTOR = 8L;
+    private static final long RECEIPT_FLOOR_PING_INTERVAL_FACTOR = 3L;
 
     private final CancellableTask reconcilerTask = CancellableTask.cancellableTask();
     /// Periodic CONTROL-lane keepalive sender (Wave 5 receipt-evidence TTL). Scheduled at
@@ -1217,7 +1218,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // listener is read through the volatile field at EACH invocation, so wiring installed
         // after a PeerState was created still observes its transitions.
         return peers.computeIfAbsent(peerId,
-                                     id -> PeerState.peerState(id, System.nanoTime(), this::onPeerTransition));
+                                     id -> PeerState.peerState(id,
+                                                               System.nanoTime(),
+                                                               this::onPeerTransition,
+                                                               receiptFloorNanos()));
     }
 
     /// THE single per-transition chokepoint (Wave 5, invariant A3): every [PeerState] phase
@@ -2548,6 +2552,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var ttl = livenessTtlNanos();
 
         return state.inboundAgeNanos(now) > ttl && state.phaseAgeNanos(now) > ttl;
+    }
+
+    /// Receipt floor handed to each [PeerState]: three keepalive intervals, so a healthy idle link is
+    /// never judged silent by the cross-direction supersede rule (`PeerState` raises it to its 3s minimum).
+    private long receiptFloorNanos() {
+        return topologyManager.pingInterval()
+                              .nanos() * RECEIPT_FLOOR_PING_INTERVAL_FACTOR;
     }
 
     /// Liveness TTL in nanos: `pingInterval * LIVENESS_TTL_PING_INTERVAL_FACTOR`. See the field doc

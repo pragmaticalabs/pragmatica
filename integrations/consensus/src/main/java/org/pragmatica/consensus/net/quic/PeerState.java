@@ -211,24 +211,42 @@ public final class PeerState {
     /// for this peer up to a configured cap, reset by `resetReconcileBackoff` on a
     /// successful attach.
     private long reconcileCurrentDelayMs;
+    /// How recently the peer must have been heard from for an established incumbent to survive a fresh
+    /// handshake of either direction. At least [SUPERSEDE_MIN_AGE_NANOS], and the network raises it to
+    /// three keepalive intervals so a healthy idle link is never mistaken for a silent one.
+    private final long receiptFloorNanos;
 
-    private PeerState(NodeId peerId, long nowNanos, Consumer<PeerTransitionRecord> transitionListener) {
+    private PeerState(NodeId peerId,
+                      long nowNanos,
+                      Consumer<PeerTransitionRecord> transitionListener,
+                      long receiptFloorNanos) {
         this.peerId = peerId;
         this.phaseChangedAtNanos = nowNanos;
         this.transitionListener = transitionListener;
+        this.receiptFloorNanos = Math.max(SUPERSEDE_MIN_AGE_NANOS, receiptFloorNanos);
     }
 
     public static PeerState peerState(NodeId peerId, long nowNanos) {
         return new PeerState(peerId,
                              nowNanos,
-                             ignored -> {});
+                             ignored -> {},
+                             SUPERSEDE_MIN_AGE_NANOS);
     }
 
     /// Factory with the transition-chokepoint listener (Wave 1 journal + Wave 5 emission).
     /// The listener receives one [PeerTransitionRecord] per phase mutation, invoked OUTSIDE
     /// the per-peer monitor in mutation order.
     public static PeerState peerState(NodeId peerId, long nowNanos, Consumer<PeerTransitionRecord> transitionListener) {
-        return new PeerState(peerId, nowNanos, transitionListener);
+        return new PeerState(peerId, nowNanos, transitionListener, SUPERSEDE_MIN_AGE_NANOS);
+    }
+
+    /// [#peerState(NodeId, long, Consumer)] with a receipt floor (see [#receiptFloorNanos]); values below
+    /// the 3s default are raised to it.
+    public static PeerState peerState(NodeId peerId,
+                                      long nowNanos,
+                                      Consumer<PeerTransitionRecord> transitionListener,
+                                      long receiptFloorNanos) {
+        return new PeerState(peerId, nowNanos, transitionListener, receiptFloorNanos);
     }
 
     /// Rewire the transition listener. Used by `QuicClusterNetwork.seedPeerForTests` so states
@@ -396,27 +414,30 @@ public final class PeerState {
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }
 
-    /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). Incumbent initiated by
-    /// the LOWER id always survives a higher-id link; a same-direction link within
-    /// [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial race. A lower-id link
-    /// displaces a higher-id incumbent (the #1390 convergence) when it lands inside the
-    /// [CONVERGENCE_WINDOW_NANOS] race window, or when the incumbent is receipt-silent: an established
-    /// link whose peer was heard from within [SUPERSEDE_MIN_AGE_NANOS] is working, and a stray
-    /// handshake (a dial aimed at a recycled address that reached us anyway) must not tear it down.
+    /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). A same-direction link
+    /// within [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial race. Across
+    /// directions both ends prefer the link dialed by the LOWER id (#1390), but only while the race is
+    /// live or the incumbent is provably working: inside [CONVERGENCE_WINDOW_NANOS] the lower-id link
+    /// wins whichever arrived first; beyond it an incumbent survives only if its peer was heard from
+    /// within [#receiptFloorNanos]. A receipt-silent incumbent of EITHER direction is superseded: a
+    /// completed Hello from the verified peer proves it abandoned the old link, and a lower-id
+    /// incumbent the peer no longer reads (its CONNECTION_CLOSE lost) would otherwise answer every
+    /// redial with DUPLICATE until this end's own liveness sweep evicts it. A stray handshake (a dial
+    /// aimed at a recycled address that reached us anyway) cannot tear down a heard-from link.
     private boolean isIncumbentKept(int directionOrder, long nowNanos) {
         return switch (Integer.signum(directionOrder)) {
-            case -1 -> true;
+            case -1 -> isInsideRaceWindow(nowNanos) || isHeardFromRecently(nowNanos);
             case 0 -> phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;
-            default -> isEstablishedAndHeard(nowNanos);
+            default -> !isInsideRaceWindow(nowNanos) && isHeardFromRecently(nowNanos);
         };
     }
 
-    private boolean isEstablishedAndHeard(long nowNanos) {
-        return phaseAgeNanos(nowNanos) > CONVERGENCE_WINDOW_NANOS && isHeardFromRecently(nowNanos);
+    private boolean isInsideRaceWindow(long nowNanos) {
+        return phaseAgeNanos(nowNanos) <= CONVERGENCE_WINDOW_NANOS;
     }
 
     private boolean isHeardFromRecently(long nowNanos) {
-        return inboundObserved && inboundAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;
+        return inboundObserved && inboundAgeNanos(nowNanos) <= receiptFloorNanos;
     }
 
     /// Transitions CONNECTED → EVICTED. Preserves offline buffer for reconnect drain.

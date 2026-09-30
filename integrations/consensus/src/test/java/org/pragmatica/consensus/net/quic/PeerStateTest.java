@@ -227,6 +227,67 @@ class PeerStateTest {
         assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
     }
 
+    @Test
+    void attach_higherIdDialOverReceiptSilentLowerIdIncumbent_supersedes() {
+        // M5: the lower-id incumbent's peer evicted its end and redials, but our end never saw the close.
+        // 10s old, last heard 5s before the redial: the completed Hello proves the peer abandoned the
+        // old link, so it is superseded and handed back to close (before, it answered DUPLICATE until
+        // this end's own liveness sweep evicted it).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var fiveSeconds = TimeUnit.SECONDS.toNanos(5);
+        s.markInbound(T0 + 2 + fiveSeconds);
+        var fresh = initiatedBy(HIGHER);
+        var result = s.attach(fresh, T0 + 2 + 2 * fiveSeconds);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(incumbent);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
+    }
+
+    @Test
+    void attach_higherIdDialOverRecentlyHeardLowerIdIncumbent_isDuplicate() {
+        // Companion: the same incumbent, heard 100ms before the handshake, is a working link.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var tenSeconds = TimeUnit.SECONDS.toNanos(10);
+        s.markInbound(T0 + 2 + tenSeconds - TimeUnit.MILLISECONDS.toNanos(100));
+        var result = s.attach(initiatedBy(HIGHER), T0 + 2 + tenSeconds);
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(result.superseded().isEmpty()).isTrue();
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(incumbent);
+    }
+
+    @Test
+    void attach_higherIdDialInsideTheRaceWindow_keepsTheLowerIdIncumbentWithoutReceipts() {
+        // Formation dual-dial race: the lower-id link that landed first keeps its place at both ends.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var result = s.attach(initiatedBy(HIGHER), T0 + 2 + TimeUnit.MILLISECONDS.toNanos(100));
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(incumbent);
+    }
+
+    @Test
+    void attach_receiptFloorScalesWithTheKeepaliveInterval() {
+        // A 9s floor (three 3s keepalive intervals): an incumbent heard 5s ago is still a working link,
+        // though 5s exceeds the 3s minimum that would have superseded it.
+        var s = PeerState.peerState(PEER, T0, ignored -> {}, TimeUnit.SECONDS.toNanos(9));
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var fiveSeconds = TimeUnit.SECONDS.toNanos(5);
+        s.markInbound(T0 + 2 + fiveSeconds);
+        var result = s.attach(initiatedBy(HIGHER), T0 + 2 + 2 * fiveSeconds);
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(incumbent);
+    }
+
     private static QuicPeerConnection initiatedBy(NodeId initiator) {
         var chan = mock(QuicChannel.class);
         when(chan.isActive()).thenReturn(true);

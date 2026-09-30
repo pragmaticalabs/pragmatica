@@ -31,10 +31,14 @@ class ConnectionInitiatorRetentionTest {
     }
 
     @Test
-    void agedPreferredDirectionIsNotReplacedByOppositeDial() {
+    void agedButRecentlyHeardPreferredDirectionIsNotReplacedByOppositeDial() {
         var state = PeerState.peerState(HIGHER, 0);
         var preferred = connection(HIGHER, LOWER);
         state.attach(preferred, 1);
+        // M5: an aged preferred link is kept only while its peer is being heard from; the previous form of
+        // this test (no receipts at all) encoded "the lower-id link always wins", which kept a link the peer
+        // had abandoned. A silent aged incumbent is superseded: see PeerStateTest.
+        state.markInbound(Long.MAX_VALUE / 2 - 1);
         assertThat(state.attach(connection(HIGHER, HIGHER), Long.MAX_VALUE / 2).result())
             .isEqualTo(PeerState.AttachResult.DUPLICATE);
         assertThat(state.activeConnection().unwrap()).isSameAs(preferred);
