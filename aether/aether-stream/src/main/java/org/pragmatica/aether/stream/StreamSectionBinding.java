@@ -81,7 +81,9 @@ public sealed interface StreamSectionBinding {
         declared.warnings()
                 .forEach(warning -> OperatorWarnings.raise(LOG,
                                                            sink,
-                                                           OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                           warning.loud()
+                                                           ? OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE
+                                                           : OperatorWarningCode.REPLICATION_POLICY_WARNING,
                                                            resource,
                                                            "{}stream replication warning [{}]: {}",
                                                            warning.loud()

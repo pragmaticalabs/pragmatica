@@ -36,9 +36,12 @@ public enum OperatorWarningCode {
     /// barrier will not count this copy.
     REPLICA_FSYNC_FAILED("replica-fsync-failed", "stream-replication", WarningLevel.WARNING),
     /// A stream, durable topic or durable entity was activated with a replication policy that carries a stated
-    /// risk (#1564): an explicitly declared replication factor below 3, a confirmation factor equal to the
-    /// replication factor, or a confirmation factor of 1.
+    /// risk (#1564): a confirmation factor equal to the replication factor, or a confirmation factor of 1.
     REPLICATION_POLICY_WARNING("replication-policy-warning", "stream-replication", WarningLevel.WARNING),
+    /// The LOUD replication warning (#1564, owner ruling 596bdfd07(3)): a stream, durable topic or durable entity
+    /// was activated with an explicitly declared replication factor below 3 — under terminal node removal, losing
+    /// that many nodes loses the partition. CRITICAL, so it is distinguishable from the ordinary policy warnings.
+    REPLICATION_FACTOR_BELOW_THREE("replication-factor-below-three", "stream-replication", WarningLevel.CRITICAL),
     /// A blueprint publish was accepted with a deploy-time warning (#1564): a declaration with a stated
     /// replication risk, or a stream declaration the cluster accepted with a caveat.
     DEPLOY_WARNING("deploy-warning", "deployment", WarningLevel.WARNING),

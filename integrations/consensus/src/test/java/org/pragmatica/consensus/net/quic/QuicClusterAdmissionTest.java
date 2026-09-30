@@ -205,18 +205,13 @@ class QuicClusterAdmissionTest {
                                                    .isNotInstanceOf(CoreError.Timeout.class));
     }
 
-    /// TRIPWIRE — found while fixing #807. When the server REFUSES the client's certificate, the client's
-    /// connect promise never settles: not with a refusal, and not with its own Hello timeout either
-    /// (measured: still unresolved after 20 s, at rc4 `90d00cd13` and at #1677's head `6223858a2`). The
-    /// old 8 s wait scored the TEST's own timeout as "rejected", so these two rejections were never
-    /// observed as the client's verdict. This asserts today's behaviour: not admitted, and unsettled.
-    /// It reddens the moment the client settles — then replace the call with [#assertRejected].
-    private static void assertNotAdmittedAndClientNeverSettles(Result<QuicPeerConnection> outcome, String why) {
-        assertThat(outcome.isSuccess()).as("%s — outcome: %s", why, outcome).isFalse();
-        outcome.onFailure(cause -> assertThat(cause)
-            .as("TRIPWIRE: the client now SETTLES a refused-certificate connect (%s). That is the fix this "
-                + "tripwire waits for: replace assertNotAdmittedAndClientNeverSettles with assertRejected.", cause)
-            .isInstanceOf(CoreError.Timeout.class));
+    /// #1694 — a server that refuses the client certificate closes the connection before answering the Hello. The
+    /// dial must settle promptly with THAT cause, not after the 15 s Hello bound as `HELLO_TIMEOUT` (which is what
+    /// the timeout path alone would report). Before #1694 it never settled at all.
+    private static void assertRejectedByPeerClose(Result<QuicPeerConnection> outcome, String why) {
+        assertRejected(outcome, why);
+        outcome.onFailure(cause -> assertThat(cause.message()).as("#1694: the refusal is reported as the peer's close, not a timeout")
+                                                              .contains("closed the connection before answering the Hello"));
     }
 
     @Nested
@@ -236,7 +231,7 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected() {
             var port = startServer(clusterServerSsl());
 
-            assertNotAdmittedAndClientNeverSettles(connect(certificatelessClientSsl(), port),
+            assertRejectedByPeerClose(connect(certificatelessClientSsl(), port),
                 "#715: a peer presenting no certificate must not be admitted to the cluster — "
                     + "before the fix this succeeded, and the peer was then counted by the CTM");
         }
@@ -260,7 +255,7 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected_againstRotatedContext() {
             var port = startServer(rotatedClusterServerSsl());
 
-            assertNotAdmittedAndClientNeverSettles(connect(certificatelessClientSsl(), port),
+            assertRejectedByPeerClose(connect(certificatelessClientSsl(), port),
                 "the rotated context must enforce the same admission policy as the initial one");
         }
 
