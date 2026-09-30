@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
@@ -90,6 +91,33 @@ public sealed interface SchemaError extends Cause {
         @Override
         public String message() {
             return "Failed to acquire migration lock for datasource '" + datasource + "'";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #217: surfaces as HTTP 409 on `/baseline` — the record's migration is in flight (PENDING or MIGRATING,
+    /// or UNKNOWN on a node that cannot read the status). Baseline writes COMPLETED, and only a PENDING record
+    /// is ever dispatched, so the in-flight migration would silently never run. Raised by the route's early
+    /// check and, under the orchestrator's fence, by the re-checks around the baseline itself, where a deploy
+    /// can arm a migration after the route looked. `stage` says which check refused; `force=true` overrides.
+    record BaselineOverInFlightMigration(String datasource, SchemaStatus currentStatus, String stage) implements SchemaError, HttpStatusAware {
+        public static BaselineOverInFlightMigration baselineOverInFlightMigration(String datasource,
+                                                                                  SchemaStatus currentStatus,
+                                                                                  String stage) {
+            return new BaselineOverInFlightMigration(datasource, currentStatus, stage);
+        }
+
+        @Override
+        public String message() {
+            return "Schema for datasource '" + datasource
+                 + "' is " + currentStatus.name()
+                 + " (" + stage
+                 + ") — a baseline would mark it COMPLETED and the in-flight migration would never run; wait for it"
+                 + " to finish (or fail), or pass force=true to baseline over it deliberately";
         }
 
         @Override
