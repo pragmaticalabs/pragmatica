@@ -88,6 +88,11 @@ public final class QuorumCollector<T> {
         }
     }
 
+    /// Replies recorded so far, including those arriving after the quorum resolved the promise.
+    public int successCount() {
+        return successCount.get();
+    }
+
     private T selectBest(T existing, T incoming) {
         if (existing == null) {
             return incoming;

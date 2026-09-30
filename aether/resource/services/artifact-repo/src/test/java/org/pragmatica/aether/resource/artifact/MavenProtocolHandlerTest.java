@@ -219,12 +219,12 @@ class MavenProtocolHandlerTest {
 
             @Override
             public Promise<byte[]> resolve(ArtifactFile file) {
-                return new ArtifactStoreError.NotFound(file).promise();
+                return new ArtifactStoreError.NotFound(file, "test-key").promise();
             }
 
             @Override
             public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
-                return new ArtifactStoreError.NotFound(file).promise();
+                return new ArtifactStoreError.NotFound(file, "test-key").promise();
             }
 
             @Override
@@ -265,12 +265,12 @@ class MavenProtocolHandlerTest {
 
             @Override
             public Promise<byte[]> resolve(ArtifactFile file) {
-                return new ArtifactStoreError.NotFound(file).promise();
+                return new ArtifactStoreError.NotFound(file, "test-key").promise();
             }
 
             @Override
             public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
-                return new ArtifactStoreError.NotFound(file).promise();
+                return new ArtifactStoreError.NotFound(file, "test-key").promise();
             }
 
             @Override

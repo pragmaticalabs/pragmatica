@@ -577,6 +577,40 @@ class ArtifactStoreTest {
         }
     }
 
+    /// `DHTClient.get` answers `Option`, so above it absence and corruption look alike. These pin the two
+    /// resolve failures apart, and pin that "not found" names the key the DHT client's all-miss line names.
+    @Nested
+    class MetadataAttributionTests {
+        @Test
+        void resolveWithMetadata_absentKey_notFoundNamesTheDhtKeyHex() {
+            var artifact = Artifact.artifact("org.example:absent:1.0.0").unwrap();
+            var keyHex = java.util.HexFormat.of()
+                                            .formatHex("artifacts/org.example/absent/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> {
+                     assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class);
+                     assertThat(cause.message()).contains("dht key " + keyHex);
+                 });
+        }
+
+        @Test
+        void resolveWithMetadata_unparseableMetadata_isNotNotFound() {
+            var artifact = Artifact.artifact("org.example:garbled:1.0.0").unwrap();
+            dhtStorage.put("artifacts/org.example/garbled/1.0.0/jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> {
+                     assertThat(cause).isInstanceOf(ArtifactStoreError.MetadataUnparseable.class);
+                     assertThat(cause).isNotInstanceOf(ArtifactStoreError.NotFound.class);
+                 });
+        }
+    }
+
     @Nested
     class ResolveTimeoutTests {
         /// Regression for the Hetzner 3h hang: `resolveWithMetadata` had NO aggregate timeout,

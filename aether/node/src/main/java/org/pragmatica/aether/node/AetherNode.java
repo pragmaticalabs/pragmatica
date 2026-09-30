@@ -318,6 +318,7 @@ import org.pragmatica.dht.DHTRebalancer;
 import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
+import org.pragmatica.dht.LoggingResolveFallbackObserver;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
@@ -1808,12 +1809,17 @@ public interface AetherNode extends ManageableNode {
         // And a task armed at ASSEMBLY runs on a node that was never started (#642's evidence run:
         // two held-back Ember nodes, 274 snapshot ticks each) — see PeriodicTasks for the contract.
         var periodicTasks = PeriodicTasks.periodicTasks();
-        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
-                                                                  dhtNetwork,
-                                                                  config.artifactRepo(),
-                                                                  KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
-                                                                                                        BootstrapModule.CORE_PARTITION_ID));
-        var cacheDhtClient = dhtClient.scoped(config.cache());
+        var baseDhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
+                                                                      dhtNetwork,
+                                                                      config.artifactRepo(),
+                                                                      KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
+                                                                                                            BootstrapModule.CORE_PARTITION_ID));
+        // An all-miss resolve reads as a bare "absent" everywhere above the client; this observer writes the WARN that
+        // says whether the key is lost or unreachable. The cache client is scoped from the base client, not from this one:
+        // a cache miss is normal traffic and must not WARN.
+        var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(LOG::warn,
+                                                                                                                                LOG::info));
+        var cacheDhtClient = baseDhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
         // #253 BLOCKING #1 (2026-09-04 ruling): a configured storage instance that fails to create
         // is a boot failure -- `createAll` now returns `Result` and this aborts naming the instance

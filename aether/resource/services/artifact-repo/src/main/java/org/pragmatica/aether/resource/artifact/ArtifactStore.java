@@ -166,10 +166,21 @@ public interface ArtifactStore {
     }
 
     sealed interface ArtifactStoreError extends Cause {
-        record NotFound(ArtifactFile file) implements ArtifactStoreError {
+        /// The DHT answered "no metadata" for the key. `keyHex` joins this line to the DHT client's
+        /// all-miss report for the same key, which says whether the key is lost or merely unreachable.
+        record NotFound(ArtifactFile file, String keyHex) implements ArtifactStoreError {
             @Override
             public String message() {
-                return "Artifact not found: " + file.asString();
+                return "Artifact not found: " + file.asString() + " (dht key " + keyHex + ")";
+            }
+        }
+
+        /// The DHT returned bytes for the metadata key but they do not parse. The key IS present, so this
+        /// is deliberately not [NotFound]: corruption must not read as absence.
+        record MetadataUnparseable(ArtifactFile file, String keyHex) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "Artifact metadata unparseable: " + file.asString() + " (dht key " + keyHex + ")";
             }
         }
 
@@ -369,9 +380,18 @@ class ArtifactStoreImpl implements ArtifactStore {
         // Promise.timeout's contract so a never-resolving dht.get is cancelled rather than a
         // downstream transformation.
         return dhtGetWithRetry(metaKey(file)).timeout(resolveBase)
-                              .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                                         .async(new ArtifactStoreError.NotFound(file))
-                                                         .flatMap(meta -> resolveChunksFromStorage(file, meta)));
+                              .flatMap(metaOpt -> metadataOf(file, metaOpt))
+                              .flatMap(meta -> resolveChunksFromStorage(file, meta));
+    }
+
+    /// Absent bytes are [ArtifactStoreError.NotFound]; present bytes that do not parse are
+    /// [ArtifactStoreError.MetadataUnparseable] — the two are different facts and stay different causes.
+    private Promise<ArtifactMetadata> metadataOf(ArtifactFile file, Option<byte[]> metaOpt) {
+        var keyHex = HexFormat.of().formatHex(metaKey(file));
+
+        return metaOpt.async(new ArtifactStoreError.NotFound(file, keyHex))
+                      .flatMap(bytes -> ArtifactMetadata.fromBytes(bytes).async(new ArtifactStoreError.MetadataUnparseable(file,
+                                                                                                                           keyHex)));
     }
 
     @Override
