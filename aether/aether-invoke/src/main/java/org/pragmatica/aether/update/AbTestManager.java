@@ -341,9 +341,11 @@ public interface AbTestManager {
 
             /// A slice that has never been written has no placement, owner or bounds to carry, so
             /// the creation factory is correct for it and the transformations above are correct for
-            /// every other case. Floor == target at birth, matching `SliceRoutes`' first write.
+            /// every other case. The floor at birth is the shared default (#1497), like every other first write.
             private static SliceTargetValue newSliceTarget(Version version) {
-                return SliceTargetValue.sliceTargetValue(version, VARIANT_INSTANCES, VARIANT_INSTANCES);
+                return SliceTargetValue.sliceTargetValue(version,
+                                                         VARIANT_INSTANCES,
+                                                         SliceTargetValue.defaultMinInstances(VARIANT_INSTANCES));
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {
