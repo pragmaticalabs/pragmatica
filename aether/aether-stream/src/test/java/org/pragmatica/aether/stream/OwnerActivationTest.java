@@ -210,33 +210,29 @@ class OwnerActivationTest {
         assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
     }
 
-    /// Observation: the gate's probe and overlap reads go through the real [OwnerPeerReads] against a peer that
-    /// HOLDS the partition unmaterialized (paced) with durable data BELOW self. Pre-F1a that peer answered
-    /// `PARTITION_NOT_LOCAL`, read as `-1`, and was skipped; now it reports 5, its overlap window is read, the read is
-    /// refused (no ring), and activation is refused until the peer materializes.
+    /// A peer BELOW the owner that holds the partition unmaterialized (paced, or budget-deferred) has compared nothing,
+    /// like a lower peer whose window was evicted: activation is NOT refused and no block is raised. Held 5 against
+    /// local 19.
     @Test
-    void gate_pacedLowerPeerWithDurableData_refusesActivation_whileANonHolderDoesNot() {
-        var heldAtFive = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
-            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L).message()).promise());
-        var nonHolder = gateThrough((_, _, _, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
-            StreamError.General.PARTITION_NOT_LOCAL.message()).promise());
-
+    void gate_lowerPeerHeldUnmaterialized_activatesWithNoBlock_pacedOrBudgetDeferred() {
         members.set(List.of(SELF, PEER_A));
 
-        assertThat(heldAtFive.activate(STREAM, PARTITION).await().isSuccess()).as("paced lower peer").isFalse();
-        assertThat(nonHolder.activate(STREAM, PARTITION).await().isSuccess()).as("genuine non-holder").isTrue();
+        for (var budget : List.of(false, true)) {
+            var gate = gateThrough(held(5L, budget));
+
+            assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("lower held peer, budget=%s", budget).isTrue();
+        }
+        assertThat(alarms).isEmpty();
     }
 
-    /// A peer that holds durable data but is deferred for off-heap BUDGET (no slot will free it) is reported, once, as a
-    /// block naming the partition, the peer and both offsets; a merely paced peer is not (its slot will free).
+    /// A peer ABOVE the owner (held 25 against local 19) is the catch-up source and stays strict: activation is refused,
+    /// and a budget-deferred one is reported as a block naming the partition, the peer and both heads (once); a merely
+    /// paced one is refused without a block (its slot will free).
     @Test
-    void gate_budgetDeferredPeerWithDurableData_raisesTheBlock_pacedPeerDoesNot() {
-        var budgetDeferred = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
-            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L, true).message()).promise());
-        var paced = gateThrough((_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
-            new StreamError.PartitionHeldNotMaterialized(stream, partition, 5L, false).message()).promise());
-
+    void gate_upperPeerHeldUnmaterialized_refuses_andBudgetDeferredRaisesTheBlockOnce() {
         members.set(List.of(SELF, PEER_A));
+        var paced = gateThrough(held(25L, false));
+        var budgetDeferred = gateThrough(held(25L, true));
 
         assertThat(paced.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
         assertThat(alarms).as("a paced peer raises no budget block").isEmpty();
@@ -245,11 +241,25 @@ class OwnerActivationTest {
         var block = alarms.getFirst();
 
         assertThat(block).isInstanceOf(OwnerActivation.ActivationBlock.HolderBudgetDeferred.class);
-        assertThat(block.message()).contains(STREAM + "[" + PARTITION + "]", PEER_A.id(), "head 5", "local head 19", "off-heap budget exhausted");
+        assertThat(block.message()).contains(STREAM + "[" + PARTITION + "]", PEER_A.id(), "head 25", "local head 19", "off-heap budget exhausted");
         assertThat(budgetDeferred.blockOf(STREAM, PARTITION)).isEqualTo(Option.some(block));
 
         budgetDeferred.activate(STREAM, PARTITION).await();
         assertThat(alarms).as("the same block is raised once").hasSize(1);
+    }
+
+    /// A genuine non-holder is read as -1 and never blocks.
+    @Test
+    void gate_nonHolderPeer_activates() {
+        members.set(List.of(SELF, PEER_A));
+
+        assertThat(gateThrough((_, _, _, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            StreamError.General.PARTITION_NOT_LOCAL.message()).promise()).activate(STREAM, PARTITION).await().isSuccess()).isTrue();
+    }
+
+    private static OwnerPeerReads.PageRead held(long watermark, boolean budgetExhausted) {
+        return (_, stream, partition, _, _) -> new org.pragmatica.aether.stream.forward.StreamForwardError.ReadForwardFailed(
+            new StreamError.PartitionHeldNotMaterialized(stream, partition, watermark, budgetExhausted).message()).promise();
     }
 
     private OwnerActivation gateThrough(OwnerPeerReads.PageRead peerRead) {

@@ -364,10 +364,10 @@ class HeldNotMaterializedProbeTest {
 
             tightHandler.onReadForward(readForward(PEER, "corr", "b2", 0, 0L, PAGE, false, true));
 
-            assertThat(tight.heldBudgetExhausted("b2")).isTrue();
+            assertThat(tight.heldBudgetExhausted("b2", 0)).isTrue();
             assertThat(StreamError.PartitionHeldNotMaterialized.isBudgetExhausted(new StreamForwardError.ReadForwardFailed(answers.getLast().errorMessage())))
                 .isTrue();
-            assertThat(manager.heldBudgetExhausted("fresh")).as("paced with budget to spare").isFalse();
+            assertThat(manager.heldBudgetExhausted("fresh", 0)).as("paced with budget to spare").isFalse();
             assertThat(StreamError.PartitionHeldNotMaterialized.isBudgetExhausted(new StreamError.PartitionHeldNotMaterialized("s", 0, 1L))).isFalse();
         } finally {
             tight.close();
