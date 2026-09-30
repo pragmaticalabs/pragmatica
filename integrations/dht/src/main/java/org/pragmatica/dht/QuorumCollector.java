@@ -213,6 +213,7 @@ public final class QuorumCollector<T> {
     }
 
     /// Record that a replica this read was waiting on left the ring mid-read and its slot was taken over.
+    @Contract
     public void noteDeparted() {
         departed.incrementAndGet();
     }
