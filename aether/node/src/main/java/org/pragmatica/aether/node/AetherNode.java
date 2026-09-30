@@ -1166,7 +1166,8 @@ public interface AetherNode extends ManageableNode {
     /// unusable and streams degraded to no WAL.
     private static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
         return streamStorage.logRoot()
-                            .<AppendLog.Opener> map(_ -> streamStorage::openLog);
+                            .<AppendLog.Opener> map(_ -> AppendLog.Opener.opener(streamStorage::openLog,
+                                                                                 streamStorage::inspectLog));
     }
 
     /// #634 item 2 — the boot gate, exposed for [org.pragmatica.aether.Main]'s verification chain (the
@@ -1636,15 +1637,22 @@ public interface AetherNode extends ManageableNode {
         nodeDeploymentManager.reconcileActivation();
     }
 
-    /// `-1` for empty) by paging its partition over the forward-read transport, or FAIL when the peer is
-    /// unreachable. The success/failure split is the data-safety signal the backfill deadlock-break needs:
-    /// a reachable peer's watermark is comparable; an unreachable peer's is unknown (and might be ahead),
-    /// so self must not self-promote past it.
+    /// A peer's watermark (its highest held offset; `-1` for empty) over the catch-up read class, or FAIL when
+    /// the peer is unreachable. The success/failure split is the data-safety signal the backfill deadlock-break
+    /// needs: a reachable peer's watermark is comparable; an unreachable peer's is unknown (and might be
+    /// ahead), so self must not self-promote past it. A peer that HOLDS the partition but has not materialized
+    /// it (paced, deferred) or is an owner not yet promoted is REACHABLE ([OwnerPeerReads#replicaWatermark]):
+    /// the catch-up class is not gated on the peer's own promotion, and a held-unmaterialized refusal carries
+    /// its durable watermark.
     private static Promise<Long> probePeerWatermark(StreamForwardClient forwardClient,
                                                     NodeId target,
                                                     String streamName,
                                                     int partition) {
-        return pagePeerWatermark(forwardClient::readRemote, target, streamName, partition, 0L);
+        return OwnerPeerReads.replicaWatermark(forwardClient::readRemoteCatchup,
+                                               target,
+                                               streamName,
+                                               partition,
+                                               STREAM_CATCHUP_BATCH_SIZE);
     }
 
     /// #1555: the owner promotion gate's probe, over the catch-up read class the gate's catch-up then pulls
@@ -1674,44 +1682,6 @@ public interface AetherNode extends ManageableNode {
         LOG.warn("CRITICAL: {}", block.message());
 
         return Unit.unit();
-    }
-
-    /// One page of a peer's partition read, over whichever forward-read class the probe uses.
-    @FunctionalInterface
-    interface PeerPageRead {
-        Promise<StreamForwardClient.ReadForwardResult> read(NodeId target,
-                                                            String streamName,
-                                                            int partition,
-                                                            long fromOffset,
-                                                            int maxEvents);
-    }
-
-    private static Promise<Long> pagePeerWatermark(PeerPageRead pageRead,
-                                                   NodeId target,
-                                                   String streamName,
-                                                   int partition,
-                                                   long cursor) {
-        return pageRead.read(target, streamName, partition, cursor, STREAM_CATCHUP_BATCH_SIZE)
-                       .flatMap(result -> continuePeerWatermark(pageRead, target, streamName, partition, cursor, result));
-    }
-
-    private static Promise<Long> continuePeerWatermark(PeerPageRead pageRead,
-                                                       NodeId target,
-                                                       String streamName,
-                                                       int partition,
-                                                       long cursor,
-                                                       StreamForwardClient.ReadForwardResult result) {
-        var events = result.events();
-
-        if (events.isEmpty()) {
-            return Promise.success(cursor - 1);
-        }
-
-        var lastOffset = events.getLast().offset();
-
-        return events.size() >= STREAM_CATCHUP_BATCH_SIZE
-               ? pagePeerWatermark(pageRead, target, streamName, partition, lastOffset + 1)
-               : Promise.success(lastOffset);
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -5013,9 +4983,10 @@ public interface AetherNode extends ManageableNode {
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
                                                                                      STREAM_CATCHUP_BATCH_SIZE);
         // Cold-start deadlock-break: a watermark+reachability probe over the same forward-read transport.
-        // A REACHABLE peer answers with the highest local offset it holds (its watermark; -1 when empty);
-        // an UNREACHABLE peer's readRemote fails (timeout) and the probe propagates that failure, which
-        // the orchestrator treats as "do not self-promote past a node that might hold newer state".
+        // A REACHABLE peer answers with the highest local offset it holds (its watermark; -1 when empty), or,
+        // for a partition it holds but has not materialized, its durable watermark; an UNREACHABLE peer's
+        // read fails (timeout) and the probe propagates that failure, which the orchestrator treats as "do not
+        // self-promote past a node that might hold newer state".
         ReplicaWatermarkProbe streamWatermarkProbe = (target, streamName, partition) -> probePeerWatermark(streamForwardClient,
                                                                                                            target,
                                                                                                            streamName,

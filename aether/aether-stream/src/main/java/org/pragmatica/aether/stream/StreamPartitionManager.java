@@ -2456,6 +2456,36 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  .anyMatch(nodeId::equals);
     }
 
+    /// The durable watermark of a partition this node HOLDS (placement makes it owner or replica) but has not
+    /// materialized — paced or budget-deferred — so a replication-class read has no ring to answer from. The
+    /// higher of the WAL head and the sealed bound, `-1` when it holds nothing durable, read without opening the
+    /// log ([AppendLog.Opener#inspect]). None when the partition is materialized, is not held here, is out of
+    /// range, or the log cannot be inspected: an unknown watermark is not reported as an empty one, and the
+    /// caller answers `PARTITION_NOT_LOCAL` as before.
+    public Option<Long> heldNotMaterializedWatermark(String streamName, int partition) {
+        return option(streams.get(streamName)).filter(entry -> isHeldWithoutRing(entry, streamName, partition))
+                     .flatMap(_ -> durableWatermark(streamName, partition));
+    }
+
+    private boolean isHeldWithoutRing(StreamEntry entry, String streamName, int partition) {
+        return partition >= 0 && partition < entry.declaredPartitions() && entry.ringFor(partition)
+                                                                                .isEmpty() && placementRoleSupplier.roleFor(streamName,
+                                                                                                                            partition) != Role.NONE;
+    }
+
+    private Option<Long> durableWatermark(String streamName, int partition) {
+        return logs.fold(() -> Option.some(lastSealedOffset.lastSealedOffset(streamName, partition)),
+                         opener -> walHead(opener, streamName, partition).map(head -> Math.max(head,
+                                                                                               lastSealedOffset.lastSealedOffset(streamName,
+                                                                                                                                 partition))));
+    }
+
+    private static Option<Long> walHead(AppendLog.Opener opener, String streamName, int partition) {
+        return opener.inspect(StreamEntry.logName(streamName, partition))
+                     .map(AppendLog.LogExtent::headOffset)
+                     .option();
+    }
+
     /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
     /// and survivor pulls, which must see events that are not yet visible, and the entity log fold, whose
     /// head is the appended head. Never a consumer path.
@@ -4146,7 +4176,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// The log `<stream>/<partition>`: under the storage instance's log root in production, which keeps
         /// the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal`.
         private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, String streamName, int partition) {
-            return opener.open(streamName + "/" + partition);
+            return opener.open(logName(streamName, partition));
+        }
+
+        /// The log `<stream>/<partition>` names, shared by the open and the read-only inspect of it.
+        static String logName(String streamName, int partition) {
+            return streamName + "/" + partition;
         }
 
         private static List<Option<AppendLog>> noWals(int count) {

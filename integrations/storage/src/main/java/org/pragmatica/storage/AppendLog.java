@@ -213,10 +213,13 @@ public final class AppendLog implements AutoCloseable {
 
     /// What a log file holds, read without opening, recovering or writing it (#1569 A3/A4): the lowest and
     /// highest valid offsets (`-1` for none), the bytes of the valid prefix, and the file's size -- a larger
-    /// size means a torn tail that the next [#open] would cut. The inventory probe reads this from a volume
+    /// size means a torn tail that the next [#open] would cut. A log that was never created holds nothing:
+    /// [LogExtent#EMPTY], not a failure. The inventory probe reads this from a volume
     /// it may not end up owning, so it must leave the volume byte-identical.
     public static Result<LogExtent> inspect(Path file) {
-        return FileOps.readBytes(file).map(AppendLog::extentOf);
+        return Files.exists(file)
+               ? FileOps.readBytes(file).map(AppendLog::extentOf)
+               : Result.success(LogExtent.EMPTY);
     }
 
     private static LogExtent extentOf(byte[] bytes) {
@@ -807,10 +810,33 @@ public final class AppendLog implements AutoCloseable {
     public interface Opener {
         Result<AppendLog> open(String name);
 
+        /// The extent of log `name`, READ-ONLY ([AppendLog#inspect]): nothing is opened, recovered or cut,
+        /// so it is safe beside a materialization of the same log. An opener with no way to look refuses,
+        /// and the caller must treat that as "unknown", never as an empty log.
+        default Result<LogExtent> inspect(String name) {
+            return StorageError.InspectUnsupported.inspectUnsupported(name).result();
+        }
+
+        /// An opener that can also inspect, over the same log names.
+        static Opener opener(Fn1<Result<AppendLog>, String> open, Fn1<Result<LogExtent>, String> inspect) {
+            return new Opener() {
+                @Override
+                public Result<AppendLog> open(String name) {
+                    return open.apply(name);
+                }
+
+                @Override
+                public Result<LogExtent> inspect(String name) {
+                    return inspect.apply(name);
+                }
+            };
+        }
+
         /// A standalone opener laying logs out as `<root>/<name>.wal` -- the layout of
         /// [StorageInstance#openLog] -- for wiring that has no storage instance (tests, tools).
         static Opener directory(Path root) {
-            return name -> AppendLog.open(root.resolve(name + ".wal"));
+            return opener(name -> AppendLog.open(root.resolve(name + ".wal")),
+                          name -> AppendLog.inspect(root.resolve(name + ".wal")));
         }
     }
 
@@ -823,7 +849,10 @@ public final class AppendLog implements AutoCloseable {
     public record EpochStart(long ownerEpoch, long startOffset) {}
 
     /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
-    public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {}
+    public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {
+        /// The extent of a log that does not exist: no valid record, no bytes.
+        public static final LogExtent EMPTY = new LogExtent(-1L, -1L, 0L, 0L);
+    }
 
     /// A torn tail cut by recovery: bytes `[validEnd, fileBytes)` of `file` were discarded, and
     /// `lastValidOffset` (`-1` for none) is the last record kept.

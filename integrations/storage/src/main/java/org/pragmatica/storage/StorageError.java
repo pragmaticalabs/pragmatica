@@ -93,6 +93,19 @@ public sealed interface StorageError extends Cause {
         }
     }
 
+    /// [AppendLog.Opener#inspect] on an opener that cannot look at a log without opening it. The extent is
+    /// UNKNOWN, which is not the same as empty.
+    record InspectUnsupported(String logName) implements StorageError {
+        static InspectUnsupported inspectUnsupported(String logName) {
+            return new InspectUnsupported(logName);
+        }
+
+        @Override
+        public String message() {
+            return "Append log '" + logName + "' cannot be inspected without opening it";
+        }
+    }
+
     /// A log name that is blank or does not resolve to a file strictly under the instance's log root
     /// (absolute, or climbing out with `..`).
     record InvalidLogName(String name) implements StorageError {

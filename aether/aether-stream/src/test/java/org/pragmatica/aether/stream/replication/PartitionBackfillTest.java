@@ -11,8 +11,13 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
+import org.pragmatica.aether.stream.OwnerPeerReads;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -1703,6 +1708,87 @@ class PartitionBackfillTest {
             var self = descriptorFor(OWNER);
             assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
             assertThat(self.confirmedOffset()).isEqualTo(5L); // self-promoted at its own tail
+        }
+
+        /// F1a (cloud run 1 `Concurrent_deploy`): both co-replicas HOLD the brand-new partition but are paced by
+        /// `reshuffle_concurrency`, so they answer the owner's probe with the typed "held, not materialized,
+        /// durable watermark -1" reply. That is a REACHABLE answer, so the owner promotes on the FIRST attempt:
+        /// with the clock at 0, inside the source wait, an "unreachable" reading fails the backfill and holds the
+        /// promotion for the full bound.
+        @Test
+        void backfill_freshOwner_bothPeersHeldNotMaterialized_selfPromotesOnTheFirstAttempt() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            otherMembers().forEach(peer -> registry.registerReplica(STREAM, PARTITION, peer));
+
+            var probed = new AtomicInteger();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             probeThrough(pacedHolder(-1L), probed),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(probed.get()).as("both blind peers probed").isEqualTo(2);
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        /// The other side of the same line: a peer that answers `PARTITION_NOT_LOCAL` is a genuine non-holder,
+        /// no information, and keeps blocking the owner's promotion inside the wait exactly as before.
+        @Test
+        void backfill_freshOwner_peerNotLocal_staysBlockedWithinTheWait() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            otherMembers().forEach(peer -> registry.registerReplica(STREAM, PARTITION, peer));
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             probeThrough(nonHolder(), new AtomicInteger()),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        private static List<NodeId> otherMembers() {
+            return MEMBERS.stream().filter(member -> !member.equals(OWNER)).toList();
+        }
+
+        private static ReplicaWatermarkProbe probeThrough(OwnerPeerReads.PageRead read, AtomicInteger probed) {
+            return (target, stream, partition) -> countedProbe(read, probed, target, stream, partition);
+        }
+
+        private static Promise<Long> countedProbe(OwnerPeerReads.PageRead read,
+                                                  AtomicInteger probed,
+                                                  NodeId target,
+                                                  String stream,
+                                                  int partition) {
+            probed.incrementAndGet();
+
+            return OwnerPeerReads.replicaWatermark(read, target, stream, partition, 16);
+        }
+
+        private static OwnerPeerReads.PageRead pacedHolder(long watermark) {
+            return (_, stream, partition, _, _) -> refusal(new StreamError.PartitionHeldNotMaterialized(stream,
+                                                                                                        partition,
+                                                                                                        watermark));
+        }
+
+        private static OwnerPeerReads.PageRead nonHolder() {
+            return (_, _, _, _, _) -> refusal(StreamError.General.PARTITION_NOT_LOCAL);
+        }
+
+        /// A remote refusal travels as its message only.
+        private static Promise<StreamForwardClient.ReadForwardResult> refusal(Cause cause) {
+            return new StreamForwardError.ReadForwardFailed(cause.message()).promise();
         }
 
         private void seedLocal(int count) {
