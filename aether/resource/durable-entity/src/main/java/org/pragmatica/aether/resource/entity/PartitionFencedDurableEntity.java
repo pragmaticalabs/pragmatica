@@ -1095,12 +1095,15 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// surfaced as a generic failure instead of [EntityError.EntityAlreadyExists] read as an
     /// unexplained error to every matcher keyed on the type (02w counts acked creates exactly that
     /// way). Only the variants that legitimately cross this boundary are reconstructed; anything
-    /// else keeps the carrier, whose message already names the owner's reason.
+    /// else keeps the carrier, whose message already names the owner's reason. [EntityError.StorageUnavailable]
+    /// crosses so a transient refusal stays transient for the caller; the carrier becomes its wrapped cause, so
+    /// the owner's inner reason survives in the message.
     private Cause retypeForwarded(Cause cause, K key) {
         return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ignored)
                ? switch (failureType) {
             case "EntityAlreadyExists" -> new EntityError.EntityAlreadyExists(String.valueOf(key));
             case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
+            case "StorageUnavailable" -> new EntityError.StorageUnavailable(String.valueOf(key), cause);
             default -> cause;
         }
                : cause;
@@ -1384,6 +1387,15 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
         return cause instanceof EntityLogError.StaleOwnerAppend stale
                ? new EntityError.StaleOwnerEpoch(String.valueOf(key), stale.detail())
+               : storageFailure(key, cause);
+    }
+
+    /// The substrate's own classification decides: a cause it marks [Cause.Transient] (a freshly handed-over
+    /// stream owner not yet promoted, catch-up pending) is a "not ready yet" and keeps that classification as
+    /// [EntityError.StorageUnavailable]; anything else is a genuine [EntityError.StorageFailed].
+    private static Cause storageFailure(Object key, Cause cause) {
+        return cause.isTransient()
+               ? new EntityError.StorageUnavailable(String.valueOf(key), cause)
                : new EntityError.StorageFailed(String.valueOf(key), cause);
     }
 
