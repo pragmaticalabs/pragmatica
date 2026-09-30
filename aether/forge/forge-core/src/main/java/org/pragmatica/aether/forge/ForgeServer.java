@@ -17,10 +17,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.ClusterStatus;
 import org.pragmatica.aether.ember.EmberCluster.NodeStatus;
@@ -69,6 +68,11 @@ public final class ForgeServer {
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
+
+    private static final long EVENT_POLL_WARN_INTERVAL_MS = 60_000;
+
+    private final java.util.concurrent.atomic.AtomicLong lastEventPollWarnMs = new java.util.concurrent.atomic.AtomicLong();
+
     private volatile Option<StaticFileHandler> staticHandler = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
@@ -93,6 +97,8 @@ public final class ForgeServer {
     /// exited rather than run an empty cluster that looked healthy. Forge must authenticate to the
     /// cluster it just secured.
     private final AtomicReference<Option<String>> operatorApiKey = new AtomicReference<>(Option.none());
+    /// One poller, so one `HttpClient`, for the server's lifetime (v1533 C1); the key is read at request time.
+    private final NodeEventPoll nodeEventPoll = NodeEventPoll.nodeEventPoll(operatorApiKey::get);
     private final long startTime = System.currentTimeMillis();
     private volatile String lastEventTimestamp = "";
 
@@ -292,7 +298,8 @@ public final class ForgeServer {
                                                                                            entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  metricsInstance,
-                                                                 configurableLoadRunnerInstance);
+                                                                 configurableLoadRunnerInstance,
+                                                                 operatorApiKey::get);
 
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
@@ -529,20 +536,24 @@ public final class ForgeServer {
     private void pollNodeEvents() {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
-            var uriStr = "http://localhost:" + port + "/api/v1/events";
 
-            if (!lastEventTimestamp.isEmpty()) {
-                uriStr += "?since=" + URLEncoder.encode(lastEventTimestamp, StandardCharsets.UTF_8);
-            }
-
-            var request = HttpRequest.newBuilder().uri(URI.create(uriStr)).GET().timeout(Duration.ofSeconds(2)).build();
-
-            http.sendString(request)
-                .await(TimeSpan.timeSpan(3).seconds())
-                .flatMap(HttpResult::toResult)
-                .onSuccess(this::parseAndMergeEvents);
+            nodeEventPoll.fetch(port, lastEventTimestamp)
+                         .onSuccess(this::parseAndMergeEvents)
+                         .onFailure(this::warnEventPollFailed);
         } catch (Exception e) {
-            log.trace("Event polling failed: {}", e.getMessage());
+            warnEventPollFailed(Causes.fromThrowable(e));
+        }
+    }
+
+    /// A failed poll is no longer swallowed at TRACE: an empty timeline must be explainable. Rate-limited to one WARN
+    /// per minute, because the poll runs every 2 s.
+    private void warnEventPollFailed(Cause cause) {
+        var now = System.currentTimeMillis();
+        var last = lastEventPollWarnMs.get();
+
+        if (now - last >= EVENT_POLL_WARN_INTERVAL_MS && lastEventPollWarnMs.compareAndSet(last, now)) {
+            log.warn("Forge event poll of the cluster failed (the dashboard event timeline will be empty): {}",
+                     cause.message());
         }
     }
 
