@@ -59,10 +59,6 @@
   pass reads the KV-Store is not counted. A victim's slices are re-placed only after it leaves, so
   even while the guard holds, the drained slice's capacity is one instance lower until the
   replacement is ACTIVE.]
-- Limitation: when a slice's `minAvailable` equals its instance count, no owner of that slice is ever
-  drained, and the surplus stays deferred. That is what CLI/REST deploy, `addSliceTargetCommand`, A/B
-  tests and rollback write today. #1497 will change those writers; until then the deferral WARN names
-  the slice and its `minAvailable`, and an operator can lower `minAvailable` to let the drain proceed.
 - Limitation: instances are counted per exact artifact version, while `minAvailable` is set per
   artifact base. During a rolling update the old and the new version are each compared with the full
   `minAvailable`. An owner can then be refused even when both versions together would keep the slice

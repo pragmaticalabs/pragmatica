@@ -384,7 +384,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void handleAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove,
                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            tx.handle(() -> handleAppBlueprintRemoval(valueRemove.cause().key()));
+            tx.handle(() -> handleAppBlueprintRemoval(valueRemove.cause().key(),
+                                                      valueRemove.value().isPresent()));
         }
 
         private void handleSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove,
@@ -1013,7 +1014,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             SharedScheduler.schedule(this::reconcile, timeSpan(1).seconds());
         }
 
-        private void handleAppBlueprintRemoval(AppBlueprintKey key) {
+        /// #1492 — `wasPresent` is whether the KV-Store actually held the key. `KVStore.handleRemove` publishes
+        /// a `ValueRemove` even for a key that was never there, and this used to log "App blueprint … removed"
+        /// either way, so a cleanup of a blueprint that never existed read in the logs as proof that it had.
+        private void handleAppBlueprintRemoval(AppBlueprintKey key, boolean wasPresent) {
             var removedBlueprintId = key.blueprintId();
             var rollingUpdateArtifacts = blueprints.entrySet()
                                                    .stream()
@@ -1032,8 +1036,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            log.info("App blueprint '{}' removed",
-                     removedBlueprintId.artifact().asString());
+            if (wasPresent) {
+                log.info("App blueprint '{}' removed",
+                         removedBlueprintId.artifact().asString());
+            } else {
+                log.info("App blueprint '{}' remove applied to an absent key — nothing was removed",
+                         removedBlueprintId.artifact().asString());
+            }
+
             var artifactsToRemove = blueprints.entrySet()
                                               .stream()
                                               .filter(e -> e.getValue()

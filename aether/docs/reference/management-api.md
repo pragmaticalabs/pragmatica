@@ -403,7 +403,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 ]
 ```
 
-**Event Types** (the 32 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
+**Event Types** (the 36 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
 
 - `NODE_JOINED` -- a node joined the cluster (sourced from the transport `PeerJoined` handshake; leader-gated). Severity INFO.
 - `NODE_LEFT` -- a node gracefully departed (consensus-committed decommission/drain decision; leader-gated). Severity WARNING.
@@ -421,7 +421,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `AUTO_ROLLBACK` -- the leader committed an automatic rollback. `details`: `artifact`, `from`, `to`, `rollbackNumber`, `windowMs`, `requestId`, and `defects.<nodeId>` per hosting node. Severity CRITICAL.
 - `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
 - `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
-- `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
+- `COMMUNITY_SCALE_REQUEST` -- **not currently produced** (#927): no code emits it; the type stays wire-pinned (tag 263) and never appears.
 - `COMMUNITY_METRICS_SNAPSHOT` -- a community-tier metrics snapshot was recorded. Severity INFO.
 - `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
 - `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
@@ -429,14 +429,15 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `BACKUP_CREATED` / `BACKUP_RESTORED` -- no producer since the backup API was removed (#676); the types stay wire-pinned (tags 258/259) and never appear.
 - `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
 - `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
-- `STREAM_REGISTERED` -- a stream was registered (carries the stream `ResourceAddress`). Severity INFO.
-- `STREAM_DELETED` -- a stream was deleted (carries the stream `ResourceAddress`). Severity INFO.
+- `STREAM_REGISTERED` / `STREAM_DELETED` -- **not currently produced** (#927): the stream-lifecycle emission points were never wired, so neither appears; the types (carrying the stream `ResourceAddress`) stay wire-pinned (tags 288/286).
 - `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/v1/alerts`. Severity per inject.
 - `TRACE_INJECTED` -- an operator-injected synthetic invocation trace, replicated cluster-wide so every node serves it on `/api/v1/traces`.
 - `SELF_DRAIN_INITIATED` -- the draining node reports its own drain start (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
+- `THRESHOLD_BREACHED` -- a metric crossed an alert threshold (owner-gated; `details` carries `metric`, `nodeId`, `value`, `threshold`, `alertSeverity`). The durable alert HISTORY, not the source of truth for what is firing now. Severity follows the alert (WARNING or CRITICAL).
+- `THRESHOLD_CLEARED` -- a breached metric fell below its hysteresis-adjusted clear point (owner-gated; `details` carries `metric`, `nodeId`, `value`, `clearedFrom`, `clearPoint`). Severity INFO.
 - `COMMUNITY_MINTED` -- the leader minted a worker community: its committed `CommunityValue` appeared (`details`: `communityId`, `state`, `targetSize`, `role`). Severity INFO.
 - `COMMUNITY_STATE_CHANGED` -- a community's committed lifecycle state changed; one event per edge (`details`: `communityId`, `from`, `to`, `targetSize`). `FORMING -> ACTIVE` is "formed", `ACTIVE -> DEGRADED` (severity WARNING, the only non-INFO edge) is live membership falling below the viability floor, `DEGRADED -> ACTIVE` is recovery, `-> DISSOLVED` is retirement by placement policy. Severity INFO otherwise.
 - `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO. A force-killed worker did not produce `COMMUNITY_MEMBER_LEFT` within 180 s of the kill (one Ember run, #1652; the core raised no worker leave, #1717). From the source, not measured: the roster shrinks only when the core deletes the member's activation directive (a worker leave, a decommission or a self-shutdown) and the governor's next authority write commits the smaller roster. [unverified: no live trigger of `COMMUNITY_MEMBER_LEFT` is demonstrated yet; the roster diff that emits it is pinned at unit level]
