@@ -47,8 +47,12 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$BackupCreated (at:org.pragmatica.hl
 SHAPE org.pragmatica.aether.api.ClusterEvent$BackupRestored (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$BlueprintDeleted (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$BlueprintDeployed (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$CommunityMemberJoined (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$CommunityMemberLeft (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$CommunityMetricsSnapshot (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$CommunityMinted (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$CommunityScaleRequest (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$CommunityStateChanged (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ConfigChanged (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ConnectionEstablished (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ConnectionFailed (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -365,8 +369,12 @@ TAG  org.pragmatica.aether.api.ClusterEvent$BackupCreated 258
 TAG  org.pragmatica.aether.api.ClusterEvent$BackupRestored 259
 TAG  org.pragmatica.aether.api.ClusterEvent$BlueprintDeleted 260
 TAG  org.pragmatica.aether.api.ClusterEvent$BlueprintDeployed 261
+TAG  org.pragmatica.aether.api.ClusterEvent$CommunityMemberJoined 1742
+TAG  org.pragmatica.aether.api.ClusterEvent$CommunityMemberLeft 1743
 TAG  org.pragmatica.aether.api.ClusterEvent$CommunityMetricsSnapshot 262
+TAG  org.pragmatica.aether.api.ClusterEvent$CommunityMinted 1740
 TAG  org.pragmatica.aether.api.ClusterEvent$CommunityScaleRequest 263
+TAG  org.pragmatica.aether.api.ClusterEvent$CommunityStateChanged 1741
 TAG  org.pragmatica.aether.api.ClusterEvent$ConfigChanged 264
 TAG  org.pragmatica.aether.api.ClusterEvent$ConnectionEstablished 265
 TAG  org.pragmatica.aether.api.ClusterEvent$ConnectionFailed 266

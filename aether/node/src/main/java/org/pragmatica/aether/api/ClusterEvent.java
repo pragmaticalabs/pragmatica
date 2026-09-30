@@ -19,15 +19,16 @@ import org.pragmatica.serialization.Codec;
 /// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
 /// additional variants without modifying the sealed parent.
 ///
-/// Closed-set count is **36 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// Closed-set count is **40 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
 /// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED + STREAM_MEMORY_EXCEEDED +
-/// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED + THRESHOLD_BREACHED/THRESHOLD_CLEARED + OPERATOR_WARNING).
+/// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED + THRESHOLD_BREACHED/THRESHOLD_CLEARED +
+/// COMMUNITY_MINTED/COMMUNITY_STATE_CHANGED/COMMUNITY_MEMBER_JOINED/COMMUNITY_MEMBER_LEFT + OPERATOR_WARNING).
 ///
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -434,6 +435,54 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         @Override
         public ClusterEvent withDetail(String key, String value) {
             return new ThresholdCleared(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// The leader minted a community (#1652): its committed `CommunityValue` appeared. Derived from the
+    /// committed record, so every node observes it and the aggregator's owner-gated
+    /// {@link ClusterEventAggregator#emit} path publishes it from the owner only (at-least-once across an
+    /// ownership handover, guarantees.md row 14b). Severity INFO. `details` carries `communityId`,
+    /// `state` (FORMING for a mint), `targetSize` and `role`.
+    record CommunityMinted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new CommunityMinted(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// A community's committed lifecycle `state` changed (#1652) — one event for every edge, with the
+    /// edge in `details` (`communityId`, `from`, `to`, `targetSize`). FORMING→ACTIVE is "formed";
+    /// ACTIVE→DEGRADED (severity WARNING, the only non-INFO edge) is live membership falling below the
+    /// viability floor; DEGRADED→ACTIVE is recovery; →DISSOLVED is retirement. Owner-gated like
+    /// {@link CommunityMinted}.
+    ///
+    /// **What it does not record.** A worker that loses the core fences itself LOCALLY and writes
+    /// nothing, so no DISSOLVED edge exists for that case; the core records only what it observes — the
+    /// ACTIVE→DEGRADED edge once the members stop answering.
+    record CommunityStateChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new CommunityStateChanged(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// A node was added to a community's committed roster (`GovernorAnnouncementValue.members`, #1652).
+    /// Roster membership is ASSIGNMENT, not liveness: a member that stops answering stays on the roster
+    /// and shows up as the community's DEGRADED edge instead. Owner-gated. Severity INFO. `details`
+    /// carries `communityId`, `nodeId`, `governorId` and `memberCount` (roster size after the change).
+    record CommunityMemberJoined(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new CommunityMemberJoined(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// A node was removed from a community's committed roster (#1652) — the complement of
+    /// {@link CommunityMemberJoined}, with the same assignment-not-liveness meaning and `details`.
+    record CommunityMemberLeft(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new CommunityMemberLeft(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
         }
     }
 

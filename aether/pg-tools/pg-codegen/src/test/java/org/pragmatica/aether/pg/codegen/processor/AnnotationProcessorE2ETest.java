@@ -234,7 +234,7 @@ class AnnotationProcessorE2ETest {
         }
 
         @Test
-        void queryReferencingUnknownNamedParam_stillWarns() throws Exception {
+        void queryReferencingUnknownNamedParam_failsCompilation() throws Exception {
             var source = """
                 package test;
 
@@ -253,13 +253,169 @@ class AnnotationProcessorE2ETest {
 
             var result = compileWithProcessor(source, "test/MismatchRepo.java");
 
-            // Compilation succeeds (warning, not error), but a diagnostic must flag :bogus and
-            // flag the unused `name` method parameter.
-            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+            // #1139: this used to compile with a WARNING and generate a method Postgres rejects at its first call (the
+            // bind list and the placeholders disagree). It is a generation error now, naming both mismatches.
+            assertThat(result.success()).as("Compilation must fail: " + result.diagnostics()).isFalse();
             var diag = result.diagnostics();
             assertThat(diag).contains(":bogus");
             assertThat(diag).contains("has no matching method parameter");
             assertThat(diag).contains("parameter 'name' is not used");
+        }
+
+        /// #1139 row 1: a declared parameter the SQL never names is a generation error.
+        @Test
+        void queryWithUnusedMethodParameter_failsCompilation() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface UnusedParamRepo {
+
+                    @Query("UPDATE users SET name = :name WHERE id = :id")
+                    Promise<Unit> rename(String name, long id, String extra);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/UnusedParamRepo.java");
+
+            assertThat(result.success()).as("Compilation must fail: " + result.diagnostics()).isFalse();
+            assertThat(result.diagnostics()).contains("parameter 'extra' is not used");
+        }
+
+        /// #1139 row 3: a hand-written positional query is not checked against named placeholders (it used to warn
+        /// "not used" for every parameter) but by count, and a matching count compiles cleanly.
+        @Test
+        void positionalQuery_matchingCount_compilesWithoutUnusedWarnings() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface PositionalRepo {
+
+                    @Query("UPDATE users SET name = $2 WHERE id = $1")
+                    Promise<Unit> rename(long id, String name);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/PositionalRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+            assertThat(result.diagnostics()).doesNotContain("is not used");
+        }
+
+        /// #1707 review: a `$n` inside a string literal is not a placeholder, so a parameterless query containing one
+        /// compiles.
+        @Test
+        void positionalLookalikeInsideALiteral_isNotCountedAsAPlaceholder() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface LiteralRepo {
+
+                    @Query("UPDATE users SET name = 'costs $2' WHERE id = 1")
+                    Promise<Unit> renameFirst();
+                }
+                """;
+            var result = compileWithProcessor(source, "test/LiteralRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+        }
+
+        /// #1707 review round 2: a `:name` inside a string literal is not a placeholder, so a parameterless query
+        /// containing one compiles.
+        @Test
+        void namedLookalikeInsideALiteral_isNotAParameter() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface NamedLiteralRepo {
+
+                    @Query("UPDATE users SET name = 'at :noon' WHERE id = 1")
+                    Promise<Unit> renameFirst();
+                }
+                """;
+            var result = compileWithProcessor(source, "test/NamedLiteralRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+        }
+
+        /// #1707 review: a query mixing `:name` and `$n` binds by an order neither check sees, so it is refused.
+        @Test
+        void mixedNamedAndPositionalPlaceholders_failsCompilation() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface MixedRepo {
+
+                    @Query("UPDATE users SET name = :name WHERE id = $2")
+                    Promise<Unit> rename(String name, long id);
+                }
+                """;
+            var result = compileWithProcessor(source, "test/MixedRepo.java");
+
+            assertThat(result.success()).as("Compilation must fail: " + result.diagnostics()).isFalse();
+            assertThat(result.diagnostics()).contains("mixes named");
+        }
+
+        @Test
+        void sqlCodeOnly_blanksLiteralsIdentifiersDollarQuotesAndComments() {
+            var sql = "SELECT '$1''x', \"$2\", $$ $3 $$, $t$ $4 $t$ /* $5 */ FROM t -- $6\nWHERE a = $7";
+            var code = QueryRewriter.sqlCodeOnly(sql);
+
+            assertThat(code).hasSize(sql.length()).contains("$7").doesNotContain("$1", "$2", "$3", "$4", "$5", "$6");
+        }
+
+        /// #1139 row 3: a positional query whose highest `$n` disagrees with the parameter count is a generation error.
+        @Test
+        void positionalQuery_countMismatch_failsCompilation() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface PositionalMismatchRepo {
+
+                    @Query("UPDATE users SET name = $2, email = $3 WHERE id = $1")
+                    Promise<Unit> rename(long id, String name);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/PositionalMismatchRepo.java");
+
+            assertThat(result.success()).as("Compilation must fail: " + result.diagnostics()).isFalse();
+            assertThat(result.diagnostics()).contains("go up to $3").contains("2 parameter(s)");
         }
 
         @Test

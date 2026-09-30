@@ -51,7 +51,7 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// every case object after each test via [#dropCaseObjects].
 ///
 /// If Docker is unavailable the whole class is skipped via [#dockerAvailable] rather than failing.
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class StatementSplitterMysqlDiffTest {
     private static final DialectSpec MYSQL = Dialects.MYSQL;
 

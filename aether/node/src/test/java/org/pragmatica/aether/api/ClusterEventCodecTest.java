@@ -8,6 +8,10 @@ import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.ThresholdBreached;
 import org.pragmatica.aether.api.ClusterEvent.ThresholdCleared;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
+import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
 import org.pragmatica.aether.api.ClusterEvent.OperatorWarning;
 import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
 import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
@@ -359,6 +363,10 @@ class ClusterEventCodecTest {
                        new ScaleCapped(ts, sev, "ScaleCapped", d),
                        new ThresholdBreached(ts, sev, "ThresholdBreached", d),
                        new ThresholdCleared(ts, sev, "ThresholdCleared", d),
+                       new CommunityMinted(ts, sev, "CommunityMinted", d),
+                       new CommunityStateChanged(ts, sev, "CommunityStateChanged", d),
+                       new CommunityMemberJoined(ts, sev, "CommunityMemberJoined", d),
+                       new CommunityMemberLeft(ts, sev, "CommunityMemberLeft", d),
                        new OperatorWarning(ts, sev, "OperatorWarning", d));
     }
 

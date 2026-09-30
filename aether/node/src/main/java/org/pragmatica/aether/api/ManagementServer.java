@@ -386,6 +386,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.CommunityRoutes.communityRoutes(nodeSupplier));
         // #525: turns declared-but-unbuilt routes into an honest 501 instead of a bare 404.
         // Registration order is irrelevant (route names are unique); registration itself is not —
         // dropping this source silently resurrects the dead-route class. Reasons live per-route in
