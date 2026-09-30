@@ -123,6 +123,86 @@ class ClusterDeploymentManagerTest {
         }
     }
 
+    /// #1652: `communityLiveMembers` is an observation only the active leader with a WIRED liveness view
+    /// can make. Anywhere else it is absent — never a count computed from the everyone-alive default.
+    @Nested
+    class LiveMemberObservationTests {
+        private static final String COMMUNITY = "east";
+        private static final NodeId WORKER = new NodeId("worker-1");
+        private ClusterDeploymentManager cdm;
+
+        @BeforeEach
+        void setUp() {
+            var router = MessageRouter.mutable();
+            var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+            ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1, new ArrayList<>(), kvStore);
+
+            commitAsLeader(kvStore,
+                           AetherKey.GovernorAnnouncementKey.forCommunity(COMMUNITY),
+                           new AetherValue.GovernorAnnouncementValue(WORKER,
+                                                                     1,
+                                                                     List.of(WORKER),
+                                                                     "10.0.0.1:9000",
+                                                                     1700000000000L,
+                                                                     5L,
+                                                                     org.pragmatica.aether.slice.generation.Epoch.ZERO,
+                                                                     org.pragmatica.aether.slice.generation.Epoch.ZERO,
+                                                                     org.pragmatica.hlc.HlcTimestamp.ZERO,
+                                                                     false));
+            commitAsLeader(kvStore,
+                           AetherKey.ActivationDirectiveKey.activationDirectiveKey(WORKER),
+                           AetherValue.ActivationDirectiveValue.worker(COMMUNITY, ""));
+            cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
+                                                                     clusterNode,
+                                                                     kvStore,
+                                                                     router,
+                                                                     List.of(NODE_1),
+                                                                     stubTopologyManager(NODE_1, List.of(NODE_1)),
+                                                                     ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                                                     3,
+                                                                     timeSpan(300).seconds(),
+                                                                     NO_OP_SCHEMA_ORCHESTRATOR,
+                                                                     () -> Set.of(NODE_1),
+                                                                     Set::of,
+                                                                     Set::of);
+        }
+
+        @Test
+        void communityLiveMembers_isAbsent_onANodeWhoseDeploymentFsmIsNotActive() {
+            cdm.setCommunityLiveness(_ -> false);
+
+            assertThat(cdm.communityLiveMembers(COMMUNITY)).isEqualTo(Option.none());
+        }
+
+        @Test
+        void communityLiveMembers_isAbsent_whileTheLivenessViewIsUnwired() {
+            cdm.activate().await();
+
+            assertThat(cdm.communityLiveMembers(COMMUNITY)).isEqualTo(Option.none());
+        }
+
+        @Test
+        void communityLiveMembers_isTheObservedCount_onTheActiveLeaderWithAWiredView() {
+            cdm.activate().await();
+            cdm.setCommunityLiveness(_ -> false);
+
+            assertThat(cdm.communityLiveMembers(COMMUNITY)).isEqualTo(Option.some(1));
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private static void commitAsLeader(KVStore<AetherKey, AetherValue> store, AetherKey key, AetherValue value) {
+            store.process(store.createBatch((List) List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                                  java.util.UUID.randomUUID()
+                                                                                                                                .toString(),
+                                                                                                                  new org.pragmatica.cluster.state.kvstore.LeaderValue(NODE_1,
+                                                                                                                                                                        1),
+                                                                                                                  List.of(),
+                                                                                                                  List.of(new KVCommand.Mutation<>(key,
+                                                                                                                                                   store.get(key),
+                                                                                                                                                   Option.some(value)))))));
+        }
+    }
+
     @Nested
     class SnapshotDerivedMembershipTests {
         private ClusterDeploymentManager cdm;
