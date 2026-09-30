@@ -353,7 +353,7 @@ SHAPE org.pragmatica.swim.SwimMember (nodeId:org.pragmatica.consensus.NodeId,sta
 SHAPE org.pragmatica.swim.SwimMessage$Ack (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
 SHAPE org.pragmatica.swim.SwimMessage$Announce (nodeInfo:org.pragmatica.consensus.net.NodeInfo,clusterName:java.lang.String,incarnation:long,bootToken:long)
 SHAPE org.pragmatica.swim.SwimMessage$IdentityRefused (from:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
-SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,bootToken:long)
+SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,bootToken:long,labels:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
 SHAPE org.pragmatica.swim.SwimMessage$PingReq (from:org.pragmatica.consensus.NodeId,target:org.pragmatica.consensus.NodeId,sequence:long)
 SHAPE org.pragmatica.swim.SwimMessage$WhoAmI (from:org.pragmatica.consensus.NodeId)

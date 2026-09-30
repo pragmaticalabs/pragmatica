@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -244,6 +245,21 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// This process's random boot token, seeded by [#announceJoin]; `0` until then (and for callers
     /// that announce without one). Carried on every self-ANNOUNCE and self-ALIVE.
     private final AtomicLong selfBootToken = new AtomicLong(0);
+    /// This node's own descriptor labels (role/source), taken from the `NodeInfo` given to [#announceJoin]
+    /// and carried on every self update, so a peer that never saw our ANNOUNCE still learns them from
+    /// steady-state gossip. Empty until the first announce.
+    private volatile Map<String, String> selfLabels = Map.of();
+    /// Piggyback byte budget for messages this node sends, from ITS OWN id length (see [PiggybackBuffer#piggybackBudgetFor]).
+    private final int piggybackBudgetBytes;
+
+    /// The only labels gossip carries: what core counting and the member descriptor read (`role`, `source`) plus `zone`,
+    /// which feeds the anti-affinity placement hint (a decision, and a few bytes). Hostname, pool and instance type stay out.
+    /// The full label map stays on ANNOUNCE and the QUIC Hello — an update with every label is several times
+    /// larger and, at the default eight updates per message, would push EVERY probe past the datagram budget.
+    private static final Set<String> GOSSIPED_LABEL_KEYS = Set.of(NodeInfo.LABEL_ROLE,
+                                                                  NodeInfo.LABEL_SOURCE,
+                                                                  NodeInfo.LABEL_ZONE);
+
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
@@ -415,6 +431,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.piggybackBuffer = PiggybackBuffer.piggybackBuffer(config.maxPiggyback());
+        this.piggybackBudgetBytes = PiggybackBuffer.piggybackBudgetFor(selfId);
         this.isBooting = isBooting;
         this.transportConnected = transportConnected;
         bootTokens.onRetired(this::onRetired);
@@ -817,7 +834,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                           MemberState.ALIVE,
                                                           refreshedSelfIncarnation(incarnation),
                                                           selfAddress,
-                                                          selfBootToken.get()));
+                                                          selfBootToken.get(),
+                                                          selfLabels));
     }
 
     /// Fix 1 (#336 PRIMARY): the incarnation this round's proactive self-ALIVE advertises.
@@ -873,7 +891,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void probeTarget(SwimMember target) {
         var seq = sequenceCounter.incrementAndGet();
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
         var ping = Ping.ping(selfId, seq, piggyback);
 
         lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
@@ -1473,7 +1491,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         inboundProbeReceived = true;
         recordInboundReachability();
         processPiggyback(ping.piggyback(), ping.from());
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
 
         transport.send(sender, ack);
@@ -1839,6 +1857,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // already advanced the value) never regresses it.
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
+            selfLabels = gossipLabels(self.labels());
             var attempts = new AtomicInteger(0);
             var future = new AtomicReference<ScheduledFuture<?>>();
             var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
@@ -2015,7 +2034,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                         requesterAddress,
                                         target.nodeId(),
                                         System.currentTimeMillis()));
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
         var ping = Ping.ping(selfId, relaySeq, piggyback);
 
         transport.send(target.address(), ping);
@@ -2152,7 +2171,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                           MemberState.ALIVE,
                                                           bumped,
                                                           selfAddress,
-                                                          selfBootToken.get()));
+                                                          selfBootToken.get(),
+                                                          selfLabels));
     }
 
     private void applyNewMember(MembershipUpdate update) {
@@ -2171,7 +2191,11 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
+        var member = SwimMember.swimMember(update.nodeId(),
+                                           update.state(),
+                                           update.incarnation(),
+                                           update.address(),
+                                           update.labels());
 
         if (!storeScopedMember(update.nodeId(), member)) {
             return;
@@ -2312,6 +2336,9 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (isReAdmitTowardAlive(existing, update) && blockedByTombstone(update.nodeId(), update.incarnation())) {
             return;
         }
+        // Labels are identity, not state: a resident member that has none yet adopts the labels this
+        // update carries, even when the update is otherwise a same-state rebroadcast.
+        var resident = adoptGossipedLabels(existing, update);
         // Same-state same-incarnation: gossip rebroadcast, not a state event.
         // Canonical SWIM: ignore. Otherwise repeated gossip would re-fire listener
         // notifications and reset suspect timers, preventing FAULTY transition.
@@ -2323,13 +2350,41 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var updated = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
+        var updated = SwimMember.swimMember(update.nodeId(),
+                                            update.state(),
+                                            update.incarnation(),
+                                            update.address(),
+                                            resident.labels());
 
         if (!storeScopedMember(update.nodeId(), updated)) {
             return;
         }
 
         notifyStateChange(existing.state(), updated, accuser);
+    }
+
+    /// First-non-blank-wins label adoption from gossip: a resident member with NO labels takes the
+    /// labels a `MembershipUpdate` carries; a member that already has labels keeps them (an
+    /// ANNOUNCE-supplied or earlier-gossiped role is never overwritten by later hearsay). On adoption
+    /// the newly known identity is re-emitted as `MemberDiscovered` so the membership layer learns the
+    /// role now rather than at the next ALIVE edge; a FAULTY member is not re-emitted (it must not
+    /// re-enter the QUIC dial set). Returns the resident member as stored after the call.
+    private SwimMember adoptGossipedLabels(SwimMember existing, MembershipUpdate update) {
+        if (!existing.labels().isEmpty() || update.labels().isEmpty()) {
+            return existing;
+        }
+
+        var adopted = existing.withLabels(update.labels());
+
+        if (!storeScopedMember(adopted.nodeId(), adopted)) {
+            return existing;
+        }
+
+        if (adopted.state() != MemberState.FAULTY) {
+            deliverObservation(new SwimObservation.MemberDiscovered(dialInfoFor(adopted), adopted.incarnation()));
+        }
+
+        return adopted;
     }
 
     /// A re-admit toward ALIVE: the resident member is currently FAULTY or SUSPECT and
@@ -2479,7 +2534,15 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                     member.state(),
                                                                     member.incarnation(),
                                                                     member.address(),
-                                                                    bootTokenOf(member.nodeId())));
+                                                                    bootTokenOf(member.nodeId()),
+                                                                    gossipLabels(member.labels())));
+    }
+
+    private static Map<String, String> gossipLabels(Map<String, String> labels) {
+        return labels.entrySet()
+                     .stream()
+                     .filter(label -> GOSSIPED_LABEL_KEYS.contains(label.getKey()))
+                     .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     private void addMemberUpdate(MembershipUpdate update) {

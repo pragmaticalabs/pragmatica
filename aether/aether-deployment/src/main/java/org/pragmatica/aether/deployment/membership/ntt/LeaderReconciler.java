@@ -180,8 +180,8 @@ public final class LeaderReconciler {
     /// Drain-safety grace window = `nttDepartureTimeout × 2` (30s at the 15s default; Wave 2
     /// defense in depth at the drain authority). A surplus-drain victim whose membership is
     /// YOUNGER than this window is NEVER selected: a freshly-joined node's self-asserted role
-    /// may still be propagating (it travels in the join ANNOUNCE and the QUIC Hello descriptor;
-    /// gossip-rebuilt `MembershipUpdate` carries no labels), so a just-joined worker can
+    /// may still be propagating (it travels in the join ANNOUNCE, the QUIC Hello descriptor and the
+    /// labels of a gossiped `MembershipUpdate`, each arriving at its own time), so a just-joined worker can
     /// transiently read as a blank-role core and open a phantom core-surplus that drains the
     /// joiner. AGE-based and deliberately role-agnostic — an all-blank-role (all-core) cluster
     /// stays drainable once members age past the window. Sizing: ≥ the deficit debounce (×1, the
