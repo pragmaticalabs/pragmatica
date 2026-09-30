@@ -625,6 +625,64 @@ class ArtifactStoreTest {
             };
         }
 
+        /// The bounded retry re-issues the metadata read after a transient failure; the retry must carry the same
+        /// absent grace as the first attempt, or a retried resolve silently falls back to absent-on-two-empties.
+        @Test
+        void resolveWithMetadata_retryAfterTransientFailure_keepsTheAbsentGrace() {
+            var artifact = Artifact.artifact("org.example:grace-retry:1.0.0").unwrap();
+            var storageInstance = StorageInstance.storageInstance("grace-retry-artifacts",
+                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
+            var inner = recordingDht();
+            var failFirstGrace = new AtomicInteger();
+            DHTClient flaky = new DHTClient() {
+                @Override
+                public Promise<Option<byte[]>> get(byte[] key) {
+                    return inner.get(key);
+                }
+
+                @Override
+                public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
+                    return failFirstGrace.getAndIncrement() == 0
+                           ? DHTError.quorumNotReached(2, 1).promise()
+                           : inner.get(key, options);
+                }
+
+                @Override
+                public Promise<Unit> put(byte[] key, byte[] value) {
+                    return inner.put(key, value);
+                }
+
+                @Override
+                public Promise<Boolean> remove(byte[] key) {
+                    return inner.remove(key);
+                }
+
+                @Override
+                public Promise<Boolean> exists(byte[] key) {
+                    return inner.exists(key);
+                }
+
+                @Override
+                public Partition partitionFor(byte[] key) {
+                    return inner.partitionFor(key);
+                }
+            };
+            var retryStore = ArtifactStore.artifactStore(flaky,
+                                                         storageInstance,
+                                                         new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())));
+
+            retryStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
+            seen.clear();
+            failFirstGrace.set(0);
+
+            retryStore.resolveWithMetadata(artifact).await().onFailureRun(Assertions::fail);
+
+            // attempt 1 failed before reaching the delegate; the RETRY is the one recorded, and it keeps the grace
+            assertThat(failFirstGrace.get()).isEqualTo(2);
+            assertThat(seen).hasSize(1);
+            assertThat(seen.getFirst().hasAbsentGrace()).isTrue();
+        }
+
         @Test
         void resolveWithMetadata_readsMetadataWithAbsentGrace_andNothingElseDoes() {
             var artifact = Artifact.artifact("org.example:grace:1.0.0").unwrap();
