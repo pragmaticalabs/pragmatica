@@ -4703,10 +4703,51 @@ stream_declared_name() {
     printf '%s' "$declared"
 }
 
+# Publish one event with the retry policy below and print the FINAL HTTP status ("000" when nothing
+# answered) on stdout; the final response body goes to $3 when given. A 503 whose body says
+# "retry"/"retryable" is a TRANSIENT refusal (an owner not yet promoted, not enough replicas): it is
+# retried with backoff for up to STREAM_PUBLISH_RETRY_BUDGET_S (default 10s), then the last refusal is
+# reported as-is. Every other failure is returned IMMEDIATELY, in particular a 500, including
+# "Publish outcome unknown ... FORWARD_TIMEOUT": the publish may have landed, and without a message id a
+# resend can duplicate it (#1750), so it must never be retried here.
+stream_publish_status() {
+    local name="$1" body="$2" body_file="${3:-/dev/null}" coord
+    coord=$(stream_coordinate "$name") || { printf '000'; return 0; }
+    local budget="${STREAM_PUBLISH_RETRY_BUDGET_S:-10}"
+    local delay="${STREAM_PUBLISH_RETRY_DELAY_S:-0.5}"
+    local deadline=$(( SECONDS + budget ))
+    local out status resp_body attempt=0
+    while :; do
+        attempt=$((attempt + 1))
+        out=$(_api_call POST "$(_resolve_live_endpoint)/api/v1/streams/${coord}/publish" "$body" 1) || true
+        status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+        resp_body=$(printf '%s' "$out" | sed '$d')
+        if [ "$status" = "503" ] && printf '%s' "$resp_body" | grep -qi 'retry'; then
+            if [ "$SECONDS" -lt "$deadline" ]; then
+                sleep "$delay"
+                continue
+            fi
+            log_warn "stream_publish ${name}: retryable 503 still refused after ${attempt} attempt(s) in ${budget}s; last body: $(printf '%s' "$resp_body" | head -c 300)" >&2
+        fi
+        printf '%s' "$resp_body" > "$body_file"
+        printf '%s' "${status:-000}"
+        return 0
+    done
+}
+
+# Publish one event; success (rc 0) prints the response body, any refusal returns 1. See
+# stream_publish_status for the retry policy.
 stream_publish() {
-    local name="$1" body="$2" coord
-    coord=$(stream_coordinate "$name") || return 1
-    api_post "/api/v1/streams/${coord}/publish" "$body"
+    local name="$1" body="$2" body_file status
+    body_file=$(mktemp)
+    status=$(stream_publish_status "$name" "$body" "$body_file")
+    if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        cat "$body_file"
+        rm -f "$body_file"
+        return 0
+    fi
+    rm -f "$body_file"
+    return 1
 }
 
 # The catalog identity in CLI form: `namespace:stream:version`.
