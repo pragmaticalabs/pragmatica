@@ -275,6 +275,12 @@ in `EncryptingStorageTier`.
   explicit `[storage.artifacts] snapshot_path`. If `artifacts` sits on a mounted volume, content's
   tier may land outside it. Configure `[storage.content]` explicitly to control placement.
 
+**Storage paths are per instance (#856, #912).** A `[storage.<name>]` section that omits `disk_path` /
+`snapshot_path` resolves them under the default root, `/data/aether` (`<root>/storage`,
+`<root>/metadata-snapshots`); the JVM system property `aether.storage.defaultRoot` names another root.
+Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are
+refused at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
+
 **Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
 `StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not
