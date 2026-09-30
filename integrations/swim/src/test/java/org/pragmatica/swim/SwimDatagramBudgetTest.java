@@ -80,7 +80,7 @@ class SwimDatagramBudgetTest {
         for (int round = 1; round <= SUBJECTS * 4; round++) {
             var piggyback = ackToPing(round).piggyback();
 
-            assertThat(estimatedBytes(piggyback)).as("round %d piggyback", round).isLessThanOrEqualTo(PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
+            assertThat(estimatedBytes(piggyback)).as("round %d piggyback", round).isLessThanOrEqualTo(PiggybackBuffer.piggybackBudgetFor(SELF_ID));
             piggyback.forEach(update -> delivered.add(update.nodeId()));
         }
 
@@ -159,7 +159,7 @@ class SwimDatagramBudgetTest {
 
         assertThat(SwimConfig.DEFAULT.maxPiggyback()).isEqualTo(8);
         assertThat(piggyback).hasSize(8);
-        assertThat(estimatedBytes(piggyback)).isLessThanOrEqualTo(PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
+        assertThat(estimatedBytes(piggyback)).isLessThanOrEqualTo(PiggybackBuffer.piggybackBudgetFor(SELF_ID));
         assertThat(piggyback).allSatisfy(update -> assertThat(update.labels().keySet()).isSubsetOf(NodeInfo.LABEL_ROLE, NodeInfo.LABEL_SOURCE));
     }
 

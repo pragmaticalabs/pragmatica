@@ -249,6 +249,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// and carried on every self update, so a peer that never saw our ANNOUNCE still learns them from
     /// steady-state gossip. Empty until the first announce.
     private volatile Map<String, String> selfLabels = Map.of();
+    /// Piggyback byte budget for messages this node sends, from ITS OWN id length (see [PiggybackBuffer#piggybackBudgetFor]).
+    private final int piggybackBudgetBytes;
 
     /// The only labels gossip carries: what core counting and the member descriptor read (`role`, `source`).
     /// The full label map stays on ANNOUNCE and the QUIC Hello — an update with every label is several times
@@ -426,6 +428,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.piggybackBuffer = PiggybackBuffer.piggybackBuffer(config.maxPiggyback());
+        this.piggybackBudgetBytes = PiggybackBuffer.piggybackBudgetFor(selfId);
         this.isBooting = isBooting;
         this.transportConnected = transportConnected;
         bootTokens.onRetired(this::onRetired);
@@ -885,7 +888,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void probeTarget(SwimMember target) {
         var seq = sequenceCounter.incrementAndGet();
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
         var ping = Ping.ping(selfId, seq, piggyback);
 
         lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
@@ -1485,7 +1488,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         inboundProbeReceived = true;
         recordInboundReachability();
         processPiggyback(ping.piggyback(), ping.from());
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
 
         transport.send(sender, ack);
@@ -2028,7 +2031,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                         requesterAddress,
                                         target.nodeId(),
                                         System.currentTimeMillis()));
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), PiggybackBuffer.PIGGYBACK_BUDGET_BYTES);
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
         var ping = Ping.ping(selfId, relaySeq, piggyback);
 
         transport.send(target.address(), ping);
