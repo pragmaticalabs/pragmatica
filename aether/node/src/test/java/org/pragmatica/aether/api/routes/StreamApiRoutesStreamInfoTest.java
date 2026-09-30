@@ -151,6 +151,66 @@ class StreamApiRoutesStreamInfoTest {
                                                                                                                                   .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)));
     }
 
+    /// A replica ring that has not backfilled reports an empty span; the owner holds every event. The
+    /// delegate holds the ring, so a local-first read would answer 0 — the total must come from the owner.
+    @Test
+    void streamInfo_delegateHoldsALaggingReplicaRing_totalEventsComesFromTheOwner() {
+        servingPartitions.placementRoleSupplier((_, _) -> Role.REPLICA);
+        declare(1);
+        publish(0, 20);
+
+        assertThat(servingPartitions.visibleBounds(engineKey, 0).map(bounds -> bounds.isEmpty())).as("control: the delegate holds a ring, and it is empty")
+                  .isEqualTo(Option.some(true));
+
+        routes.streamInfo(NAMESPACE, STREAM, VERSION, "info")
+              .await()
+              .onFailure(cause -> fail("info must be answered from the owner: " + cause.message()))
+              .onSuccess(info -> assertThat(info.totalEvents()).as("owner-authoritative, not the lagging replica's 0")
+                                                               .isEqualTo(20L));
+    }
+
+    @Test
+    void streamInfo_ownerForwardTimesOut_answers503() {
+        declare(1);
+        publish(0, 3);
+
+        var silent = StreamForwardClient.streamForwardClient(SERVING, (_, _) -> {}, TimeSpan.timeSpan(100).millis());
+        var router = StreamReadRouter.streamReadRouter(servingPartitions,
+                                                       Option.none(),
+                                                       Option.some(silent),
+                                                       SERVING,
+                                                       (_, _) -> Option.some(OWNER),
+                                                       StreamReadForwardMetrics.NOOP);
+        var silentRoutes = StreamApiRoutes.streamApiRoutes(() -> nodeWith(servingPartitions, router, emptyStore()),
+                                                           StreamNamespacesService.inMemory(),
+                                                           ConsumerGroupCoordinator.noOp(),
+                                                           ConsumerGroupRegistry.consumerGroupRegistry());
+
+        silentRoutes.streamInfo(NAMESPACE, STREAM, VERSION, "info")
+                    .await()
+                    .onSuccess(info -> fail("a silent owner must not render as totalEvents=" + info.totalEvents()))
+                    .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(ManagementServerError.StreamInfoUnavailable.class,
+                                                                                  unavailable -> assertThat(unavailable.httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)));
+    }
+
+    /// Both sources know a count and they differ: the committed config is the declaration, the local
+    /// manager's count only a fallback, so the committed one wins.
+    @Test
+    void streamMetadata_committedAndLocalCountsDiffer_committedWins() {
+        declare(2);
+        var store = emptyStore();
+        var namespaces = StreamNamespacesService.inMemory();
+        var metadataRoutes = routesWith(servingPartitions, store, namespaces);
+
+        commit(store, 1);
+        register(namespaces);
+
+        metadataRoutes.streamMetadata(NAMESPACE, STREAM, VERSION)
+                      .onFailure(cause -> fail("metadata must resolve: " + cause.message()))
+                      .onSuccess(metadata -> assertThat(metadata.partitionCount()).as("committed 1 beats local 2")
+                                                                               .isEqualTo(1));
+    }
+
     @Test
     void streamMetadata_partitionCount_isTheCommittedConfigsNotAConstant() {
         var store = emptyStore();

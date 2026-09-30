@@ -548,9 +548,9 @@ public final class StreamApiRoutes implements RouteSource {
     /// #1478: STREAM_GET is delegate-routed (`taskGroup(STREAMING)`), so the answering node is arbitrary
     /// and usually holds no ring — summing its OWN rings reported `totalEvents: 0` for a stream whose
     /// owner held every event (the defect #1039 fixed for STREAM_REPLICAS). Each partition is therefore
-    /// asked through [StreamReadRouter#bounds]: this node's ring when it holds one, else the resolved
-    /// owner over the read-forward path. `totalBytes` stays this node's own allocation — bytes have no
-    /// forwarded form — so it is meaningful only on a node that holds the rings. A partition whose owner
+    /// asked through [StreamReadRouter#ownerBounds]: this node's ring only when it IS the owner, else the
+    /// resolved owner over the read-forward path — a replica ring that has not backfilled is never authoritative.
+    /// `totalBytes` stays this node's own allocation — bytes have no forwarded form — so it is meaningful only on a node that holds the rings. A partition whose owner
     /// cannot answer FAILS the request; it is never rendered as an empty partition.
     private Promise<StreamRoutes.StreamInfoResponse> buildStreamInfoResponse(String engineKey) {
         return streamManager().streamInfo(engineKey)
@@ -581,7 +581,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Promise<StreamRoutes.PartitionDetail> ownerPartitionDetail(String engineKey, int partition) {
-        return streamReadRouter().bounds(engineKey, partition)
+        return streamReadRouter().ownerBounds(engineKey, partition)
                                .map(bounds -> StreamRoutes.PartitionDetail.fromBounds(partition, bounds))
                                .mapError(cause -> new ManagementServerError.StreamInfoUnavailable(engineKey,
                                                                                                   partition,
