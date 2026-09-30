@@ -444,7 +444,7 @@ run_suite() {
             suite_fail=$((suite_fail + 1))
         fi
         if [ -f "$restore_marker" ]; then
-            log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
+            SUITE_FAILCAP_DIR="" log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
             capture_node_logs "${suite_name}-restore-failed" "$target_cluster" "$start_time" || true
             suite_fail=$((suite_fail + 1))
             break

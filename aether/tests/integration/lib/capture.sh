@@ -44,9 +44,10 @@ capture_node_logs() {
     local names
     case "$ENV_TYPE" in
         docker)
-            names=$(docker ps -a --format '{{.Names}}' --filter "name=aether-${target_cluster}-node-" 2>/dev/null)
+            # Bounded: a hung docker daemon must not hang the test process that now calls this mid-test.
+            names=$(_run_with_timeout "${CLOUD_CAPTURE_DOCKER_TIMEOUT_S:-60}" docker ps -a --format '{{.Names}}' --filter "name=aether-${target_cluster}-node-" 2>/dev/null)
             for n in $names; do
-                docker logs --tail 400 "$n" > "${out_dir}/${n}.log" 2>&1 || true
+                _run_with_timeout "${CLOUD_CAPTURE_DOCKER_TIMEOUT_S:-60}" docker logs --tail 400 "$n" > "${out_dir}/${n}.log" 2>&1 || true
             done
             ;;
         remote)
@@ -82,7 +83,14 @@ capture_node_logs() {
                 log_warn "${suite_name}: AETHER_SSH_KEY unset — cloud node-log capture skipped"
                 return 0
             fi
-            if [ "$target_cluster" = "a" ]; then cluster_name="$CLUSTER_A_NAME"; else cluster_name="$CLUSTER_B_NAME"; fi
+            # CLUSTER_A_NAME / CLUSTER_B_NAME are plain variables of the run-tests.sh process and do not reach the
+            # `bash "$test_file"` children that call this at fail time; BOOTSTRAP_CLUSTER_NAME is exported per suite.
+            if [ "$target_cluster" = "a" ]; then cluster_name="${CLUSTER_A_NAME:-${BOOTSTRAP_CLUSTER_NAME:-}}"; else cluster_name="${CLUSTER_B_NAME:-${BOOTSTRAP_CLUSTER_NAME:-}}"; fi
+            if [ -z "$cluster_name" ]; then
+                echo "cluster name unknown (the cluster-name variable and BOOTSTRAP_CLUSTER_NAME are both unset) — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: cloud node-log capture has no cluster name — nothing captured"
+                return 0
+            fi
             ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null) || enum_rc=$?
             if [ "$enum_rc" -ne 0 ]; then
                 # Unavailable is not empty (_cloud_running_vm_ips's own contract).
@@ -101,7 +109,7 @@ capture_node_logs() {
                 rc=0
                 _run_with_timeout "${CLOUD_CAPTURE_SSH_TIMEOUT_S:-90}" \
                     ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" \
-                    "hostname; timeout 60 ${remote_cmd}" > "${out_dir}/vm-${ip}.log" 2>&1 || rc=$?
+                    "hostname; timeout ${CLOUD_CAPTURE_REMOTE_TIMEOUT_S:-60} ${remote_cmd}" > "${out_dir}/vm-${ip}.log" 2>&1 || rc=$?
                 [ "$rc" -eq 0 ] && ok=$((ok + 1))
                 printf 'vm %s rc=%s lines=%s\n' "$ip" "$rc" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" \
                     >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
@@ -128,6 +136,8 @@ capture_node_logs() {
 # Cap on pre-destructive captures per suite: restore paths call restart_all_nodes from every cleanup, and a
 # cloud capture costs up to CLOUD_CAPTURE_SSH_TIMEOUT_S per VM.
 FAILCAP_MAX_PRE_DESTRUCTIVE="${FAILCAP_MAX_PRE_DESTRUCTIVE:-4}"
+# Cap on first-fail captures per suite: a broken cluster fails every later test, and each would capture again.
+FAILCAP_MAX_FIRST_FAIL="${FAILCAP_MAX_FIRST_FAIL:-6}"
 
 # _failcap_capture <reason> — one capture into a fresh timestamped per-test directory. Output goes to
 # stderr (log_fail is often called inside $( ... ), whose stdout is data) and nothing here can fail the caller.
@@ -139,8 +149,16 @@ _failcap_capture() {
     (
         HARNESS_FAIL_FILE=/dev/null   # a log_fail inside the capture must not add a [FAIL] to the test
         _FAILCAP_ACTIVE=1
+        # Tighter per-node bounds than the suite-end capture: this runs inside a live test, once per failing test.
+        export CLOUD_CAPTURE_SSH_TIMEOUT_S="${FAILCAP_SSH_TIMEOUT_S:-30}" CLOUD_CAPTURE_REMOTE_TIMEOUT_S="${FAILCAP_REMOTE_TIMEOUT_S:-25}" \
+               CLOUD_CAPTURE_DOCKER_TIMEOUT_S="${FAILCAP_DOCKER_TIMEOUT_S:-30}"
         capture_node_logs "$suite" "${CLUSTER_ID:-a}" "${SUITE_START_EPOCH:-$(( $(date +%s) - 3600 ))}" "$dir"
     ) >&2 2>&1 || true
+    # A capture directory with no node logs (manifest only) must read as a failure to capture, not as a capture.
+    if [ -z "$(find "$dir" -name '*.log' -size +0 2>/dev/null | head -1)" ]; then
+        echo "[WARN]  fail-time capture (${reason}) produced NO node logs in ${dir} — see capture-manifest.txt there" >&2
+        return 0
+    fi
     echo "[INFO]  fail-time capture (${reason}) -> ${dir}" >&2
 }
 
@@ -150,6 +168,13 @@ _failcap_armed() { [ -n "${SUITE_FAILCAP_DIR:-}" ] && [ -d "${SUITE_FAILCAP_DIR}
 _failcap_on_fail() {
     _failcap_armed || return 0
     : > "${SUITE_FAILCAP_DIR}/suite-has-fail" 2>/dev/null || true
+    local n
+    n=$(ls -d "${SUITE_FAILCAP_DIR}"/first-fail-* 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${n:-0}" -ge "$FAILCAP_MAX_FIRST_FAIL" ]; then
+        mkdir "${SUITE_FAILCAP_DIR}/cap-warned" 2>/dev/null \
+            && echo "[WARN]  fail-time capture: cap of ${FAILCAP_MAX_FIRST_FAIL} first-fail captures reached for this suite — later failing tests are not captured" >&2
+        return 0
+    fi
     # mkdir is the atomic once-per-test latch and, unlike a shell variable, holds across subshells.
     mkdir "${SUITE_FAILCAP_DIR}/first-fail-${SUITE_TAG:-no-suite}-${TEST_TAG:-outside-a-test}" 2>/dev/null || return 0
     _failcap_capture "first-fail"

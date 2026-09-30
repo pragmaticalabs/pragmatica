@@ -13,6 +13,10 @@
 #   T6  control: without SUITE_FAILCAP_DIR (any stub suite, a standalone run) log_fail never touches docker.
 #   T7  the pre-destructive cap holds: FAILCAP_MAX_PRE_DESTRUCTIVE=1 lets the second restart_all_nodes through
 #       uncaptured, with a WARN.
+#   T8  the cloud reap, by behaviour: node logs are read before the (stub) reaper runs.
+#   T9  the CLOUD branch from an env -i child holding only what run_suite exports writes a log per VM.
+#   T10 FAILCAP_MAX_FIRST_FAIL bounds first-fail captures per suite, with one WARN.
+#   T11 a capture that ends with no node logs is a WARN, not an INFO.
 #   INTEG_DIR_UNDER_TEST=<path> selects another copy of aether/tests/integration (used for the mutation probes).
 #   bash aether/tests/integration/test/test-failtime-capture.sh
 set -uo pipefail
@@ -45,6 +49,7 @@ scenario() {
               logs) echo "docker-logs $3" >> "$EV"; echo "log line of $3" ;;
           esac
       }
+      _run_with_timeout() { shift; "$@"; }   # `timeout` cannot run the stub docker function
       remote_exec() { case "$1" in *"compose -f docker-compose-b.yml down"*) echo "recreate" >> "$EV" ;; esac; return 1; }
       $body ) > "${d}/out" 2>&1
 }
@@ -134,15 +139,82 @@ scenario unarmed body_unarmed
     || fail "T6 unarmed run captured: $(count_events unarmed docker-logs) reads"
 
 # T8 ---------------------------------------------------------------------------------------------------------------
-# The cloud reap cannot run under a stub (it shells out to tools/cloud-reaper.sh and `aether cluster bootstrap`), so
-# its call site is pinned by ORDER in the shipped text: inside _cloud_full_drain_recover the capture precedes the
-# reaper invocation. Positive control: both anchors must be found, or this examined nothing.
-fn=$(awk '/^_cloud_full_drain_recover\(\) \{/,/^\}/' "${INTEG_DIR}/lib/cluster.sh")
-cap_line=$(printf '%s\n' "$fn" | grep -n '^    capture_before_destructive "cloud-reap"$' | head -1 | cut -d: -f1)
-reap_line=$(printf '%s\n' "$fn" | grep -n 'reap_out=\$("\$reaper"' | head -1 | cut -d: -f1)
-[ -n "$cap_line" ] && [ -n "$reap_line" ] && [ "$cap_line" -lt "$reap_line" ] \
-    && ok "T8 _cloud_full_drain_recover: capture_before_destructive (line ${cap_line}) precedes the reaper call (line ${reap_line})" \
-    || fail "T8 cloud reap order: capture=[${cap_line:-missing}] reap=[${reap_line:-missing}]"
+# The cloud reap by BEHAVIOUR: the real _cloud_full_drain_recover with a stub reaper (AETHER_CLOUD_REAPER) and a
+# stub `aether`; the real capture_before_destructive runs against the stub docker. The trace must read
+# "docker-logs ... reap": a moved, renamed or deleted hook changes what the function DOES, which a source-line
+# comparison would not see.
+cat > "${WORK}/reaper.sh" <<'REAPER'
+#!/bin/bash
+echo "reap" >> "$EV"
+exit 0
+REAPER
+chmod +x "${WORK}/reaper.sh"; touch "${WORK}/b.toml"
+body_reap() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")
+    : > "${SUITE_FAILCAP_DIR}/suite-has-fail"      # an earlier test in this suite failed
+    TEST_TAG=s20_recover; TEST_FAIL_COUNT=0
+    aether() { echo "bootstrap" >> "$EV"; return 1; }
+    _cloud_full_drain_recover > /dev/null
+    rm -rf "$SUITE_FAILCAP_DIR"
+}
+scenario reap body_reap BOOTSTRAP_CLUSTER_NAME=test-b CLUSTER_ID=b CLOUD_TOML_B="${WORK}/b.toml" AETHER_CLOUD_REAPER="${WORK}/reaper.sh"
+first_logs=$(grep -n '^docker-logs' "${WORK}/reap/events" | head -1 | cut -d: -f1)
+first_reap=$(grep -n '^reap$' "${WORK}/reap/events" | head -1 | cut -d: -f1)
+[ -n "$first_logs" ] && [ -n "$first_reap" ] && [ "$first_logs" -lt "$first_reap" ] \
+    && ok "T8 cloud reap by behaviour: node logs read (event ${first_logs}) before the reaper ran (event ${first_reap})" \
+    || fail "T8 trace: first-logs=[${first_logs:-none}] first-reap=[${first_reap:-none}] events=$(tr '\n' ' ' < "${WORK}/reap/events")"
+
+# T9 ---------------------------------------------------------------------------------------------------------------
+# The CLOUD branch from a test process: an `env -i` child holding ONLY what run_suite exports (plus the ambient
+# operator inputs), under set -euo pipefail. The run-tests.sh-local CLUSTER_A_NAME/CLUSTER_B_NAME are NOT there; the
+# first version of the hook read them and died with "unbound variable", leaving a manifest and no logs.
+# Positive control: run_suite really exports BOOTSTRAP_CLUSTER_NAME (else this env is not what run_suite hands down).
+if grep -q 'export BOOTSTRAP_CLUSTER_NAME="\$CLUSTER_B_NAME"' "${INTEG_DIR}/run-tests.sh"; then
+    ok "T9a control: run-tests.sh exports BOOTSTRAP_CLUSTER_NAME per suite"
+else fail "T9a run-tests.sh no longer exports BOOTSTRAP_CLUSTER_NAME"; fi
+mkdir -p "${WORK}/cloud"; : > "${WORK}/cloud/events"
+env -i PATH="$PATH" HOME="$WORK" TARGET_HOST=localhost CLOUD_MODE=true CLOUD_RUNTIME=container CLUSTER_ID=b \
+    BOOTSTRAP_CLUSTER_NAME=test-b AETHER_SSH_KEY=/dev/null SUITE_TAG=02-chaos SUITE_START_EPOCH=1700000000 \
+    SUITE_FAILCAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")" AETHER_FAILURE_LOGS_DIR="${WORK}/cloud/failure-logs" \
+    INTEG_DIR="$INTEG_DIR" bash -c '
+        set -euo pipefail
+        source "$INTEG_DIR/lib/common.sh" > /dev/null 2>&1; source "$INTEG_DIR/lib/cluster.sh" > /dev/null 2>&1
+        _run_with_timeout() { shift; "$@"; }
+        ssh() { echo "node-log ${*: -1}"; }
+        _cloud_running_vm_ips() { [ "$1" = test-b ] && printf "1.1.1.1\n2.2.2.2\n"; }
+        provisioning_snapshot() { echo "{}"; }
+        TEST_TAG=kill_under_load
+        log_fail "boom" > /dev/null' > "${WORK}/cloud/out" 2>&1
+d=$(ls -d "${WORK}"/cloud/failure-logs/02-chaos/kill_under_load/*-first-fail 2>/dev/null | head -1)
+if [ -n "$d" ] && [ -s "$d/vm-1.1.1.1.log" ] && [ -s "$d/vm-2.2.2.2.log" ] && grep -q 'captured 2 of 2' "$d/capture-manifest.txt" \
+   && ! grep -q 'unbound variable' "${WORK}/cloud/out"; then
+    ok "T9 cloud branch in an env -i test process: a log per VM, 'captured 2 of 2', no unbound variable"
+else fail "T9 cloud capture: dir=[${d:-none}] out=$(tr '\n' '|' < "${WORK}/cloud/out" | head -c 300)"; fi
+
+# T10 --------------------------------------------------------------------------------------------------------------
+body_first_cap() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")
+    for t in t1 t2 t3; do ( TEST_TAG=$t; log_fail "fails" > /dev/null ); done
+    ls -d "${SUITE_FAILCAP_DIR}"/first-fail-* 2>/dev/null | wc -l | tr -d ' ' > "${EV}.ff"
+    rm -rf "$SUITE_FAILCAP_DIR"
+}
+scenario firstcap body_first_cap FAILCAP_MAX_FIRST_FAIL=2
+if [ "$(cat "${WORK}/firstcap/events.ff")" = "2" ] && [ "$(count_events firstcap docker-logs)" -eq 4 ] \
+   && [ "$(grep -c 'cap of 2 first-fail' "${WORK}/firstcap/out")" -eq 1 ]; then
+    ok "T10 FAILCAP_MAX_FIRST_FAIL=2: two captures for three failing tests, one WARN"
+else fail "T10 ff=$(cat "${WORK}/firstcap/events.ff") reads=$(count_events firstcap docker-logs) warns=$(grep -c 'cap of 2 first-fail' "${WORK}/firstcap/out")"; fi
+
+# T11 --------------------------------------------------------------------------------------------------------------
+body_empty() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")
+    docker() { case "$1" in ps) ;; esac; }      # no containers: the capture ends with a manifest and no logs
+    TEST_TAG=t; log_fail "fails" > /dev/null
+    rm -rf "$SUITE_FAILCAP_DIR"
+}
+scenario empty body_empty
+grep -q 'produced NO node logs' "${WORK}/empty/out" && ! grep -q 'fail-time capture (first-fail) ->' "${WORK}/empty/out" \
+    && ok "T11 a capture with no node logs is a WARN naming the directory, not an INFO capture line" \
+    || fail "T11 empty capture: $(tr '\n' '|' < "${WORK}/empty/out" | head -c 300)"
 
 echo ""
 echo "  ----"
