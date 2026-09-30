@@ -302,31 +302,9 @@ test_pick_minority() {
     log_info "Leader (majority): ${leader} | Minority (to partition): ${m1}, ${m2}"
 }
 
-test_partition_does_not_destabilize_majority() {
-    local m1 m2 c1 c2 leader
-    m1=$(sed -n '1p' "$MINORITY_FILE")
-    m2=$(sed -n '2p' "$MINORITY_FILE")
-    leader=$(cat "$LEADER_FILE" 2>/dev/null || true)
-    c1=$(container_for_node "$m1")
-    c2=$(container_for_node "$m2")
-    if [ -z "$c1" ] || [ -z "$c2" ]; then
-        log_fail "Cannot resolve containers for minority nodes (${m1}=${c1:-<empty>}, ${m2}=${c2:-<empty>})"
-        return 1
-    fi
-
-    # Pre-partition baseline: both minority nodes MUST currently report as
-    # READY. If they don't, the test premise is invalid (we'd be partitioning
-    # a node that wasn't a healthy member to begin with).
-    local pre1 pre2
-    pre1=$(kv_lifecycle_state "$m1")
-    pre2=$(kv_lifecycle_state "$m2")
-    assert_eq "$pre1" "READY" "Pre-partition: ${m1} reports READY"
-    assert_eq "$pre2" "READY" "Pre-partition: ${m2} reports READY"
-
-    log_info "Injecting 2-vs-3 partition for ${PARTITION_DURATION_S}s (dual-signal: QUIC drop + SWIM faulty)"
-    disconnect_node_from_network "$c1" || return 1
-    disconnect_node_from_network "$c2" || return 1
-
+# Poll the MAJORITY's health for the partition window. Returns 1 on an S05 violation.
+monitor_majority_during_partition() {
+    local leader="$1"
     # Continuous monitoring during the partition: poll the MAJORITY's health at
     # ~1Hz. The protective property under a dual-signal (transport + SWIM-faulty)
     # split is that the 3-node majority MUST stay quorate with a STABLE leader —
@@ -352,11 +330,49 @@ test_partition_does_not_destabilize_majority() {
     done
 
     log_pass "S05: majority stayed quorate with a stable leader (${leader:-?}) throughout the ${PARTITION_DURATION_S}s dual-signal partition; prompt minority eviction (if any) is intended co-confirmation behavior"
+    return 0
+}
+
+test_partition_does_not_destabilize_majority() {
+    local m1 m2 c1 c2 leader
+    m1=$(sed -n '1p' "$MINORITY_FILE")
+    m2=$(sed -n '2p' "$MINORITY_FILE")
+    leader=$(cat "$LEADER_FILE" 2>/dev/null || true)
+    c1=$(container_for_node "$m1")
+    c2=$(container_for_node "$m2")
+    if [ -z "$c1" ] || [ -z "$c2" ]; then
+        log_fail "Cannot resolve containers for minority nodes (${m1}=${c1:-<empty>}, ${m2}=${c2:-<empty>})"
+        return 1
+    fi
+
+    # Pre-partition baseline: both minority nodes MUST currently report as
+    # READY. If they don't, the test premise is invalid (we'd be partitioning
+    # a node that wasn't a healthy member to begin with).
+    local pre1 pre2
+    pre1=$(kv_lifecycle_state "$m1")
+    pre2=$(kv_lifecycle_state "$m2")
+    assert_eq "$pre1" "READY" "Pre-partition: ${m1} reports READY"
+    assert_eq "$pre2" "READY" "Pre-partition: ${m2} reports READY"
+
+    log_info "Injecting 2-vs-3 partition for ${PARTITION_DURATION_S}s (dual-signal: QUIC drop + SWIM faulty)"
+    # The heal below runs on EVERY exit path from here on — a failed disconnect, an S05
+    # violation, or success. A `return 1` between partition and heal used to skip it, leaking
+    # the partition (two Hetzner firewalls at 5c1a726b7) into the next test. Healing is
+    # idempotent, so healing a node whose disconnect never landed is harmless.
+    local rc=0
+    if ! disconnect_node_from_network "$c1"; then
+        rc=1
+    elif ! disconnect_node_from_network "$c2"; then
+        rc=1
+    elif ! monitor_majority_during_partition "$leader"; then
+        rc=1
+    fi
 
     # Heal — the next test function asserts the recovery contract.
     log_info "Healing partition: reconnecting ${c1}, ${c2} to ${NETWORK_NAME}"
     connect_node_to_network "$c1" || log_warn "Reconnect of ${c1} returned non-zero; recovery assertion will surface any real problem"
     connect_node_to_network "$c2" || log_warn "Reconnect of ${c2} returned non-zero; recovery assertion will surface any real problem"
+    return $rc
 }
 
 test_cluster_heals_to_5_onduty() {
@@ -374,22 +390,43 @@ test_cluster_heals_to_5_onduty() {
     assert_cluster_healthy "S06: cluster returned to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal"
 }
 
+# Heal one minority node from cleanup. Never skips silently: every path that does not heal says
+# so, naming the node and the reason.
+#
+# Cloud: container_for_node echoes empty once the node is no longer a live member (CTM replaced or
+# reaped it). The partition firewall outlives the VM's membership, though, and
+# cloud_heal_partition needs only the node id (the firewall name derives from it), so heal by id
+# rather than skip — a skipped heal here leaked two firewalls at 5c1a726b7 and starved the next
+# test's replacements. Docker: no container means no network attachment to restore, so there is
+# nothing to heal, but it is logged.
+heal_minority_node() {
+    local nid="$1" c
+    c=$(container_for_node "$nid")
+    if [ -n "$c" ]; then
+        connect_node_to_network "$c" || true
+        return 0
+    fi
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        local rid
+        rid=$(to_node_id "$nid")
+        log_warn "cleanup: ${nid} is not a live member (container_for_node empty); healing partition by node id ${rid}"
+        connect_node_to_network "$rid" || \
+            log_warn "cleanup: heal by id ${rid} returned non-zero; its partition firewall may have leaked — check hcloud firewall list for aether-partition-*"
+        return 0
+    fi
+    log_warn "cleanup: SKIPPING heal for ${nid}: no docker container carries aether.node-id=${nid}, so there is no network attachment to restore"
+    return 0
+}
+
 cleanup() {
     # Best-effort reconnect in case the test aborted mid-flight before
     # the in-test reconnect ran. Idempotent: connect_node_to_network
     # tolerates "already connected".
     if [ -f "$MINORITY_FILE" ]; then
-        local m1 m2 c1 c2
-        m1=$(sed -n '1p' "$MINORITY_FILE" 2>/dev/null || true)
-        m2=$(sed -n '2p' "$MINORITY_FILE" 2>/dev/null || true)
-        if [ -n "$m1" ]; then
-            c1=$(container_for_node "$m1")
-            [ -n "$c1" ] && connect_node_to_network "$c1" || true
-        fi
-        if [ -n "$m2" ]; then
-            c2=$(container_for_node "$m2")
-            [ -n "$c2" ] && connect_node_to_network "$c2" || true
-        fi
+        local m
+        while IFS= read -r m; do
+            [ -n "$m" ] && heal_minority_node "$m"
+        done < "$MINORITY_FILE"
     fi
 
     rm -f "$MINORITY_FILE" "$LEADER_FILE"
