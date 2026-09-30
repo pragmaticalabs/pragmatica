@@ -59,6 +59,13 @@ class EmberClusterCurrentLeaderTest {
     private static final int FIRST_CANDIDATE_BASE = 29700;
     private static final int LAST_CANDIDATE_BASE = 31500;
     private static final int CANDIDATE_STEP = 200;
+    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
+                                                                                LAST_CANDIDATE_BASE,
+                                                                                CANDIDATE_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final String PREFIX = "newborn";
     private static final String NEWBORN_ID = PREFIX + "-" + (CLUSTER_SIZE + 1);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
@@ -82,14 +89,15 @@ class EmberClusterCurrentLeaderTest {
     @Test
     @Timeout(300)
     void currentLeader_isTheNodeClaimingLeadership_notTheFirstMapEntry() {
-        var basePort = freeBasePort();
-        var running = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, PREFIX);
+        var running = EmberTestPorts.startedCluster(PORTS,
+                                                    basePort -> emberCluster(CLUSTER_SIZE,
+                                                                             basePort,
+                                                                             basePort + MGMT_OFFSET,
+                                                                             basePort + APP_HTTP_OFFSET,
+                                                                             PREFIX),
+                                                    START_BOUND);
 
         cluster = some(running);
-        assertThat(running.start().await(START_BOUND).fold(Cause::message, _ -> "started")).describedAs("a three-node cluster on a verified-free port block at %d must form within %s",
-                                                                                                        basePort,
-                                                                                                        START_BOUND)
-                  .isEqualTo("started");
         var leaderId = awaitLeader(running).or("none");
 
         assertThat(leaderId).describedAs("a formed cluster must elect a leader within %d polls of %dms; without one there is nothing to pin",
@@ -183,51 +191,4 @@ class EmberClusterCurrentLeaderTest {
         }
     }
 
-    /// The first candidate base whose whole block — cluster ports (QUIC, so UDP as well as TCP),
-    /// management ports and app-HTTP ports — binds free right now. Same helper and rationale as
-    /// `EmberClusterObservedNodeStateTest`, on a disjoint candidate range.
-    private static int freeBasePort() {
-        return IntStream.iterate(FIRST_CANDIDATE_BASE,
-                                 base -> base <= LAST_CANDIDATE_BASE,
-                                 base -> base + CANDIDATE_STEP)
-                        .filter(EmberClusterCurrentLeaderTest::blockIsFree)
-                        .findFirst()
-                        .orElseGet(() -> fail("no free block of " + SLOTS
-                                             + " consecutive ports found between " + FIRST_CANDIDATE_BASE
-                                             + " and " + LAST_CANDIDATE_BASE
-                                             + "; this box is too busy to run a cluster test"));
-    }
-
-    private static boolean blockIsFree(int base) {
-        return IntStream.range(0, SLOTS).allMatch(slot -> udpFree(base + slot)
-                                                          && tcpFree(base + slot)
-                                                          && tcpFree(base + MGMT_OFFSET + slot)
-                                                          && tcpFree(base + APP_HTTP_OFFSET + slot));
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var channel = DatagramChannel.open()) {
-            channel.socket().setReuseAddress(false);
-            channel.bind(loopback(port));
-
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
-    }
 }
