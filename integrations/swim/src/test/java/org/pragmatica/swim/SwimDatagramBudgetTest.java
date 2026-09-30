@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -57,6 +58,9 @@ class SwimDatagramBudgetTest {
                                                                         NodeInfo.LABEL_ZONE, "fsn1-dc14",
                                                                         NodeInfo.LABEL_INSTANCE_TYPE, "ccx33",
                                                                         NodeInfo.LABEL_POOL, "core-pool-primary");
+
+    /// What gossip may carry: role and source (core counting), zone (anti-affinity placement hint).
+    private static final Set<String> GOSSIPED_KEYS = Set.of(NodeInfo.LABEL_ROLE, NodeInfo.LABEL_SOURCE, NodeInfo.LABEL_ZONE);
 
     private RecordingTransport transport;
     private SwimProtocol protocol;
@@ -98,14 +102,21 @@ class SwimDatagramBudgetTest {
                                 .unwrap();
         var info = NodeInfo.nodeInfo(SELF_ID,
                                      NodeAddress.nodeAddress("127.0.0.1", 9700).unwrap(),
-                                     Map.of(NodeInfo.LABEL_ROLE, "core", NodeInfo.LABEL_SOURCE, "replacement"));
+                                     Map.of(NodeInfo.LABEL_ROLE, "core",
+                                            NodeInfo.LABEL_SOURCE, "replacement",
+                                            NodeInfo.LABEL_ZONE, "fsn1-dc14",
+                                            NodeInfo.LABEL_HOSTNAME, "h".repeat(1870),
+                                            NodeInfo.LABEL_POOL, "core-pool-primary",
+                                            NodeInfo.LABEL_INSTANCE_TYPE, "ccx33"));
 
         fresh.start();
         fresh.announceJoin(info, "c", 1L, 77L, List.of());
         try {
             await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(selfUpdates(fresh))
                 .isNotEmpty()
-                .allSatisfy(update -> assertThat(update.labels()).containsEntry(NodeInfo.LABEL_ROLE, "core")));
+                .allSatisfy(update -> assertThat(update.labels()).containsEntry(NodeInfo.LABEL_ROLE, "core")
+                                                                   .containsEntry(NodeInfo.LABEL_ZONE, "fsn1-dc14")
+                                                                   .satisfies(labels -> assertThat(labels.keySet()).as("self-update label keys must stay within the gossiped set").isSubsetOf(GOSSIPED_KEYS))));
         } finally {
             fresh.stop();
         }
@@ -128,13 +139,13 @@ class SwimDatagramBudgetTest {
     /// members, gossip carries only the labels core counting reads (role, source), so the default-8 Ack stays under
     /// the budget with room to spare instead of tipping every probe past the receive buffer.
     @Test
-    void defaultEightUpdateAck_withLongRealisticLabels_carriesOnlyRoleAndSource_underBudget() {
+    void defaultEightUpdateAck_withLongRealisticLabels_carriesOnlyRoleSourceAndZone_underBudget() {
         var defaults = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                    .unwrap();
         var longLabels = Map.of(NodeInfo.LABEL_ROLE, "core",
                                 NodeInfo.LABEL_SOURCE, "replacement",
                                 NodeInfo.LABEL_HOSTNAME, "aether-production-eu-central-core-node-0123456789abcdef.internal.example.com",
-                                NodeInfo.LABEL_ZONE, "fsn1-dc14-availability-zone-primary",
+                                NodeInfo.LABEL_ZONE, "fsn1-dc14",
                                 NodeInfo.LABEL_INSTANCE_TYPE, "ccx33-dedicated-vcpu-general-purpose",
                                 NodeInfo.LABEL_POOL, "core-pool-primary-replacement-generation-7");
 
@@ -158,9 +169,11 @@ class SwimDatagramBudgetTest {
                                               .piggyback();
 
         assertThat(SwimConfig.DEFAULT.maxPiggyback()).isEqualTo(8);
-        assertThat(piggyback).hasSize(8);
+        assertThat(piggyback).as("zone adds a few bytes per update, so the budget may hold 7 of the 8: delayed, not dropped")
+                             .hasSizeBetween(6, 8);
         assertThat(estimatedBytes(piggyback)).isLessThanOrEqualTo(PiggybackBuffer.piggybackBudgetFor(SELF_ID));
-        assertThat(piggyback).allSatisfy(update -> assertThat(update.labels().keySet()).isSubsetOf(NodeInfo.LABEL_ROLE, NodeInfo.LABEL_SOURCE));
+        assertThat(piggyback).allSatisfy(update -> assertThat(update.labels()).containsEntry(NodeInfo.LABEL_ZONE, "fsn1-dc14")
+                                                                                               .satisfies(labels -> assertThat(labels.keySet()).isSubsetOf(GOSSIPED_KEYS)));
     }
 
     private Ack ackToPing(int sequence) {
