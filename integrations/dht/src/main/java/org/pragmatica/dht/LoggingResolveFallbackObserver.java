@@ -53,6 +53,8 @@ public final class LoggingResolveFallbackObserver implements ResolveFallbackObse
     static String describe(ResolveMiss miss) {
         return "DHT resolve all-miss key=" + miss.keyHex()
              + " verdict=" + miss.verdict()
+             + " kind=" + miss.kind()
+             + " elapsedMs=" + miss.elapsedMillis()
              + " rSetAnswered=" + miss.rSetAnswered()
              + " rSetLive=" + miss.rSetLive()
              + " rSetSize=" + miss.rSetSize()

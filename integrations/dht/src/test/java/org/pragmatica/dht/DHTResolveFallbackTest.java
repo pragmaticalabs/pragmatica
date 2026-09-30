@@ -122,6 +122,7 @@ class DHTResolveFallbackTest {
         assertThat(miss.probesFailed()).isZero();
         assertThat(miss.unprobed()).isZero();
         assertThat(miss.verdict()).isEqualTo("lost");
+        assertThat(miss.kind()).isEqualTo("quorum-empty");
     }
 
     @Test
@@ -138,6 +139,9 @@ class DHTResolveFallbackTest {
         var miss = observer.lastMiss();
         assertThat(miss.probesFailed()).isGreaterThanOrEqualTo(1);
         assertThat(miss.verdict()).isEqualTo("unreachable");
+        assertThat(miss.kind()).isEqualTo("fallback-degraded");
+        // the dead holder's probe ran to the 2s operation timeout, and the report says so
+        assertThat(miss.elapsedMillis()).isGreaterThanOrEqualTo(1500L);
     }
 
     @Test

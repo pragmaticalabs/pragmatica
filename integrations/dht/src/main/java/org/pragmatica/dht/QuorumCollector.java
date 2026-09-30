@@ -37,6 +37,7 @@ public final class QuorumCollector<T> {
     private final AtomicInteger failureCount = new AtomicInteger(0);
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
+    private final long createdNanos = System.nanoTime();
 
     private QuorumCollector(int quorum, int total, Promise<T> promise, UnaryOperator<T> valueMerger) {
         this.quorum = quorum;
@@ -86,6 +87,11 @@ public final class QuorumCollector<T> {
         if (total - failures < quorum) {
             promise.fail(DHTError.quorumNotReached(quorum, successCount.get()));
         }
+    }
+
+    /// Milliseconds since this collector was created, i.e. since the read it serves began.
+    public long elapsedMillis() {
+        return (System.nanoTime() - createdNanos) / 1_000_000L;
     }
 
     /// Replies recorded so far, including those arriving after the quorum resolved the promise.

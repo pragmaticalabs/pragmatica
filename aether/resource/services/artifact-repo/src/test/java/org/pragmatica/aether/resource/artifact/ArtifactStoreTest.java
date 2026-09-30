@@ -593,7 +593,22 @@ class ArtifactStoreTest {
                  .onFailure(cause -> {
                      assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class);
                      assertThat(cause.message()).contains("dht key " + keyHex);
+                     assertThat(cause.message()).contains("outcome=answered-empty").contains("elapsedMs=");
                  });
+        }
+
+        @Test
+        void readFailureLine_timeout_isTimedOutWithKeyAndElapsed() {
+            var line = ArtifactStoreImpl.readFailureLine("ab12", new org.pragmatica.lang.io.CoreError.Timeout("resolve"), 15003L);
+
+            assertThat(line).contains("key=ab12").contains("outcome=timed-out").contains("elapsedMs=15003");
+        }
+
+        @Test
+        void readFailureLine_otherFailure_isReadFailed() {
+            var line = ArtifactStoreImpl.readFailureLine("ab12", DHTError.quorumNotReached(2, 1), 40L);
+
+            assertThat(line).contains("outcome=read-failed").doesNotContain("timed-out");
         }
 
         @Test

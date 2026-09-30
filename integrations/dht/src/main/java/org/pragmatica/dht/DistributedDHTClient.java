@@ -408,7 +408,8 @@ public final class DistributedDHTClient implements DHTClient {
                                        rSetCollector.successCount(),
                                        probed,
                                        probesFailed,
-                                       Math.max(0, candidates - probed));
+                                       Math.max(0, candidates - probed),
+                                       rSetCollector.elapsedMillis());
     }
 
     private List<Promise<Option<byte[]>>> probeAll(byte[] key,

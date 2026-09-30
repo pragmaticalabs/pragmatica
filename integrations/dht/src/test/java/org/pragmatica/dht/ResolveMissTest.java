@@ -27,7 +27,7 @@ import static org.pragmatica.dht.ResolveMiss.resolveMiss;
 /// The verdict is "lost" only when nothing could have hidden a copy; every other shape is "unreachable".
 class ResolveMissTest {
     private static ResolveMiss healthy() {
-        return resolveMiss("ab12", 3, 3, 3, 4, 0, 0);
+        return resolveMiss("ab12", 3, 3, 3, 4, 0, 0, 12L);
     }
 
     @Test
@@ -37,22 +37,28 @@ class ResolveMissTest {
 
     @Test
     void verdict_unreachable_whenAProbeFailed() {
-        assertThat(resolveMiss("ab12", 3, 3, 3, 4, 1, 0).verdict()).isEqualTo("unreachable");
+        assertThat(resolveMiss("ab12", 3, 3, 3, 4, 1, 0, 12L).verdict()).isEqualTo("unreachable");
     }
 
     @Test
     void verdict_unreachable_whenAnRSetReplicaDidNotAnswer() {
-        assertThat(resolveMiss("ab12", 3, 3, 2, 4, 0, 0).verdict()).isEqualTo("unreachable");
+        assertThat(resolveMiss("ab12", 3, 3, 2, 4, 0, 0, 12L).verdict()).isEqualTo("unreachable");
     }
 
     @Test
     void verdict_unreachable_whenAnRSetMemberWasNotTargeted() {
-        assertThat(resolveMiss("ab12", 3, 2, 2, 4, 0, 0).verdict()).isEqualTo("unreachable");
+        assertThat(resolveMiss("ab12", 3, 2, 2, 4, 0, 0, 12L).verdict()).isEqualTo("unreachable");
     }
 
     @Test
     void verdict_unreachable_whenTheProbeBoundLeftRingMembersUnread() {
-        assertThat(resolveMiss("ab12", 3, 3, 3, 8, 0, 1).verdict()).isEqualTo("unreachable");
+        assertThat(resolveMiss("ab12", 3, 3, 3, 8, 0, 1, 12L).verdict()).isEqualTo("unreachable");
+    }
+
+    @Test
+    void kind_fallbackDegraded_whenAProbeFailed_otherwiseQuorumEmpty() {
+        assertThat(resolveMiss("ab12", 3, 3, 3, 4, 1, 0, 12L).kind()).isEqualTo("fallback-degraded");
+        assertThat(healthy().kind()).isEqualTo("quorum-empty");
     }
 
     @Test
@@ -61,10 +67,10 @@ class ResolveMissTest {
         var infos = new ArrayList<String>();
         var observer = loggingResolveFallbackObserver(warns::add, infos::add);
 
-        observer.onUnresolvedAfterFallback(resolveMiss("ab12", 3, 3, 2, 8, 1, 2));
+        observer.onUnresolvedAfterFallback(resolveMiss("ab12", 3, 3, 2, 8, 1, 2, 12L));
 
         assertThat(infos).isEmpty();
-        assertThat(warns).containsExactly("DHT resolve all-miss key=ab12 verdict=unreachable rSetAnswered=2 rSetLive=3 rSetSize=3"
+        assertThat(warns).containsExactly("DHT resolve all-miss key=ab12 verdict=unreachable kind=fallback-degraded elapsedMs=12 rSetAnswered=2 rSetLive=3 rSetSize=3"
                                           + " probed=8 probesFailed=1 unprobed=2");
     }
 

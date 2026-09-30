@@ -30,21 +30,24 @@ package org.pragmatica.dht;
 /// @param probed        non-R-set ring members probed by the bounded fallback
 /// @param probesFailed  probes that timed out or were refused (each read as empty)
 /// @param unprobed      non-R-set ring members the probe bound left unread
+/// @param elapsedMillis time from the R-set read starting to this report
 public record ResolveMiss(String keyHex,
                           int rSetSize,
                           int rSetLive,
                           int rSetAnswered,
                           int probed,
                           int probesFailed,
-                          int unprobed) {
+                          int unprobed,
+                          long elapsedMillis) {
     public static ResolveMiss resolveMiss(String keyHex,
                                           int rSetSize,
                                           int rSetLive,
                                           int rSetAnswered,
                                           int probed,
                                           int probesFailed,
-                                          int unprobed) {
-        return new ResolveMiss(keyHex, rSetSize, rSetLive, rSetAnswered, probed, probesFailed, unprobed);
+                                          int unprobed,
+                                          long elapsedMillis) {
+        return new ResolveMiss(keyHex, rSetSize, rSetLive, rSetAnswered, probed, probesFailed, unprobed, elapsedMillis);
     }
 
     /// True only when nothing could have hidden a copy: every R-set member was targeted and answered, no probe
@@ -54,6 +57,15 @@ public record ResolveMiss(String keyHex,
                && unprobed == 0
                && rSetLive == rSetSize
                && rSetAnswered >= rSetSize;
+    }
+
+    /// How the empty was reached: `fallback-degraded` when a probe failed and was read as empty, otherwise
+    /// `quorum-empty` (every probe answered empty). A read that never completed is reported by the artifact
+    /// store as `timed-out`; it produces no all-miss at all.
+    public String kind() {
+        return probesFailed > 0
+               ? "fallback-degraded"
+               : "quorum-empty";
     }
 
     /// `lost` or `unreachable`, the verdict operators grep for.

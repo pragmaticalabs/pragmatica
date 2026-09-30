@@ -29,6 +29,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -168,10 +169,13 @@ public interface ArtifactStore {
     sealed interface ArtifactStoreError extends Cause {
         /// The DHT answered "no metadata" for the key. `keyHex` joins this line to the DHT client's
         /// all-miss report for the same key, which says whether the key is lost or merely unreachable.
-        record NotFound(ArtifactFile file, String keyHex) implements ArtifactStoreError {
+        record NotFound(ArtifactFile file, String keyHex, long elapsedMillis) implements ArtifactStoreError {
             @Override
             public String message() {
-                return "Artifact not found: " + file.asString() + " (dht key " + keyHex + ")";
+                return "Artifact not found: " + file.asString()
+                     + " (dht key " + keyHex
+                     + ", outcome=answered-empty, elapsedMs=" + elapsedMillis
+                     + ")";
             }
         }
 
@@ -379,17 +383,44 @@ class ArtifactStoreImpl implements ArtifactStore {
         // resolveChunksFromStorage with a chunk-count-scaled budget. Placed early per
         // Promise.timeout's contract so a never-resolving dht.get is cancelled rather than a
         // downstream transformation.
+        var startNanos = System.nanoTime();
+
         return dhtGetWithRetry(metaKey(file)).timeout(resolveBase)
-                              .flatMap(metaOpt -> metadataOf(file, metaOpt))
+                              .onFailure(cause -> log.warn(readFailureLine(keyHex(file),
+                                                                           cause,
+                                                                           elapsedMillisSince(startNanos))))
+                              .flatMap(metaOpt -> metadataOf(file,
+                                                             metaOpt,
+                                                             elapsedMillisSince(startNanos)))
                               .flatMap(meta -> resolveChunksFromStorage(file, meta));
+    }
+
+    private String keyHex(ArtifactFile file) {
+        return HexFormat.of().formatHex(metaKey(file));
+    }
+
+    private static long elapsedMillisSince(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
+    /// The line for a metadata read that did not complete. `outcome=timed-out` is a read the aggregate timeout cut
+    /// (a target that departed mid-read never answers, so nothing reports an all-miss for it); any other failure is
+    /// `read-failed`. Joins by key hex to the DHT client's all-miss line, which covers the reads that DID complete.
+    static String readFailureLine(String keyHex, Cause cause, long elapsedMillis) {
+        return "DHT metadata read did not complete key=" + keyHex
+             + " outcome=" + (cause instanceof CoreError.Timeout
+                              ? "timed-out"
+                              : "read-failed")
+             + " elapsedMs=" + elapsedMillis
+             + " cause=" + cause.message();
     }
 
     /// Absent bytes are [ArtifactStoreError.NotFound]; present bytes that do not parse are
     /// [ArtifactStoreError.MetadataUnparseable] — the two are different facts and stay different causes.
-    private Promise<ArtifactMetadata> metadataOf(ArtifactFile file, Option<byte[]> metaOpt) {
-        var keyHex = HexFormat.of().formatHex(metaKey(file));
+    private Promise<ArtifactMetadata> metadataOf(ArtifactFile file, Option<byte[]> metaOpt, long elapsedMillis) {
+        var keyHex = keyHex(file);
 
-        return metaOpt.async(new ArtifactStoreError.NotFound(file, keyHex))
+        return metaOpt.async(new ArtifactStoreError.NotFound(file, keyHex, elapsedMillis))
                       .flatMap(bytes -> ArtifactMetadata.fromBytes(bytes).async(new ArtifactStoreError.MetadataUnparseable(file,
                                                                                                                            keyHex)));
     }
