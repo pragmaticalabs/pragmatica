@@ -131,6 +131,51 @@ public final class PiggybackBuffer {
         return Collections.unmodifiableList(result);
     }
 
+    /// Split `updates` into at most `maxMessages` pages, each holding at most `maxPerMessage` updates and
+    /// an estimated encoded size within `budgetBytes` (the same budget [#peekUpdates(int,int)] honours).
+    /// An update that ALONE exceeds the budget goes out on its own page WITHOUT its labels, exactly as
+    /// `peekUpdates` degrades it; updates beyond the last page are dropped — the caller bounds fan-out.
+    public static List<List<MembershipUpdate>> pack(List<MembershipUpdate> updates,
+                                                    int maxPerMessage,
+                                                    int budgetBytes,
+                                                    int maxMessages) {
+        var pages = new ArrayList<List<MembershipUpdate>>();
+        var page = new ArrayList<MembershipUpdate>();
+        var usedBytes = 0;
+
+        for (var update : updates) {
+            var candidate = estimatedBytes(update) > budgetBytes ? stripLabels(update) : update;
+            var itemBytes = estimatedBytes(candidate);
+
+            if (!page.isEmpty() && (page.size() >= maxPerMessage || usedBytes + itemBytes > budgetBytes)) {
+                pages.add(page);
+                page = new ArrayList<>();
+                usedBytes = 0;
+            }
+
+            if (pages.size() >= maxMessages) {
+                return List.copyOf(pages);
+            }
+
+            page.add(candidate);
+            usedBytes += itemBytes;
+        }
+
+        if (!page.isEmpty() && pages.size() < maxMessages) {
+            pages.add(page);
+        }
+
+        return List.copyOf(pages);
+    }
+
+    private static MembershipUpdate stripLabels(MembershipUpdate update) {
+        return MembershipUpdate.membershipUpdate(update.nodeId(),
+                                                 update.state(),
+                                                 update.incarnation(),
+                                                 update.address(),
+                                                 update.bootToken());
+    }
+
     private MembershipUpdate withoutLabels(MembershipUpdate update, int itemBytes, int budgetBytes) {
         if (update.labels().isEmpty()) {
             return update;

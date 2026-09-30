@@ -96,6 +96,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// tombstone immediately. The TTL exists purely to reclaim map entries for ids
     /// that never come back.
     private static final long TOMBSTONE_TTL_MULTIPLIER = 10L;
+    /// Sequence of the unsolicited `Ack`s that answer an ANNOUNCE with the membership view (#1783).
+    /// The probe sequence counter starts at 1, so no pending probe ever matches it.
+    private static final long SYNC_ACK_SEQUENCE = 0L;
+    /// Most datagrams one ANNOUNCE reply may take (about 7 members each at the default budget); a larger
+    /// view is covered by the ANNOUNCE retries, which reshuffle.
+    private static final int SYNC_MAX_DATAGRAMS = 4;
 
     private final SwimConfig config;
     private final SwimTransport transport;
@@ -1709,6 +1715,52 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                                                               announce.nodeInfo())),
                                                              announce.clusterName(),
                                                              announce.incarnation()));
+        replyWithMembershipSnapshot(sender, announce.nodeInfo().id());
+    }
+
+    /// Join ack: answer an accepted ANNOUNCE with this node's current view, so the joiner learns the
+    /// cluster without depending on what the piggyback buffer still retains (#1783). An update is evicted
+    /// after `maxDisseminations` peeks, and a member is only ever gossiped TO the peers its gossiper probes,
+    /// so two nodes that join at different times can each miss the other's join gossip for good.
+    ///
+    /// The view rides as unsolicited `Ack`s (sequence [#SYNC_ACK_SEQUENCE], which no pending probe ever
+    /// carries) — no new wire type. The receiver merges the pages through `processPiggyback`, i.e. the SAME
+    /// `applyUpdate` precedence as gossip (boot-token gate, tombstone gate, incarnation and state ordering),
+    /// so a stale entry can never resurrect a FAULTY or removed member. The joiner's own pings then carry
+    /// its self-ALIVE to every member it just learned, which closes the other direction.
+    /// Bounded: at most [#SYNC_MAX_DATAGRAMS] datagrams, each within the piggyback byte budget. The member
+    /// order is shuffled per reply, so the ANNOUNCE retries (every 500ms until first probed) cover a view
+    /// larger than one reply.
+    @Contract
+    private void replyWithMembershipSnapshot(InetSocketAddress sender, NodeId announcer) {
+        PiggybackBuffer.pack(snapshotFor(announcer), config.maxPiggyback(), piggybackBudgetBytes, SYNC_MAX_DATAGRAMS)
+                       .forEach(page -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
+    }
+
+    /// Live members worth telling a joiner about: ALIVE and SUSPECT (hearsay the joiner's own merge rules
+    /// weigh). FAULTY is excluded — a joiner gains nothing from a death it cannot act on, and OBSERVED is
+    /// local-only and never serialized ([#addMemberUpdate]).
+    private List<MembershipUpdate> snapshotFor(NodeId announcer) {
+        var view = members.values()
+                          .stream()
+                          .filter(member -> !member.nodeId().equals(announcer))
+                          .filter(member -> member.state() == MemberState.ALIVE || member.state() == MemberState.SUSPECT)
+                          .filter(member -> inMembershipScope(member.nodeId()))
+                          .map(this::snapshotUpdate)
+                          .collect(Collectors.toCollection(ArrayList::new));
+
+        Collections.shuffle(view);
+
+        return view;
+    }
+
+    private MembershipUpdate snapshotUpdate(SwimMember member) {
+        return MembershipUpdate.membershipUpdate(member.nodeId(),
+                                                 member.state(),
+                                                 member.incarnation(),
+                                                 member.address(),
+                                                 bootTokenOf(member.nodeId()),
+                                                 gossipLabels(member.labels()));
     }
 
     /// Derive the dial-preferred QUIC address for an announcing peer: the ANNOUNCE source IP
