@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -40,6 +41,12 @@ final class UdpGate implements AutoCloseable {
     /// #1727: probability of dropping a relayed datagram, in either direction (0 = none).
     private volatile double dropRate;
     private final java.util.Random drops;
+    /// #1727: what the relay did, for a failure's diagnosis. A relay thread used to end SILENTLY on any IOException, which
+    /// stalls one direction for good while the other keeps flowing; [#describe] names such an exit and its cause.
+    private final AtomicLong toTarget = new AtomicLong();
+    private final AtomicLong toClient = new AtomicLong();
+    private final AtomicLong discarded = new AtomicLong();
+    private final List<String> exits = new CopyOnWriteArrayList<>();
 
     private UdpGate(DatagramSocket front, InetSocketAddress target, long seed) {
         this.front = front;
@@ -110,8 +117,12 @@ final class UdpGate implements AutoCloseable {
                 front.receive(packet);
                 if (open && !drop()) {
                     upstream(packet.getSocketAddress()).send(new DatagramPacket(packet.getData(), packet.getLength(), target));
+                    toTarget.incrementAndGet();
+                } else {
+                    discarded.incrementAndGet();
                 }
             } catch (IOException e) {
+                exited("to-target", e);
                 return;
             }
         }
@@ -142,11 +153,26 @@ final class UdpGate implements AutoCloseable {
                 socket.receive(packet);
                 if (!drop()) {
                     front.send(new DatagramPacket(packet.getData(), packet.getLength(), client));
+                    toClient.incrementAndGet();
+                } else {
+                    discarded.incrementAndGet();
                 }
             } catch (IOException e) {
+                exited("to-client", e);
                 return;
             }
         }
+    }
+
+    private void exited(String direction, IOException cause) {
+        if (!closed) {
+            exits.add(direction + ": " + cause);
+        }
+    }
+
+    String describe() {
+        return "relay{toTarget=" + toTarget.get() + " toClient=" + toClient.get() + " discarded=" + discarded.get()
+               + " exitsBeforeClose=" + exits + "}";
     }
 
     @Override

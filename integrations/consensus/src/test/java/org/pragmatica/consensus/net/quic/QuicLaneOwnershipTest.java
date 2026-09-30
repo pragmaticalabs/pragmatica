@@ -70,6 +70,7 @@ class QuicLaneOwnershipTest {
     private final List<Object> receivedByDialer = new CopyOnWriteArrayList<>();
     private final AtomicReference<QuicPeerConnection> acceptorSide = new AtomicReference<>();
     private final AtomicReference<Option<DeliveryTrace>> runningBurst = new AtomicReference<>(Option.empty());
+    private Option<LaneDiagnosis.Sockets> sockets = Option.empty();
     private QuicClusterServer server;
     private QuicClusterClient client;
     private QuicPeerConnection dialerSide;
@@ -98,6 +99,7 @@ class QuicLaneOwnershipTest {
                            .fold(cause -> fail("dial: " + cause.message()), connection -> connection);
         awaitTrue(() -> acceptorSide.get() != null && everyLanePresent(acceptorSide.get()),
                   "the acceptor registered every lane the dialer opened");
+        sockets = Option.some(LaneDiagnosis.Sockets.attach(dialerSide.connection(), acceptorSide.get().connection()));
     }
 
     @AfterEach
@@ -389,7 +391,7 @@ class QuicLaneOwnershipTest {
                  + indices(undelivered()) + " closes=" + closes + " dialerStream.active=" + dialerStream.isActive()
                  + " acceptorStream.active=" + acceptorStream.map(QuicStreamChannel::isActive).or(false)
                  + " stats@10s=" + statsAtTimeout + " stats@+15s=" + stats() + " acceptorPortSharers="
-                 + server.boundPort().map(LaneDiagnosis::portSharers).or("n/a"));
+                 + server.boundPort().map(LaneDiagnosis::portSharers).or("n/a") + " " + belowQuic());
         }
 
         /// Every write resolved and every acknowledged one was read.
@@ -541,6 +543,11 @@ class QuicLaneOwnershipTest {
     private String diagnosis() {
         return runningBurst.get().map(trace -> trace.summary() + " ").or("")
                + LaneDiagnosis.stall(Option.option(dialerSide), Option.option(acceptorSide.get()),
-                                     Option.option(server).flatMap(QuicClusterServer::boundPort));
+                                     Option.option(server).flatMap(QuicClusterServer::boundPort))
+               + " " + belowQuic();
+    }
+
+    private String belowQuic() {
+        return sockets.map(LaneDiagnosis.Sockets::describe).or("sockets{not attached}");
     }
 }

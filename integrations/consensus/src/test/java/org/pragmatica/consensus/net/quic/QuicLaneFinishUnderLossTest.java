@@ -69,6 +69,7 @@ class QuicLaneFinishUnderLossTest {
     private final List<Object> receivedByDialer = new CopyOnWriteArrayList<>();
     private final AtomicReference<QuicPeerConnection> acceptorSide = new AtomicReference<>();
     private final AtomicReference<Option<Burst>> runningBurst = new AtomicReference<>(Option.empty());
+    private Option<LaneDiagnosis.Sockets> sockets = Option.empty();
     private QuicClusterServer server;
     private QuicClusterClient client;
     private UdpGate relay;
@@ -123,7 +124,7 @@ class QuicLaneFinishUnderLossTest {
                  + " failed=" + failed.get() + " missing=" + missing(acked) + " closes=" + closes
                  + " dialerStandIn.active=" + standIn.isActive() + " acceptorStandIn.active=" + acceptorStandIn.isActive()
                  + " statsAt20s=" + statsAt + " statsAt35s=" + stats() + " verdict=" + verdict(burst) + " acceptorPortSharers="
-                 + server.boundPort().map(LaneDiagnosis::portSharers).or("n/a"));
+                 + server.boundPort().map(LaneDiagnosis::portSharers).or("n/a") + " " + belowQuic());
         }
         assertThat(LaneDiagnosis.lostBytes(dialerSide.connection())).as("arming: the relay made the dialer's QUIC stack lose bytes").isPositive();
         assertThat(failed.get()).as("arming: the finish landed mid-burst, so the writes after it failed visibly").isPositive();
@@ -152,6 +153,7 @@ class QuicLaneFinishUnderLossTest {
         awaitTrue(() -> acceptorSide.get() != null
                         && java.util.Arrays.stream(StreamType.values()).allMatch(lane -> acceptorSide.get().stream(lane).isPresent()),
                   "the acceptor registered every lane the dialer opened");
+        sockets = Option.some(LaneDiagnosis.Sockets.attach(dialerSide.connection(), acceptorSide.get().connection()));
     }
 
     private String stats() {
@@ -263,6 +265,13 @@ class QuicLaneFinishUnderLossTest {
     private String diagnosis() {
         return runningBurst.get().map(burst -> summary(burst) + " ").or("")
                + LaneDiagnosis.stall(Option.option(dialerSide), Option.option(acceptorSide.get()),
-                                     Option.option(server).flatMap(QuicClusterServer::boundPort));
+                                     Option.option(server).flatMap(QuicClusterServer::boundPort))
+               + " " + belowQuic();
+    }
+
+    /// The datagram sockets under both ends, and the relay between them (its threads can die; see [UdpGate#describe]).
+    private String belowQuic() {
+        return sockets.map(LaneDiagnosis.Sockets::describe).or("sockets{not attached}") + " "
+               + Option.option(relay).map(UdpGate::describe).or("relay{none}");
     }
 }
