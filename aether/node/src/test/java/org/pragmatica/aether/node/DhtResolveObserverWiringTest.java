@@ -29,10 +29,10 @@ class DhtResolveObserverWiringTest {
     }
 
     @Test
-    void assembly_warnsOnlyForArtifactKeys() throws IOException {
+    void assembly_warnsOnlyForArtifactMetadataKeys() throws IOException {
         var source = Files.readString(SOURCE);
 
-        assertThat(source).contains("ArtifactStore::isArtifactKeyHex");
+        assertThat(source).contains("ArtifactStore::isArtifactMetadataKeyHex");
     }
 
     @Test

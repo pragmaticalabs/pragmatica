@@ -160,6 +160,25 @@ class DHTResolveFallbackTest {
         assertThat(miss.verdict()).isEqualTo("unreachable");
     }
 
+    /// #1770's opt-in grace: a value on the third R-set replica that arrives within the grace WINS, so the read is
+    /// not a false negative and nothing is reported. The default read above still discards it and says so.
+    @Test
+    void get_valueOnThirdRSetReplica_withinOptedInGrace_isReturnedAndNotReportedDiscarded() {
+        var observer = new RecordingResolveFallbackObserver();
+        var fabric = fabric(CONFIG, observer, 5);
+        var lateKey = key("late-key");
+        var rSet = fabric.rSetFor(lateKey);
+        fabric.seedOnly(rSet.getLast(), lateKey, value("payload"));
+
+        fabric.client(rSet.getFirst())
+              .get(lateKey, ReadOptions.absentGrace(timeSpan(1).seconds()))
+              .await()
+              .onFailure(cause -> Assertions.fail(cause.message()))
+              .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+
+        assertThat(observer.unresolvedCount()).isZero();
+    }
+
     @Test
     void get_fallbackBounded_probesAtMostLimit() {
         var observer = new RecordingResolveFallbackObserver();
