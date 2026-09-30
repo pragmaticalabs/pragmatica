@@ -578,9 +578,15 @@ class StreamSectionBindingTest {
             }
 
             assertThat(events).as("RF 1 declared raises all three warnings").hasSize(3);
-            assertThat(events).allSatisfy(event -> assertThat(event.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING))
-                              .allSatisfy(event -> assertThat(event.subject()).isEqualTo("stream 'orders'"));
-            assertThat(events).anySatisfy(event -> assertThat(event.message()).contains(ReplicationWarning.FACTOR_BELOW_THREE.code()));
+            assertThat(events).allSatisfy(event -> assertThat(event.subject()).isEqualTo("stream 'orders'"));
+            // The LOUD RF-below-3 warning has its own CRITICAL code (v1680 N-r3-2); the other two share the policy code.
+            assertThat(events.stream().map(org.pragmatica.utility.warning.OperatorWarning::code))
+                .containsExactlyInAnyOrder(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING);
+            assertThat(events).filteredOn(event -> event.code() == org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE)
+                              .singleElement()
+                              .satisfies(event -> assertThat(event.message()).contains(ReplicationWarning.FACTOR_BELOW_THREE.code()));
         }
 
         /// V5: the declaration's warnings are LOGGED at activation — the LOUD RF-below-3 warning among them.
@@ -598,10 +604,13 @@ class StreamSectionBindingTest {
                 detach.run();
             }
 
-            // #1617: OperatorWarnings.raise prefixes the site's template with the operator-warning code.
-            assertThat(warnings).anySatisfy(line -> assertThat(line).startsWith("[replication-policy-warning] LOUD: ")
+            // #1617: OperatorWarnings.raise prefixes the site's template with the operator-warning code, and logs at the
+            // code's level: the LOUD RF-below-3 warning under its own CRITICAL code (an ERROR line, v1680 N-r3-2).
+            assertThat(warnings).anySatisfy(line -> assertThat(line).startsWith("[replication-factor-below-three] LOUD: ")
                                                                     .contains(ReplicationWarning.FACTOR_BELOW_THREE.code())
                                                                     .contains("stream 'orders'"));
+            assertThat(warnings).anySatisfy(line -> assertThat(line).startsWith("[replication-policy-warning] stream replication warning [")
+                                                                    .contains(ReplicationWarning.CONFIRMATION_EQUALS_FACTOR.code()));
         }
     }
 

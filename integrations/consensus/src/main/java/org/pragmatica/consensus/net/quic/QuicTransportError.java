@@ -48,6 +48,14 @@ public sealed interface QuicTransportError extends Cause {
                 return true;
             }
         },
+        /// #1461: `stop()` ran before (or while) `startOnPort` ran. A stopped network stays stopped, so the late
+        /// start refuses instead of arming a server, reconciler and keepalive that nothing will stop. Terminal.
+        NETWORK_STOPPED("QUIC cluster network was stopped before its start could complete") {
+            @Override
+            public boolean isTerminal() {
+                return true;
+            }
+        },
         NO_TLS_CONFIGURATION("No TLS configuration provided. Set AETHER_INSECURE_DEV_MODE=true for development without TLS verification");
         private final String message;
         General(String message) {
@@ -75,6 +83,15 @@ public sealed interface QuicTransportError extends Cause {
     record ConnectFailed(String address, Cause origin, String message) implements QuicTransportError, Cause.Wrapped {
         static final Fn2<ConnectFailed, String, Cause> FACTORY = Causes.forTwoValues("Failed to connect to QUIC peer at %s: %s",
                                                                                      ConnectFailed::new);
+    }
+
+    /// #1489: the QUIC connect failed in its TLS handshake (the netty-quic connect future fails with a
+    /// `javax.net.ssl.SSLException`, e.g. `CERTIFICATE_VERIFY_FAILED` for a peer of another cluster). Kept apart
+    /// from [ConnectFailed] (unreachable, refused, timed out) so `quic_handshake_failures_total` counts TLS
+    /// failures only; `quic_dial_failures_total` counts every failed dial.
+    record HandshakeFailed(String address, Cause origin, String message) implements QuicTransportError, Cause.Wrapped {
+        static final Fn2<HandshakeFailed, String, Cause> FACTORY = Causes.forTwoValues("QUIC TLS handshake with %s failed: %s",
+                                                                                       HandshakeFailed::new);
     }
 
     /// Peer address could not be resolved to an IP (e.g. stale/unknown DNS name).

@@ -31,6 +31,8 @@ public final class QuicTransportMetrics {
     private final AtomicInteger activeConnections = new AtomicInteger(0);
     private final LongAdder handshakeTotal = new LongAdder();
     private final LongAdder handshakeFailures = new LongAdder();
+    /// #1489: every failed dial, whatever the stage. `handshakeFailures` counts only TLS handshake failures.
+    private final LongAdder dialFailures = new LongAdder();
     /// #1578: dials abandoned before their QUIC handshake because the peer went CONNECTED over another link.
     private final LongAdder dialsAbandoned = new LongAdder();
     private final LongAdder messagesSent = new LongAdder();
@@ -104,9 +106,16 @@ public final class QuicTransportMetrics {
         activeConnections.decrementAndGet();
     }
 
+    /// #1489: a QUIC connect that failed in its TLS handshake ([QuicTransportError.HandshakeFailed]) only.
     @Contract
     public void onHandshakeFailure() {
         handshakeFailures.increment();
+    }
+
+    /// #1489: any failed dial — unreachable, refused, timed out, identity or boot-token rejection, TLS.
+    @Contract
+    public void onDialFailure() {
+        dialFailures.increment();
     }
 
     @Contract
@@ -237,6 +246,7 @@ public final class QuicTransportMetrics {
         metrics.put("quic_active_connections", activeConnections.get());
         metrics.put("quic_handshake_total", handshakeTotal.sum());
         metrics.put("quic_handshake_failures_total", handshakeFailures.sum());
+        metrics.put("quic_dial_failures_total", dialFailures.sum());
         metrics.put("quic_dial_abandoned_total", dialsAbandoned.sum());
         metrics.put("quic_messages_sent_total", messagesSent.sum());
         metrics.put("quic_messages_received_total", messagesReceived.sum());
@@ -273,6 +283,10 @@ public final class QuicTransportMetrics {
 
     public long handshakeFailureCount() {
         return handshakeFailures.sum();
+    }
+
+    public long dialFailureCount() {
+        return dialFailures.sum();
     }
 
     public long dialAbandonedCount() {

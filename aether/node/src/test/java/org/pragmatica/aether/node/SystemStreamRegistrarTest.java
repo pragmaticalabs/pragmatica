@@ -290,6 +290,211 @@ class SystemStreamRegistrarTest {
             assertThat(scheduler.hasPending()).as("a committed leg is never re-armed").isFalse();
         }
 
+        /// v1680 N-r3-1: the refusal is cleared once the re-armed leg commits — the recovery sink runs exactly once,
+        /// and never for a leg that was not refused.
+        @Test
+        void recoverySink_runsOnceWhenARefusedLegCommits_andNeverOtherwise() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(recoveries.get()).as("a refusal is not a recovery").isZero();
+
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+            assertThat(recoveries.get()).as("the re-armed leg committed").isEqualTo(1);
+
+            registrar.onClusterConfigChanged();
+            assertThat(scheduler.hasPending()).isFalse();
+            assertThat(recoveries.get()).as("a committed leg recovers once").isEqualTo(1);
+        }
+
+        /// v1735 X4b: a re-armed leg that is REFUSED AGAIN has not recovered — the sink must not clear a still-refused
+        /// state; the refusal is reported again instead.
+        @Test
+        void recoverySink_doesNotRun_whenTheReArmedLegIsRefusedAgain() {
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                5).result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+
+            assertThat(refusals.get()).as("refused, re-armed, refused again").isEqualTo(2);
+            assertThat(recoveries.get()).as("a still-refused leg never clears").isZero();
+        }
+
+        /// v1735 X4c: after a re-arm the stream may already be committed (another leader committed it) — the leg
+        /// answers `STREAM_ALREADY_EXISTS`, which is the committed state, so the refusal is cleared once.
+        @Test
+        void recoverySink_runsOnce_whenTheReArmedLegFindsTheStreamAlreadyCommitted() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : StreamError.General.STREAM_ALREADY_EXISTS.result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).isTrue();
+            assertThat(recoveries.get()).isEqualTo(1);
+        }
+
+        /// v1735 r3: the refusal alert is leader-local, so a node that loses leadership clears it (and un-latches the
+        /// leg, so a re-elected node attempts — and reports — again).
+        @Test
+        void deactivate_withALatchedRefusal_clearsItsReport_andReArmsOnTheNextLeadership() {
+            var calls = new AtomicInteger();
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+                                                                            calls.incrementAndGet();
+                                                                            return new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                      5).result();
+                                                                        },
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(recoveries.get()).as("the former leader clears its report").isEqualTo(1);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireAll();
+            assertThat(calls.get()).as("re-elected, the refused leg is attempted again").isEqualTo(2);
+            assertThat(refusals.get()).as("and a refusal that still holds is reported again").isEqualTo(2);
+        }
+
+        /// v1735 r3, end to end on one node: the refusal alert the leader raised is gone from ITS `/api/alerts/active`
+        /// once it loses leadership. The sinks are wired exactly as `AetherNode` wires them (inject local, clear by name).
+        @Test
+        @SuppressWarnings("unchecked")
+        void formerLeader_alertIsGoneFromActiveAlerts_afterLeadershipLoss() {
+            var alerts = org.pragmatica.aether.api.AlertManager.readOnly(org.mockito.Mockito.mock(org.pragmatica.cluster.state.kvstore.KVStore.class));
+            var name = "cluster-events-registration-refused";
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                5).result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        cause -> alerts.injectLocal(name, "CRITICAL", cause.message())
+                                                                                       .await(),
+                                                                        () -> alerts.clearInjected(name));
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(activeNames(alerts)).as("the leader lists its refusal").contains(name);
+
+            registrar.onLeaderChange(lost());
+            assertThat(activeNames(alerts)).as("a former leader keeps no stale refusal").doesNotContain(name);
+        }
+
+        private static List<String> activeNames(org.pragmatica.aether.api.AlertManager alerts) {
+            return alerts.activeAlertsAsList()
+                         .await()
+                         .or(List.of())
+                         .stream()
+                         .map(org.pragmatica.aether.api.AlertManager.AlertView::name)
+                         .toList();
+        }
+
+        /// v1735 r3 residual: a corrected config re-armed the refused leg (no longer latched, still recovering), its pass
+        /// then fails TRANSIENTLY, and the node loses leadership — the alert is still up, so it must still be cleared.
+        @Test
+        void deactivate_whileAReArmedLegIsStillFailingTransiently_clearsTheReport() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : StreamError.General.STREAM_CONFIG_COMMIT_FAILED.result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(refusals.get()).isEqualTo(1);
+            assertThat(recoveries.get()).as("the re-armed-but-uncommitted refusal is cleared on leadership loss")
+                                        .isEqualTo(1);
+        }
+
+        @Test
+        void deactivate_withoutARefusal_clearsNothing() {
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(recoveries.get()).isZero();
+        }
+
+        @Test
+        void recoverySink_neverRunsForALegThatWasNotRefused() {
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).isTrue();
+            assertThat(recoveries.get()).isZero();
+        }
+
         @Test
         void onLeaderChange_bootstrapTransientFailure_retriedIndependently() {
             // createStream commits immediately; only the bootstrap leg is transiently failing. The
