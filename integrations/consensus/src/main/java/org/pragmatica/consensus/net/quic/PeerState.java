@@ -416,17 +416,18 @@ public final class PeerState {
 
     /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). A same-direction link
     /// within [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial race. Across
-    /// directions both ends prefer the link dialed by the LOWER id (#1390), but only while the race is
-    /// live or the incumbent is provably working: inside [CONVERGENCE_WINDOW_NANOS] the lower-id link
-    /// wins whichever arrived first; beyond it an incumbent survives only if its peer was heard from
-    /// within [#receiptFloorNanos]. A receipt-silent incumbent of EITHER direction is superseded: a
-    /// completed Hello from the verified peer proves it abandoned the old link, and a lower-id
-    /// incumbent the peer no longer reads (its CONNECTION_CLOSE lost) would otherwise answer every
-    /// redial with DUPLICATE until this end's own liveness sweep evicts it. A stray handshake (a dial
-    /// aimed at a recycled address that reached us anyway) cannot tear down a heard-from link.
+    /// directions both ends prefer the link dialed by the LOWER id (#1390). A lower-id incumbent survives
+    /// while it is younger than [#receiptFloorNanos] (the race is live, and BOTH ends must keep the same
+    /// link even when one end's handshake is delayed past [CONVERGENCE_WINDOW_NANOS] and both are still
+    /// silent) or while its peer was heard within that floor; an older receipt-silent one is superseded —
+    /// a completed Hello from the verified peer proves it abandoned the old link, and answering every
+    /// redial with DUPLICATE until this end's own liveness sweep evicts it is the M5 outage. A higher-id
+    /// incumbent yields to the lower-id link inside [CONVERGENCE_WINDOW_NANOS] and survives beyond it only
+    /// while heard from. A stray handshake (a dial aimed at a recycled address) cannot tear down a
+    /// heard-from link.
     private boolean isIncumbentKept(int directionOrder, long nowNanos) {
         return switch (Integer.signum(directionOrder)) {
-            case -1 -> isInsideRaceWindow(nowNanos) || isHeardFromRecently(nowNanos);
+            case -1 -> phaseAgeNanos(nowNanos) <= receiptFloorNanos || isHeardFromRecently(nowNanos);
             case 0 -> phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;
             default -> !isInsideRaceWindow(nowNanos) && isHeardFromRecently(nowNanos);
         };

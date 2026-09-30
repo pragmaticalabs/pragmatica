@@ -288,6 +288,26 @@ class PeerStateTest {
         assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(incumbent);
     }
 
+    @Test
+    void attach_flippedArrivalOrderBothEndsSilent_bothEndsKeepTheLowerIdLink() {
+        // N5: the two ends see the two dials in opposite order and one handshake is delayed past the 500ms
+        // race window (600ms here), with no receipt at either end. Both must converge on the lower-id link;
+        // before, the lower-id incumbent's end kept it but the higher-id incumbent's end yielded to the
+        // lower-id link only by the window rule, so the ends could disagree and both links died.
+        var atLowerFirst = state();
+        atLowerFirst.beginConnecting(T0 + 1);
+        var lowerLinkAtX = initiatedBy(LOWER);
+        atLowerFirst.attach(lowerLinkAtX, T0 + 2);
+        atLowerFirst.attach(initiatedBy(HIGHER), T0 + 2 + TimeUnit.MILLISECONDS.toNanos(600));
+        var atHigherFirst = state();
+        atHigherFirst.beginConnecting(T0 + 1);
+        atHigherFirst.attach(initiatedBy(HIGHER), T0 + 2);
+        var lowerLinkAtY = initiatedBy(LOWER);
+        atHigherFirst.attach(lowerLinkAtY, T0 + 2 + TimeUnit.MILLISECONDS.toNanos(600));
+        assertThat(atLowerFirst.activeConnection().or((QuicPeerConnection) null)).isSameAs(lowerLinkAtX);
+        assertThat(atHigherFirst.activeConnection().or((QuicPeerConnection) null)).isSameAs(lowerLinkAtY);
+    }
+
     private static QuicPeerConnection initiatedBy(NodeId initiator) {
         var chan = mock(QuicChannel.class);
         when(chan.isActive()).thenReturn(true);

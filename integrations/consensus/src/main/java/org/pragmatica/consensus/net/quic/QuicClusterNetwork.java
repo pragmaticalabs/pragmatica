@@ -2554,6 +2554,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return state.inboundAgeNanos(now) > ttl && state.phaseAgeNanos(now) > ttl;
     }
 
+    /// Package-private test seam: the [PeerState] the production path would create for `peerId`, so a test can
+    /// observe the receipt floor the network wires into it.
+    PeerState peerStateForTests(NodeId peerId) {
+        return getOrCreatePeer(peerId);
+    }
+
     /// Receipt floor handed to each [PeerState]: three keepalive intervals, so a healthy idle link is
     /// never judged silent by the cross-direction supersede rule (`PeerState` raises it to its 3s minimum).
     private long receiptFloorNanos() {
