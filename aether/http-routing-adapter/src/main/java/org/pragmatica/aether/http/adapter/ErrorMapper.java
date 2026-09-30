@@ -13,10 +13,20 @@ import org.pragmatica.lang.Cause;
 public interface ErrorMapper {
     HttpError map(Cause cause);
 
+    /// Unmapped causes answer 500, except a [Cause#isTransient] one: a refusal that passes when retried
+    /// (#1737) answers 503 so a client can tell it from a server fault. A cause that is not classified
+    /// transient — including a publish whose outcome is unknown, which is not retry-safe without a
+    /// message ID — stays 500. No `Retry-After` is set, as on the Management-API publish path (#1735).
     static ErrorMapper defaultMapper() {
         return cause -> cause instanceof HttpError he
                         ? he
-                        : HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
+                        : HttpError.httpError(unmappedStatus(cause), cause);
+    }
+
+    private static HttpStatus unmappedStatus(Cause cause) {
+        return cause.isTransient()
+               ? HttpStatus.SERVICE_UNAVAILABLE
+               : HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     default ErrorMapper orElse(ErrorMapper other) {

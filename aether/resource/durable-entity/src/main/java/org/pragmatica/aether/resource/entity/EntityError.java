@@ -152,6 +152,22 @@ public sealed interface EntityError extends Cause {
         }
     }
 
+    /// A fenced write failed because the durable backing is not READY, not because it is broken: the
+    /// underlying cause declares itself [Cause.Transient] (e.g. a stream partition whose new owner has not
+    /// finished promotion after a failover). Nothing reached the log and the condition clears by itself, so
+    /// the caller retries.
+    ///
+    /// Distinct from [StorageFailed], which is a genuine storage fault nobody's retry changes: folding the
+    /// two made a "not ready yet" indistinguishable from a permanent fault, and the owner-forward wire then
+    /// flattened both to the same non-transient carrier. Wraps the originating [Cause] so its message
+    /// survives; being [Cause.Transient] it is what a transport boundary maps to "unavailable, retry".
+    record StorageUnavailable(String key, Cause cause) implements EntityError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Durable entity storage for key '" + key + "' is temporarily unavailable, retry: " + cause.message();
+        }
+    }
+
     /// An operation reached a node that is NOT the committed owner of the entity key's
     /// `(keyspace, partition)` ownership arc. `committedOwner` names the node that IS.
     ///

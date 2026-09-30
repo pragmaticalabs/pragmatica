@@ -21,6 +21,7 @@ class TransientClassificationTest {
         Cause[] transientCauses = {
             new EntityError.OwnershipNotYetCommitted("k", "ks", 0),
             new EntityError.LinearizableUnavailable("k"),
+            new EntityError.StorageUnavailable("k", new EntityLogError.FoldInProgress("ks", 0)),
             new EntityLogError.FoldInProgress("ks", 0),
         };
 
@@ -34,6 +35,7 @@ class TransientClassificationTest {
     void unclassifiedCauses_stayUnclassified() {
         Cause[] unclassified = {
             new EntityError.EntityNotFound("k"),
+            new EntityError.StorageFailed("k", new EntityLogError.MalformedRecord("torn")),
             new EntityLogError.PartitionNotHeld("ks", 0),
         };
 
