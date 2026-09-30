@@ -28,7 +28,8 @@ class SwimMessageLabelsCodecTest {
     private static final NodeId FROM = new NodeId("node-from");
     private static final Map<String, String> CORE_LABELS = Map.of(NodeInfo.LABEL_ROLE, "core",
                                                                    NodeInfo.LABEL_SOURCE, "replacement");
-    private static final InetSocketAddress ADDRESS = new InetSocketAddress("127.0.0.1", 9500);
+    /// Decoded addresses are unresolved (`host/<unresolved>:port`), so the expected value is built the same way.
+    private static final InetSocketAddress ADDRESS = InetSocketAddress.createUnresolved("127.0.0.1", 9500);
 
     private final SliceCodec codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
 
