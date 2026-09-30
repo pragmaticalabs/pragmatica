@@ -21,6 +21,13 @@ import org.pragmatica.lang.Unit;
 
 public interface DeploymentManager {
     Promise<Unit> activate();
+
+    /// #1533 — re-read the rollouts from the KV store when a restore has landed after [#activate] (a
+    /// fresh cluster activates before its restore). A no-op unless active; idempotent.
+    default Unit reloadRestoredState() {
+        return Unit.unit();
+    }
+
     Promise<Unit> deactivate();
     boolean isActive();
 

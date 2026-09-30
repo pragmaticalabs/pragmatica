@@ -703,10 +703,63 @@ final class EntityFold {
 
         var building = new FoldedPartition();
 
-        return substrate.loadCheckpoint(keyspace, partition)
-                        .flatMap(checkpoint -> restoreThenReplay(partition, building, checkpoint))
-                        .map(_ -> publish(fold, building));
+        return usableCheckpoint(partition).flatMap(checkpoint -> restoreThenReplay(partition, building, checkpoint))
+                               .map(_ -> publish(fold, building));
     }
+
+    /// The checkpoint to seed from, validated HERE, at its point of use (#1533): a checkpoint pointer is
+    /// cluster state and comes back with a KV backup restore, while the log it points into is this node's
+    /// and may not have survived. A pointer whose block cannot be read or decoded, or whose `throughOffset`
+    /// lies beyond this node's complete local log head (the log restarted), is ignored and the partition
+    /// folds from its log instead.
+    ///
+    /// Ignoring it is safe (forward recovery, not a silent loss): [#replayFrom]'s gap check still refuses
+    /// to fold when the log below the head is not all readable here, so a skipped checkpoint can cost a
+    /// longer replay or a refused fold — never state missing committed records.
+    private Promise<Option<SeedCheckpoint>> usableCheckpoint(int partition) {
+        return substrate.loadCheckpoint(keyspace, partition)
+                        .map(checkpoint -> checkpoint.flatMap(c -> seedable(partition, c)))
+                        .recover(cause -> unreadableCheckpoint(partition, cause));
+    }
+
+    private Option<SeedCheckpoint> seedable(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
+        var head = substrate.headOffset(keyspace, partition);
+
+        if (checkpoint.throughOffset() > head) {
+            LOG.warn("Entity keyspace '{}' partition {}: the checkpoint claims offset {} but this node's complete log"
+                    + " ends at {} (the log restarted); ignoring the checkpoint and folding from the log",
+                     keyspace,
+                     partition,
+                     checkpoint.throughOffset(),
+                     head);
+
+            return Option.none();
+        }
+
+        return EntityFoldSnapshot.decode(checkpoint.snapshot())
+                                 .map(snapshot -> new SeedCheckpoint(checkpoint.throughOffset(),
+                                                                     snapshot))
+                                 .onFailure(cause -> LOG.warn("Entity keyspace '{}' partition {}: the checkpoint at offset {}"
+                                                             + " cannot be decoded ({}); ignoring it and folding from the log",
+                                                              keyspace,
+                                                              partition,
+                                                              checkpoint.throughOffset(),
+                                                              cause.message()))
+                                 .option();
+    }
+
+    private Option<SeedCheckpoint> unreadableCheckpoint(int partition, Cause cause) {
+        LOG.warn("Entity keyspace '{}' partition {}: the checkpoint cannot be read ({}); ignoring it and folding from"
+                + " the log",
+                 keyspace,
+                 partition,
+                 cause.message());
+
+        return Option.none();
+    }
+
+    /// A checkpoint that passed [#usableCheckpoint]: decoded, and within this node's log.
+    private record SeedCheckpoint(long throughOffset, EntityFoldSnapshot.FoldedState snapshot) {}
 
     /// The single reference write that makes a rebuilt fold visible. Everything before it ran on an
     /// instance no reader could reach, so there is no window in which a partition serves a fold that is
@@ -735,24 +788,12 @@ final class EntityFold {
 
     private Promise<Unit> restoreThenReplay(int partition,
                                             FoldedPartition building,
-                                            Option<EntityLogSubstrate.EntityCheckpoint> checkpoint) {
-        return restore(partition, building, checkpoint).async()
-                      .flatMap(_ -> replayFrom(partition,
-                                               building,
-                                               checkpoint.map(c -> c.throughOffset() + 1).or(0L)));
-    }
+                                            Option<SeedCheckpoint> checkpoint) {
+        checkpoint.onPresent(c -> seed(building, c.snapshot(), c.throughOffset()));
 
-    private Result<Unit> restore(int partition,
-                                 FoldedPartition building,
-                                 Option<EntityLogSubstrate.EntityCheckpoint> checkpoint) {
-        return checkpoint.fold(() -> Result.unitResult(),
-                               c -> EntityFoldSnapshot.decode(c.snapshot())
-                                                      .map(snapshot -> seed(building,
-                                                                            snapshot,
-                                                                            c.throughOffset()))
-                                                      .mapError(cause -> new EntityLogError.FoldFailed(keyspace,
-                                                                                                       partition,
-                                                                                                       cause)));
+        return replayFrom(partition,
+                          building,
+                          checkpoint.map(c -> c.throughOffset() + 1).or(0L));
     }
 
     /// State AND timers are seeded together, because the checkpoint recorded them together. Seeding only

@@ -546,17 +546,18 @@ Workers self-organize into groups deterministically from SWIM membership. Same m
 enabled = true
 path = "/data/backups"
 remote = ""
+restore = "auto"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable git-backed consensus persistence (also needs a non-blank `path`) |
-| `path` | string | env-dependent | Git repo directory holding `state.toml` |
-| `remote` | string | `""` | Optional git remote URL; pushed after every save |
-| `interval` | string | `"5m"` | Accepted and ignored — saves happen on lifecycle transitions only, never periodically |
+| `enabled` | boolean | `false` | Enable the change-triggered KV backup and the cold-start restore (also needs a non-blank `path`) |
+| `path` | string | env-dependent | Directory holding the backup repository `<path>/kv-backup` |
+| `remote` | string | `""` | Git remote the leader pushes to, fast-forward only |
+| `restore` | string | `"auto"` | `auto`: a cold start restores the backup head (fresh when empty); `fresh`: ignore the backup |
 
-Saves are lifecycle-driven (quorum-loss pause, reconfigure, graceful stop); there is no backup API
-or CLI (#676). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
+The leader writes the backup on change (#1532); a whole-cluster restart is a regular start of fresh cores
+followed by the restore (#1533). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
 Default `path` by environment:
 - LOCAL: `./aether-backups`
