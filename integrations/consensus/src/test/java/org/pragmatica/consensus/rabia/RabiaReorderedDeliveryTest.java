@@ -355,7 +355,7 @@ class RabiaReorderedDeliveryTest {
     @Test
     void replicaThatMissedASlotCatchesUpFromTheNextDecision() {
         for (int seed = 0; seed < 6; seed++) {
-            var cluster = new ScheduledCluster(3, seed);
+            var cluster = new ScheduledCluster(3, seed, timeSpan(60).seconds(), timeSpan(100).millis());
             clusters.add(cluster);
             cluster.start();
             var slot = cluster.engines.getFirst().currentPhaseForTesting();
@@ -365,8 +365,9 @@ class RabiaReorderedDeliveryTest {
             assertThat(cluster.parked).as("seed %s: control — slot traffic to the replica really is withheld", seed)
                                       .anyMatch(delivery -> delivery.target() == 2 && delivery.message() instanceof Decision<?>);
             commitOnFirstTwo(cluster, "second", 2);
-            cluster.pumpUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 2
-                                    && cluster.engines.get(2).isActive());
+            cluster.pumpWithTimersUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 2
+                                              && cluster.engines.get(2).isActive(),
+                                        5_000);
             assertThat(cluster.machines.get(2).getProcessedCommands()).as("seed %s", seed)
                                                                        .containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
             assertThat(cluster.engines.get(2).currentPhaseForTesting().compareTo(slot.successor())).as("seed %s", seed).isPositive();
@@ -412,7 +413,7 @@ class RabiaReorderedDeliveryTest {
     @Test
     void pastSlotRepairAlsoReplaysTheFrontierDecision() {
         for (int seed = 0; seed < 4; seed++) {
-            var cluster = new ScheduledCluster(3, seed);
+            var cluster = new ScheduledCluster(3, seed, timeSpan(60).seconds(), timeSpan(100).millis());
             clusters.add(cluster);
             cluster.start();
             var slot = cluster.engines.getFirst().currentPhaseForTesting();
@@ -439,11 +440,90 @@ class RabiaReorderedDeliveryTest {
                                      .toList())
                 .as("seed %s: the repair replays the requested slot AND the peer's frontier", seed)
                 .containsExactlyInAnyOrder(slot, frontier);
-            cluster.pumpUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 3 && cluster.engines.get(2).isActive());
+            cluster.pumpWithTimersUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 3 && cluster.engines.get(2).isActive(),
+                                        5_000);
             assertThat(cluster.machines.get(2).getProcessedCommands()).as("seed %s", seed)
                                                                        .containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
             cluster.stop();
         }
+    }
+
+    /// M4 — ordinary reordering: Decision(P+1) reaches a replica that is still at P, and Decision(P)
+    /// arrives after it. #1390 answered ANY Decision past the current slot with a snapshot resync, which
+    /// deposed the replica (`ConsensusPassive`, every leader-bound component cycled) for what is a
+    /// routine reorder. The later Decision must wait buffered and apply, in order, the moment P does.
+    /// The gap timeout is 60 s so only the in-order release can explain the outcome. Mutation that reddens
+    /// it: replace `awaitMissingSlot(decision)` in the `comparison > 0` branch of `handleDecision` with
+    /// `triggerResync()` — the replica leaves Active at once and emits `ConsensusPassive`.
+    @Test
+    void decisionPastAMissingSlotAppliesInOrderWithoutResync() {
+        var cluster = new ScheduledCluster(3, 0, timeSpan(60).seconds(), timeSpan(60).seconds());
+        clusters.add(cluster);
+        cluster.start();
+        var slot = cluster.engines.getFirst().currentPhaseForTesting();
+        var decisions = withholdTwoSlotsFromTheThirdReplica(cluster, slot);
+        var lagging = cluster.engines.get(2);
+
+        lagging.processDecision(decisions.get(1));
+        lagging.settleForTesting().await();
+        assertThat(lagging.currentPhaseForTesting()).as("nothing applies across the missing slot").isEqualTo(slot);
+        assertThat(lagging.isActive()).as("a reordered Decision is not a reason to leave Active").isTrue();
+
+        lagging.processDecision(decisions.getFirst());
+        cluster.pumpWithTimersUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 2, 5_000);
+        assertThat(cluster.machines.get(2).getProcessedCommands()).containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
+        assertThat(lagging.currentPhaseForTesting()).isEqualTo(Phase.phase(slot.value() + 2));
+        assertThat(lagging.isActive()).isTrue();
+        assertThat(cluster.events.get(2)).as("the replica never published a passive edge")
+                                         .noneMatch(ConsensusEvent.ConsensusPassive.class::isInstance);
+    }
+
+    /// M4 — the bound: the hazard #1390 fixed is a slot that is lost outright (#1683), so the wait for it
+    /// must end. The missing Decision(P) is never delivered; the buffered Decision(P+1) waits out
+    /// `decisionGapTimeout`, then the replica resyncs from a snapshot and converges. Mutation that
+    /// reddens it: make `armDecisionGapTimer` return immediately — nothing ever ends the wait and the
+    /// replica stays at P.
+    @Test
+    void missingSlotThatNeverArrivesEndsInResyncAfterTheGapTimeout() {
+        var cluster = new ScheduledCluster(3, 0, timeSpan(60).seconds(), timeSpan(1).seconds());
+        clusters.add(cluster);
+        cluster.start();
+        var slot = cluster.engines.getFirst().currentPhaseForTesting();
+        var decisions = withholdTwoSlotsFromTheThirdReplica(cluster, slot);
+        var lagging = cluster.engines.get(2);
+
+        lagging.processDecision(decisions.get(1));
+        lagging.settleForTesting().await();
+        assertThat(lagging.isActive()).as("control: inside the timeout the replica keeps waiting").isTrue();
+        assertThat(cluster.events.get(2)).noneMatch(ConsensusEvent.ConsensusPassive.class::isInstance);
+
+        cluster.pumpWithTimersUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 2 && lagging.isActive(), 10_000);
+        assertThat(cluster.machines.get(2).getProcessedCommands()).containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
+        assertThat(cluster.events.get(2)).as("the way back was a resync: Active left and re-entered")
+                                         .anyMatch(ConsensusEvent.ConsensusPassive.class::isInstance);
+    }
+
+    /// Commits slots P and P+1 on the first two voters while everything the third would see of any slot
+    /// is withheld, then returns the Decisions for P and P+1 that were addressed to it.
+    private List<Decision<TestCommand>> withholdTwoSlotsFromTheThirdReplica(ScheduledCluster cluster, Phase slot) {
+        cluster.held = delivery -> delivery.target() == 2 && isSlotBallot(delivery.message(), null);
+        commitOnFirstTwo(cluster, "first", 1);
+        commitOnFirstTwo(cluster, "second", 2);
+        cluster.settle();
+        cluster.collectEmitted();
+        assertThat(cluster.engines.get(2).currentPhaseForTesting()).as("control: the replica saw nothing").isEqualTo(slot);
+        var decisions = List.of(slot, slot.successor()).stream().map(phase -> decisionFor(cluster, phase)).toList();
+        cluster.parked.removeIf(delivery -> delivery.target() == 2 && delivery.message() instanceof Decision<?>);
+        return decisions;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Decision<TestCommand> decisionFor(ScheduledCluster cluster, Phase phase) {
+        return cluster.parked.stream()
+                             .filter(delivery -> delivery.target() == 2 && delivery.message() instanceof Decision<?> decision && decision.phase().equals(phase))
+                             .map(delivery -> (Decision<TestCommand>) delivery.message())
+                             .findFirst()
+                             .orElseThrow(() -> new AssertionError("control: no Decision for " + phase + " was addressed to the third replica"));
     }
 
     /// Submits one command to the first two voters only and pumps until both applied it.
@@ -501,6 +581,8 @@ class RabiaReorderedDeliveryTest {
     private static final class ScheduledCluster {
         private final List<RabiaEngine<TestCommand>> engines = new ArrayList<>();
         private final List<SnapshotMachine> machines = new ArrayList<>();
+        /// The `ConsensusActive` / `ConsensusPassive` edges each engine has published.
+        private final List<List<ConsensusEvent>> events = new ArrayList<>();
         private final List<NodeId> members;
         private final ConcurrentLinkedQueue<Delivery> emitted = new ConcurrentLinkedQueue<>();
         private final List<Delivery> pending = new ArrayList<>();
@@ -519,7 +601,16 @@ class RabiaReorderedDeliveryTest {
 
         ScheduledCluster(int size, int seed, int initialVoters) { this(size, seed, initialVoters, timeSpan(60).seconds()); }
 
+        ScheduledCluster(int size, int seed, org.pragmatica.lang.io.TimeSpan syncRetryInterval, org.pragmatica.lang.io.TimeSpan decisionGapTimeout) {
+            this(size, seed, size, syncRetryInterval, decisionGapTimeout);
+        }
+
         ScheduledCluster(int size, int seed, int initialVoters, org.pragmatica.lang.io.TimeSpan syncRetryInterval) {
+            this(size, seed, initialVoters, syncRetryInterval, ProtocolConfig.DEFAULT_DECISION_GAP_TIMEOUT);
+        }
+
+        ScheduledCluster(int size, int seed, int initialVoters, org.pragmatica.lang.io.TimeSpan syncRetryInterval,
+                         org.pragmatica.lang.io.TimeSpan decisionGapTimeout) {
             random = new Random(seed);
             members = IntStream.range(0, size).mapToObj(index -> nodeId("voter-" + index).unwrap()).toList();
             for (int index = 0; index < size; index++) {
@@ -556,8 +647,12 @@ class RabiaReorderedDeliveryTest {
                     }
                 };
                 machines.add(machine);
-                var engine = new RabiaEngine<>(topology, network, machine,
-                                              ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetryInterval));
+                var consensusEvents = new java.util.concurrent.CopyOnWriteArrayList<ConsensusEvent>();
+                events.add(consensusEvents);
+                var config = ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetryInterval)
+                                           .withDecisionGapTimeout(decisionGapTimeout);
+                var engine = new RabiaEngine<>(topology, network, machine, config, ConsensusMetrics.noop(), false,
+                                              RabiaPersistence.inMemory(), RabiaEngine.DEFAULT_PHASE_STALL_CHECK, consensusEvents::add);
                 assertThat(engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(members.subList(0, initialVoters)))).isSuccess()).isTrue();
                 if (index >= initialVoters) { engine.authorizeObservation(); }
                 engines.add(engine);

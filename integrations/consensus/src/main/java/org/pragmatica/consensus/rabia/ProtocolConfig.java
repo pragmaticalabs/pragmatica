@@ -34,6 +34,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                             Without it the returned promise has no timeout and a batch that
 ///                             is never answered (e.g. the engine pauses mid-flight, or the
 ///                             correlation answer is dropped) hangs the caller forever.
+/// @param decisionGapTimeout   How long a Decision that arrives past a missing slot waits, buffered, for
+///                             that slot to be applied in order before the replica gives up and resyncs
+///                             from a snapshot. Ordinary reordering resolves well inside it; a slot that
+///                             is lost outright (#1683) is repaired when it expires.
 /// @param participationMarker #1212 — this node's durable first-boot marker, when the deployment
 ///                             supplies one. `Option.none()` means the node's history is UNKNOWN and
 ///                             it is held to the amnesiac's adoption bound, which is exactly #1171's
@@ -43,7 +47,19 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                              long removeOlderThanPhases,
                              int maxPendingBatches,
                              TimeSpan applyTimeout,
+                             TimeSpan decisionGapTimeout,
                              Option<ParticipationMarker> participationMarker) {
+    /// Returns this configuration with another decision-gap timeout.
+    public ProtocolConfig withDecisionGapTimeout(TimeSpan timeout) {
+        return new ProtocolConfig(cleanupInterval,
+                                  syncRetryInterval,
+                                  removeOlderThanPhases,
+                                  maxPendingBatches,
+                                  applyTimeout,
+                                  timeout,
+                                  participationMarker);
+    }
+
     /// Validates and creates a ProtocolConfig.
     public static Result<ProtocolConfig> protocolConfig(TimeSpan cleanupInterval,
                                                         TimeSpan syncRetryInterval,
@@ -71,6 +87,7 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                                                                                                                                phases,
                                                                                                                                                maxPending.intValue(),
                                                                                                                                                apply,
+                                                                                                                                               DEFAULT_DECISION_GAP_TIMEOUT,
                                                                                                                                                Option.none()));
     }
 
@@ -103,6 +120,9 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     /// batch (never answered) into a clear `ConsensusError.ApplyTimeout` failure rather
     /// than a forever-pending promise, NOT to enforce a tight latency SLA.
     public static final TimeSpan DEFAULT_APPLY_TIMEOUT = timeSpan(30).seconds();
+    /// Default wait for a missing slot before a buffered later Decision forces a snapshot resync.
+    /// The wait costs nothing while the slot is merely reordered and bounds the stall when it is lost.
+    public static final TimeSpan DEFAULT_DECISION_GAP_TIMEOUT = timeSpan(2).seconds();
 
     /// Creates a default (production) configuration.
     /// Supports `SYNC_RETRY_INTERVAL_MS` environment variable override for E2E testing.
@@ -117,6 +137,7 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,
                                   DEFAULT_MAX_PENDING_BATCHES,
                                   DEFAULT_APPLY_TIMEOUT,
+                                  DEFAULT_DECISION_GAP_TIMEOUT,
                                   Option.none());
     }
 
@@ -135,6 +156,7 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,
                                   DEFAULT_MAX_PENDING_BATCHES,
                                   DEFAULT_APPLY_TIMEOUT,
+                                  DEFAULT_DECISION_GAP_TIMEOUT,
                                   participationMarker);
     }
 
@@ -152,6 +174,7 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   100,
                                   DEFAULT_MAX_PENDING_BATCHES,
                                   DEFAULT_APPLY_TIMEOUT,
+                                  DEFAULT_DECISION_GAP_TIMEOUT,
                                   participationMarker);
     }
 

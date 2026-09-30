@@ -758,6 +758,9 @@ public class RabiaEngine<C extends Command> {
     /// #1683 — the idle slot probe ([#probeQuietSlot]). Same lifetime as [#cleanupTask]: armed at
     /// activation, cancelled by [#stop].
     private final AtomicReference<ScheduledFuture<?>> quietSlotProbeTask = new AtomicReference<>();
+    /// The one-shot wait for a missing slot ([#awaitMissingSlot]); armed by the first Decision that
+    /// arrives past a gap, cancelled by [#stop].
+    private final AtomicReference<ScheduledFuture<?>> decisionGapTask = new AtomicReference<>();
     private final AtomicLong quorumSequence = new AtomicLong();
 
     /// Current cluster membership (consensus-level view).
@@ -1788,6 +1791,7 @@ public class RabiaEngine<C extends Command> {
         cancelGenesisTimer();
         Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(quietSlotProbeTask.getAndSet(null)).onPresent(task -> task.cancel(false));
+        Option.option(decisionGapTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
 
         exitState(oldState);
@@ -3641,11 +3645,12 @@ public class RabiaEngine<C extends Command> {
 
         if (comparison > 0) {
             bufferDecisionForReplay(decision);
-            // The log cannot apply across a missing slot. Snapshot repair establishes
-            // the complete applied prefix before replaying this buffered decision.
-            // Quorum loss defers the request until resume drains this same buffer.
+            // The log cannot apply across a missing slot, so the Decision waits buffered: the missing
+            // slot's own Decision (ordinary reordering) applies in order and releases it through
+            // [#applyBufferedDecision]. Only a far gap or a slot that never arrives ends in snapshot
+            // repair of the applied prefix. Quorum loss defers the request until resume drains this buffer.
             if (!state.isPaused()) {
-                triggerResync();
+                awaitMissingSlot(decision);
             }
 
             return;
@@ -3663,6 +3668,93 @@ public class RabiaEngine<C extends Command> {
         }
 
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);
+    }
+
+    /// A Decision past the current slot is not itself a fault: delivery reorders, and the slot in front of
+    /// it is normally already queued. A gap beyond [#MAX_PHASE_AHEAD] resyncs at once (the snapshot is
+    /// cheaper than the replay); a smaller one gets `decisionGapTimeout` to close in order.
+    private void awaitMissingSlot(Decision<C> decision) {
+        var gap = decision.phase().value() - currentPhase.get().value();
+
+        if (gap > MAX_PHASE_AHEAD) {
+            log.warn("Node {} received Decision {} but currentPhase={}; gap={} > {} — buffering and resyncing",
+                     self,
+                     decision.phase(),
+                     currentPhase.get(),
+                     gap,
+                     MAX_PHASE_AHEAD);
+            triggerResync();
+
+            return;
+        }
+
+        armDecisionGapTimer();
+    }
+
+    private void armDecisionGapTimer() {
+        if (decisionGapTask.get() != null) {
+            return;
+        }
+
+        var missing = currentPhase.get();
+        var task = SharedScheduler.schedule(() -> safeExecute(() -> decisionGapExpired(missing)),
+                                            config.decisionGapTimeout());
+
+        if (!decisionGapTask.compareAndSet(null, task)) {
+            task.cancel(false);
+        }
+    }
+
+    /// Runs on the executor, so every message queued before the timer has been handled: a slot that is
+    /// merely late has been applied by now. Progress re-arms for the next missing slot; no progress means
+    /// the slot is lost and only a snapshot can repair it.
+    private void decisionGapExpired(Phase missing) {
+        decisionGapTask.set(null);
+        var state = engineState.get();
+
+        if (state.isPaused() || state instanceof EngineState.Stopped || state instanceof EngineState.Syncing) {
+            return;
+        }
+
+        var current = currentPhase.get();
+
+        if (bufferedDecisions.stream().noneMatch(decision -> decision.phase()
+                                                                     .compareTo(current) > 0)) {
+            return;
+        }
+
+        if (!current.equals(missing)) {
+            armDecisionGapTimer();
+
+            return;
+        }
+
+        log.warn("Node {} still missing slot {} after {}; a later Decision is buffered. Triggering resync.",
+                 self,
+                 current,
+                 config.decisionGapTimeout());
+        triggerResync();
+    }
+
+    /// Releases the buffered Decision for the slot that has just become current, one per task so the
+    /// apply order stays the executor's queue order. Older duplicates are dropped.
+    private void applyBufferedDecision() {
+        var state = engineState.get();
+
+        if (state instanceof EngineState.Stopped || state instanceof EngineState.Syncing) {
+            return;
+        }
+
+        var current = currentPhase.get();
+        var next = Option.from(bufferedDecisions.stream()
+                                                .filter(decision -> decision.phase()
+                                                                            .equals(current))
+                                                .findFirst());
+
+        bufferedDecisions.removeIf(decision -> decision.phase()
+                                                       .compareTo(current) <= 0);
+        bufferedDecisionCount.set(bufferedDecisions.size());
+        next.onPresent(this::handleDecision);
     }
 
     private void bufferDecisionForReplay(Decision<C> decision) {
@@ -3698,6 +3790,10 @@ public class RabiaEngine<C extends Command> {
         this.currentPhase.updateAndGet(p -> p.compareTo(nextPhase) >= 0
                                             ? p
                                             : nextPhase);
+        if (!bufferedDecisions.isEmpty()) {
+            safeExecute(this::applyBufferedDecision);
+        }
+
         if (observerMode) {
             advancePhaseAsObserver(nextPhase);
 
