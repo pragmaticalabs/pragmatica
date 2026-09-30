@@ -807,11 +807,16 @@ class PartitionFencedDurableEntityTimerTest {
             appendFailure = Option.none();
         }
 
-        /// Make every rebuild fail at its checkpoint load — the cheapest way to produce a partition that is
-        /// held, owned, and permanently un-ready.
+        /// Make every rebuild fail: the checkpoint cannot be loaded AND the log below it has been reclaimed, so
+        /// the fold cannot fall back to replaying the log (#1533 — an unreadable checkpoint alone is skipped,
+        /// and the fold refuses only when the log cannot cover it). The cheapest way to produce a partition
+        /// that is held, owned, and permanently un-ready.
         void failCheckpointLoads() {
             checkpointLoadFails = true;
         }
+
+        /// While checkpoint loads fail, the log reads as reclaimed below this offset.
+        private static final long RECLAIMED_HEAD = 10L;
 
         void allowCheckpointLoads() {
             checkpointLoadFails = false;
@@ -924,11 +929,17 @@ class PartitionFencedDurableEntityTimerTest {
 
         @Override
         public long headOffset(String keyspace, int partition) {
-            return log.getOrDefault(partition, List.of()).size() - 1L;
+            return checkpointLoadFails
+                   ? RECLAIMED_HEAD
+                   : log.getOrDefault(partition, List.of()).size() - 1L;
         }
 
         @Override
         public long earliestRetainedOffset(String keyspace, int partition) {
+            if (checkpointLoadFails) {
+                return RECLAIMED_HEAD;
+            }
+
             return log.getOrDefault(partition, List.of()).isEmpty() ? -1L : 0L;
         }
 

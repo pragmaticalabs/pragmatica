@@ -4,8 +4,8 @@
   refused every call with HTTP 400 `Type mismatch: expected int, got unknown`. Neither probe read the status: the rejected
   call left the configured count at 5, and the probes waited out their budget and reported a "5→7 stall … #336 reproducing
   IN-JVM". Every conclusion about #336/#467 drawn from them since #581 was measuring a refused HTTP call.
-- Both probes now send `{source:"", role:"core", count, expectedVersion}` (the shape `PostRestartSlowRejoinDeficitFillProbeTest`
-  already sends) and fail before any membership wait unless the response is 2xx, reports the requested `newCount`, and
+- Both probes now send `{source:"", role:"core", count, expectedVersion}` (the shape `PostRestartSlowRejoinDeficitFillProbeTest`, since deleted by #1533,
+  already sent) and fail before any membership wait unless the response is 2xx, reports the requested `newCount`, and
   reports `configVersion` one past the fencing version it was sent. A transport failure also fails immediately.
 - **`03-scaling/test-01-quorum-safety.sh` had the same stale body and passed without testing anything.** Its three rejection
   tests sent `{coreCount}` and accepted any `>= 400`, so the decoder's 400 satisfied them before the quorum or max check ran.

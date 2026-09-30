@@ -173,6 +173,38 @@ public record GitBackupRepository(Path dir,
         return run(List.of("push", "--porcelain", REMOTE_NAME, "HEAD:refs/heads/" + branch)).flatMap(this::classifyPush);
     }
 
+    // --- restore (#1533) ---
+    /// The ref a restore reads: the freshly fetched remote branch when a remote is configured, else the
+    /// local `HEAD`. Absent when there is nothing to restore (no such remote branch, or no local commit).
+    /// A failure means the remote could not be reached — never read as "absent".
+    public Result<Option<String>> fetchRestoreRef() {
+        return hasRemote()
+               ? remoteHasBranch().flatMap(present -> present
+                                                      ? fetchBranch().map(_ -> Option.some(REMOTE_REF + branch))
+                                                      : success(Option.none()))
+               : hasCommits().map(present -> present
+                                             ? Option.some("HEAD")
+                                             : Option.none());
+    }
+
+    /// The commit `ref` names.
+    public Result<String> commitOf(String ref) {
+        return git("rev-parse", "--verify", ref + "^{commit}").map(String::strip);
+    }
+
+    /// The backup document as committed at `commit`.
+    public Result<String> documentAt(String commit) {
+        return git("show", commit + ":" + FILE);
+    }
+
+    /// `<sha> <subject>` for every commit reachable from `ref`, newest first — the backup's own record of
+    /// every `(lineage, incarnation, revision)` it has written.
+    public Result<List<String>> history(String ref) {
+        return git("log", "--format=%H %s", ref).map(output -> output.lines()
+                                                                     .filter(line -> !line.isBlank())
+                                                                     .toList());
+    }
+
     // --- internals ---
     private Result<Unit> createDirectory() {
         return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
@@ -214,9 +246,11 @@ public record GitBackupRepository(Path dir,
     }
 
     private Result<String> fetchAndShow() {
-        return git("fetch", "--quiet", REMOTE_NAME, "+refs/heads/" + branch + ":" + REMOTE_REF + branch).flatMap(_ -> git("show",
-                                                                                                                          REMOTE_REF + branch
-                                                                                                                         + ":" + FILE));
+        return fetchBranch().flatMap(_ -> git("show", REMOTE_REF + branch + ":" + FILE));
+    }
+
+    private Result<String> fetchBranch() {
+        return git("fetch", "--quiet", REMOTE_NAME, "+refs/heads/" + branch + ":" + REMOTE_REF + branch);
     }
 
     private Result<Unit> classifyPush(GitResult result) {

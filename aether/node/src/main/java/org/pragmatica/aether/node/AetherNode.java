@@ -6,7 +6,6 @@ package org.pragmatica.aether.node;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -66,8 +65,11 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
+import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
+import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.GitBackupRepository;
 import org.pragmatica.aether.node.backup.KvBackupService;
+import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
@@ -768,6 +770,7 @@ public interface AetherNode extends ManageableNode {
                                                                              config,
                                                                              installedVoters,
                                                                              membershipFsmRef))
+                        .map(clusterNode -> installRestoreGate(clusterNode, config, kvStore))
                         .flatMap(clusterNode -> configuredWorker(config)
                                                 ? clusterNode.configurePassiveClient()
                                                              .map(ignored -> clusterNode)
@@ -848,28 +851,49 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// Cores AND workers run in-memory Rabia (owner ruling, session 28: #1390's durable control
-    /// storage is removed; a dead NodeId never returns). A configured `[backup]` path makes the
-    /// git-backed snapshot the persistence, as before #1390, so there is no window without a backup.
+    /// storage is removed; a dead NodeId never returns). A whole-cluster cold restart gets its state back
+    /// from the change-triggered KV backup instead (#1532/#1533, [BackupRestoreCoordinator]), so own-snapshot
+    /// adoption can only ever install state this same process saved.
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
+        return RabiaPersistence.inMemory();
+    }
+
+    /// `[backup]` enabled with a path — the one condition for the backup service, its restore source, and
+    /// the restore gate on this node's submit path.
+    private static Option<BackupConfig> enabledBackup(AetherNodeConfig config) {
         return config.backupConfig()
-                     .filter(b -> !b.path()
-                                    .isBlank())
-                     .map(AetherNode::createGitBackedPersistence)
-                     .or(RabiaPersistence::inMemory);
+                     .filter(BackupConfig::enabled)
+                     .filter(backup -> !backup.path()
+                                              .isBlank());
+    }
+
+    /// #1533 — the central restore gate: on a backup-enabled node every batch this node submits to
+    /// consensus is checked by [RestoreGate] before it enters the log.
+    private static RabiaNode<KVCommand<AetherKey>> installRestoreGate(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                      AetherNodeConfig config,
+                                                                      KVStore<AetherKey, AetherValue> kvStore) {
+        enabledBackup(config).onPresent(_ -> clusterNode.installSubmitGuard(RestoreGate.restoreGate(kvStore)));
+
+        return clusterNode;
     }
 
     /// #1532 — the change-triggered KV backup, present only when `[backup] enabled = true` with a path. Its
     /// repository is `<path>/kv-backup`, apart from anything else written under `[backup] path`.
     private static Option<KvBackupService> createKvBackupService(AetherNodeConfig config,
                                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                                 SliceCodec nodeCodec) {
-        return config.backupConfig()
-                     .filter(BackupConfig::enabled)
-                     .filter(backup -> !backup.path()
-                                              .isBlank())
-                     .map(backup -> KvBackupService.kvBackupService(kvStore,
-                                                                    BackupEntryCodec.backupEntryCodec(nodeCodec),
-                                                                    kvBackupRepository(backup)));
+                                                                 SliceCodec nodeCodec,
+                                                                 BackupWarning.Sink warnings) {
+        return enabledBackup(config).map(backup -> KvBackupService.kvBackupService(kvStore,
+                                                                                   BackupEntryCodec.backupEntryCodec(nodeCodec),
+                                                                                   kvBackupRepository(backup),
+                                                                                   warnings));
+    }
+
+    /// #1533 — the restore source, when this node backs up: the service and the configured restore mode.
+    private static Option<BackupRestoreCoordinator.Source> restoreSource(AetherNodeConfig config,
+                                                                         Option<KvBackupService> kvBackupService) {
+        return Option.all(kvBackupService, enabledBackup(config)).map((service, backup) -> BackupRestoreCoordinator.Source.source(service,
+                                                                                                                                  backup.restore()));
     }
 
     private static GitBackupRepository kvBackupRepository(BackupConfig backup) {
@@ -884,32 +908,6 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, service::onValueRemove));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, service::onLeaderChange));
-    }
-
-    private static RabiaPersistence<KVCommand<AetherKey>> createGitBackedPersistence(BackupConfig backup) {
-        var backupDir = Path.of(backup.path());
-        var remote = Option.option(backup.remote()).filter(s -> !s.isBlank());
-
-        LoggerFactory.getLogger(AetherNode.class).info("Consensus persistence: git-backed at {}", backupDir);
-
-        return RabiaPersistence.gitBacked(backupDir, remote, AetherNode::snapshotToBase64, AetherNode::base64ToSnapshot);
-    }
-
-    static Result<String> snapshotToBase64(byte[] snapshot) {
-        return Result.success(Base64.getEncoder().encodeToString(snapshot));
-    }
-
-    /// Git-backed persistence prepends its envelope before invoking the snapshot decoder: the voter
-    /// authority header lines (`# Voter…:` / `# Handoff…:`, written by the authority-carrying save)
-    /// and then the phase header. Remove exactly that envelope; malformed headers and payloads remain
-    /// typed decode failures.
-    static Result<byte[]> base64ToSnapshot(String encoded) {
-        var payload = encoded.replaceFirst("\\A(?:# (?:Voter|Handoff)[A-Za-z-]*: [^\\r\\n]*\\R)*(?:# Phase: [0-9]+\\R)?",
-                                           "")
-                             .trim();
-
-        return Result.lift(Causes::fromThrowable,
-                           () -> Base64.getDecoder().decode(payload));
     }
 
     /// NTT reconcile fan-out (membership v2). Fired once per stable presence-sensor membership
@@ -4776,6 +4774,12 @@ public interface AetherNode extends ManageableNode {
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                  .onPut(AetherKey.SpokesmanKey.class,
                                                         _ -> bootstrapModule.retryIfNeeded())
+                                                 // #1533: the ONE restore-commit hook — see onRestoreDecision.
+                                                 .onPut(AetherKey.BackupRestoreKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
+                                                                                                                                                                            bootstrapModule,
+                                                                                                                                                                            deploymentManager,
+                                                                                                                                                                            abTestManager))
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,
@@ -5531,9 +5535,21 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  clusterIncarnationRegistrar::onLeaderChange));
         // #1532: change-triggered, leader-only KV backup — only when [backup] is enabled with a path.
-        var kvBackupService = createKvBackupService(config, kvStore, nodeCodec);
+        // #1533 × #1617: the restore-blocked, dropped-checkpoints and forked conditions are also cluster events.
+        var backupWarnings = BackupWarning.Sink.operatorWarnings(operatorWarningSink);
+        var kvBackupService = createKvBackupService(config, kvStore, nodeCodec, backupWarnings);
 
         kvBackupService.onPresent(service -> routeKvBackup(allEntries, service));
+        // #1533: the restore decision precedes every cluster-state seeder — on EVERY node, so a leader
+        // without [backup] still commits DISABLED and opens the gate its backup-enabled peers hold closed.
+        var backupRestoreCoordinator = BackupRestoreCoordinator.backupRestoreCoordinator(kvStore,
+                                                                                         clusterCommandApplier,
+                                                                                         restoreSource(config,
+                                                                                                       kvBackupService),
+                                                                                         backupWarnings);
+
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 backupRestoreCoordinator::onLeaderChange));
         // Publish-side mirror: same forward client + HRW owner resolver the read router uses, so a
         // management publish landing on a metadata-only node write-forwards to the owner (#265) instead
         // of failing PARTITION_NOT_LOCAL on a local append.
@@ -7178,6 +7194,24 @@ public interface AetherNode extends ManageableNode {
     /// restart-with-empty-KV paths before presence-derived membership has converged.
     private static BootstrapModule.ClusterConfigBaseline clusterConfigBaseline(TopologyConfig topology) {
         return new BootstrapModule.ClusterConfigBaseline(topology.clusterSize(), topology.coreMin(), topology.coreMax());
+    }
+
+    /// #1533 — the ONE restore-commit hook. On a fresh cluster a component that loads cluster state once —
+    /// at leader gain or on its task-group activation — does so BEFORE the restore lands, and sees an empty
+    /// KV. A terminal restore decision re-drives each such component that has no put listener of its own
+    /// for the keys it loaded: the bootstrap config seed (refused by the restore gate), the rollout manager
+    /// (`DeploymentKey`) and the A/B test manager (`AbTestKey`). Components that listen for puts of their
+    /// restored keys are covered by those listeners, because the restore's writes publish ordinary puts.
+    @Contract
+    static void onRestoreDecision(KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put,
+                                  BootstrapModule bootstrapModule,
+                                  DeploymentManager deploymentManager,
+                                  AbTestManager abTestManager) {
+        if (put.cause().value().outcome().isTerminal()) {
+            bootstrapModule.retryIfNeeded();
+            deploymentManager.reloadRestoredState();
+            abTestManager.reloadRestoredState();
+        }
     }
 
     private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,

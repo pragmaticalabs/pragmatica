@@ -58,6 +58,7 @@ import static org.pragmatica.aether.node.backup.GitFixtures.git;
 /// The change-triggered backup against a real KV applier, real git and bare remotes in temp
 /// directories. Time and scheduling are manual, so debounce and retries are deterministic.
 class KvBackupServiceTest {
+    static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final SliceCodec NODE_CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(NODE_CODEC);
     private static final KvBackupService.Timing TIMING = KvBackupService.Timing.timing(500, 5_000, 1_000, 8_000, 3_000);
@@ -141,7 +142,7 @@ class KvBackupServiceTest {
             var remote = bareRemote(temp.resolve("remote.git"));
             var service = leaderService(Option.some(remote));
 
-            put(service, ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 2, "id-" + LINEAGE + "-2"));
+            put(service, ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 2, INCARNATION_ID));
             scheduler.advance(0);
 
             assertThat(commitCount(remote)).as("flushed without waiting out the quiet period").isEqualTo(2);
@@ -273,7 +274,7 @@ class KvBackupServiceTest {
         void aForeignLineageHead_isGated_andNamesTheOperatorCommand() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote));
 
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
@@ -297,7 +298,7 @@ class KvBackupServiceTest {
         void anotherLineageHead_isGated_evenWhenThisClusterHasTheHigherIncarnation() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote), 2);
 
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
@@ -314,7 +315,7 @@ class KvBackupServiceTest {
         void aDeclarationForAnotherLineageOrIncarnation_doesNotAuthorize() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, INCARNATION_ID, 40));
             seedDeclaration(remote, LINEAGE + " 5\n");
             var service = leaderService(Option.some(remote), 2);
 
@@ -331,7 +332,7 @@ class KvBackupServiceTest {
         void theMatchingDeclaration_authorizesTheWrite() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, INCARNATION_ID, 40));
             seedDeclaration(remote, LINEAGE + " 2\n");
             var service = leaderService(Option.some(remote), 2);
 
@@ -349,7 +350,7 @@ class KvBackupServiceTest {
         void aHigherIncarnationOfTheSameLineage_isWritten_despiteALowerRevision() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 900));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 900));
             var service = leaderService(Option.some(remote), 2);
 
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
@@ -367,7 +368,7 @@ class KvBackupServiceTest {
         void aHeadBrieflyAheadOfThisLeader_isNotWrittenOver_andIsNotWarned() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, slot + 6));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, slot + 6));
             var service = leaderService(Option.some(remote));
 
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
@@ -391,7 +392,7 @@ class KvBackupServiceTest {
         void aHeadAheadPastTheBound_warnsOncePerEpisode_andIsNeverWrittenOverWhileAhead() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 1_000_000));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1_000_000));
             var service = leaderService(Option.some(remote));
 
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
@@ -418,7 +419,7 @@ class KvBackupServiceTest {
         void aNewHeadAheadEpisode_afterRecovery_warnsAgain() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 1_000));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1_000));
             var service = leaderService(Option.some(remote));
 
             scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
@@ -427,7 +428,7 @@ class KvBackupServiceTest {
             scheduler.advance(TIMING.maxRetryMillis());
 
             assertThat(remoteDocument(remote).entries()).containsKey(ConfigKey.forKey("overtake"));
-            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, 3_000_000));
+            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 3_000_000));
             put(service, ConfigKey.forKey("behind-again"), ConfigValue.configValue("behind-again", "v"));
             scheduler.advance(TIMING.maxRetryMillis());
 
@@ -441,16 +442,17 @@ class KvBackupServiceTest {
                                 .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_HEAD_REPLACED, Code.BACKUP_HEAD_AHEAD);
         }
 
-        /// Hazard (d), pinned as it is (v1621's probe): under the interim old persistence path a cold restart
-        /// can come back with the same lineage and incarnation and an OLDER revision. Its changes are not
-        /// backed up while the head is ahead — the sustained warning is the only signal — and once its
-        /// revision overtakes, its state REPLACES the newer head (git history keeps the replaced commit).
-        /// #1533 removes the old path.
+        /// Hazard (d), pinned as it is (v1621's probe): a cluster whose state has the head's lineage and
+        /// incarnation and an OLDER revision. The old persistence path that produced this on a cold restart is
+        /// gone (#1533 restores past the head's incarnation); a second writer of the same lineage and
+        /// incarnation still can. Its changes are not backed up while the head is ahead — the sustained warning
+        /// is the only signal — and once its revision overtakes, its state REPLACES the newer head (git
+        /// history keeps the replaced commit).
         @Test
         void afterAnOldPathRestart_theStallIsWarned_andTheOvertakingStateReplacesTheHead() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 5_000));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 5_000));
             var service = leaderService(Option.some(remote));
 
             put(service, ConfigKey.forKey("after-restart"), ConfigValue.configValue("after-restart", "v"));
@@ -486,7 +488,7 @@ class KvBackupServiceTest {
 
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
             scheduler.runUntilIdle();
-            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, 1));
+            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1));
             put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
             scheduler.runUntilIdle();
 
@@ -520,6 +522,192 @@ class KvBackupServiceTest {
         }
     }
 
+    /// #1533: a cluster incarnation id tells two clusters at one `(lineage, incarnation)` apart. Restored from the
+    /// same backup at once, they would otherwise take turns replacing each other's head, silently.
+    @Nested
+    class Fork {
+        private static final String OTHER_INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1OTHR0";
+
+        /// Two clusters at the SAME lineage and incarnation as different incarnation ids (restored from one backup
+        /// at once). X flushes first and owns the head. Y reads X's head: FORKED, loud once naming both
+        /// incarnation ids, and never writes — not then, not after later changes, whatever the revisions. X shows
+        /// nothing and its next flush WRITES normally (detection is on the second writer only).
+        @Test
+        void theSecondClusterOfAFork_isForked_neverWrites_andTheFirstKeepsWriting() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var x = otherCluster(remote, OTHER_INCARNATION_ID, "local-x");
+
+            x.put(ConfigKey.forKey("x1"), ConfigValue.configValue("x1", "1"));
+            scheduler.runUntilIdle();
+            var y = leaderService(Option.some(remote));
+
+            put(y, ConfigKey.forKey("y1"), ConfigValue.configValue("y1", "1"));
+            scheduler.runUntilIdle();
+            put(y, ConfigKey.forKey("y2"), ConfigValue.configValue("y2", "2"));
+            scheduler.runUntilIdle();
+
+            assertThat(y.status()).isEqualTo(KvBackupService.Status.FORKED);
+            assertThat(remoteDocument(remote).header()
+                                             .incarnationId()).as("the head stays X's").isEqualTo(OTHER_INCARNATION_ID);
+            assertThat(remoteDocument(remote).entries()).doesNotContainKey(ConfigKey.forKey("y1"));
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_FORKED);
+            assertThat(warnings.getFirst()
+                               .detail()).contains(OTHER_INCARNATION_ID, INCARNATION_ID);
+
+            x.put(ConfigKey.forKey("x2"), ConfigValue.configValue("x2", "2"));
+            scheduler.runUntilIdle();
+
+            assertThat(remoteDocument(remote).entries()).as("X keeps backing up")
+                                                        .containsKey(ConfigKey.forKey("x2"));
+            assertThat(x.service()
+                        .status()).isEqualTo(KvBackupService.Status.CURRENT);
+            assertThat(x.warnings()).as("the first writer never observes the fork").isEmpty();
+        }
+
+        /// The race: Y committed locally while the remote was unreachable, and X's push reached the remote
+        /// first. The remote admits exactly one history (pushes are fast-forward only); when Y next reads
+        /// the head it is X's, so Y ends FORKED and its queued commit never reaches the remote.
+        @Test
+        void aForkRacedAtThePush_leavesTheLoserForked_andItsQueuedCommitUnpushed() {
+            var remotePath = temp.resolve("raced.git");
+            var y = leaderService(Option.some(remotePath.toString()));
+
+            put(y, ConfigKey.forKey("y1"), ConfigValue.configValue("y1", "1"));
+            scheduler.runUntilIdle(10);
+            assertThat(localCommitCount()).as("Y's commits are queued locally").isPositive();
+
+            var remote = bareRemote(remotePath);
+            var x = otherCluster(remote, OTHER_INCARNATION_ID, "local-x");
+
+            x.put(ConfigKey.forKey("x1"), ConfigValue.configValue("x1", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(y.status()).isEqualTo(KvBackupService.Status.FORKED);
+            assertThat(remoteDocument(remote).header()
+                                             .incarnationId()).isEqualTo(OTHER_INCARNATION_ID);
+            assertThat(remoteDocument(remote).entries()).doesNotContainKey(ConfigKey.forKey("y1"));
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .contains(Code.BACKUP_FORKED);
+        }
+
+        /// The head owner's side after the FORKED cluster declared genesis (v1533 finding 2): the head is now a
+        /// HIGHER incarnation of the same lineage. This cluster goes HEAD_AHEAD for good, whatever its revision,
+        /// and the warning says so instead of promising that its state will replace the head.
+        @Test
+        void afterAnotherClusterTakesOverTheLineage_theHeadAheadWarningSaysItNeverCatchesUp() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 2, OTHER_INCARNATION_ID, 5));
+            var service = leaderService(Option.some(remote));
+
+            for (int i = 0; i < 20; i++) {
+                put(service, ConfigKey.forKey("x" + i), ConfigValue.configValue("x" + i, "v"));
+            }
+            scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
+            scheduler.advance(3 * TIMING.maxRetryMillis());
+
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.HEAD_AHEAD);
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD);
+            assertThat(warnings.getFirst()
+                               .detail()).contains("HIGHER incarnation", "never pass it", OTHER_INCARNATION_ID)
+                                         .doesNotContain("REPLACES");
+            assertThat(commitCount(remote)).as("never written, though this cluster's revision is past the head's")
+                                           .isEqualTo(1);
+        }
+
+        /// The legitimate path the incarnation id check must not break: a new leader of the SAME incarnation id, whose
+        /// repository lacks the previous leader's commit, writes over the head it does not contain.
+        @Test
+        void aHeadUnderThisIncarnationId_isWrittenOver_byANewLeader() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 0));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(remoteDocument(remote).entries()).containsKey(ConfigKey.forKey("a"));
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+            assertThat(warnings).isEmpty();
+        }
+
+        /// A later incarnation supersedes the head whatever incarnation id wrote it — the successor rule.
+        @Test
+        void aLaterIncarnation_supersedesAHeadUnderAnotherIncarnationId() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 4, OTHER_INCARNATION_ID, 900));
+            var service = leaderService(Option.some(remote), 5);
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(remoteDocument(remote).header()).satisfies(header -> {
+                assertThat(header.incarnation()).isEqualTo(5);
+                assertThat(header.incarnationId()).isEqualTo(INCARNATION_ID);
+            });
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// `declare-genesis` is how the operator picks the cluster whose state continues: it moves to a new
+        /// incarnation AND a new incarnation id, and that supersedes the forked head.
+        @Test
+        void declareGenesis_resolvesAFork_withANewIncarnationAndIncarnationId() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, OTHER_INCARNATION_ID, 5));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.FORKED);
+
+            var declared = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)))
+                                        .unwrap();
+            scheduler.runUntilIdle();
+
+            assertThat(declared.incarnation()).isEqualTo(2);
+            assertThat(ClusterIncarnation.committed(kvStore)
+                                         .unwrap()
+                                         .incarnationId()).as("a declaration mints a new incarnation id")
+                                                       .isNotIn(INCARNATION_ID, OTHER_INCARNATION_ID);
+            assertThat(remoteDocument(remote).header()
+                                             .incarnation()).isEqualTo(2);
+            assertThat(remoteDocument(remote).entries()).containsKey(ConfigKey.forKey("a"));
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// The incarnation id is replicated cluster state, not node state: a leader on another node, with its own
+        /// repository, writes as the same incarnation id and is never FORKED against the head its predecessor
+        /// wrote.
+        @Test
+        void theIncarnationId_survivesALeaderChange_toAnotherNode() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var first = leaderService(Option.some(remote));
+
+            put(first, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+            first.onLeaderChange(leaderChange(false));
+
+            var second = service(Option.some(remote), "local-second-leader");
+
+            second.onLeaderChange(leaderChange(true));
+            put(second, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle();
+
+            assertThat(second.status()).isEqualTo(KvBackupService.Status.CURRENT);
+            assertThat(remoteDocument(remote).entries()).containsKey(ConfigKey.forKey("b"));
+            assertThat(remoteDocument(remote).header()
+                                             .incarnationId()).isEqualTo(INCARNATION_ID);
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .doesNotContain(Code.BACKUP_FORKED);
+        }
+    }
+
     @Nested
     class Genesis {
         /// A fresh cluster gated by another lineage's head declares genesis: its incarnation moves past
@@ -528,7 +716,7 @@ class KvBackupServiceTest {
         void declareGenesis_overAForeignHead_liftsTheGate_andTheNextFlushSupersedesIt() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote));
 
             assertThat(service.status()).isEqualTo(KvBackupService.Status.GATED);
@@ -559,7 +747,7 @@ class KvBackupServiceTest {
         void declareGenesis_neverMovesThisClustersIncarnationBackwards() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote), 9);
 
             var declared = settle(BackupGenesis.backupGenesis(service)
@@ -570,13 +758,33 @@ class KvBackupServiceTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(10);
         }
 
+        /// The declaration clears the same floor a restore does: a history that recorded this lineage at 7
+        /// (an earlier run of it, then superseded by another lineage's head at 3) must not see this cluster,
+        /// now at 1, declare 4 — that would reuse an incarnation the backup already records for the lineage.
+        @Test
+        void declareGenesis_clearsEveryIncarnationTheHistoryRecordsForThisLineage() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, INCARNATION_ID, 30), recordedSubject(LINEAGE, 7, 30));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
+            var service = leaderService(Option.some(remote), 1);
+
+            var declared = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)))
+                                        .unwrap();
+
+            assertThat(declared.incarnation()).as("past the recorded L@7, not max(1, 3) + 1")
+                                              .isEqualTo(8);
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
+        }
+
         /// #1625 meets #1532: the declared incarnation is a new incarnation, so it carries a fresh
         /// incarnation id — reusing the superseded one would make incarnations 9 and 10 compare equal.
         @Test
         void declareGenesis_commitsAFreshIncarnationId_notTheSupersededOne() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, "id-another-cluster-3", 40));
             var service = leaderService(Option.some(remote), 9);
             var superseded = ClusterIncarnation.currentId(kvStore)
                                                .unwrap();
@@ -596,7 +804,7 @@ class KvBackupServiceTest {
         void declareGenesis_overAConcurrentIncarnationChange_isRefused_notClobbered() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote), 1);
             var concurrent = ClusterIncarnationValue.clusterIncarnationValue("restored-lineage", 3, "id-restored-lineage-3");
 
@@ -614,7 +822,7 @@ class KvBackupServiceTest {
         void declareGenesis_afterARefusedPush_isReRunnable_andLiftsTheGate() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
             var service = leaderService(Option.some(remote), 1);
             var hook = installRefusingHook(remote);
 
@@ -642,7 +850,7 @@ class KvBackupServiceTest {
         void declareGenesis_overANewerHeadOfTheSameLineage_isRefused() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 1_000_000));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1_000_000));
             var service = leaderService(Option.some(remote));
 
             var refused = settle(BackupGenesis.backupGenesis(service)
@@ -716,8 +924,52 @@ class KvBackupServiceTest {
         return service;
     }
 
+    /// Another cluster at this test's lineage and incarnation 1, as incarnation id `incarnation id`: its own KV store,
+    /// local repository and warnings, sharing the remote and the scheduler. It is its own leader.
+    private OtherCluster otherCluster(String remote, String incarnationId, String localDir) {
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
+        var otherWarnings = new ArrayList<BackupWarning>();
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve(localDir),
+                                                                 Option.some(remote),
+                                                                 "backup",
+                                                                 TimeSpan.timeSpan(30).seconds());
+        var service = KvBackupService.kvBackupService(store,
+                                                      CODEC,
+                                                      repository,
+                                                      scheduler,
+                                                      scheduler::now,
+                                                      otherWarnings::add,
+                                                      TIMING);
+        var cluster = new OtherCluster(store, service, otherWarnings);
+
+        cluster.apply(ClusterIncarnationKey.clusterIncarnationKey(),
+                      ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 1, incarnationId));
+        service.onLeaderChange(leaderChange(true));
+        scheduler.advance(TIMING.quietMillis());
+
+        return cluster;
+    }
+
+    private record OtherCluster(KVStore<AetherKey, AetherValue> store, KvBackupService service, List<BackupWarning> warnings) {
+        void apply(AetherKey key, AetherValue value) {
+            store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(key, value))), store.committedRevision() + 1);
+        }
+
+        void put(AetherKey key, AetherValue value) {
+            var old = store.get(key);
+
+            apply(key, value);
+            service.onValuePut(new ValuePut<>(new KVCommand.Put<>(key, value), old));
+        }
+    }
+
     private KvBackupService service(Option<String> remote) {
-        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+        return service(remote, "local");
+    }
+
+    /// A service whose local repository is `localDir` — a second node's leader has its own.
+    private KvBackupService service(Option<String> remote, String localDir) {
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve(localDir),
                                                                  remote,
                                                                  "backup",
                                                                  TimeSpan.timeSpan(30).seconds());
@@ -727,7 +979,7 @@ class KvBackupServiceTest {
 
     private void incarnation(long incarnation) {
         applyOnly(ClusterIncarnationKey.clusterIncarnationKey(),
-                  ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, incarnation, "id-" + LINEAGE + "-" + incarnation));
+                  ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, incarnation, INCARNATION_ID));
     }
 
     private void put(KvBackupService service, AetherKey key, AetherValue value) {
@@ -864,24 +1116,32 @@ class KvBackupServiceTest {
     }
 
     private void seedRemote(String remote, BackupHeader header) {
+        seedRemote(remote, header, "seed");
+    }
+
+    /// Seed with `message` as the commit subject — [#recordedSubject] gives the one a backup commit carries.
+    private void seedRemote(String remote, BackupHeader header, String message) {
         var seeder = temp.resolve("seeder-" + header.revision());
 
         git(temp, "clone", "--quiet", remote, seeder.toString());
-        commitDocument(seeder, header, remoteHasBranch(remote));
+        commitDocument(seeder, header, remoteHasBranch(remote), message);
+    }
+
+    private static String recordedSubject(String lineageId, long incarnation, long revision) {
+        return "kv backup lineage=" + lineageId + " incarnation=" + incarnation + " revision=" + revision;
     }
 
     private void seedRemoteOnTop(String remote, BackupHeader header) {
         seedRemote(remote, header);
     }
 
-    private void commitDocument(Path clone, BackupHeader header, boolean onTopOfExisting) {
+    private void commitDocument(Path clone, BackupHeader header, boolean onTopOfExisting, String message) {
         var document = CODEC.encode(header.revision(),
                                     Map.of(ConfigKey.forKey("seed"),
                                            ConfigValue.configValue("seed", "x"),
                                            ClusterIncarnationKey.clusterIncarnationKey(),
                                            ClusterIncarnationValue.clusterIncarnationValue(header.lineageId(),
-                                                                                           header.incarnation(),
-                                                                                           "id-" + header.lineageId() + "-" + header.incarnation())))
+                                                                                           header.incarnation(), header.incarnationId())))
                             .unwrap();
 
         if (onTopOfExisting) {
@@ -891,7 +1151,7 @@ class KvBackupServiceTest {
         }
         writeFile(clone.resolve(GitBackupRepository.FILE), document);
         git(clone, "add", GitBackupRepository.FILE);
-        git(clone, "-c", "user.email=s@x", "-c", "user.name=seed", "commit", "--quiet", "-m", "seed");
+        git(clone, "-c", "user.email=s@x", "-c", "user.name=seed", "commit", "--quiet", "-m", message);
         git(clone, "push", "--quiet", "origin", "backup");
     }
 

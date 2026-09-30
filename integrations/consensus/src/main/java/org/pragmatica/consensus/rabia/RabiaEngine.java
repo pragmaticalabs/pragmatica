@@ -36,6 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -739,6 +740,12 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<Phase> highestObservedClusterPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicReference<EngineState> engineState = new AtomicReference<>(new EngineState.Stopped());
     private final AtomicBoolean stopping = new AtomicBoolean();
+
+    /// Consulted for every locally submitted command batch before it enters consensus — the single entry
+    /// ([#apply] and [#handleSubmit] both go through [#submitCommands]). A failure refuses the whole batch
+    /// with that cause. The default admits everything; the node installs its own (#1533's restore gate).
+    private final AtomicReference<Function<List<C>, Result<Unit>>> submitGuard = new AtomicReference<>(_ -> Result.unitResult());
+
     private final Promise<Unit> stoppedCompletion = Promise.promise();
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
     /// The old-phase sweep, armed on ACTIVATION rather than in the constructor (#714).
@@ -1614,6 +1621,13 @@ public class RabiaEngine<C extends Command> {
         return currentConfig.get();
     }
 
+    /// Install the check every locally submitted batch must pass (see [#submitGuard]). Replaces any earlier one.
+    public Unit installSubmitGuard(Function<List<C>, Result<Unit>> guard) {
+        submitGuard.set(guard);
+
+        return Unit.unit();
+    }
+
     public <R> Promise<List<R>> apply(List<C> commands) {
         var pendingAnswer = Promise.<List<R>> promise();
 
@@ -1657,7 +1671,9 @@ public class RabiaEngine<C extends Command> {
             log.debug("Node {} submitting {} command(s): {} [caller: {}]", self, commands.size(), commands, callerInfo);
         }
 
-        return validateSubmission(commands).map(_ -> prepareBatch(commands))
+        return validateSubmission(commands).flatMap(_ -> submitGuard.get()
+                                                                    .apply(commands))
+                                 .map(_ -> prepareBatch(commands))
                                  .onSuccess(batch -> safeExecute(() -> registerBatch(batch, onBatchPrepared),
                                                                  () -> onRejected.accept(new ConsensusError.NodeInactive(self))))
                                  .onSuccess(batch -> safeExecute(() -> broadcastBatch(batch)));
@@ -2421,7 +2437,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// #1020 — a failed re-persist after a restore. #1390's `authorityFailure` keeps the node from
-    /// activating; rc4's ERROR names the consequence, because `GitBackedPersistence` carries no logger
+    /// activating; rc4's ERROR names the consequence, because a persistence adapter need carry no logger
     /// of its own and this is the only place the failure is heard. Pinned by
     /// `RabiaRestoredStateSaveFailureLogTest#syncAdoptionSaveFails_nodeDoesNotActivate_pinsCurrentBehaviour`
     /// and `#syncAdoptionSaveFails_logsFailedToPersistAtError`.
@@ -2458,7 +2474,7 @@ public class RabiaEngine<C extends Command> {
     /// The candidate passed here MUST be the max over peer RESPONSES ONLY. Comparing self against a
     /// candidate that already includes self makes `persisted > candidate` unsatisfiable, which retires
     /// this detector without removing it — and burns its one-shot latch while doing so. The persisted
-    /// state is passed in rather than re-loaded because `gitBacked` persistence shells out to `git`, and
+    /// state is passed in rather than re-loaded because an adapter's `load()` may do I/O, and
     /// the adoption path must not pay that twice on the consensus apply thread.
     @Contract
     private void detectBootFutureHistory(Option<SavedState<C>> persisted, SavedState<C> candidate) {

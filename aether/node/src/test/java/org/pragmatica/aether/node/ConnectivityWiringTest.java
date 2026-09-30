@@ -113,7 +113,7 @@ class ConnectivityWiringTest {
 
         var current = ClusterIncarnation.committed(kvStore)
                                         .unwrap();
-        var next = ClusterIncarnation.superseding(current, 3, "declared-id");
+        var next = ClusterIncarnation.superseding(current, 3, current.incarnation(), "declared-id");
 
         applyBatch(List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER)));
         applyBatch(ClusterIncarnation.supersedeCommands(LEADER, "declare-genesis:test", current, next));
