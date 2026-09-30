@@ -32,6 +32,10 @@ import static org.pragmatica.aether.update.SliceTargetOverridePreservationTest.s
 /// lands, so activation sees no rollouts. When the restore decision commits, the node's restore hook calls
 /// [DeploymentManager#reloadRestoredState]; the restored in-flight rollout is then resumed exactly as after
 /// a leader failover, and the operator's handles on it work.
+///
+/// "Resumed" is observed through the managed set ([DeploymentManager#list], and [DeploymentManager#rollback]
+/// finding it), never through [DeploymentManager#status]: since #1754 `status` also answers from the
+/// committed `DeploymentKey`, so it reports a restored rollout whether or not it was resumed.
 class DeploymentRestoreReloadTest {
     private CapturingRabiaNode rabiaNode;
     private KVStore<AetherKey, AetherValue> kvStore;
@@ -51,13 +55,15 @@ class DeploymentRestoreReloadTest {
     void reloadRestoredState_resumesARolloutRestoredAfterActivation_soRollbackRemovesItsRouting() {
         seed(kvStore, DeploymentKey.deploymentKey(DEPLOYMENT_ID), inFlightRollout());
 
-        assertThat(manager.status(DEPLOYMENT_ID)
-                          .isEmpty()).as("activation ran before the restore").isTrue();
+        assertThat(manager.list()).as("activation ran before the restore").isEmpty();
+        assertThat(manager.rollback(DEPLOYMENT_ID)
+                          .isFailure()).as("not yet operable: rollback finds no managed rollout").isTrue();
 
         manager.reloadRestoredState();
 
-        assertThat(manager.status(DEPLOYMENT_ID)
-                          .isPresent()).as("the restored rollout is resumed").isTrue();
+        assertThat(manager.list()).as("the restored rollout is resumed")
+                                  .extracting(Deployment::deploymentId)
+                                  .containsExactly(DEPLOYMENT_ID);
         rabiaNode.appliedCommands.clear();
         manager.rollback(DEPLOYMENT_ID)
                .onFailure(cause -> Assertions.fail("rollback of the restored rollout: " + cause.message()));
@@ -76,8 +82,7 @@ class DeploymentRestoreReloadTest {
 
         manager.reloadRestoredState();
 
-        assertThat(manager.status(DEPLOYMENT_ID)
-                          .isEmpty()).isTrue();
+        assertThat(manager.list()).isEmpty();
     }
 
     /// A rolling update caught mid-shift: 30% of traffic on the new version.
