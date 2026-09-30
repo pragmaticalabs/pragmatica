@@ -652,6 +652,99 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// M3 (s29 cloud run 1) — the provisioning snapshot mixes live values with the captured decision;
+    /// the captured decision must not outlive the term that produced it, and repeated deficit-time
+    /// leadership loss must be visible to the operator.
+    @Nested
+    class ProvisioningSnapshotAcrossTerms {
+        private static final long WARN_WINDOW_MILLIS = 60_000L;
+        private static final long OBSERVED_TENURE_MILLIS = 10_000L;
+        private static final long MARGIN_MILLIS = 1000L;
+
+        @Test
+        void currentProvisioningSnapshot_reportsNotEvaluated_afterReElectionUntilFirstPass() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("WITHIN_DEBOUNCE");
+
+            reconciler.deactivate();
+            reconciler.activate();
+
+            var snapshot = reconciler.currentProvisioningSnapshot();
+            assertThat(snapshot.reason()).isEqualTo("NOT_EVALUATED");
+            assertThat(snapshot.trigger()).isEqualTo(ReconcileTrigger.LEADER_ACTIVATION);
+            assertThat(reconciler.lastProvisioningDecision().isEmpty()).isTrue();
+        }
+
+        @Test
+        void deactivate_warns_whenLeadershipLostThreeTimesInsideWarnWindowWithDeficit() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A);
+
+            var warns = capturingReconcilerWarns(this::loseLeadershipThreeTimesWithinWindow);
+
+            assertThat(warns).anyMatch(line -> line.contains("leadership lost 3 times"));
+        }
+
+        @Test
+        void deactivate_warns_whenLossesAreTenSecondsApartAsInTheObservedFlap() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A);
+
+            var warns = capturingReconcilerWarns(this::loseLeadershipThreeTimesTenSecondsApart);
+
+            assertThat(warns).anyMatch(line -> line.contains("leadership lost 3 times"));
+        }
+
+        @Test
+        void deactivate_doesNotWarn_whenLossesAreSpreadBeyondWarnWindow() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A);
+
+            var warns = capturingReconcilerWarns(this::loseLeadershipThreeTimesOutsideWindow);
+
+            assertThat(warns).noneMatch(line -> line.contains("leadership lost"));
+        }
+
+        @Test
+        void deactivate_doesNotWarn_whenNoDeficitExists() {
+            configuredCoreCount.set(2);
+            seedClusterWithPeers(PEER_A);
+
+            var warns = capturingReconcilerWarns(this::loseLeadershipThreeTimesWithinWindow);
+
+            assertThat(warns).noneMatch(line -> line.contains("leadership lost"));
+        }
+
+        private void loseLeadershipThreeTimesWithinWindow() {
+            loseLeadership(1L);
+            loseLeadership(1L);
+            loseLeadership(1L);
+        }
+
+        private void loseLeadershipThreeTimesOutsideWindow() {
+            loseLeadership(1L);
+            loseLeadership(WARN_WINDOW_MILLIS + MARGIN_MILLIS);
+            loseLeadership(WARN_WINDOW_MILLIS + MARGIN_MILLIS);
+        }
+
+        private void loseLeadershipThreeTimesTenSecondsApart() {
+            loseLeadership(1L);
+            loseLeadership(OBSERVED_TENURE_MILLIS);
+            loseLeadership(OBSERVED_TENURE_MILLIS);
+        }
+
+        private void loseLeadership(long advanceMillis) {
+            timeSource.advanceTimeMillis(advanceMillis);
+            reconciler.activate();
+            reconciler.deactivate();
+        }
+    }
+
     @Nested
     class TopologyUnhealthyIngress {
         @Test
