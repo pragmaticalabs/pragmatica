@@ -24,6 +24,9 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -386,6 +389,302 @@ class DistributedDHTClientTest {
                   .await()
                   .onSuccess(_ -> fail("Expected failure"))
                   .onFailure(c -> assertThat(c.message()).contains("No available nodes"));
+        }
+    }
+
+    /// A target of an in-flight R-set read departs the ring: the read re-issues to a replacement from the
+    /// current ring instead of waiting out the operation timeout. The client is a pure reader (its own
+    /// id is not on the ring), so every replica is remote and driven by hand through the capturing network.
+    @Nested
+    class DepartureReissue {
+        private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, timeSpan(10).seconds());
+
+        private ConsistentHashRing<NodeId> ring;
+        private CapturingNetwork network;
+        private DistributedDHTClient client;
+
+        @BeforeEach
+        void setUp() {
+            ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            // enough spare replicas that only the re-issue bound, never candidate exhaustion, stops a churning read
+            for (var i = 1; i <= 12; i++) {
+                ring.addNode(new NodeId("replica-" + i));
+            }
+            var node = dhtNode(LOCAL_NODE, memoryStorageEngine(), ring, CONFIG);
+            network = new CapturingNetwork();
+            client = distributedDHTClient(node, network, CONFIG);
+        }
+
+        private List<CapturedMessage> getRequests() {
+            return network.captured.stream()
+                                   .filter(m -> m.message() instanceof DHTMessage.GetRequest)
+                                   .toList();
+        }
+
+        private void reply(CapturedMessage request, Option<byte[]> value) {
+            var req = (DHTMessage.GetRequest) request.message();
+
+            client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), request.target(), value));
+        }
+
+        @Test
+        void get_resolvesWithoutTimeout_whenOneTargetDepartsMidRead() {
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+            assertThat(initial).hasSize(3);
+
+            // one replica answers with the value, one never answers and leaves the ring, one is silent
+            reply(initial.getFirst(), Option.some(value("v1")));
+            ring.removeNode(initial.get(1).target());
+
+            var reissued = getRequests().subList(3, getRequests().size());
+            assertThat(reissued).hasSize(1);
+            assertThat(reissued.getFirst().target()).isNotIn(initial.stream().map(CapturedMessage::target).toList());
+            reply(reissued.getFirst(), Option.some(value("v1")));
+
+            // the timeout is 10s: resolving inside 2s proves the read did not wait for it
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected resolution without waiting for the timeout: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+        }
+
+        @Test
+        void get_sendsNoExtraRequests_whenNoTargetDeparts() {
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+
+            reply(initial.get(0), Option.some(value("v1")));
+            // a node outside the R-set leaving mid-read is not a departure of a read target
+            var bystander = new HashSet<>(ring.nodes());
+            initial.forEach(m -> bystander.remove(m.target()));
+            bystander.stream().limit(2).forEach(ring::removeNode);
+            reply(initial.get(1), Option.some(value("v1")));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected success: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+            assertThat(getRequests()).hasSize(3);
+        }
+
+        @Test
+        void get_doesNotReissue_afterReadCompleted() {
+            var read = client.get(key("k1"));
+            var initial = getRequests();
+
+            // quorum (2 of 3) completes the read; the third target is still owing a reply
+            reply(initial.get(0), Option.some(value("v1")));
+            reply(initial.get(1), Option.some(value("v1")));
+            read.await(timeSpan(2).seconds());
+            ring.removeNode(initial.get(2).target());
+
+            assertThat(getRequests()).hasSize(3);
+        }
+
+        @Test
+        void get_boundsReissues_andFailsFastOncePastTheBound() {
+            var read = client.get(key("k1"));
+            var departed = new ArrayList<NodeId>();
+
+            // depart 4 of the targets currently owing a reply; only 3 replacements may ever be issued
+            for (var i = 0; i < 4; i++) {
+                departNextOwingTarget(departed);
+            }
+
+            assertThat(getRequests()).hasSize(6);
+            assertThat(read.isResolved()).isFalse();
+
+            // a fifth departure fails a second slot: quorum 2 of 3 becomes impossible, no timeout wait
+            departNextOwingTarget(departed);
+
+            assertThat(getRequests()).hasSize(6);
+            var outcome = read.await(timeSpan(2).seconds());
+            outcome.onSuccess(_ -> fail("Expected quorum failure"))
+                   .onFailure(c -> assertThat(c).isInstanceOf(DHTError.QuorumNotReached.class));
+        }
+
+        private void departNextOwingTarget(List<NodeId> departed) {
+            var owing = getRequests().stream()
+                                     .map(CapturedMessage::target)
+                                     .filter(t -> !departed.contains(t))
+                                     .findFirst()
+                                     .orElseThrow();
+
+            departed.add(owing);
+            ring.removeNode(owing);
+        }
+    }
+
+    /// Opt-in absent grace (`ReadOptions.absentGrace`): after R empty answers the read waits up to the grace for
+    /// the remaining original replica; without the option the read is the plain quorum read (absent at R empties).
+    @Nested
+    class AbsentGraceWindow {
+        private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, timeSpan(10).seconds());
+        private static final ReadOptions GRACE = ReadOptions.absentGrace(timeSpan(400).millis());
+
+        private ConsistentHashRing<NodeId> ring;
+        private CapturingNetwork network;
+        private DistributedDHTClient client;
+
+        private void useRing(int replicas) {
+            ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            for (var i = 1; i <= replicas; i++) {
+                ring.addNode(new NodeId("replica-" + i));
+            }
+            var node = dhtNode(LOCAL_NODE, memoryStorageEngine(), ring, CONFIG);
+            network = new CapturingNetwork();
+            client = distributedDHTClient(node, network, CONFIG);
+        }
+
+        private List<CapturedMessage> requests() {
+            return network.captured.stream()
+                                   .filter(m -> m.message() instanceof DHTMessage.GetRequest)
+                                   .toList();
+        }
+
+        private void reply(CapturedMessage request, Option<byte[]> value) {
+            var req = (DHTMessage.GetRequest) request.message();
+
+            client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), request.target(), value));
+        }
+
+        @Test
+        void get_isFound_whenValueOnThirdOriginalArrivesWithinGrace() {
+            useRing(3);
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            assertThat(read.isResolved()).isFalse();
+            reply(initial.get(2), Option.some(value("v1")));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected the in-grace value to be found: " + c.message()))
+                .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("v1")))
+                                     .onEmpty(() -> fail("Value discarded: read reported absent")));
+        }
+
+        @Test
+        void get_isAbsentAtOnce_whenEveryOriginalAnswersEmpty() {
+            useRing(3);
+            var read = client.get(key("k1"), ReadOptions.absentGrace(timeSpan(5).seconds()));
+
+            requests().forEach(m -> reply(m, Option.none()));
+
+            // the grace is 5s: an answer inside 1s proves no grace wait once every original has answered
+            read.await(timeSpan(1).seconds())
+                .onFailure(c -> fail("Expected absent: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+
+        @Test
+        void get_isAbsentAfterGrace_whenThirdOriginalStaysSilent() {
+            useRing(3);
+            var started = System.nanoTime();
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+
+            // bounded by the grace (400ms), not the 10s operation deadline
+            read.await(timeSpan(3).seconds())
+                .onFailure(c -> fail("Expected absent after the grace: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+            var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+            assertThat(elapsedMillis).isBetween(300L, 2500L);
+        }
+
+        @Test
+        void get_isFound_whenHolderAnswersAfterAnotherOriginalDepartedAndReplacementWasEmpty() {
+            useRing(4);
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            ring.removeNode(initial.get(0).target());
+            var replacement = requests().get(3);
+            reply(initial.get(1), Option.none());
+            // the replacement holds no copy yet: its empty answer is a failed slot, never a vote
+            reply(replacement, Option.none());
+            assertThat(read.isResolved()).isFalse();
+            reply(initial.get(2), Option.some(value("v1")));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected the holder's value: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+        }
+
+        /// The opt-in is a per-call option on the SAME instance, never a derived client: pendingOps is per instance and
+        /// the node routes replies only to the base client, so a derived client's reads would time out on every reply.
+        @Test
+        void get_withOption_resolvesFromRepliesRoutedToTheBaseClient() {
+            useRing(3);
+            var read = client.get(key("k1"), GRACE);
+            var initial = requests();
+
+            initial.forEach(m -> reply(m, Option.some(value("v1"))));
+
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected the read to resolve through the base client's reply path: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+        }
+
+        @Test
+        void get_isAbsent_whenValueOnThirdArrivesAfterGrace() throws InterruptedException {
+            useRing(3);
+            var read = client.get(key("k1"), ReadOptions.absentGrace(timeSpan(150).millis()));
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            Thread.sleep(700);
+            reply(initial.get(2), Option.some(value("v1")));
+
+            // documents the bound: a value later than the grace is not waited for
+            read.await(timeSpan(2).seconds())
+                .onFailure(c -> fail("Expected absent: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+
+        @Test
+        void get_isAbsentAtTwoEmpties_withoutTheOption() {
+            useRing(3);
+            var read = client.get(key("k1"));
+            var initial = requests();
+
+            reply(initial.get(0), Option.none());
+            reply(initial.get(1), Option.none());
+            // the value is on the third replica and arrives at once; a caller that did not opt in keeps today's
+            // absent, decided at the second empty answer
+            reply(initial.get(2), Option.some(value("v1")));
+
+            read.await(timeSpan(1).seconds())
+                .onFailure(c -> fail("Expected absent at once: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        }
+
+        @Test
+        void get_doesNotResurrectRemovedValue_withoutTheOption() {
+            useRing(3);
+            // remove acked by two replicas; the third keeps the value (the DHT has no tombstones)
+            var removal = client.remove(key("k1"));
+            var removes = network.captured.stream()
+                                          .filter(m -> m.message() instanceof DHTMessage.RemoveRequest)
+                                          .toList();
+            removes.subList(0, 2).forEach(m -> client.onRemoveResponse(
+                new DHTMessage.RemoveResponse(((DHTMessage.RemoveRequest) m.message()).requestId(), m.target(), true)));
+            removal.await(timeSpan(2).seconds())
+                   .onFailure(c -> fail("Expected the remove to reach quorum: " + c.message()));
+            var stale = removes.get(2).target();
+
+            var read = client.get(key("k1"));
+            var reads = requests();
+            reads.stream().filter(m -> !m.target().equals(stale)).forEach(m -> reply(m, Option.none()));
+            reads.stream().filter(m -> m.target().equals(stale)).forEach(m -> reply(m, Option.some(value("stale"))));
+
+            read.await(timeSpan(1).seconds())
+                .onFailure(c -> fail("Expected absent: " + c.message()))
+                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
         }
     }
 

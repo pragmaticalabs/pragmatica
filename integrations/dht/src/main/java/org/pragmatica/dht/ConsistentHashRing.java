@@ -17,6 +17,8 @@ package org.pragmatica.dht;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -49,6 +51,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     private final NavigableMap<Integer, SortedSet<N>> ring = new TreeMap<>();
     private final Map<N, List<Integer>> nodeToVirtualNodes = new HashMap<>();
     private final int virtualNodesPerPhysical;
+    private final Map<Object, Consumer<N>> removalListeners = new ConcurrentHashMap<>();
 
     private ConsistentHashRing(int virtualNodesPerPhysical) {
         this.virtualNodesPerPhysical = virtualNodesPerPhysical;
@@ -88,13 +91,35 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         }
     }
 
-    /// Remove a node from the ring.
+    /// Remove a node from the ring. Removal listeners registered via [#onNodeRemoved] run after the
+    /// write lock is released, and only when the node was actually in the ring.
     @Contract
     public void removeNode(N node) {
+        if (removeUnderLock(node)) {
+            removalListeners.values().forEach(listener -> listener.accept(node));
+        }
+    }
+
+    /// Register a listener invoked with each node that leaves the ring (any removal path: DEPARTING
+    /// prune, decommission, node-removed, self-shutdown). Lets an in-flight quorum read learn that a
+    /// target departed without being wired into every membership callback.
+    ///
+    /// @param listener invoked on the removing thread, outside the ring lock
+    /// @return handle that unregisters the listener when run
+    public Runnable onNodeRemoved(Consumer<N> listener) {
+        var token = new Object();
+
+        removalListeners.put(token, listener);
+
+        return () -> removalListeners.remove(token);
+    }
+
+    private boolean removeUnderLock(N node) {
         lock.writeLock().lock();
         try {
-            Option.option(nodeToVirtualNodes.remove(node))
-                  .onPresent(virtualNodes -> virtualNodes.forEach(point -> removeFromPoint(point, node)));
+            return Option.option(nodeToVirtualNodes.remove(node))
+                         .onPresent(virtualNodes -> virtualNodes.forEach(point -> removeFromPoint(point, node)))
+                         .isPresent();
         } finally {
             lock.writeLock().unlock();
         }

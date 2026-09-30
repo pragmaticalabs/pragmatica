@@ -38,6 +38,12 @@ public interface DHTClient {
     /// @return the value if found, or empty if not present on any replica
     Promise<Option<byte[]>> get(byte[] key);
 
+    /// Get a value by key with per-read options (see [ReadOptions]). Implementations that do not
+    /// distinguish the options ignore them, which is the default quorum behaviour.
+    default Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
+        return get(key);
+    }
+
     /// Get a value by string key.
     default Promise<Option<byte[]>> get(String key) {
         return get(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));

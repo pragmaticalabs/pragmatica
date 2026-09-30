@@ -21,6 +21,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTConfig.DhtRetryPolicy;
 import org.pragmatica.dht.DHTError;
+import org.pragmatica.dht.ReadOptions;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.dht.DHTClient;
@@ -241,6 +242,18 @@ public interface ArtifactStore {
                                        TimeSpan resolveCeiling) {
         return new ArtifactStoreImpl(dht, storage, resolveBase, resolvePerChunk, resolveCeiling);
     }
+
+    /// Variant that overrides the metadata-read absent grace (default one second). Used by tests that
+    /// drive the late-holder scenario with a short `TimeSpan`.
+    static ArtifactStore artifactStore(DHTClient dht, StorageInstance storage, TimeSpan metadataAbsentGrace) {
+        return new ArtifactStoreImpl(dht,
+                                     storage,
+                                     dht.config().retryPolicy(),
+                                     ArtifactStoreImpl.DEFAULT_RESOLVE_BASE,
+                                     ArtifactStoreImpl.DEFAULT_RESOLVE_PER_CHUNK,
+                                     ArtifactStoreImpl.DEFAULT_RESOLVE_CEILING,
+                                     metadataAbsentGrace);
+    }
 }
 
 class ArtifactStoreImpl implements ArtifactStore {
@@ -278,9 +291,16 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// produce an unbounded budget. For the unknown-chunk-count metadata-read leg the floor
     /// applies; once chunk count is known the scaled budget governs the block fan-out. Held as
     /// fields (defaulting to these constants) so tests can drive the deadline with a short span.
-    private static final TimeSpan DEFAULT_RESOLVE_BASE = timeSpan(15).seconds();
-    private static final TimeSpan DEFAULT_RESOLVE_PER_CHUNK = timeSpan(2).seconds();
-    private static final TimeSpan DEFAULT_RESOLVE_CEILING = timeSpan(120).seconds();
+    static final TimeSpan DEFAULT_RESOLVE_BASE = timeSpan(15).seconds();
+    static final TimeSpan DEFAULT_RESOLVE_PER_CHUNK = timeSpan(2).seconds();
+    static final TimeSpan DEFAULT_RESOLVE_CEILING = timeSpan(120).seconds();
+    /// After two original R-set replicas answer empty, the metadata read waits this long for the third
+    /// before it reports the artifact absent (#1775: a late replica that holds the value must not be
+    /// discarded). Opt-in for this read ONLY, and bounded by `resolveBase`. The DHT has no tombstones, so a
+    /// remove acked by W=2 leaves the value on the third replica and a grace window can resurrect it:
+    /// acceptable here because artifacts are write-once. The one exposure is artifact DELETION followed
+    /// by a re-resolve inside the window, which can briefly resolve the deleted artifact's metadata.
+    static final TimeSpan DEFAULT_METADATA_ABSENT_GRACE = timeSpan(1).seconds();
 
     /// Bounded retry for transient DHT-resilience failures inside `deploy` AND `resolve`.
     /// The DHT-resilience layer (`dht-resilience-spec.md`) converts a transient QUIC
@@ -309,6 +329,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     private final TimeSpan resolveBase;
     private final TimeSpan resolvePerChunk;
     private final TimeSpan resolveCeiling;
+    private final TimeSpan metadataAbsentGrace;
     private final Consumer<String> readFailureSink;
     private final AtomicInteger artifactCount = new AtomicInteger(0);
     private final AtomicInteger chunkCount = new AtomicInteger(0);
@@ -345,6 +366,16 @@ class ArtifactStoreImpl implements ArtifactStore {
         this(dht, storage, retryPolicy, resolveBase, resolvePerChunk, resolveCeiling, log::warn);
     }
 
+    ArtifactStoreImpl(DHTClient dht,
+                      StorageInstance storage,
+                      DhtRetryPolicy retryPolicy,
+                      TimeSpan resolveBase,
+                      TimeSpan resolvePerChunk,
+                      TimeSpan resolveCeiling,
+                      TimeSpan metadataAbsentGrace) {
+        this(dht, storage, retryPolicy, resolveBase, resolvePerChunk, resolveCeiling, log::warn, metadataAbsentGrace);
+    }
+
     /// `readFailureSink` receives the line for a metadata read that did not complete; production logs it at WARN.
     ArtifactStoreImpl(DHTClient dht,
                       StorageInstance storage,
@@ -353,6 +384,24 @@ class ArtifactStoreImpl implements ArtifactStore {
                       TimeSpan resolvePerChunk,
                       TimeSpan resolveCeiling,
                       Consumer<String> readFailureSink) {
+        this(dht,
+             storage,
+             retryPolicy,
+             resolveBase,
+             resolvePerChunk,
+             resolveCeiling,
+             readFailureSink,
+             DEFAULT_METADATA_ABSENT_GRACE);
+    }
+
+    ArtifactStoreImpl(DHTClient dht,
+                      StorageInstance storage,
+                      DhtRetryPolicy retryPolicy,
+                      TimeSpan resolveBase,
+                      TimeSpan resolvePerChunk,
+                      TimeSpan resolveCeiling,
+                      Consumer<String> readFailureSink,
+                      TimeSpan metadataAbsentGrace) {
         this.readFailureSink = readFailureSink;
         this.dht = dht;
         this.storage = storage;
@@ -360,6 +409,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         this.resolveBase = resolveBase;
         this.resolvePerChunk = resolvePerChunk;
         this.resolveCeiling = resolveCeiling;
+        this.metadataAbsentGrace = metadataAbsentGrace;
     }
 
     @Override
@@ -408,14 +458,22 @@ class ArtifactStoreImpl implements ArtifactStore {
         // downstream transformation.
         var startNanos = System.nanoTime();
 
-        return dhtGetWithRetry(metaKey(file)).timeout(resolveBase)
-                              .onFailure(cause -> readFailureSink.accept(readFailureLine(keyHex(file),
-                                                                                         cause,
-                                                                                         elapsedMillisSince(startNanos))))
+        return dhtGetWithRetry(metaKey(file),
+                               ReadOptions.absentGrace(metadataAbsentGrace)).timeout(resolveBase)
+                              .withResult(read -> reportReadFailure(file, read, startNanos))
                               .flatMap(metaOpt -> metadataOf(file,
                                                              metaOpt,
                                                              elapsedMillisSince(startNanos)))
                               .flatMap(meta -> resolveChunksFromStorage(file, meta));
+    }
+
+    /// Runs as a dependent step (`withResult`), so the line is in the sink before the resolve chain settles: an
+    /// `onFailure` callback is an independent event and a caller awaiting the chain could observe an empty sink.
+    @Contract
+    private void reportReadFailure(ArtifactFile file, Result<Option<byte[]>> read, long startNanos) {
+        read.onFailure(cause -> readFailureSink.accept(readFailureLine(keyHex(file),
+                                                                       cause,
+                                                                       elapsedMillisSince(startNanos))));
     }
 
     private String keyHex(ArtifactFile file) {
@@ -685,21 +743,25 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// that otherwise hangs until the 30s `operationTimeout`, manifesting as an HTTP 500
     /// on `/api/blueprints/deploy`. CRITICAL: a successful `Option.empty()` is a legitimate
     /// "not found" and is NEVER retried — only a transient FAILURE triggers a retry.
-    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key) {
-        return dhtGetWithRetry(key, 0);
+    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, ReadOptions options) {
+        return dhtGetWithRetry(key, 0, options);
     }
 
-    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, int attempt) {
+    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, int attempt, ReadOptions options) {
         var result = Promise.<Option<byte[]>> promise();
 
-        dht.get(key)
+        dht.get(key, options)
            .onResult(r -> r.onSuccess(_ -> result.resolve(r))
-                           .onFailure(cause -> handleGetFailure(key, attempt, cause, result)));
+                           .onFailure(cause -> handleGetFailure(key, attempt, options, cause, result)));
 
         return result;
     }
 
-    private void handleGetFailure(byte[] key, int attempt, Cause cause, Promise<Option<byte[]>> result) {
+    private void handleGetFailure(byte[] key,
+                                  int attempt,
+                                  ReadOptions options,
+                                  Cause cause,
+                                  Promise<Option<byte[]>> result) {
         var nextAttempt = attempt + 1;
 
         if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
@@ -715,7 +777,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                  retryPolicy.maxAttempts(),
                  cause.message(),
                  backoff.millis());
-        SharedScheduler.schedule(() -> dhtGetWithRetry(key, nextAttempt).onResult(result::resolve), backoff);
+        SharedScheduler.schedule(() -> dhtGetWithRetry(key, nextAttempt, options).onResult(result::resolve), backoff);
     }
 
     /// Per-chunk read variant of `dhtGetWithRetry` for the resolve fan-out. The artifact

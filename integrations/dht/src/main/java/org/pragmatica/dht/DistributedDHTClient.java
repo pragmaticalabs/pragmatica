@@ -31,9 +31,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.IdGenerator;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Distributed DHT client with quorum-based reads and writes.
@@ -43,6 +45,10 @@ public final class DistributedDHTClient implements DHTClient {
     /// MISS, at most this many ring members OUTSIDE the R-set are probed for a stranded copy. Keeps
     /// the mitigation a bounded, best-effort cache-warmth pass rather than an unbounded ring scan.
     private static final int DEFAULT_FALLBACK_PROBE_LIMIT = 8;
+    /// Upper bound on replacement requests a single quorum read may issue after its targets depart
+    /// the ring mid-read (each departed target costs at most one). Bounds the work a churning ring can
+    /// inflict on one read; past it the departed slot fails instead of being replaced.
+    private static final int DEFAULT_READ_REISSUE_LIMIT = 3;
     private static final HexFormat HEX = HexFormat.of();
 
     private final DHTNode node;
@@ -112,6 +118,11 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
+        return get(key, ReadOptions.DEFAULT);
+    }
+
+    @Override
+    public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
@@ -127,17 +138,17 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         Promise<Option<byte[]>> promise = Promise.promise();
-        var collector = QuorumCollector.<Option<byte[]>> quorumCollector(quorum, targets.size(), promise);
-
-        for (var target : targets) {
-            if (target.equals(node.nodeId())) {
-                handleLocalGet(key, collector);
-            } else {
-                sendRemoteGet(target, key, collector);
-            }
-        }
+        var deadlineNanos = readDeadlineNanos();
+        var collector = readCollector(quorum, targets.size(), promise, options, deadlineNanos);
+        var read = InFlightRead.inFlightRead(key, collector, deadlineNanos, DEFAULT_READ_REISSUE_LIMIT);
+        var unsubscribe = node.ring().onNodeRemoved(departed -> reissueAfterDeparture(read, departed));
+        // every original target is addressed before the first dispatch, so a departure landing mid-loop can
+        // never pick a not-yet-dispatched target as its replacement (one replica must never fill two slots)
+        targets.forEach(read::markAddressed);
+        targets.forEach(target -> dispatchRead(read, target));
 
         return promise.timeout(config.operationTimeout())
+                      .withResult(_ -> unsubscribe.run())
                       .flatMap(quorumResult -> resolveOrFallback(key,
                                                                  quorumResult,
                                                                  collector,
@@ -287,6 +298,107 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     // --- Private helpers ---
+    private long readDeadlineNanos() {
+        return System.nanoTime() + config.operationTimeout()
+                                         .nanos();
+    }
+
+    /// The collector for one read: plain quorum-count by default, grace mode only when the caller opted
+    /// in through [ReadOptions#absentGrace].
+    private static QuorumCollector<Option<byte[]>> readCollector(int quorum,
+                                                                 int total,
+                                                                 Promise<Option<byte[]>> promise,
+                                                                 ReadOptions options,
+                                                                 long deadlineNanos) {
+        return options.hasAbsentGrace()
+               ? QuorumCollector.<byte[]> graceCollector(quorum,
+                                                         total,
+                                                         promise,
+                                                         collector -> scheduleAbsentGrace(collector,
+                                                                                          options,
+                                                                                          deadlineNanos))
+               : QuorumCollector.<Option<byte[]>> quorumCollector(quorum, total, promise);
+    }
+
+    /// R empty answers are in: give the remaining original replica(s) at most the grace window, never
+    /// longer than what is left of the read's own deadline, then report absent.
+    private static Unit scheduleAbsentGrace(QuorumCollector<Option<byte[]>> collector,
+                                            ReadOptions options,
+                                            long deadlineNanos) {
+        var delay = Math.max(0,
+                             Math.min(options.absentGrace().nanos(),
+                                      deadlineNanos - System.nanoTime()));
+        var _ = SharedScheduler.schedule(collector::resolveWithBest, timeSpan(delay).nanos());
+
+        return unit();
+    }
+
+    private void dispatchRead(InFlightRead read, NodeId target) {
+        if (target.equals(node.nodeId())) {
+            read.markAddressed(target);
+            handleLocalGet(read.key(), read.collector());
+        } else {
+            sendTrackedGet(read, target);
+        }
+    }
+
+    private void sendTrackedGet(InFlightRead read, NodeId target) {
+        var correlationId = IdGenerator.generate();
+
+        read.expect(target, correlationId);
+        sendRemoteGet(target, read.key(), read.collector(), correlationId);
+    }
+
+    /// A target of an in-flight read left the ring: its reply may never come, and waiting for it
+    /// would burn the whole operation timeout. If it still owed a reply, take over its slot (the
+    /// atomic `pendingOps.remove` arbitrates against a concurrent reply, so exactly one side owns the
+    /// slot) and re-issue to a replacement replica from the current ring. Quorum semantics are
+    /// untouched: same quorum, same slot count, and a departure is never counted as an empty answer.
+    private void reissueAfterDeparture(InFlightRead read, NodeId departed) {
+        read.claim(departed).flatMap(this::removePending).onPresent(_ -> replaceOrFail(read, departed));
+    }
+
+    /// Fill a departed target's slot with a replacement, or fail the slot (fast-fail accrual, the same
+    /// `QuorumCollector#onFailure` path a transport refusal takes) when no replacement is allowed.
+    private void replaceOrFail(InFlightRead read, NodeId departed) {
+        read.nextReplacement(targetNodes(read.key()))
+            .onPresent(replacement -> dispatchReplacement(read, replacement))
+            .onEmpty(() -> failCollector(read.collector(),
+                                         DHTError.peerUnreachable(departed, "left the ring mid-read")));
+    }
+
+    /// A replacement was not a replica when the value was written, and the survivor rebalance that would
+    /// give it a copy starts only after the ring listeners ran. Its "absent" is therefore no evidence of
+    /// absence and must not vote: counting it breaks the R+W intersection (an absent original plus an
+    /// absent replacement would out-vote a holder still owing its reply). A present answer fills the slot;
+    /// an absent one fails it, so the read either finds the value or fails fast as retryable.
+    private void dispatchReplacement(InFlightRead read, NodeId replacement) {
+        Promise<Option<byte[]>> answer = Promise.promise();
+        var single = QuorumCollector.<Option<byte[]>> quorumCollector(1, 1, answer);
+        var _ = answer.onSuccess(value -> countReplacementAnswer(read, replacement, value))
+                      .onFailure(cause -> failCollector(read.collector(),
+                                                        cause));
+
+        if (replacement.equals(node.nodeId())) {
+            handleLocalGet(read.key(), single);
+        } else {
+            var correlationId = IdGenerator.generate();
+
+            read.expect(replacement, correlationId);
+            sendRemoteGet(replacement, read.key(), single, correlationId);
+        }
+    }
+
+    /// Same `@Contract` void-mutator suppression as [#failCollector].
+    @SuppressWarnings("JBCT-RET-07")
+    private static void countReplacementAnswer(InFlightRead read, NodeId replacement, Option<byte[]> value) {
+        if (value.isPresent()) {
+            read.collector().onSuccess(value, replacement.id());
+        } else {
+            failCollector(read.collector(), DHTError.peerUnreachable(replacement, "replacement holds no copy yet"));
+        }
+    }
+
     /// Whether quorum is arithmetically unreachable for this op: after liveness filtering, fewer
     /// live targets remain than the required `quorum`. The `quorum` is derived from the full ring
     /// size ([`DHTConfig#effectiveWriteQuorum`] / [`DHTConfig#effectiveReadQuorum`] capped at the
@@ -558,8 +670,13 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private void sendRemoteGet(NodeId target, byte[] key, QuorumCollector<Option<byte[]>> collector) {
-        var correlationId = IdGenerator.generate();
+        sendRemoteGet(target, key, collector, IdGenerator.generate());
+    }
 
+    private void sendRemoteGet(NodeId target,
+                               byte[] key,
+                               QuorumCollector<Option<byte[]>> collector,
+                               String correlationId) {
         pendingOps.put(correlationId, new PendingOperation<>(collector));
         dispatchTracked(target,
                         new DHTMessage.GetRequest(correlationId, node.nodeId(), key),
@@ -629,15 +746,18 @@ public final class DistributedDHTClient implements DHTClient {
         var _ = network.sendOutcome(target, message)
                        .onSuccess(outcome -> {
                                       if (!outcome.isSent()) {
-                                      pendingOps.remove(correlationId);
-                                      failCollector(collector,
+                                      failOwnedSlot(correlationId,
+                                                    collector,
                                                     toCause(outcome));
                                   }
                                   })
-                       .onFailure(cause -> {
-                           pendingOps.remove(correlationId);
-                           failCollector(collector, cause);
-                       });
+                       .onFailure(cause -> failOwnedSlot(correlationId, collector, cause));
+    }
+
+    /// Fail a refused request's slot only if this path still owns it: a concurrent departure may already
+    /// have claimed the pending op (and re-issued the slot), and one slot must never be counted twice.
+    private <T> void failOwnedSlot(String correlationId, QuorumCollector<T> collector, Cause cause) {
+        removePending(correlationId).onPresent(_ -> failCollector(collector, cause));
     }
 
     private static Cause toCause(WriteOutcome outcome) {

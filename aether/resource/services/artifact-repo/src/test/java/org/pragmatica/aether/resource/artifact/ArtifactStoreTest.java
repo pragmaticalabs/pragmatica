@@ -22,6 +22,7 @@ import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.dht.Partition;
+import org.pragmatica.dht.ReadOptions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -32,6 +33,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -574,6 +576,74 @@ class ArtifactStoreTest {
             // NEVER retried. With one resolve get against a missing key, exactly one get
             // is issued (no retry burst).
             assertThat(flakyGetDht.getsAfterArm()).isEqualTo(1);
+        }
+    }
+
+    /// #1775: only the artifact METADATA resolve read opts into the absent grace (artifacts are write-once);
+    /// every other DHT read keeps the default quorum rule, because the DHT has no tombstones and a grace window
+    /// resurrects a removed value from the replica that missed the remove.
+    @Nested
+    class MetadataAbsentGraceTests {
+        private final CopyOnWriteArrayList<ReadOptions> seen = new CopyOnWriteArrayList<>();
+        private final AtomicInteger plainGets = new AtomicInteger();
+
+        private DHTClient recordingDht() {
+            var delegate = testDht();
+
+            return new DHTClient() {
+                @Override
+                public Promise<Option<byte[]>> get(byte[] key) {
+                    plainGets.incrementAndGet();
+                    return delegate.get(key);
+                }
+
+                @Override
+                public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
+                    seen.add(options);
+                    return delegate.get(key);
+                }
+
+                @Override
+                public Promise<Unit> put(byte[] key, byte[] value) {
+                    return delegate.put(key, value);
+                }
+
+                @Override
+                public Promise<Boolean> remove(byte[] key) {
+                    return delegate.remove(key);
+                }
+
+                @Override
+                public Promise<Boolean> exists(byte[] key) {
+                    return delegate.exists(key);
+                }
+
+                @Override
+                public Partition partitionFor(byte[] key) {
+                    return delegate.partitionFor(key);
+                }
+            };
+        }
+
+        @Test
+        void resolveWithMetadata_readsMetadataWithAbsentGrace_andNothingElseDoes() {
+            var artifact = Artifact.artifact("org.example:grace:1.0.0").unwrap();
+            var storageInstance = StorageInstance.storageInstance("grace-artifacts",
+                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
+            var graceStore = ArtifactStore.artifactStore(recordingDht(), storageInstance, timeSpan(250).millis());
+
+            graceStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
+            seen.clear();
+            plainGets.set(0);
+
+            graceStore.resolveWithMetadata(artifact).await().onFailureRun(Assertions::fail);
+            graceStore.metadata(artifact).await();
+            graceStore.versions(artifact.groupId(), artifact.artifactId()).await();
+
+            // the metadata resolve read is the only one carrying the grace; metadata() and versions() use the plain get
+            assertThat(seen).hasSize(1);
+            assertThat(seen.getFirst().absentGrace()).isEqualTo(timeSpan(250).millis());
+            assertThat(plainGets.get()).isEqualTo(2);
         }
     }
 
