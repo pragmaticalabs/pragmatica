@@ -7,14 +7,14 @@
   `EmberCluster.DEFAULT_BASE_PORT` positionally. Every existing `emberConfig(...)` overload keeps its
   signature and defaults the new value, so no caller changes behaviour.
 - **Configurability alone would not have fixed this, and propagating the bind failure would not
-  either — there is no bind failure.** `QuicClusterServer` sets `SO_REUSEADDR` on its
-  `NioDatagramChannel` (deliberately: a restarting node must rebind its own port at once), and two UDP
-  sockets that BOTH set it bind the same port successfully. Measured on Darwin 25.5.0 across all four
+  either — there was no bind failure.** `QuicClusterServer` then set `SO_REUSEADDR` on its
+  `NioDatagramChannel` (until #1719, which made the cluster bind exclusive so a taken port now fails
+  with `BindFailed`), and two UDP sockets that BOTH set it bind the same port successfully. Measured on Darwin 25.5.0 across all four
   holder/probe combinations: both-`SO_REUSEADDR` is the ONLY one where the second bind succeeds, and
   Forge-versus-Forge is exactly that case. So the second instance does not fail to bind — it binds,
   splits the range's datagrams with the first instance, and never reaches quorum.
-  `QuicTransportError.BindFailed` already names the port and already aborts the whole cluster start;
-  it simply never fires here.
+  `QuicTransportError.BindFailed` already named the port and aborted the whole cluster start; it
+  simply never fired here before #1719.
 - **New `ForgePortPreflight`, run before any node is created**, binds each port of
   `base_port .. base_port + nodes - 1` **without** `SO_REUSEADDR` — which the kernel does refuse while
   any holder exists — and on a collision Forge logs the occupied ports and exits non-zero.

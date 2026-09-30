@@ -41,7 +41,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// socket then received 5 of 5 datagrams, the server 0). A seed in `QuicDialAttemptTest` once never connected for
 /// exactly this reason. The pin: a reuse-enabled socket cannot bind the dialer's own port — which it could if the dial
 /// socket were reuse-enabled. The control, in the same run, shows this platform does let two reuse-enabled sockets
-/// share a port (Linux does; macOS does not, where the hazard and so this pin do not apply).
+/// share a port. Linux does. So does macOS for Java's `setReuseAddress` (the JDK also sets SO_REUSEPORT on BSD-family
+/// systems), which is why the pin runs there too; a platform that refuses the control skips it.
 @Timeout(60)
 class QuicDialSocketTest {
     private static final NodeId ACCEPTOR = new NodeId("ds-acceptor");
@@ -94,7 +95,8 @@ class QuicDialSocketTest {
         }
     }
 
-    /// Control: two reuse-enabled UDP sockets on one port — possible on Linux, refused on macOS.
+    /// Control: two reuse-enabled UDP sockets on one port — possible on Linux, and on macOS through Java's reuse (which
+    /// also sets SO_REUSEPORT there).
     private static boolean platformSharesReusePorts() throws IOException {
         try (var first = reuseSocket(); var second = reuseSocket()) {
             first.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));

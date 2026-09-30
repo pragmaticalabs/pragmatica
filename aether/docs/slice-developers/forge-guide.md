@@ -199,11 +199,10 @@ whole budget.
 ### Running two Forge instances on one host
 
 All four port settings must be moved, `base_port` included. It is the cluster's QUIC/consensus range
-(`base_port` through `base_port + nodes - 1`), and it is the one that does **not** announce a
-collision by itself: the QUIC sockets are bound with `SO_REUSEADDR`, so a second instance left on the
-default 6000 binds successfully, silently splits the range's datagrams with the first instance, and
-never reaches quorum — surfacing only as `activePeerCount=1`, which is also what genuinely stale
-`forge-data/` state looks like.
+(`base_port` through `base_port + nodes - 1`). Before #1719 it did **not** announce a collision: the QUIC
+sockets were bound with `SO_REUSEADDR`, so a second instance left on the default 6000 bound successfully,
+silently split the range's datagrams with the first instance, and never reached quorum. Since #1719 the
+QUIC bind is exclusive, so a taken port fails the node's start with `BindFailed` naming the port.
 
 Forge therefore checks the whole range at startup and refuses to start when any of it is held,
 naming the ports. If you see that message it is a collision, not stale state — no node was started.
