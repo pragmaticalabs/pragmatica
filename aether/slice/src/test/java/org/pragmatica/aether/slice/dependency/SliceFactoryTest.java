@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -149,6 +150,7 @@ class SliceFactoryTest {
         SliceFactory.createSlice(WrongParamCountFactory.class, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
             assertThat(cause.message()).contains("Parameter mismatch");
             assertThat(cause.message()).contains("expected 1");
+            assertFactoryContractMismatchNamesNoDirection(cause.message());
         });
     }
 
@@ -162,6 +164,7 @@ class SliceFactoryTest {
         }
         SliceFactory.createSlice(WrongFirstParamFactory.class, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
             assertThat(cause.message()).contains("factory parameter 0 must be SliceCreationContext");
+            assertFactoryContractMismatchNamesNoDirection(cause.message());
         });
     }
 
@@ -174,7 +177,9 @@ class SliceFactoryTest {
         var factoryClass = loader.loadClass(GhostParamFactory.class.getName());
 
         SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
-            assertThat(cause.message()).contains("Parameter mismatch");
+            assertThat(cause).isInstanceOf(SliceLoadingFailure.Fatal.ServedPackageLacksClass.class);
+            assertThat(cause.message()).startsWith("Class resolution failed in ");
+            assertThat(cause.message()).doesNotContain("Parameter mismatch");
             assertThat(cause.message()).contains("rebuild against this runtime version");
             assertThat(cause.message()).contains("DIFFERENT VERSION of the artifact");
             assertThat(cause.message()).contains("GhostAspect");
@@ -557,6 +562,16 @@ class SliceFactoryTest {
                                            .doesNotContain("removed class");
             });
         }
+    }
+
+    /// #1196 — the arity/type messages must state only what is observed (the signature is not this
+    /// runtime's contract) and a remedy that holds for an older AND a newer slice. These two tests used to
+    /// assert only the first half of each message, stopping exactly before the false causal claim.
+    private static void assertFactoryContractMismatchNamesNoDirection(String message) {
+        assertThat(message).contains("does not match this runtime's factory contract")
+                           .contains("older or newer")
+                           .contains("build the slice with the same Aether version as this runtime")
+                           .doesNotContain("older runtime");
     }
 
     /// The served-but-lacking verdict: the evidence (which loader, which jar, which artifact

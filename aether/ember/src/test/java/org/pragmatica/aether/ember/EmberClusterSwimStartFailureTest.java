@@ -38,9 +38,9 @@ class EmberClusterSwimStartFailureTest {
     /// Above every computed candidate range in this module (`EmberClusterObservedNodeStateTest` 25700–27500,
     /// `EmberBootstrapAdminKeyAuthTest` 27700–29500, `EmberClusterCurrentLeaderTest` 29700–31500, each
     /// reaching base + 102) and every literal block, so a parallel fork's prober never lands on these.
-    private static final int BASE_PORT = 31700;
-    private static final int BASE_MGMT_PORT = 31740;
-    private static final int BASE_APP_HTTP_PORT = 31780;
+    /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with
+    /// another process would read as the behaviour under test. The port it occupies on purpose it binds itself.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(50100, 50900, 200, 3, 40, 80);
     private static final String NODE_PREFIX = "swimfail";
     /// Well above the measured green (node 1's stop plus the abort's bounded stops of the other two),
     /// well below the 90 s the reviewer's probe hung for: a `Timeout` here IS the hang.
@@ -49,6 +49,9 @@ class EmberClusterSwimStartFailureTest {
     private static final long RECLAIM_WAIT_MS = 5_000;
 
     private EmberCluster cluster;
+    private final int basePort = EmberTestPorts.freeBase(PORTS);
+    private final int baseMgmtPort = basePort + PORTS.mgmtOffset();
+    private final int baseAppHttpPort = basePort + PORTS.appOffset();
 
     /// By the time this runs `abortStart` has stopped every node; a green result here is evidence
     /// that the second stop is idempotent, as in the sibling test.
@@ -64,11 +67,11 @@ class EmberClusterSwimStartFailureTest {
     @Test
     @Timeout(150)
     void start_settlesWithTheBindFailure_whenOneNodeCannotBindItsSwimPort() throws IOException {
-        // Slots are assigned in node order: node 1 -> BASE_PORT; its SWIM listener is that + offset.
-        var node1SwimPort = BASE_PORT + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
+        // Slots are assigned in node order: node 1 -> basePort; its SWIM listener is that + offset.
+        var node1SwimPort = basePort + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
 
         try (var heldSwim = new DatagramSocket(node1SwimPort)) {
-            cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
+            cluster = emberCluster(3, basePort, baseMgmtPort, baseAppHttpPort, NODE_PREFIX);
             var startedAt = System.nanoTime();
             var outcome = cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started");
             var elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
@@ -90,9 +93,9 @@ class EmberClusterSwimStartFailureTest {
         // Every node was stopped as part of the abort: node 1's management port and the survivors'
         // are reclaimable, and so is node 1's QUIC (UDP) port.
         for (int slot = 0; slot < 3; slot++) {
-            assertReclaimableTcp(BASE_MGMT_PORT + slot);
+            assertReclaimableTcp(baseMgmtPort + slot);
         }
-        assertReclaimableUdp(BASE_PORT);
+        assertReclaimableUdp(basePort);
     }
 
     /// A closed channel's port can trail the stop promise by a few milliseconds; poll for it, bounded.

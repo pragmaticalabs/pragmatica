@@ -646,7 +646,7 @@ public final class SliceRoutes implements RouteSource {
         var defaultPlacement = placement.or("CORE_ONLY");
         AetherValue value = existing.or(AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(),
                                                                                       instances,
-                                                                                      instances,
+                                                                                      AetherValue.SliceTargetValue.defaultMinInstances(instances),
                                                                                       defaultPlacement));
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
 

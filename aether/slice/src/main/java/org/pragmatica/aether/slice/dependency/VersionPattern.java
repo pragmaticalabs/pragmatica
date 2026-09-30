@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -146,8 +150,87 @@ public sealed interface VersionPattern {
             return Integer.compare(v1.patch(), v2.patch());
         }
 
-        return v1.qualifier()
-                 .compareTo(v2.qualifier());
+        return compareQualifiers(v1.qualifier(), v2.qualifier());
+    }
+
+    /// #1435 — pre-release ordering, following semver §11 and Maven's `ComparableVersion` on the cases that
+    /// matter here. It used to be a plain `String.compareTo`, which put `1.0.0` BELOW `1.0.0-SNAPSHOT` and
+    /// `rc10` below `rc9`; since #1184 that ordering decides whether an `[infra]` slice loads.
+    ///
+    ///   - An empty qualifier (a release) is newer than any pre-release of the same `major.minor.patch`.
+    ///     So a loaded pre-release never satisfies a requester of the release it precedes: `^1.0.0`
+    ///     against a loaded `1.0.0-SNAPSHOT` is a conflict, and `^1.0.0-SNAPSHOT` against `1.0.0` is
+    ///     compatible.
+    ///   - Otherwise the qualifiers are compared token by token. A token is a run of digits or a run of
+    ///     letters (`.` and `-` separate too), so `rc10` is `[rc, 10]`. Two numeric tokens compare
+    ///     numerically (`rc9` < `rc10`), a numeric token sorts before a letter token, letter tokens compare
+    ///     case-insensitively (`alpha` < `beta` < `rc` < `snapshot`), and a qualifier that is a prefix of
+    ///     another sorts first.
+    static int compareQualifiers(String q1, String q2) {
+        if (q1.isEmpty() || q2.isEmpty()) {
+            return Boolean.compare(q1.isEmpty(), q2.isEmpty());
+        }
+
+        var t1 = qualifierTokens(q1);
+        var t2 = qualifierTokens(q2);
+
+        for (int i = 0; i < Math.min(t1.size(), t2.size()); i++) {
+            var cmp = compareTokens(t1.get(i), t2.get(i));
+
+            if (cmp != 0) {
+                return cmp;
+            }
+        }
+
+        return Integer.compare(t1.size(), t2.size());
+    }
+
+    private static List<String> qualifierTokens(String qualifier) {
+        var tokens = new ArrayList<String>();
+        var matcher = QUALIFIER_TOKEN.matcher(qualifier);
+
+        while (matcher.find()) {
+            tokens.add(matcher.group());
+        }
+
+        return tokens;
+    }
+
+    /// Numeric tokens of any length, without overflow: strip leading zeros, then the longer is larger.
+    private static int compareNumericTokens(String a, String b) {
+        var x = stripLeadingZeros(a);
+        var y = stripLeadingZeros(b);
+
+        return x.length() != y.length()
+               ? Integer.compare(x.length(), y.length())
+               : x.compareTo(y);
+    }
+
+    private static String stripLeadingZeros(String digits) {
+        var i = 0;
+
+        while (i < digits.length() - 1 && digits.charAt(i) == '0') {
+            i++;
+        }
+
+        return digits.substring(i);
+    }
+
+    private static int compareTokens(String a, String b) {
+        var aNumeric = Character.isDigit(a.charAt(0));
+        var bNumeric = Character.isDigit(b.charAt(0));
+
+        if (aNumeric && bNumeric) {
+            return compareNumericTokens(a, b);
+        }
+
+        if (aNumeric != bNumeric) {
+            return aNumeric
+                   ? -1
+                   : 1;
+        }
+
+        return a.compareToIgnoreCase(b);
     }
 
     static Result<VersionPattern> parse(String pattern) {
@@ -241,6 +324,7 @@ public sealed interface VersionPattern {
     }
 
     Cause EMPTY_PATTERN = Causes.cause("Version pattern cannot be empty");
+    Pattern QUALIFIER_TOKEN = Pattern.compile("\\d+|[A-Za-z]+");
     Fn1<Cause, String> INVALID_RANGE_FORMAT = Causes.forOneValue("Invalid range format: %s");
     Fn1<Cause, String> INVALID_COMPARISON_FORMAT = Causes.forOneValue("Invalid comparison format: %s");
 

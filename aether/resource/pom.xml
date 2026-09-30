@@ -82,15 +82,8 @@
         </dependencies>
     </dependencyManagement>
 
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.sonatype.central</groupId>
-                <artifactId>central-publishing-maven-plugin</artifactId>
-                <configuration>
-                    <skipPublishing>true</skipPublishing>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
+    <!-- #1211, #1219: the resource family is published. `node`, `aether-deployment`, `aether-metrics`, `aether-stream`,
+         `aether-invoke`, `aether-storage`, `ember` and `pg-codegen` depend on it at compile scope, so an inherited
+         skipPublishing here left every one of them unresolvable from Central. tools/check-publish-closure.py
+         refuses an unclosed published set. -->
 </project>
