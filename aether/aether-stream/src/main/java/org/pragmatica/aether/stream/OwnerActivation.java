@@ -27,6 +27,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -231,6 +232,8 @@ public final class OwnerActivation {
     /// How many of the most recent offsets two nodes both hold are compared before one is trusted or promoted
     /// over the other. A named constant, not a derived bound — see the class comment.
     public static final int OVERLAP_WINDOW = 1024;
+    static final TimeSpan REDRIVE_INITIAL_BACKOFF = TimeSpan.timeSpan(250).millis();
+    static final TimeSpan REDRIVE_MAX_BACKOFF = TimeSpan.timeSpan(2).seconds();
 
     private record PeerWatermark(NodeId node, long watermark) {}
 
@@ -251,6 +254,8 @@ public final class OwnerActivation {
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
 
     private final Set<PartitionKey> inFlight = ConcurrentHashMap.newKeySet();
+    /// Partitions with a re-drive already scheduled.
+    private final Set<PartitionKey> redriving = ConcurrentHashMap.newKeySet();
     /// The block currently reported for each partition; the alarm fires when it first appears or changes.
     private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
@@ -327,14 +332,46 @@ public final class OwnerActivation {
         if (isActivated(stream, partition)) {
             return Result.unitResult();
         }
-        // FER: the refused action is retried by its caller, and every later demand re-runs the gate, so an
-        // activation attempt that fails here is logged and superseded, never relied upon.
-        activate(stream, partition).onFailure(cause -> log.debug("Owner activation of {}[{}] pending: {}",
-                                                                 stream,
-                                                                 partition,
-                                                                 cause.message()));
+
+        attempt(stream, partition, REDRIVE_INITIAL_BACKOFF);
 
         return new StreamError.OwnerNotActivated(stream, partition).result();
+    }
+
+    /// One activation attempt. A failed attempt is re-driven here, with a doubling backoff, while this node still
+    /// claims the partition and is not activated: without it a failure (a peer that has not applied the stream's
+    /// config yet, a probe that timed out) waited for the next demand, and a partition nobody demanded again stayed
+    /// refused until something else happened to probe it (cloud run 1: ~25 s).
+    ///
+    /// FER: the failure itself is not surfaced to the refused caller, which is told `OwnerNotActivated` and retries;
+    /// this loop only guarantees an attempt is made again. Stops when the node is activated, ownership left it
+    /// (`NOT_OWNER`), or consensus is inactive; a demand starts a fresh loop, and one loop runs per partition.
+    private void attempt(String stream, int partition, TimeSpan backoff) {
+        activate(stream, partition).onFailure(cause -> redrive(stream, partition, backoff, cause));
+    }
+
+    private void redrive(String stream, int partition, TimeSpan backoff, Cause cause) {
+        log.debug("Owner activation of {}[{}] pending: {}", stream, partition, cause.message());
+        if (cause == ActivationError.IN_PROGRESS || cause == ActivationError.NOT_OWNER || !consensusActive.getAsBoolean()) {
+            return;
+        }
+
+        if (redriving.add(PartitionKey.partitionKey(stream, partition))) {
+            SharedScheduler.schedule(() -> redriveAfterBackoff(stream, partition, backoff), backoff);
+        }
+    }
+
+    private void redriveAfterBackoff(String stream, int partition, TimeSpan backoff) {
+        redriving.remove(PartitionKey.partitionKey(stream, partition));
+        if (!isActivated(stream, partition)) {
+            attempt(stream, partition, nextBackoff(backoff));
+        }
+    }
+
+    private static TimeSpan nextBackoff(TimeSpan backoff) {
+        return backoff.millis() * 2 >= REDRIVE_MAX_BACKOFF.millis()
+               ? REDRIVE_MAX_BACKOFF
+               : TimeSpan.timeSpan(backoff.millis() * 2).millis();
     }
 
     /// Run the promotion gate for `(stream, partition)` once; concurrent demands share nothing and are told an

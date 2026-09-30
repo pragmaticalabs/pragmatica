@@ -52,10 +52,10 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// reverted the gate still opened 15 ms after the first demand (cloudbb-d1, 2026-09-30, mutant run in the
 /// f-backfill report). [#ownerGateOpensPromptly] is kept as the incident's symptom check and is green either way.
 ///
-/// **What it does NOT pin: that a publish is acknowledged.** The stream's confirmation factor is 2 and its replicas
-/// stay paced until the occupier's slots are released by the reshuffle tick, so the first publishes time out at the
-/// confirmation barrier (`REPLICATION_TIMEOUT`, observed on the same run). That is the second mechanism of the
-/// cloud finding (B=500) and the probe fix does not close it.
+/// **Publish.** The stream's confirmation factor is 2 and its replicas stay paced while the slots are busy, so
+/// the first publishes timed out at the confirmation barrier (`REPLICATION_TIMEOUT`, measured before F1f). A
+/// replica's first replicate append at offset 0 of an empty partition is no longer paced, and the publish through
+/// every node is acknowledged inside [#PUBLISH_BOUND_MS].
 ///
 /// [unverified: the slot is still taken at the second stream's create] It is decided by the reshuffle tick, not
 /// by the test. The run log shows `held[0] ... paced: node already has 1 partitions in materialize+backfill`
@@ -82,6 +82,7 @@ class EmberHeldPartitionPublishTest {
     private static final long ACTIVATION_BOUND_MS = 8_000L;
     /// Same bound for the owner's `PartitionBackfill` self-promotion: a retry tick or two is fine, the 20 s wait is not.
     private static final long PROMOTION_BOUND_MS = 8_000L;
+    private static final long PUBLISH_BOUND_MS = 10_000L;
     private static final long OWNERSHIP_BOUND_MS = 30_000L;
     private static final String NAMESPACE = "ember";
     private static final String VERSION = "1.0.0";
@@ -128,8 +129,25 @@ class EmberHeldPartitionPublishTest {
                                            backfillWarnings.stream().filter(line -> line.contains(HELD_ENGINE_KEY)).toList())
                                        .isLessThan(PROMOTION_BOUND_MS);
             ownerGateOpensPromptly();
+            everyNodePublishesWithinTheBudget();
         } finally {
             detach.run();
+        }
+    }
+
+    /// The spec's end-to-end pin: with the slot still held, a publish (confirmation_factor 2) through each node's
+    /// management API is acknowledged inside the forwarder budget. Its replicas are paced, so it is F1f (an empty
+    /// partition's first replicate append is not paced) that lets the confirmation barrier complete.
+    private void everyNodePublishesWithinTheBudget() {
+        for (var node : cluster.status().nodes()) {
+            var published = post(node.mgmtPort(),
+                                 "/api/v1/streams/" + NAMESPACE + "/held/" + VERSION + "/publish",
+                                 "{\"data\":\"held-" + node.id() + "\"}");
+
+            assertThat(published.status()).as("publish via %s after %dms: %s", node.id(), published.elapsedMs(), published.body())
+                                          .isBetween(200, 299);
+            assertThat(published.elapsedMs()).as("publish via %s inside the forwarder budget", node.id())
+                                             .isLessThan(PUBLISH_BOUND_MS);
         }
     }
 

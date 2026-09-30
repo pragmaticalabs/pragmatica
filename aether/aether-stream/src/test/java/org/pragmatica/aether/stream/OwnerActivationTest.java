@@ -156,6 +156,46 @@ class OwnerActivationTest {
         assertThat(activation.admit(STREAM, PARTITION).isSuccess()).isTrue();
     }
 
+    /// F1e: a failed attempt is re-driven by the gate itself. The peer fails the probe on the first attempt and then
+    /// answers; with NO further demand the partition is activated within the backoff, where before it stayed refused
+    /// until something else demanded it (cloud run 1: ~25 s).
+    @Test
+    void admit_firstAttemptFails_redrivesWithoutAnotherDemand() {
+        record.set(Option.some(ownedBy(SELF, 1)));
+        members.set(List.of(SELF, PEER_A));
+        unreachable.add(PEER_A);
+
+        assertThat(activation.admit(STREAM, PARTITION).isFailure()).isTrue();
+        LockSupport.parkNanos(50_000_000L);
+        unreachable.remove(PEER_A);
+
+        assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven with no further demand").isTrue();
+    }
+
+    /// The re-drive stops once ownership has left the node: a moved partition is not retried forever.
+    @Test
+    void admit_ownershipLeaves_redriveStops() {
+        record.set(Option.some(ownedBy(SELF, 1)));
+        members.set(List.of(SELF, PEER_A));
+        unreachable.add(PEER_A);
+
+        activation.admit(STREAM, PARTITION);
+        record.set(Option.some(ownedBy(PEER_B, 2)));
+        unreachable.remove(PEER_A);
+
+        assertThat(eventuallyActivatedWithin(1_500L)).isFalse();
+    }
+
+    private boolean eventuallyActivatedWithin(long millis) {
+        var deadline = System.nanoTime() + millis * 1_000_000L;
+
+        while (System.nanoTime() < deadline && !activation.isActivated(STREAM, PARTITION)) {
+            LockSupport.parkNanos(10_000_000L);
+        }
+
+        return activation.isActivated(STREAM, PARTITION);
+    }
+
     /// Fresh-view gate: the round applies a newer committed record naming another node; the re-read after the
     /// round must see it and refuse, so a node whose committed view was stale never activates on it.
     @Test

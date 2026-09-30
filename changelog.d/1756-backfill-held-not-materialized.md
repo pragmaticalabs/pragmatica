@@ -12,7 +12,14 @@
   pinned by `HeldNotMaterializedProbeTest`, `OwnerPeerReadsTest.replicaWatermark_*` and
   `PartitionBackfillTest.backfill_freshOwner_bothPeersHeldNotMaterialized_selfPromotesOnTheFirstAttempt`, each red with the
   settle step or the handler's naming reverted]
-- **Not closed here:** a publish to such a stream still waits on its replicas, which stay paced, so the confirmation
-  barrier (`confirmation_factor` 2) can time out (`REPLICATION_TIMEOUT`) until the reshuffle tick releases a slot.
+- **The owner promotion gate re-drives a failed activation itself** (250 ms doubling to 2 s while the node still claims
+  the partition), instead of waiting for the next demand; before, a first attempt that failed (e.g. a peer that had not
+  applied the stream's config) left the partition refused until something else probed it (~25 s in cloud run 1).
+  [pinned by `OwnerActivationTest.admit_firstAttemptFails_redrivesWithoutAnotherDemand`, red with the re-drive removed]
+- **A replica's first replicate append at offset 0 of an empty partition is no longer paced by `reshuffle_concurrency`**,
+  so a `confirmation_factor` 2 publish to a new stream is acknowledged while the slots are busy; a partition with durable
+  data stays paced. [pinned by `HeldNotMaterializedProbeTest.appendRecovered_atOffsetZeroOfAnEmptyPartition_*`, and by
+  `EmberHeldPartitionPublishTest`, both red with the bypass reverted]
+- `Stream not found` from a peer stays UNREACHABLE (a cold-restarted peer may hold data it has not yet applied config for).
 - **Also fixed:** the old probe paged from offset 0 and never resumed on `CursorExpired`, so a peer whose offset 0 had aged
   out read as unreachable; it now shares the promotion gate's paging.

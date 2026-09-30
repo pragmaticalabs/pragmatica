@@ -177,4 +177,23 @@ class HeldNotMaterializedProbeTest {
         assertThat(manager.heldNotMaterializedWatermark("fresh", 7)).as("out of range").isEqualTo(Option.none());
         assertThat(manager.heldNotMaterializedWatermark("unknown", 0)).as("no such stream").isEqualTo(Option.none());
     }
+
+    /// F1f: with every slot busy, a replicate append at offset 0 for a partition with NOTHING durable materializes
+    /// outside pacing and is applied, so a confirmation_factor 2 publish to a new stream can be acked.
+    @Test
+    void appendRecovered_atOffsetZeroOfAnEmptyPartition_isNotPacedWhileSlotsAreBusy() {
+        var applied = manager.appendRecovered("fresh", 0, 0L, "first".getBytes(), 1000L);
+
+        assertThat(applied.isSuccess()).as("empty partition, nothing to backfill: %s", applied).isTrue();
+        assertThat(manager.partitionBuffer("fresh", 0).isPresent()).isTrue();
+    }
+
+    /// The other side: a partition that has durable data has a backfill to do, so it stays paced.
+    @Test
+    void appendRecovered_atOffsetZeroOfAPartitionWithWalHistory_staysPaced() {
+        var applied = manager.appendRecovered("restarted", 0, 0L, "first".getBytes(), 1000L);
+
+        assertThat(applied.isFailure()).isTrue();
+        applied.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReshufflePaced.class));
+    }
 }

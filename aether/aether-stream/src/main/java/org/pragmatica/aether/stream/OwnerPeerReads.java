@@ -290,6 +290,10 @@ public sealed interface OwnerPeerReads {
                            all);
     }
 
+    /// Only `PARTITION_NOT_LOCAL` means "holds nothing". `Stream not found` stays UNREACHABLE on purpose: after a cold
+    /// restart a same-id peer that has not yet applied the stream's config still holds its data on disk, so reading
+    /// "not found" as `-1` could let the owner promote past durable records. The owner gate's re-drive covers the
+    /// transient case (config not applied yet) safely.
     private static boolean isNotHeld(Cause cause) {
         return cause.message()
                     .contains(StreamError.General.PARTITION_NOT_LOCAL.message());
