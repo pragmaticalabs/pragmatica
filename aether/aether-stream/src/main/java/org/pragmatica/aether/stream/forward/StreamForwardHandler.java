@@ -266,8 +266,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                  .<Cause> map(watermark -> new StreamError.PartitionHeldNotMaterialized(request.streamName(),
                                                                                                         request.partition(),
                                                                                                         watermark,
-                                                                                                        partitionManager.heldBudgetExhausted(request.streamName(),
-                                                                                                                                             request.partition())))
+                                                                                                        partitionManager.heldBudgetExhausted(request.streamName())))
                                  .or(cause)
                : cause;
     }

@@ -229,8 +229,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Bumped on every ring install and release; a watermark read that started before a bump is never cached, so a
     /// slow read cannot put a pre-install value back after the drop.
     private final AtomicLong watermarkGeneration = new AtomicLong();
-    /// Partitions whose last materialization attempt was refused for lack of off-heap budget.
-    private final Set<PartitionRef> budgetDeferred = ConcurrentHashMap.newKeySet();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -3071,11 +3069,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .flatMap(_ -> durableWatermark(streamName, partition));
     }
 
-    /// Whether `(streamName, partition)` was last refused materialization for lack of off-heap budget (the actual
-    /// deferral, recorded by [#reportMaterializeDeferred]) rather than merely paced; no reshuffle slot frees such a
-    /// partition. Cleared when the partition is queued behind a slot or its ring is installed.
-    public boolean heldBudgetExhausted(String streamName, int partition) {
-        return budgetDeferred.contains(new PartitionRef(streamName, partition));
+    /// Whether a held-but-unmaterialized partition of `streamName` is deferred for lack of off-heap budget (the same
+    /// test [#materializePaced] makes first) rather than merely paced; no reshuffle slot frees such a partition.
+    public boolean heldBudgetExhausted(String streamName) {
+        return option(streams.get(streamName)).filter(entry -> !isSystemStream(streamName))
+                     .map(entry -> availableBytes() < perPartitionFloorBytes(entry.config()))
+                     .or(false);
     }
 
     private boolean isHeldWithoutRing(StreamEntry entry, String streamName, int partition) {
@@ -3118,7 +3117,6 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void dropDurableWatermark(PartitionRef ref) {
-        budgetDeferred.remove(ref);
         watermarkGeneration.incrementAndGet();
         durableWatermarks.remove(ref);
     }
@@ -3842,7 +3840,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partition is a no-op. Returns the named {@link StreamError.ReshufflePaced} so the caller retries
     /// (reconcile hook next tick / owner-append client retry), never forwards.
     private Result<OffHeapRingBuffer> enqueueMaterialize(PartitionRef ref, boolean system) {
-        budgetDeferred.remove(ref);
         if (queuedMaterializations.add(ref)) {
             (system
              ? systemMaterializeQueue
@@ -4108,7 +4105,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// node IS the holder, so the caller RETRIES (reconcile hook next tick / owner-append client retry),
     /// never a forward loop. The partition stays DEFERRED (metadata-only) until budget frees.
     private Result<OffHeapRingBuffer> reportMaterializeDeferred(StreamConfig config, int partition, long floorBytes) {
-        budgetDeferred.add(new PartitionRef(config.name(), partition));
         log.warn("Off-heap budget exhausted materializing {}[{}]: need {} floor bytes, {} available of {} — partition deferred metadata-only",
                  config.name(),
                  partition,

@@ -567,32 +567,15 @@ public final class OwnerActivation {
     /// Every responder that is not the catch-up source must agree with the local log where both hold records:
     /// a lower (or equal) peer that disagrees means the local tail, or the peer's, belongs to another lineage.
     private Promise<Unit> verifyAgreement(String stream, int partition, long local, List<PeerWatermark> others) {
-        return Promise.allOf(others.stream().map(peer -> verifyOther(stream, partition, local, peer)).toList())
+        return Promise.allOf(others.stream()
+                                   .map(peer -> verifyOverlap(stream, partition, local, peer).onFailure(cause -> flagBudgetHolder(stream,
+                                                                                                                                  partition,
+                                                                                                                                  local,
+                                                                                                                                  peer,
+                                                                                                                                  cause)))
+                                   .toList())
                       .flatMap(results -> Result.allOf(results).async())
                       .mapToUnit();
-    }
-
-    /// A responder that is not the catch-up source. At or below the owner's watermark it holds nothing the owner
-    /// lacks, so a peer that HOLDS the partition unmaterialized (paced or budget-deferred: its window cannot be read)
-    /// has compared nothing, exactly like a lower peer whose window was evicted, and does not block activation. What
-    /// such a peer could still hold is a divergent lineage, which #1505's quarantine catches when it backfills; a
-    /// strict check here costs availability (the slot-preemption wait, or indefinitely under budget exhaustion) with
-    /// no durability gain. A peer ABOVE the owner stays strict, and a budget-deferred one is reported.
-    private Promise<Unit> verifyOther(String stream, int partition, long local, PeerWatermark peer) {
-        var overlap = verifyOverlap(stream, partition, local, peer);
-
-        return peer.watermark() <= local
-               ? overlap.fold(result -> result.fold(cause -> comparedNothingWhenHeld(cause),
-                                                    _ -> Promise.success(Unit.unit())))
-               : overlap.onFailure(cause -> flagBudgetHolder(stream, partition, local, peer, cause));
-    }
-
-    /// FER (a lower peer that cannot be read is not evidence against the owner): held-unmaterialized is accepted as
-    /// "compared nothing"; every other failure still refuses.
-    private static Promise<Unit> comparedNothingWhenHeld(Cause cause) {
-        return StreamError.PartitionHeldNotMaterialized.watermarkOf(cause).isPresent()
-               ? Promise.success(Unit.unit())
-               : cause.promise();
     }
 
     /// The refusal that names a peer deferred for off-heap budget is reported (once per distinct block) rather than
