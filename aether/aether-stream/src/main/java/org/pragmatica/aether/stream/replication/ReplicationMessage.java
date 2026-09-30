@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.messaging.StreamType;
@@ -148,16 +149,38 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
         }
     }
 
+    /// `history` (#1596) is the source's owner-epoch slice, read after the last page, covering every record of the
+    /// response: the apply checks it against the replica's own history and records it before applying the records.
     record CatchupResponse(NodeId governorId,
                            String streamName,
                            int partition,
                            long fromOffset,
                            long toOffset,
                            List<byte[]> payloads,
-                           List<Long> timestamps) implements ReplicationMessage {
+                           List<Long> timestamps,
+                           List<ProvenanceEntry> history) implements ReplicationMessage {
         public CatchupResponse {
             payloads = payloads.stream().map(byte[]::clone).toList();
             timestamps = List.copyOf(timestamps);
+            history = List.copyOf(history);
+        }
+
+        /// A response from a source that ships no owner-epoch history.
+        public static CatchupResponse catchupResponse(NodeId governorId,
+                                                      String streamName,
+                                                      int partition,
+                                                      long fromOffset,
+                                                      long toOffset,
+                                                      List<byte[]> payloads,
+                                                      List<Long> timestamps) {
+            return catchupResponse(governorId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   toOffset,
+                                   payloads,
+                                   timestamps,
+                                   List.of());
         }
 
         public static CatchupResponse catchupResponse(NodeId governorId,
@@ -166,8 +189,16 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
                                                       long fromOffset,
                                                       long toOffset,
                                                       List<byte[]> payloads,
-                                                      List<Long> timestamps) {
-            return new CatchupResponse(governorId, streamName, partition, fromOffset, toOffset, payloads, timestamps);
+                                                      List<Long> timestamps,
+                                                      List<ProvenanceEntry> history) {
+            return new CatchupResponse(governorId,
+                                       streamName,
+                                       partition,
+                                       fromOffset,
+                                       toOffset,
+                                       payloads,
+                                       timestamps,
+                                       history);
         }
 
         @Override

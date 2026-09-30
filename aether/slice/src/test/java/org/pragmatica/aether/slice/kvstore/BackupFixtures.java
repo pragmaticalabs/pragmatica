@@ -37,6 +37,11 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionRecoveryKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReason;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionRecoveryValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
@@ -230,7 +235,15 @@ final class BackupFixtures {
                                                                                artifact("org.example:orders-slice:1.2.3"),
                                                                                MethodName.methodName("purgeExpired")
                                                                                          .unwrap()),
-                                   ScheduledTaskPauseValue.scheduledTaskPauseValue(1_700_000_000_000L)));
+                                   ScheduledTaskPauseValue.scheduledTaskPauseValue(1_700_000_000_000L)),
+                       new Fixture(StreamPartitionRecoveryKey.streamPartitionRecoveryKey("orders/eu", 3),
+                                   StreamPartitionRecoveryValue.streamPartitionRecoveryValue(PartitionRecoveryState.FLAGGED,
+                                                                                             Set.of(PartitionRecoveryReason.partitionRecoveryReason(PartitionRecoveryReasonKind.MARKED_DIVERGED,
+                                                                                                                                                    Option.some("node-1"),
+                                                                                                                                                    AWKWARD),
+                                                                                                    PartitionRecoveryReason.partitionRecoveryReason(PartitionRecoveryReasonKind.DIVERGED,
+                                                                                                                                                    Option.none(),
+                                                                                                                                                    "first differing offset 11")))));
     }
 
     private static Artifact artifact(String coordinates) {

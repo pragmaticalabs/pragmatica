@@ -303,6 +303,31 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Provenance refusal (#1596): the append carries owner epoch `presented`, but this partition's log already
+    /// records records of the strictly later epoch `recorded` -- the writer is deposed as far as this log is
+    /// concerned, whatever this node's fence high-water has observed yet. Nothing is appended.
+    record ProvenanceRegression(String streamName, int partition, Epoch presented, Epoch recorded) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: owner epoch %s is older than epoch %s this partition's log already records".formatted(streamName,
+                                                                                                                                            partition,
+                                                                                                                                            presented,
+                                                                                                                                            recorded);
+        }
+    }
+
+    /// Catch-up provenance refusal (#1596, spec #1569 §7.5.1 N13): the source's owner-epoch history disagrees with
+    /// this replica's own at `offset`, the first offset whose provenance differs, so the two copies are different
+    /// histories. Nothing of the page is applied, and the partition is quarantined at `offset` (#1505 F2).
+    record ProvenanceMismatch(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Catch-up refused for %s[%d]: the source's owner-epoch history differs from this replica's at offset %d".formatted(streamName,
+                                                                                                                                      partition,
+                                                                                                                                      offset);
+        }
+    }
+
     /// Offset-addressed replica append refusal (#1505): an event was offered at owner offset `offset`, but the
     /// next offset this replica's ring can assign is `nextExpected` — the replica is missing
     /// `[nextExpected, offset-1]`. Appending anyway would land the event one or more offsets too low, so
