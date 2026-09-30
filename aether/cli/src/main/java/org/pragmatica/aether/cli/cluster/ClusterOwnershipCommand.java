@@ -26,8 +26,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_OWN
 class ClusterOwnershipCommand implements Callable<Integer> {
     // One row per committed ownership atom from the `entries` array; `identity` is the
     // domain-specific partition/key, `owner` the committed owner NodeId, the committed fence Epoch is
-    // split into its (rabiaTerm, localCounter) columns, and the responding node's LOCAL per-domain
-    // epoch high-water is split into HW-TERM/HW-CTR. FENCED is `true` when the high-water is strictly
+    // split into its (incarnation, rabiaTerm, localCounter) columns, and the responding node's LOCAL
+    // per-domain epoch high-water is split into HW-INC/HW-TERM/HW-CTR. FENCED is `true` when the high-water is strictly
     // after the committed epoch — the deposed-owner window in which this node has observed a newer
     // epoch than the committed owner shows (so the committed owner would be rejected as stale here);
     // in steady state high-water equals the committed epoch and FENCED is `false`. The view is
@@ -37,8 +37,10 @@ class ClusterOwnershipCommand implements Callable<Integer> {
     private static final TableSpec TABLE_SPEC = new TableSpec("Local Ownership View",
                                                               List.of(new Column("IDENTITY", "identity", 24),
                                                                       new Column("OWNER", "owner", 16),
+                                                                      new Column("EPOCH-INC", "epoch.incarnation", 10),
                                                                       new Column("EPOCH-TERM", "epoch.rabiaTerm", 11),
                                                                       new Column("EPOCH-CTR", "epoch.localCounter", 10),
+                                                                      new Column("HW-INC", "highWater.incarnation", 7),
                                                                       new Column("HW-TERM", "highWater.rabiaTerm", 8),
                                                                       new Column("HW-CTR", "highWater.localCounter", 7),
                                                                       new Column("FENCED", "fenced", 7)),

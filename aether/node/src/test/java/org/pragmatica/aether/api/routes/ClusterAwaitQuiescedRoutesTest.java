@@ -20,9 +20,10 @@ class ClusterAwaitQuiescedRoutesTest {
     class EpochParsing {
         @Test
         void parseEpoch_validForm_succeeds() {
-            var parsed = ClusterAwaitQuiescedRoute.parseEpoch(Option.some("7:142"));
+            var parsed = ClusterAwaitQuiescedRoute.parseEpoch(Option.some("2:7:142"));
             assertThat(parsed.isSuccess()).isTrue();
             parsed.onSuccess(epoch -> {
+                assertThat(epoch.incarnation()).isEqualTo(2L);
                 assertThat(epoch.rabiaTerm()).isEqualTo(7L);
                 assertThat(epoch.localCounter()).isEqualTo(142L);
             });
@@ -30,8 +31,15 @@ class ClusterAwaitQuiescedRoutesTest {
 
         @Test
         void parseEpoch_zeroCounter_succeeds() {
-            var parsed = ClusterAwaitQuiescedRoute.parseEpoch(Option.some("3:0"));
+            var parsed = ClusterAwaitQuiescedRoute.parseEpoch(Option.some("1:3:0"));
             assertThat(parsed.isSuccess()).isTrue();
+        }
+
+        /// #1529: the pre-incarnation `term:counter` form is refused rather than read as incarnation 0,
+        /// which would rank below every epoch a cluster mints and report quiescence at once.
+        @Test
+        void parseEpoch_termCounterWithoutIncarnation_fails() {
+            assertThat(ClusterAwaitQuiescedRoute.parseEpoch(Option.some("7:142")).isFailure()).isTrue();
         }
 
         @Test
@@ -51,7 +59,7 @@ class ClusterAwaitQuiescedRoutesTest {
 
         @Test
         void parseEpoch_tooManyParts_fails() {
-            assertThat(ClusterAwaitQuiescedRoute.parseEpoch(Option.some("1:2:3")).isFailure()).isTrue();
+            assertThat(ClusterAwaitQuiescedRoute.parseEpoch(Option.some("1:2:3:4")).isFailure()).isTrue();
         }
 
         @Test

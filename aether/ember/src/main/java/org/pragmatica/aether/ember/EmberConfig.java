@@ -18,8 +18,9 @@ import org.pragmatica.lang.Result;
 /// could not move — management, dashboard and app HTTP were configurable while this stayed pinned
 /// at [EmberCluster#DEFAULT_BASE_PORT] — which is precisely what made a second Forge instance
 /// collide invisibly: relocating the three configurable ports removed the loud TCP guard while
-/// leaving the QUIC range fixed. Configurability alone does not make that collision visible (the
-/// duplicate UDP bind SUCCEEDS under `SO_REUSEADDR`); `ForgePortPreflight` is the guard.
+/// leaving the QUIC range fixed. Configurability alone did not make that collision visible: the duplicate
+/// UDP bind succeeded under `SO_REUSEADDR` until #1719 made the QUIC bind exclusive, so it now fails with
+/// `BindFailed`. `ForgePortPreflight` still reports it earlier, before any node is created.
 ///
 /// #718 shape 4 — `startTimeoutSeconds` is how long Forge waits for the cluster to finish forming
 /// before giving up and exiting. It was a hard-coded 60-second literal at the single `await` site,

@@ -74,7 +74,7 @@ class MultiSurvivorPromotionTest {
         var peers = Map.of(F3, f3, F2, f2);
         var gate = OwnerActivation.ownerActivation(F1,
                                                    (_, _) -> Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(F1,
-                                                                                                                                    Epoch.epoch(2, 0),
+                                                                                                                                    Epoch.epoch(0L, 2, 0),
                                                                                                                                     2,
                                                                                                                                     HlcTimestamp.ZERO)),
                                                    (_, _) -> true,

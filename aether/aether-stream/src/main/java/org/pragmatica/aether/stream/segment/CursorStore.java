@@ -27,12 +27,18 @@ import org.slf4j.LoggerFactory;
 public final class CursorStore implements ConsumerCursorStore {
     private static final Logger log = LoggerFactory.getLogger(CursorStore.class);
     private static final String CURSORS_PREFIX = "cursors/";
-    /// #1271: offset + the assignment epoch it was written under (`rabiaTerm`, `localCounter`).
-    private static final int FENCED_CURSOR_BYTES = 3 * Long.BYTES;
-    /// #1333: the fenced block + the rewind epoch (`generation`, `rewind`) the cursor was committed under.
-    /// A rewind epoch never travels without an assignment epoch — only a managed, fenced group can be
-    /// rewound — so there is no unfenced-rewound layout.
-    static final int REWOUND_CURSOR_BYTES = 5 * Long.BYTES;
+    /// #1271: offset + the assignment epoch it was written under (`rabiaTerm`, `localCounter`). Pre-#1529
+    /// layout, still read: its epoch has no incarnation and reads as incarnation 0.
+    private static final int LEGACY_FENCED_CURSOR_BYTES = 3 * Long.BYTES;
+    /// #1333: the legacy fenced block + the rewind epoch (`generation`, `rewind`). Pre-#1529, still read
+    /// with both incarnations `0`.
+    private static final int LEGACY_REWOUND_CURSOR_BYTES = 5 * Long.BYTES;
+    /// #1529: offset + the assignment epoch (`incarnation`, `rabiaTerm`, `localCounter`).
+    private static final int FENCED_CURSOR_BYTES = 4 * Long.BYTES;
+    /// #1529: the fenced block + the rewind epoch (`incarnation`, `generation`, `rewind`) the cursor was
+    /// committed under. A rewind epoch never travels without an assignment epoch — only a managed, fenced
+    /// group can be rewound — so there is no unfenced-rewound layout.
+    static final int REWOUND_CURSOR_BYTES = 7 * Long.BYTES;
 
     private final StorageInstance storage;
 
@@ -146,31 +152,34 @@ public final class CursorStore implements ConsumerCursorStore {
                       .map(bytes -> bytes.flatMap(CursorStore::decodeCursor));
     }
 
-    /// An 8-byte block is an unfenced cursor (pull API, or written before #1271); a 24-byte block also
-    /// carries the assignment epoch (#1271, no rewind epoch recorded → [RewindEpoch#NONE]); a 40-byte
-    /// block carries the rewind epoch as well (#1333). Anything else is unreadable and treated as absent,
-    /// as before.
+    /// An 8-byte block is an unfenced cursor (pull API, or written before #1271); a fenced block also
+    /// carries the assignment epoch (#1271, no rewind epoch recorded → [RewindEpoch#NONE]); a rewound
+    /// block carries the rewind epoch as well (#1333). Since #1529 both epochs lead with the cluster
+    /// incarnation; the shorter pre-#1529 blocks still decode, with incarnation 0. Anything else is
+    /// unreadable and treated as absent, as before.
     static Option<StoredCursor> decodeCursor(byte[] bytes) {
         return switch (bytes.length) {
             case Long.BYTES -> Option.some(new StoredCursor(decodeOffset(bytes), Option.none(), RewindEpoch.NONE));
+            case LEGACY_FENCED_CURSOR_BYTES -> Option.some(decodeLegacyFencedCursor(bytes));
+            case LEGACY_REWOUND_CURSOR_BYTES -> Option.some(decodeLegacyRewoundCursor(bytes));
             case FENCED_CURSOR_BYTES -> Option.some(decodeFencedCursor(bytes));
             case REWOUND_CURSOR_BYTES -> Option.some(decodeRewoundCursor(bytes));
             default -> Option.none();
         };
     }
 
-    private static StoredCursor decodeFencedCursor(byte[] bytes) {
+    private static StoredCursor decodeLegacyFencedCursor(byte[] bytes) {
         var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
         var offset = buffer.getLong();
         var rabiaTerm = buffer.getLong();
         var localCounter = buffer.getLong();
 
         return new StoredCursor(offset,
-                                Option.some(Epoch.epoch(rabiaTerm, localCounter)),
+                                Option.some(Epoch.epoch(0L, rabiaTerm, localCounter)),
                                 RewindEpoch.NONE);
     }
 
-    private static StoredCursor decodeRewoundCursor(byte[] bytes) {
+    private static StoredCursor decodeLegacyRewoundCursor(byte[] bytes) {
         var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
         var offset = buffer.getLong();
         var rabiaTerm = buffer.getLong();
@@ -179,14 +188,43 @@ public final class CursorStore implements ConsumerCursorStore {
         var rewind = buffer.getLong();
 
         return new StoredCursor(offset,
-                                Option.some(Epoch.epoch(rabiaTerm, localCounter)),
-                                RewindEpoch.rewindEpoch(generation, rewind));
+                                Option.some(Epoch.epoch(0L, rabiaTerm, localCounter)),
+                                RewindEpoch.rewindEpoch(0L, generation, rewind));
+    }
+
+    private static StoredCursor decodeFencedCursor(byte[] bytes) {
+        var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+        var offset = buffer.getLong();
+
+        return new StoredCursor(offset, Option.some(readEpoch(buffer)), RewindEpoch.NONE);
+    }
+
+    private static StoredCursor decodeRewoundCursor(byte[] bytes) {
+        var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+        var offset = buffer.getLong();
+        var assignmentEpoch = readEpoch(buffer);
+        var incarnation = buffer.getLong();
+        var generation = buffer.getLong();
+        var rewind = buffer.getLong();
+
+        return new StoredCursor(offset,
+                                Option.some(assignmentEpoch),
+                                RewindEpoch.rewindEpoch(incarnation, generation, rewind));
+    }
+
+    private static Epoch readEpoch(ByteBuffer buffer) {
+        var incarnation = buffer.getLong();
+        var rabiaTerm = buffer.getLong();
+        var localCounter = buffer.getLong();
+
+        return Epoch.epoch(incarnation, rabiaTerm, localCounter);
     }
 
     static byte[] encodeFencedOffset(long offset, Epoch assignmentEpoch) {
         return ByteBuffer.allocate(FENCED_CURSOR_BYTES)
                          .order(ByteOrder.BIG_ENDIAN)
                          .putLong(offset)
+                         .putLong(assignmentEpoch.incarnation())
                          .putLong(assignmentEpoch.rabiaTerm())
                          .putLong(assignmentEpoch.localCounter())
                          .array();
@@ -196,8 +234,10 @@ public final class CursorStore implements ConsumerCursorStore {
         return ByteBuffer.allocate(REWOUND_CURSOR_BYTES)
                          .order(ByteOrder.BIG_ENDIAN)
                          .putLong(offset)
+                         .putLong(assignmentEpoch.incarnation())
                          .putLong(assignmentEpoch.rabiaTerm())
                          .putLong(assignmentEpoch.localCounter())
+                         .putLong(rewindEpoch.incarnation())
                          .putLong(rewindEpoch.generation())
                          .putLong(rewindEpoch.rewind())
                          .array();

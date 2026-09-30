@@ -41,7 +41,7 @@ class HttpRouteRegistryEpochFenceTest {
             snapshotSource.setTerm(10L);
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(10L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 10L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
             assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
@@ -52,7 +52,7 @@ class HttpRouteRegistryEpochFenceTest {
             snapshotSource.setTerm(20L);
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(5L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 5L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
             assertThat(registry.findRoute("GET", "/users/").isPresent())
@@ -66,7 +66,7 @@ class HttpRouteRegistryEpochFenceTest {
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
             // Diff of exactly 5 is NOT flagged — only diff > 5 is stale
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(5L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 5L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
         }
@@ -77,7 +77,7 @@ class HttpRouteRegistryEpochFenceTest {
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
             // Diff of 6 is flagged
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(4L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 4L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
         }
@@ -87,9 +87,9 @@ class HttpRouteRegistryEpochFenceTest {
             snapshotSource.setTerm(100L);
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(10L, 0L)));
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(11L, 0L)));
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(12L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 10L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 11L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 12L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isEqualTo(3L);
         }
@@ -100,7 +100,7 @@ class HttpRouteRegistryEpochFenceTest {
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
             // Value's term > observed term: cannot be "stale" from snapshot's perspective
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(50L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 50L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
         }
@@ -109,10 +109,70 @@ class HttpRouteRegistryEpochFenceTest {
         void noopSnapshotSource_neverFlags() {
             var registry = HttpRouteRegistry.httpRouteRegistry(GenerationSnapshotSource.noop());
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 0L)));
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(100L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 0L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 100L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
+        }
+    }
+
+    /// #1529: the fence orders incarnation first, as `Epoch.compareTo` does (v1640).
+    @Nested
+    class IncarnationOrdering {
+        /// A publisher whose incarnation mirror lagged stamps the previous run's incarnation. However high its
+        /// term, that value must never be projected as current.
+        @Test
+        void olderIncarnation_refusedWhateverItsTerm() {
+            snapshotSource.setIncarnation(2L);
+            snapshotSource.setTerm(5L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(1L, 100L, 0L)));
+
+            assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
+            assertThat(registry.findRoute("GET", "/users/").isPresent())
+                    .as("an older incarnation must NOT be projected")
+                    .isFalse();
+        }
+
+        /// The case the fence must never refuse: after a cold restart the new run's term starts over, so its
+        /// routes carry a LOW term against the old run's high one while this node's view still lags.
+        @Test
+        void newerIncarnation_acceptedDespiteALowerTerm() {
+            snapshotSource.setIncarnation(1L);
+            snapshotSource.setTerm(50L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(2L, 1L, 0L)));
+
+            assertThat(registry.staleFenceObservationCount()).isZero();
+            assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
+        }
+
+        /// A burst of stale route updates is refused and counted one by one, but WARNed once per cause.
+        @Test
+        void staleBurst_countsEveryRefusal_butWarnsOnce() {
+            snapshotSource.setIncarnation(2L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            for (int i = 0; i < 50; i++) {
+                registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(1L, 100L, 0L)));
+            }
+
+            assertThat(registry.staleFenceObservationCount()).isEqualTo(50L);
+            assertThat(registry.staleFenceWarningLines()).isEqualTo(1L);
+        }
+
+        @Test
+        void sameIncarnation_staleTerm_stillRefused() {
+            snapshotSource.setIncarnation(2L);
+            snapshotSource.setTerm(20L);
+            var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
+
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(2L, 5L, 0L)));
+
+            assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
+            assertThat(registry.findRoute("GET", "/users/").isPresent()).isFalse();
         }
     }
 
@@ -139,6 +199,7 @@ class HttpRouteRegistryEpochFenceTest {
 
     private static final class FixedTermSource implements GenerationSnapshotSource {
         private volatile long term;
+        private volatile long incarnation;
 
         FixedTermSource(long initialTerm) {
             this.term = initialTerm;
@@ -146,6 +207,14 @@ class HttpRouteRegistryEpochFenceTest {
 
         void setTerm(long newTerm) {
             this.term = newTerm;
+        }
+
+        void setIncarnation(long newIncarnation) {
+            this.incarnation = newIncarnation;
+        }
+
+        @Override public long observedEpochIncarnation() {
+            return incarnation;
         }
 
         @Override public Option<MembershipView> currentMembershipView() {

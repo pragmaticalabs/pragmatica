@@ -124,9 +124,9 @@ class EntityLinearizableReadTest {
         /// StaleEpochRead, not masked by the barrier refusal.
         @Test
         void get_stillRejectsStaleEpochRead_whenNoBarrierWired() {
-            var highWater = highWaterAt(Epoch.epoch(5, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 5, 0));
 
-            seeded(committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater), Option.none())
+            seeded(committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater), Option.none())
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected StaleEpochRead, got " + state))
@@ -140,9 +140,9 @@ class EntityLinearizableReadTest {
         /// the arc high-water — self is a deposed owner whose committed record is stale.
         @Test
         void get_rejectsStaleEpochRead_whenCommittedEpochBelowHighWater() {
-            var highWater = highWaterAt(Epoch.epoch(5, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 5, 0));
 
-            seeded(committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater), someBarrier())
+            seeded(committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater), someBarrier())
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected StaleEpochRead, got " + state))
@@ -152,9 +152,9 @@ class EntityLinearizableReadTest {
         /// Equal committed epoch is NOT stale — a genuinely-current owner is never spuriously fenced.
         @Test
         void get_serves_whenCommittedEpochEqualsHighWater() {
-            var highWater = highWaterAt(Epoch.epoch(3, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 3, 0));
 
-            seeded(committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater), someBarrier())
+            seeded(committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater), someBarrier())
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onFailure(EntityLinearizableReadTest::failCause)
@@ -170,10 +170,10 @@ class EntityLinearizableReadTest {
         /// observes it and rejects StaleEpochRead. This is the window the round closes.
         @Test
         void get_rejectsStaleEpochRead_whenRoundObservesDeposalDuringRead() {
-            var highWater = highWaterAt(Epoch.epoch(3, 0));
-            var barrier = advancingBarrier(highWater, Epoch.epoch(9, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 3, 0));
+            var barrier = advancingBarrier(highWater, Epoch.epoch(0L, 9, 0));
 
-            seeded(committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater), Option.some(barrier))
+            seeded(committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater), Option.some(barrier))
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected StaleEpochRead after the round observed the deposal, got " + state))

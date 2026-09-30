@@ -32,7 +32,8 @@ import org.pragmatica.serialization.SliceCodec;
 
 /// One in-flight manifest and chunk; verified scopes become visible together through normal KV replay.
 public final class WorkerMetadataClient {
-    /// Point-in-time resource occupancy, sampled under the same monitor as mutation.
+    /// Point-in-time resource occupancy, sampled under the same monitor as mutation, plus the cluster
+    /// incarnation (#1529) of the installed projection — `0` until one is installed.
     public synchronized Map<String, Long> resourceMetrics() {
         return Map.of("clientVerifiedBytes",
                       verified.values().stream().mapToLong(bytes -> bytes.length).sum(),
@@ -41,7 +42,9 @@ public final class WorkerMetadataClient {
                       "clientBufferBytes",
                       (long) buffer.length,
                       "clientScopeLimit",
-                      (long) limits.scopeBytes());
+                      (long) limits.scopeBytes(),
+                      "clientInstalledIncarnation",
+                      installedIncarnation);
     }
 
     private final NodeId self;
@@ -64,6 +67,8 @@ public final class WorkerMetadataClient {
     private int offset;
     private long requestId;
     private long installedRevision;
+    /// Cluster incarnation (#1529) of the installed projection; `installedRevision` is a revision of it.
+    private long installedIncarnation;
     private List<WorkerMetadataMessage.ScopeContent> installedScopes = List.of();
     private long deadline;
     private long nextPoll;
@@ -135,7 +140,11 @@ public final class WorkerMetadataClient {
         waiting = true;
         requestedAtNanos = clock.nanoTime();
         deadline = now + limits.manifestTtl().nanos();
-        send.accept(core, new WorkerMetadataMessage.ManifestRequest(self, ++requestId, installedRevision));
+        send.accept(core,
+                    new WorkerMetadataMessage.ManifestRequest(self,
+                                                              ++requestId,
+                                                              installedRevision,
+                                                              installedIncarnation));
 
         return Unit.unit();
     }
@@ -169,8 +178,8 @@ public final class WorkerMetadataClient {
     }
 
     private boolean validManifest(WorkerMetadataMessage.Manifest response) {
-        if (response.incarnation().isBlank() || response.generation() <= 0 || response.committedRevision() < installedRevision || response.scopes()
-                                                                                                                                          .size() > limits.scopesPerWorker()) {
+        if (response.incarnation().isBlank() || response.generation() <= 0 || behindInstalled(response) || response.scopes()
+                                                                                                                   .size() > limits.scopesPerWorker()) {
             return false;
         }
 
@@ -193,6 +202,13 @@ public final class WorkerMetadataClient {
                && names.contains(WorkerMetadataIndex.ENDPOINT_DIRECTORY)
                && names.contains(WorkerMetadataIndex.GLOBAL)
                && names.contains("node:" + self.id());
+    }
+
+    /// A manifest from an older cluster incarnation, or from an older revision of the installed one. A
+    /// newer incarnation (a cold restart restored the cores, #1529) resets the revision latch: its revisions
+    /// start over and are not comparable with the installed one.
+    private boolean behindInstalled(WorkerMetadataMessage.Manifest response) {
+        return response.clusterIncarnation() < installedIncarnation || response.clusterIncarnation() == installedIncarnation && response.committedRevision() < installedRevision;
     }
 
     private void requestNext(WorkerMetadataMessage.Manifest current) {
@@ -387,6 +403,7 @@ public final class WorkerMetadataClient {
 
         verified.keySet().retainAll(retained);
         installedRevision = current.committedRevision();
+        installedIncarnation = current.clusterIncarnation();
         confirmedAtNanos = requestedAtNanos;
         installedScopes = current.scopes();
         waiting = false;

@@ -56,26 +56,44 @@ public final class PresenceGenerationSnapshotSource implements GenerationSnapsho
     private final IntSupplier desiredCoreSizeSupplier;
     private final Supplier<Set<NodeId>> ctmProvisionedSupplier;
     private final Supplier<Long> rabiaTermSupplier;
+    private final Supplier<Long> incarnationSupplier;
     private final AtomicBoolean reachedQuorum = new AtomicBoolean(false);
 
     private PresenceGenerationSnapshotSource(Supplier<Set<NodeId>> memberSupplier,
                                              IntSupplier desiredCoreSizeSupplier,
                                              Supplier<Set<NodeId>> ctmProvisionedSupplier,
-                                             Supplier<Long> rabiaTermSupplier) {
+                                             Supplier<Long> rabiaTermSupplier,
+                                             Supplier<Long> incarnationSupplier) {
         this.memberSupplier = memberSupplier;
         this.desiredCoreSizeSupplier = desiredCoreSizeSupplier;
         this.ctmProvisionedSupplier = ctmProvisionedSupplier;
         this.rabiaTermSupplier = rabiaTermSupplier;
+        this.incarnationSupplier = incarnationSupplier;
     }
 
     public static PresenceGenerationSnapshotSource presenceGenerationSnapshotSource(Supplier<Set<NodeId>> memberSupplier,
                                                                                     IntSupplier desiredCoreSizeSupplier,
                                                                                     Supplier<Set<NodeId>> ctmProvisionedSupplier,
                                                                                     Supplier<Long> rabiaTermSupplier) {
+        return presenceGenerationSnapshotSource(memberSupplier,
+                                                desiredCoreSizeSupplier,
+                                                ctmProvisionedSupplier,
+                                                rabiaTermSupplier,
+                                                () -> 0L);
+    }
+
+    /// `incarnationSupplier` supplies the committed cluster incarnation (#1529) stamped into the
+    /// observed epoch.
+    public static PresenceGenerationSnapshotSource presenceGenerationSnapshotSource(Supplier<Set<NodeId>> memberSupplier,
+                                                                                    IntSupplier desiredCoreSizeSupplier,
+                                                                                    Supplier<Set<NodeId>> ctmProvisionedSupplier,
+                                                                                    Supplier<Long> rabiaTermSupplier,
+                                                                                    Supplier<Long> incarnationSupplier) {
         return new PresenceGenerationSnapshotSource(memberSupplier,
                                                     desiredCoreSizeSupplier,
                                                     ctmProvisionedSupplier,
-                                                    rabiaTermSupplier);
+                                                    rabiaTermSupplier,
+                                                    incarnationSupplier);
     }
 
     /// Cold-start gate via a one-way quorum latch. Before the latch flips, a sub-quorum
@@ -101,5 +119,10 @@ public final class PresenceGenerationSnapshotSource implements GenerationSnapsho
     @Override
     public long observedRabiaTerm() {
         return rabiaTermSupplier.get();
+    }
+
+    @Override
+    public long observedEpochIncarnation() {
+        return incarnationSupplier.get();
     }
 }

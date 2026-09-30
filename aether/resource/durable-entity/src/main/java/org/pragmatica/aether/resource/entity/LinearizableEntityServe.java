@@ -159,6 +159,6 @@ final class LinearizableEntityServe<K, S> {
     }
 
     private static String epochText(Epoch epoch) {
-        return epoch.rabiaTerm() + ":" + epoch.localCounter();
+        return epoch.toString();
     }
 }

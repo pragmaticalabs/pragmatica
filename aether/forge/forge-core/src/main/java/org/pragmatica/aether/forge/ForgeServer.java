@@ -145,9 +145,8 @@ public final class ForgeServer {
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
-        // #1008 — checked before anything is created. A second Forge BINDS these UDP ports happily
-        // (both sockets carry SO_REUSEADDR) and then never reaches quorum, with nothing naming a
-        // port, so there is no bind failure downstream for this to be inherited from.
+        // #1008 — checked before anything is created, for the whole port range at once. Since #1719 a taken
+        // port also fails the QUIC bind itself (BindFailed), but only part-way through the cluster start.
         var quicPortCheck = ForgePortPreflight.ensureQuicPortsFree(forgeConfig.basePort(), forgeConfig.nodes());
 
         quicPortCheck.onFailure(cause -> log.error("{}", cause.message()));
