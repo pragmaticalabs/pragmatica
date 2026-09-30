@@ -85,6 +85,17 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
     private Result<Long> applyRecoveredEvents(String streamName,
                                               int partition,
                                               ReplicationMessage.CatchupResponse response) {
+        return partitionRecovery.applyAttributed(streamName,
+                                                 partition,
+                                                 response.fromOffset(),
+                                                 response.toOffset(),
+                                                 response.history(),
+                                                 () -> applyPayloads(streamName, partition, response));
+    }
+
+    /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded; a failure here settles that
+    /// install by trimming it (#1638 B1).
+    private Result<Long> applyPayloads(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
         var count = Math.min(payloads.size(), timestamps.size());

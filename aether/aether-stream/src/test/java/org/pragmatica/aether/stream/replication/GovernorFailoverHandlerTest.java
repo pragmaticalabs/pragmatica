@@ -73,7 +73,7 @@ class GovernorFailoverHandlerTest {
         reader = segmentReader(storage, index);
         recoveredEvents = new ArrayList<>();
         eventCounter = new AtomicLong(0);
-        handler = governorFailoverHandler(registry, this::handleRecoveredEvent, NO_DURABILITY_BARRIER);
+        handler = governorFailoverHandler(registry, AlignedRecovery.appendOnly(this::handleRecoveredEvent), NO_DURABILITY_BARRIER);
     }
 
     private Result<Long> handleRecoveredEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {
@@ -267,7 +267,7 @@ class GovernorFailoverHandlerTest {
 
         @Test
         void handleFailover_completedRun_isFsyncedOnce_andItsRecordsAreVisible_withoutALaterLiveBatch() {
-            var walBacked = governorFailoverHandler(registry, replica::appendRecovered, replica::syncReplicated);
+            var walBacked = governorFailoverHandler(registry, replica.alignedRecovery(), replica::syncReplicated);
             var before = fsyncCount();
 
             awaitSuccess(walBacked.handleFailover(STREAM, PARTITION, localWatermarks, index, reader));
@@ -303,7 +303,7 @@ class GovernorFailoverHandlerTest {
             sealSegment(0L, 14L, markers(15));
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
             registry.updateWatermark(STREAM, PARTITION, REPLICA_A, 9L);
-            var prod = governorFailoverHandler(registry, replica::appendRecovered, NO_DURABILITY_BARRIER);
+            var prod = governorFailoverHandler(registry, replica.alignedRecovery(), NO_DURABILITY_BARRIER);
 
             awaitSuccess(prod.handleFailover(STREAM, PARTITION, localWatermarks, index, reader));
 
@@ -323,7 +323,7 @@ class GovernorFailoverHandlerTest {
             sealSegment(0L, 14L, events);
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
             registry.updateWatermark(STREAM, PARTITION, REPLICA_A, 9L);
-            var prod = governorFailoverHandler(registry, replica::appendRecovered, NO_DURABILITY_BARRIER);
+            var prod = governorFailoverHandler(registry, replica.alignedRecovery(), NO_DURABILITY_BARRIER);
 
             assertThat(prod.handleFailover(STREAM, PARTITION, localWatermarks, index, reader).await().isFailure()).isTrue();
             assertThat(replica.quarantinedAt(STREAM, PARTITION).or(-1L)).isEqualTo(11L);
@@ -334,9 +334,9 @@ class GovernorFailoverHandlerTest {
         @Test
         void handleFailover_evictedOffsets_arePassedOver_restAreReplayed() {
             var landed = new ArrayList<Long>();
-            AlignedRecovery evictingBelowTwo = (_, _, offset, _, _) -> offset < 2
-                                                                        ? new StreamError.CursorExpired(offset, 2).result()
-                                                                        : Result.success(recordLanded(landed, offset));
+            AlignedRecovery evictingBelowTwo = AlignedRecovery.appendOnly((_, _, offset, _, _) -> offset < 2
+                                                                                           ? new StreamError.CursorExpired(offset, 2).result()
+                                                                                           : Result.success(recordLanded(landed, offset)));
             sealSegment(0L, 3L, markers(4));
             var prod = governorFailoverHandler(registry, evictingBelowTwo, NO_DURABILITY_BARRIER);
 

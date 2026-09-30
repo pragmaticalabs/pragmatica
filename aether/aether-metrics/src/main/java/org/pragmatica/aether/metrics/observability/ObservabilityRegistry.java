@@ -124,7 +124,12 @@ public interface ObservabilityRegistry {
         public Result<Unit> registerTransportMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
             registerTransportGauge("quic_active_connections", "Active QUIC peer connections", metricsSupplier);
             registerTransportGauge("quic_handshake_total", "Total QUIC handshakes completed", metricsSupplier);
-            registerTransportGauge("quic_handshake_failures_total", "Failed QUIC handshakes", metricsSupplier);
+            registerTransportGauge("quic_handshake_failures_total",
+                                   "QUIC connects that failed in their TLS handshake (not other dial failures)",
+                                   metricsSupplier);
+            registerTransportGauge("quic_dial_failures_total",
+                                   "Every failed QUIC dial, whatever the stage (unreachable, refused, timed out, rejected, TLS)",
+                                   metricsSupplier);
             registerTransportGauge("quic_dial_abandoned_total",
                                    "#1578: dials abandoned before their QUIC handshake because the peer connected over another link",
                                    metricsSupplier);

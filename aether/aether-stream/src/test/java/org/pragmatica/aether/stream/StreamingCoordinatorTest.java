@@ -206,10 +206,10 @@ class StreamingCoordinatorTest {
     }
 
     private AlignedRecovery recordingRecovery() {
-        return (streamName, partition, _, payload, timestamp) -> {
+        return AlignedRecovery.appendOnly((streamName, partition, _, payload, timestamp) -> {
             recoveredEvents.add(new RecoveredEvent(streamName, partition, payload.clone(), timestamp));
             return Result.success(eventCounter.incrementAndGet());
-        };
+        });
     }
 
     private static byte[] serializeEvents(List<RawEvent> events) {

@@ -23,7 +23,7 @@ test_cluster_ready() {
 # but kept explicit). An empty list IS a valid response — there may be zero
 # thresholds — so we assert HTTP status, not body content.
 test_thresholds_endpoint() {
-    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/thresholds" "200" \
+    assert_http_status "$(_resolve_live_endpoint)/api/v1/thresholds" "200" \
         "GET /api/v1/thresholds returns 200" \
         -H "X-API-Key: ${API_KEY}"
 }

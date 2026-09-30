@@ -1365,9 +1365,17 @@ Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consens
 Get transport-layer metrics. **Scope: node-local** — a flat map of **node-level** QUIC counters
 (the answering node's own totals; there is no per-peer attribution): `quic_messages_sent_total` /
 `quic_messages_received_total` (protocol-message counts), `quic_bytes_sent_total` /
-`quic_bytes_received_total` (#726), `quic_active_connections`, handshake totals/failures,
-backpressure and write-failure indicators, stream-zombie heal counters. All counters are monotonic;
-consumers difference them over their own window.
+`quic_bytes_received_total` (#726), `quic_active_connections`, handshake totals/failures, dial
+failures, backpressure and write-failure indicators, stream-zombie heal counters. All counters are
+monotonic; consumers difference them over their own window.
+
+**`quic_handshake_failures_total` / `quic_dial_failures_total` (#1489).** `quic_handshake_failures_total`
+counts only outbound QUIC connects that failed in their TLS handshake. `quic_dial_failures_total` counts
+every failed outbound dial, whatever the stage: unreachable, refused, timed out, identity or boot-token
+rejection, TLS. A server that refuses **this node's** certificate closes the connection before answering
+the Hello; that counts as a dial failure only, not a handshake failure. Before #1489,
+`quic_handshake_failures_total` counted every failed dial, so a ratio built on it measured churn rather
+than TLS health.
 
 **`quic_bytes_sent_total` / `quic_bytes_received_total` (#726)** count PAYLOAD bytes at the lane
 boundary — the serialized frame handed to the channel on send, and the frame decoded from the
@@ -5003,6 +5011,17 @@ undo to the target version instead, or baseline at (or above) the existing versi
 `version` is optional and defaults to `1` when absent; a present-but-non-integer value is rejected
 with `400 Bad Request`.
 
+A datasource whose migration is **in flight** (status `PENDING` or `MIGRATING`, or `UNKNOWN` on a node
+that cannot read the status) is refused with `409 Conflict` (`BaselineOverInFlightMigration`,
+#217): baseline writes `COMPLETED`, and the orchestrator dispatches only `PENDING` records, so the
+in-flight migration would silently never run. Wait for it to finish or fail, then baseline. To
+baseline over it deliberately, pass `force=true`; the override is written to the audit log
+(`SCHEMA_BASELINE_FORCED`). `force` does not bypass the leader binding or `BaselineConflict`. The status
+is checked again under the orchestrator's migration fence, before the database is touched and just before
+`COMPLETED` is written, so a deploy that arms a migration while the baseline runs is not overwritten; that
+refusal names the stage (after the second check the database baseline has already run).
+[verified: `aether/node/src/test/java/org/pragmatica/aether/api/routes/SchemaRoutesBaselineTest.java` `InFlightGuard` — route plus the real orchestrator over a fake schema manager, not a cluster run]
+
 > **Likewise not sticky across a republish**, for the same declarative-contract reason as undo
 > above: the artifact's declared version wins on every publish. A republish (or redeploy) that
 > declares a version different from the one baseline established resumes forward migration from
@@ -5012,6 +5031,7 @@ with `400 Bad Request`.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `version` | int | no | Version to baseline at (defaults to `1` when absent; a non-integer value is a `400`) |
+| `force` | boolean | no | `true` baselines even while a migration is `PENDING`/`MIGRATING`/`UNKNOWN` (audited); default `false` refuses with `409` |
 
 **Response:**
 ```json
@@ -5886,9 +5906,13 @@ dispatch]` That `400` is the single publish; the batch form reports the same con
 A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
 for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
 registers only after its config commits (the default `confirmation_factor` is 2 since #1564) — answers
-**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. The batch form
-reports the item `OUTCOME_UNKNOWN` with the cause. `[mechanism: ManagementServerError.PublishRetryable; pinned by
-StreamApiRoutesPublishPartitionTest]`
+**`503 Service Unavailable`** (`PublishRetryable`, naming the stream). Nothing was written; retry. This holds on the
+partition's owner and on a non-owner that forwards the publish: the owner answers the forward as retryable, so the
+forwarder bounded-retries and then answers 503 too. The batch form reports the item `OUTCOME_UNKNOWN` with the cause —
+conservative, since nothing was written, but a batch item does not distinguish a refusal before the append from an
+unknown outcome after it; a retry with the same message ID is safe either way.
+`[mechanism: ManagementServerError.PublishRetryable, StreamForwardHandler retryable floor refusal; pinned by
+StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest]`
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE

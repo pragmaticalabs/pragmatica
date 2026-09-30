@@ -4,12 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
-import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 
 import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -31,8 +29,8 @@ public sealed interface AlertProxyRoutes {
 
     record ThresholdDeleteResponse(boolean success, String body) {}
 
-    static RouteSource alertProxyRoutes(EmberCluster cluster) {
-        var http = JdkHttpOperations.jdkHttpOperations();
+    static RouteSource alertProxyRoutes(EmberCluster cluster, OperatorKey operatorKey) {
+        var http = NodeHttp.nodeHttp(operatorKey);
 
         return in("/api/alerts").serve(activeAlertsRoute(cluster, http),
                                        alertHistoryRoute(cluster, http),
@@ -41,32 +39,32 @@ public sealed interface AlertProxyRoutes {
                                        thresholdsDeleteRoute(cluster, http));
     }
 
-    private static Route<AlertListResponse> activeAlertsRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<AlertListResponse> activeAlertsRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<AlertListResponse> get("/active")
-                    .to(_ -> proxyGet(cluster, http, "/api/alerts/active"))
+                    .to(_ -> proxyGet(cluster, http, "/api/v1/alerts/active"))
                     .asJson();
     }
 
-    private static Route<AlertListResponse> alertHistoryRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<AlertListResponse> alertHistoryRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<AlertListResponse> get("/history")
-                    .to(_ -> proxyGet(cluster, http, "/api/alerts/history"))
+                    .to(_ -> proxyGet(cluster, http, "/api/v1/alerts/history"))
                     .asJson();
     }
 
-    private static Promise<AlertListResponse> proxyGet(EmberCluster cluster, JdkHttpOperations http, String path) {
+    private static Promise<AlertListResponse> proxyGet(EmberCluster cluster, NodeHttp http, String path) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendGet(http, port, path))
                       .map(AlertListResponse::new);
     }
 
-    private static Route<ThresholdListResponse> thresholdsGetRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<ThresholdListResponse> thresholdsGetRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<ThresholdListResponse> get("/thresholds")
                     .to(_ -> proxyGetThresholds(cluster, http))
                     .asJson();
     }
 
-    private static Route<ThresholdSetResponse> thresholdsSetRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<ThresholdSetResponse> thresholdsSetRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<ThresholdSetResponse> post("/thresholds")
                     .to(request -> proxySetThreshold(cluster,
                                                      http,
@@ -74,69 +72,58 @@ public sealed interface AlertProxyRoutes {
                     .asJson();
     }
 
-    private static Route<ThresholdDeleteResponse> thresholdsDeleteRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<ThresholdDeleteResponse> thresholdsDeleteRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<ThresholdDeleteResponse> delete("/thresholds")
                     .withPath(aString())
                     .to(metric -> proxyDeleteThreshold(cluster, http, metric))
                     .asJson();
     }
 
-    private static Promise<ThresholdListResponse> proxyGetThresholds(EmberCluster cluster, JdkHttpOperations http) {
+    private static Promise<ThresholdListResponse> proxyGetThresholds(EmberCluster cluster, NodeHttp http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, "/api/thresholds"))
+                      .flatMap(port -> sendGet(http, port, "/api/v1/thresholds"))
                       .map(ThresholdListResponse::new);
     }
 
-    private static Promise<ThresholdSetResponse> proxySetThreshold(EmberCluster cluster,
-                                                                   JdkHttpOperations http,
-                                                                   String body) {
+    private static Promise<ThresholdSetResponse> proxySetThreshold(EmberCluster cluster, NodeHttp http, String body) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendPostWithBody(http, port, "/api/thresholds", body))
+                      .flatMap(port -> sendPostWithBody(http, port, "/api/v1/thresholds", body))
                       .map(resp -> new ThresholdSetResponse(true, resp));
     }
 
     private static Promise<ThresholdDeleteResponse> proxyDeleteThreshold(EmberCluster cluster,
-                                                                         JdkHttpOperations http,
+                                                                         NodeHttp http,
                                                                          String metric) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendDelete(http, port, "/api/thresholds/" + metric))
+                      .flatMap(port -> sendDelete(http, port, "/api/v1/thresholds/" + metric))
                       .map(resp -> new ThresholdDeleteResponse(true, resp));
     }
 
-    private static Promise<String> sendGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> sendGet(NodeHttp http, int port, String path) {
+        var request = http.request(port, path).GET().timeout(HTTP_TIMEOUT).build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
                                             .async());
     }
 
-    private static Promise<String> sendPostWithBody(JdkHttpOperations http, int port, String path, String body) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(Option.option(body).or("")))
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> sendPostWithBody(NodeHttp http, int port, String path, String body) {
+        var request = http.request(port, path)
+                          .header("Content-Type", "application/json")
+                          .POST(HttpRequest.BodyPublishers.ofString(Option.option(body).or("")))
+                          .timeout(HTTP_TIMEOUT)
+                          .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
                                             .async());
     }
 
-    private static Promise<String> sendDelete(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .DELETE()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> sendDelete(NodeHttp http, int port, String path) {
+        var request = http.request(port, path).DELETE().timeout(HTTP_TIMEOUT).build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
