@@ -1,3 +1,3 @@
 ### Fixed (2026-09-30 — #1751: provisioning snapshot carried the previous leader term's reason)
 - **`LeaderReconciler.deactivate()` now clears the captured provisioning decision**, so a re-elected leader reports `reason="NOT_EVALUATED"` until its first pass instead of the previous term's `WITHIN_DEBOUNCE` beside `deficitAgeMs=-1`.
-- **New operator WARN** when leadership is lost three times inside one deficit debounce window while a core deficit exists: the debounce clock resets on every loss, so auto-heal cannot provision. Observability only; auto-heal itself is not changed.
+- **New operator WARN** when leadership is lost three times inside a fixed 60s window (the observed flap loses leadership every 4-10s, so the debounce window would miss it) while a core deficit exists: the debounce clock resets on every loss, so auto-heal cannot provision. Observability only; auto-heal itself is not changed.
