@@ -108,6 +108,10 @@ class SchemaRoutesBaselineTest {
     private SchemaRoutes routes;
     /// Runs inside the fake schema manager's baseline, i.e. under the orchestrator's fence, after the route's check.
     private Runnable duringBaseline = () -> {};
+    /// Runs when the orchestrator writes its migration lock: under the fence, BEFORE the database is touched.
+    private Runnable onLockWrite = () -> {};
+    /// Counts the fake schema manager's baseline calls: the database work.
+    private final java.util.concurrent.atomic.AtomicInteger baselineCalls = new java.util.concurrent.atomic.AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -199,6 +203,21 @@ class SchemaRoutesBaselineTest {
             assertThat(recorded().status()).as("the armed migration's PENDING record survives").isEqualTo(SchemaStatus.PENDING);
         }
 
+        /// v1617 NIT 2 — the FIRST fenced re-check: a migration armed after the route's check but before the database
+        /// work (here, the moment the orchestrator writes its lock) is refused BEFORE the database is touched. Mutation
+        /// that reddens it: drop that first re-check — the second still refuses, but only after the baseline ran.
+        @Test
+        void baselineDatasource_refusesBeforeTheDatabase_aMigrationArmedBeforeTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            onLockWrite = () -> seed(SchemaStatus.PENDING);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("the first fenced re-check must refuse: %s", result).isTrue();
+            assertThat(baselineCalls.get()).as("refused BEFORE the database baseline ran").isZero();
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.PENDING);
+        }
+
         @Test
         void baselineDatasource_forced_overwritesAMigrationArmedWhileTheBaselineRuns() {
             seed(SchemaStatus.COMPLETED);
@@ -279,11 +298,14 @@ class SchemaRoutesBaselineTest {
     /// route → orchestrator → KV-write path, condition 3's evidence included (the written
     /// `currentVersion` comes from `SchemaResult.currentVersion()`, not the raw request parameter).
     private ManageableNode nodeOver(InMemoryKvStore kvStore) {
-        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(new PlainClusterNode(SELF, kvStore),
+        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(new PlainClusterNode(SELF, kvStore, () -> onLockWrite.run()),
                                                                                kvStore,
                                                                                artifactStoreServing(),
                                                                                noLocalRepository(),
-                                                                               new BaselineOnlySchemaManager(() -> duringBaseline.run()),
+                                                                               new BaselineOnlySchemaManager(() -> {
+                                                                                   baselineCalls.incrementAndGet();
+                                                                                   duringBaseline.run();
+                                                                               }),
                                                                                stubConnectionProvider(),
                                                                                SELF);
 
@@ -459,9 +481,12 @@ class SchemaRoutesBaselineTest {
         private final NodeId self;
         private final InMemoryKvStore kvStore;
 
-        PlainClusterNode(NodeId self, InMemoryKvStore kvStore) {
+        private final Runnable onLockWrite;
+
+        PlainClusterNode(NodeId self, InMemoryKvStore kvStore, Runnable onLockWrite) {
             this.self = self;
             this.kvStore = kvStore;
+            this.onLockWrite = onLockWrite;
         }
 
         @Override public NodeId self() {return self;}
@@ -474,6 +499,10 @@ class SchemaRoutesBaselineTest {
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             batch.forEach(kvStore::apply);
+            if (batch.stream().anyMatch(command -> command instanceof KVCommand.Put<?, ?> put
+                                                  && put.key() instanceof AetherKey.SchemaMigrationLockKey)) {
+                onLockWrite.run();
+            }
 
             return Promise.success(List.of());
         }
