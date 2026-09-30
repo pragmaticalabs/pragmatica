@@ -57,50 +57,68 @@ class ArtifactCacheTest {
     }
 
     @Test
-    void store_publishesTheJarAndItsSha256Sidecar() throws IOException {
+    void store_publishesTheJarAndTheNodesOwnSidecar() throws IOException {
         var target = dir.resolve("a-1.0.jar");
 
         assertThat(ArtifactCache.store(target, JAR).isSuccess()).isTrue();
 
         assertThat(Files.readAllBytes(target)).isEqualTo(JAR);
-        assertThat(Files.readString(dir.resolve("a-1.0.jar.sha256"))).isEqualTo(ArtifactCache.digest(JAR, "SHA-256").unwrap());
-        assertThat(ArtifactCache.usable(target)).as("a freshly stored jar verifies").isTrue();
+        assertThat(Files.readString(dir.resolve("a-1.0.jar.aether-sha256"))).isEqualTo(ArtifactCache.digest(JAR, "SHA-256").unwrap());
+        assertThat(ArtifactCache.check(target)).as("a freshly stored jar verifies").isEqualTo(ArtifactCache.CacheState.USABLE);
     }
 
-    /// A cached jar that no longer matches its sidecar — torn before this fix, or corrupted since — is evicted
-    /// so it is fetched again, instead of being loaded. Mutation that reddens it: make `usable` skip the check.
+    /// A jar THIS NODE wrote that no longer matches its sidecar — torn before this fix, or corrupted since — is evicted
+    /// so it is fetched again, instead of being loaded. Mutation that reddens it: make `check` skip the comparison.
     @Test
-    void usable_jarNotMatchingItsSidecar_isEvicted() throws IOException {
+    void check_ownJarNotMatchingItsSidecar_isEvicted() throws IOException {
         var target = dir.resolve("a-1.0.jar");
 
         assertThat(ArtifactCache.store(target, JAR).isSuccess()).isTrue();
         Files.write(target, Arrays.copyOf(JAR, JAR.length / 2));
 
-        assertThat(ArtifactCache.usable(target)).as("#1599: a torn jar is not loaded").isFalse();
+        assertThat(ArtifactCache.check(target)).as("#1599: a torn jar is not loaded").isEqualTo(ArtifactCache.CacheState.EVICTED);
         assertThat(target).as("it is evicted so the next resolve fetches it again").doesNotExist();
-        assertThat(dir.resolve("a-1.0.jar.sha256")).doesNotExist();
+        assertThat(dir.resolve("a-1.0.jar.aether-sha256")).doesNotExist();
     }
 
-    /// Maven's own `.sha1` sidecar is honoured too.
+    /// v1617 M1 — a jar in the local Maven repository that fails MAVEN's `.sha1` and carries no mark of this node (the
+    /// operator's `~/.m2` in dev and Forge flows, possibly a local never-published build) is refused and LEFT AS IT WAS:
+    /// the node never deletes a file it did not write. Mutation that reddens it: delete the jar on a foreign mismatch.
     @Test
-    void usable_jarNotMatchingAMavenSha1Sidecar_isEvicted() throws IOException {
+    void check_foreignJarFailingAMavenSha1_isRefusedAndLeftUntouched() throws IOException {
+        var target = dir.resolve("a-1.0.jar");
+        var sha1 = dir.resolve("a-1.0.jar.sha1");
+
+        Files.write(target, JAR);
+        Files.writeString(sha1, "0000000000000000000000000000000000000000  a-1.0.jar");
+
+        assertThat(ArtifactCache.check(target)).isEqualTo(ArtifactCache.CacheState.FOREIGN_MISMATCH);
+        assertThat(target).as("M1: a jar the node did not write survives").exists();
+        assertThat(Files.readAllBytes(target)).isEqualTo(JAR);
+        assertThat(sha1).as("and so does Maven's sidecar").exists();
+    }
+
+    /// Maven may write `.sha256` too; that name is Maven's, not the node's mark, so a mismatch against it is refused the
+    /// same way. The node's own sidecar is `.aether-sha256` precisely so the two cannot be confused.
+    @Test
+    void check_foreignJarFailingAMavenSha256_isRefusedAndLeftUntouched() throws IOException {
         var target = dir.resolve("a-1.0.jar");
 
         Files.write(target, JAR);
-        Files.writeString(dir.resolve("a-1.0.jar.sha1"), "0000000000000000000000000000000000000000  a-1.0.jar");
+        Files.writeString(dir.resolve("a-1.0.jar.sha256"), "00".repeat(32));
 
-        assertThat(ArtifactCache.usable(target)).isFalse();
-        assertThat(target).doesNotExist();
+        assertThat(ArtifactCache.check(target)).isEqualTo(ArtifactCache.CacheState.FOREIGN_MISMATCH);
+        assertThat(target).exists();
     }
 
     /// CONTROL — a jar installed by Maven without a sidecar cannot be checked and stays usable, as before.
     @Test
-    void usable_jarWithoutSidecar_isTrusted() throws IOException {
+    void check_jarWithoutSidecar_isTrusted() throws IOException {
         var target = dir.resolve("a-1.0.jar");
 
         Files.write(target, JAR);
 
-        assertThat(ArtifactCache.usable(target)).isTrue();
+        assertThat(ArtifactCache.check(target)).isEqualTo(ArtifactCache.CacheState.USABLE);
         assertThat(target).exists();
     }
 

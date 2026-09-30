@@ -30,14 +30,30 @@ import org.slf4j.LoggerFactory;
 /// wrote an unforced temp file in the SYSTEM temp directory and then `moveReplace`d it, which the JDK
 /// does as copy-and-delete across filesystems — a non-atomic write at the final path.)
 ///
-/// A `.sha256` sidecar holding the verified digest is published next to the jar, so a cache hit can be
-/// checked on load: a jar that no longer matches its sidecar (or a Maven `.sha1` one) is evicted and
-/// fetched again instead of being loaded. A jar with no sidecar — installed by Maven itself — cannot be
-/// checked and is trusted, as before.
+/// A `.aether-sha256` sidecar holding the verified digest is published next to the jar. It is this node's
+/// OWNERSHIP mark as well as its checksum, and deliberately not Maven's `.sha256` name, which Maven itself may write.
+/// A cache hit is checked on load ([#check]):
+/// - a jar carrying this node's sidecar that no longer matches it is evicted and fetched again — the node wrote it;
+/// - a jar that fails a Maven `.sha1`/`.sha256` sidecar but carries no mark of ours is NOT the node's to delete (the
+///   local repository is the operator's `~/.m2` in dev and Forge flows, possibly holding a locally built, never
+///   published artifact). It is refused, loudly and with a typed cause, and every file is left as it was (v1617, M1);
+/// - a jar with no sidecar (installed by Maven itself) cannot be checked and is used, as before.
 final class ArtifactCache {
     private static final Logger log = LoggerFactory.getLogger(ArtifactCache.class);
-    private static final Sidecar SHA256_SIDECAR = new Sidecar(".sha256", "SHA-256");
-    private static final List<Sidecar> SIDECARS = List.of(SHA256_SIDECAR, new Sidecar(".sha1", "SHA-1"));
+    /// This node's sidecar: its checksum AND its mark that the node wrote the jar.
+    private static final Sidecar OWN_SIDECAR = new Sidecar(".aether-sha256", "SHA-256");
+    /// Maven's sidecars: checked, never grounds for deleting anything.
+    private static final List<Sidecar> MAVEN_SIDECARS = List.of(new Sidecar(".sha256", "SHA-256"), new Sidecar(".sha1", "SHA-1"));
+
+    /// What a cache hit may do with the jar it found.
+    enum CacheState {
+        /// Load it: it matches its sidecar, or it has none to check against.
+        USABLE,
+        /// It was this node's and did not match; it has been removed and must be fetched again.
+        EVICTED,
+        /// It fails a Maven checksum and is not this node's: refuse, and leave every file untouched.
+        FOREIGN_MISMATCH
+    }
 
     private record Sidecar(String suffix, String algorithm) {
         Path of(Path jar) {
@@ -59,7 +75,7 @@ final class ArtifactCache {
                       .flatMap(_ -> publish(target, content, writer))
                       .flatMap(_ -> digest(content, "SHA-256"))
                       .map(ArtifactCache::ascii)
-                      .flatMap(sha256 -> publish(SHA256_SIDECAR.of(target),
+                      .flatMap(sha256 -> publish(OWN_SIDECAR.of(target),
                                                  sha256,
                                                  writer))
                       .flatMap(_ -> FileOps.forceDirectory(directory))
@@ -78,27 +94,43 @@ final class ArtifactCache {
                      .onFailure(_ -> FileOps.deleteIfExists(temp));
     }
 
-    /// True when the cached jar may be loaded: it matches the first sidecar present, or has none. A jar
-    /// that does not match, or that cannot be read, is evicted together with its sidecars and reported
-    /// false, so the caller fetches it again.
-    static boolean usable(Path jar) {
-        var sidecar = SIDECARS.stream().filter(candidate -> FileOps.exists(candidate.of(jar))).findFirst();
-
-        if (sidecar.isEmpty()) {
-            return true;
+    static CacheState check(Path jar) {
+        if (FileOps.exists(OWN_SIDECAR.of(jar))) {
+            return checkOwn(jar);
         }
 
-        var intact = matches(jar, sidecar.get());
+        return MAVEN_SIDECARS.stream()
+                             .filter(sidecar -> FileOps.exists(sidecar.of(jar)))
+                             .findFirst()
+                             .map(sidecar -> checkForeign(jar, sidecar))
+                             .orElse(CacheState.USABLE);
+    }
 
-        if (!intact) {
-            log.warn("Cached artifact {} does not match its {} sidecar; evicting it to fetch it again",
-                     jar,
-                     sidecar.get().algorithm());
-            FileOps.deleteIfExists(jar);
-            SIDECARS.forEach(candidate -> FileOps.deleteIfExists(candidate.of(jar)));
+    private static CacheState checkOwn(Path jar) {
+        if (matches(jar, OWN_SIDECAR)) {
+            return CacheState.USABLE;
         }
 
-        return intact;
+        log.warn("Cached artifact {} no longer matches the checksum this node recorded when it wrote it; evicting it to fetch it again",
+                 jar);
+        FileOps.deleteIfExists(jar);
+        FileOps.deleteIfExists(OWN_SIDECAR.of(jar));
+
+        return CacheState.EVICTED;
+    }
+
+    private static CacheState checkForeign(Path jar, Sidecar sidecar) {
+        if (matches(jar, sidecar)) {
+            return CacheState.USABLE;
+        }
+
+        log.error("Artifact {} in the local Maven repository does not match its {} checksum ({}). This node did not write it, so it is "
+                  + "left untouched and NOT loaded; rebuild or reinstall it, or remove it so the node can fetch it",
+                  jar,
+                  sidecar.algorithm(),
+                  sidecar.of(jar).getFileName());
+
+        return CacheState.FOREIGN_MISMATCH;
     }
 
     private static boolean matches(Path jar, Sidecar sidecar) {

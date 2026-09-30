@@ -25,7 +25,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// #1599 — the wiring through `RemoteRepository` itself, against a local HTTP server and a local repository
 /// in a temp directory (`maven.repo.local`, which the locator reads first, so `~/.m2` is never touched).
 /// A download is cached with its sidecar, and a cached jar that no longer matches it is fetched again
-/// rather than loaded. Mutation that reddens the second test: drop the `ArtifactCache.usable` check from
+/// rather than loaded, while a jar the node did not write is never deleted or overwritten (v1617, M1). Mutation that
+/// reddens the second test: drop the `ArtifactCache.check` from
 /// the cache-hit branch of `resolveArtifact`.
 class RemoteRepositoryCacheWiringTest {
     private static final byte[] JAR = "PK\u0003\u0004 served jar bytes for the wiring test".getBytes(StandardCharsets.UTF_8);
@@ -74,7 +75,7 @@ class RemoteRepositoryCacheWiringTest {
 
         assertThat(location.isSuccess()).as("located: %s", location).isTrue();
         assertThat(Files.readAllBytes(cachedJar())).isEqualTo(JAR);
-        assertThat(cachedJar().resolveSibling("demo-1.0.0.jar.sha256")).exists();
+        assertThat(cachedJar().resolveSibling("demo-1.0.0.jar.aether-sha256")).exists();
         assertThat(jarRequests.get()).isEqualTo(1);
     }
 
@@ -88,6 +89,24 @@ class RemoteRepositoryCacheWiringTest {
         assertThat(location.isSuccess()).as("located: %s", location).isTrue();
         assertThat(jarRequests.get()).as("#1599: the torn cached jar was re-fetched, not loaded").isEqualTo(2);
         assertThat(Files.readAllBytes(cachedJar())).isEqualTo(JAR);
+    }
+
+    /// v1617 M1 — a jar in the local repository that fails Maven's `.sha1` and was not written by the node: the resolve
+    /// fails with the typed refusal, nothing is downloaded, and the jar (maybe the operator's own build) is untouched.
+    @Test
+    void foreignJarFailingItsMavenChecksum_isRefused_notDeletedOrOverwritten() throws IOException {
+        var local = "PK\u0003\u0004 a locally installed, never-published build".getBytes(StandardCharsets.UTF_8);
+
+        Files.createDirectories(cachedJar().getParent());
+        Files.write(cachedJar(), local);
+        Files.writeString(cachedJar().resolveSibling("demo-1.0.0.jar.sha1"), "0000000000000000000000000000000000000000");
+
+        var location = repository().locate(artifact()).await(timeSpan(10).seconds());
+
+        assertThat(location.isFailure()).as("the mismatched foreign jar is not loaded: %s", location).isTrue();
+        location.onFailure(cause -> assertThat(cause).isInstanceOf(RemoteRepository.RemoteRepositoryError.CachedArtifactChecksumMismatch.class));
+        assertThat(jarRequests.get()).as("nothing is fetched over it").isZero();
+        assertThat(Files.readAllBytes(cachedJar())).as("M1: the operator's jar is untouched").isEqualTo(local);
     }
 
     /// CONTROL — an intact cached jar is a cache hit: no second download.

@@ -55,15 +55,25 @@ public interface RemoteRepository extends Repository {
                                                      Path localRepo,
                                                      Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
-        // #1599: a cached jar is loaded only if it still matches its checksum sidecar; otherwise it is
-        // evicted and fetched again rather than failing the boot with a classloading error.
-        if (exists(cachedPath) && ArtifactCache.usable(cachedPath)) {
-            log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
-
-            return toLocation(artifact, cachedPath);
+        // #1599: a cached jar is loaded only if it still matches its checksum sidecar. One the node wrote and that
+        // no longer matches is evicted and fetched again; one that fails a Maven checksum but was not written by the
+        // node is refused and left untouched (v1617, M1) — it may be the operator's local, never-published build.
+        if (exists(cachedPath)) {
+            return switch (ArtifactCache.check(cachedPath)) {
+                case USABLE -> cacheHit(artifact, cachedPath);
+                case EVICTED -> downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
+                case FOREIGN_MISMATCH -> new RemoteRepositoryError.CachedArtifactChecksumMismatch(artifact.asString(),
+                                                                                                  cachedPath.toString()).promise();
+            };
         }
 
         return downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
+    }
+
+    private static Promise<Location> cacheHit(Artifact artifact, Path cachedPath) {
+        log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
+
+        return toLocation(artifact, cachedPath);
     }
 
     private static Promise<Location> downloadAndCache(Artifact artifact,
@@ -295,6 +305,16 @@ public interface RemoteRepository extends Repository {
                 }
 
                 return "Download failed from " + url + ": " + cause.getMessage();
+            }
+        }
+
+        /// #1599 (v1617, M1): a jar in the local Maven repository fails its Maven checksum and was not written by this
+        /// node. It is neither loaded nor deleted nor overwritten; the operator decides.
+        record CachedArtifactChecksumMismatch(String artifact, String path) implements RemoteRepositoryError {
+            @Override
+            public String message() {
+                return "Cached artifact " + artifact + " at " + path + " does not match its Maven checksum and was not written by"
+                     + " this node; it was left untouched and not loaded. Rebuild or reinstall it, or remove it so it can be fetched";
             }
         }
 
