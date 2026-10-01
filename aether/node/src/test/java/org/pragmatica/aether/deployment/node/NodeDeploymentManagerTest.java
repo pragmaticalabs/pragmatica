@@ -139,6 +139,20 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
+    void v1796_demotionAfterGenuineLoss_doesNotRestoreSlices() {
+        var artifact = createTestArtifact();
+        var publisher = mock(HttpRoutePublisher.class);
+        var observerManager = managerWithActiveSlice(artifact, publisher);
+
+        observerManager.onQuorumStateChange(ClusterStateNotification.passive());
+        verify(publisher).unpublishRoutes(artifact);
+        org.mockito.Mockito.clearInvocations(publisher);
+        observerManager.onQuorumStateChange(ClusterStateNotification.demotion());
+
+        org.mockito.Mockito.verifyNoInteractions(publisher);
+    }
+
+    @Test
     void quorumLoss_afterDemotion_stillSuspendsActiveSlice() {
         var artifact = createTestArtifact();
         var publisher = mock(HttpRoutePublisher.class);
