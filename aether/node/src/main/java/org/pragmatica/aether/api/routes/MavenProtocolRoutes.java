@@ -59,7 +59,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
     /// unmeasured retry hint [design intent — unverified]: it need only beat `mvn deploy`'s own
     /// "do not retry a 500" default so a CI deploy racing a node restart backs off and succeeds on
     /// its own retry instead of failing hard.
-    private static final int TIER_NOT_ADMITTED_RETRY_AFTER_SECONDS = 1;
+    private static final int RETRY_AFTER_SECONDS = 1;
 
     /// Security-relevant bypass notices (#520). Both name the artifact, the posture that admitted it,
     /// and what an operator must change — a WARN nobody can read past without understanding it.
@@ -279,7 +279,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
         }
 
         if (cause instanceof StorageError.TierNotAdmitted) {
-            response.header("Retry-After", String.valueOf(TIER_NOT_ADMITTED_RETRY_AFTER_SECONDS));
+            response.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
             response.error(HttpStatus.SERVICE_UNAVAILABLE, cause.message());
 
             return;
@@ -290,6 +290,10 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
     private void sendProtocolResponse(ResponseWriter response, MavenResponse mavenResponse) {
         var status = findHttpStatus(mavenResponse.statusCode());
+
+        if (status == HttpStatus.SERVICE_UNAVAILABLE) {
+            response.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
+        }
 
         response.write(status,
                        mavenResponse.content(),

@@ -67,6 +67,32 @@ class MavenProtocolRoutesTierNotAdmittedTest {
         assertThat(response.header("Retry-After")).isNull();
     }
 
+    @Test
+    void handle_getWhoseHandlerAnswers503_writes503WithRetryAfter() {
+        var routes = MavenProtocolRoutes.mavenProtocolRoutes(() -> nodeWith(unavailableHandler()), SHORT_TIMEOUT);
+        var response = new CapturingResponseWriter();
+
+        routes.handle(getRequest(), response);
+
+        assertThat(response.awaitStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.header("Retry-After")).as("a handler-level 503 must carry the same retry hint")
+                                                   .isEqualTo("1");
+    }
+
+    private static MavenProtocolHandler unavailableHandler() {
+        return new MavenProtocolHandler() {
+            @Override
+            public Promise<MavenResponse> handleGet(String path) {
+                return Promise.success(MavenResponse.unavailable("DHT unavailable"));
+            }
+
+            @Override
+            public Promise<MavenResponse> handlePut(String path, byte[] content) {
+                return Promise.success(MavenResponse.unavailable("DHT unavailable"));
+            }
+        };
+    }
+
     private static MavenProtocolHandler failingHandler(StorageError cause) {
         return new MavenProtocolHandler() {
             @Override
