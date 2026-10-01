@@ -2306,11 +2306,13 @@ cloud_kill_vm() {
                 # (concurrent auto-heal). Treat as success — the VM is gone either way.
                 if printf '%s' "$out" | grep -qiE 'not found|does not exist'; then
                     log_warn "cloud_kill_vm: server ${sid} (node '${node_id}') already gone at delete time (idempotent no-op)"
+                    _cloud_record_deleted_vm "$node_id" "$sid"
                     return 0
                 fi
                 log_fail "cloud_kill_vm: hcloud server delete ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
                 return "$rc"
             fi
+            _cloud_record_deleted_vm "$node_id" "$sid"
             return 0
             ;;
         *)
@@ -2384,6 +2386,13 @@ cloud_revive_vm() {
             if ! command -v hcloud >/dev/null 2>&1; then
                 log_fail "cloud_revive_vm: hcloud CLI not found (required for provider 'hetzner')"
                 return 2
+            fi
+            # A VM this run deleted through cloud_kill_vm cannot be revived and its address no longer resolves (rc 3 below would be
+            # a counted FAIL for the harness's own deletion). The record says so: nothing to do, the baseline scale-up restores N.
+            local deleted_sid
+            if deleted_sid=$(_cloud_deleted_vm_server "$node_id"); then
+                log_info "cloud_revive_vm: '${node_id}' was deleted by this run's cloud kill (hetzner server ${deleted_sid}); restored by the baseline scale-up, not revived (no-op)"
+                return 0
             fi
             local sid sid_rc
             sid=$(cloud_server_id "$node_id" 2>/dev/null); sid_rc=$?

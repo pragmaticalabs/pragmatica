@@ -1161,7 +1161,8 @@ on_exit() {
     # This run's scratch state (endpoint memory), keyed by AETHER_RUN_ID so only ours. Removed on
     # EVERY exit path: it is useless to any later run, so preserving clusters is no reason to keep it.
     rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
-          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null
+          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" \
+          "${TMPDIR:-/tmp}/aether-deleted-vms-${AETHER_RUN_ID:-norun}" 2>/dev/null
     if [ "$SKIP_TEARDOWN" = false ]; then
         if [ -n "$KEEP_ON_FAILURE_FLAG" ] && [ "$rc" -ne 0 ]; then
             preserve_on_failure "$rc"
