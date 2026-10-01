@@ -41,15 +41,18 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// deleting the `allEntries.add(ValuePut -> onLeaderKeyCommit)` line reddened nothing.
 ///
 /// A real single-node boot (the #858 shape; a lone node never elects itself, so no leader-gain edge can
-/// fire). A `LeaderKey` naming the node at a high `viewSequence` is committed through its own KV-Store.
-/// The held term (read from the booted node's `leaderTerm` component) can only reach that sequence
-/// through the registered `ValuePut` route.
+/// fire on its own). A `LeaderKey` naming the node is committed through its own KV-Store, then a SECOND one
+/// at a higher `viewSequence`: whichever path (a gain edge, if the first commit makes the FSM adopt it) takes
+/// the term to the first, the second is a same-leader re-commit that emits no gain edge, so the held term
+/// (read from the booted node's `leaderTerm` component) reaches it only through the registered `ValuePut`
+/// route.
 class LeaderKeyCommitWiringBootTest {
     @TempDir
     Path tempDir;
 
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
-    private static final long RECOMMIT_SEQUENCE = 1_000_000L;
+    private static final long FIRST_SEQUENCE = 1_000_000L;
+    private static final long RECOMMIT_SEQUENCE = 2_000_000L;
 
     private AetherNode node;
 
@@ -84,6 +87,7 @@ class LeaderKeyCommitWiringBootTest {
         assertThat(term.current()).as("control: a lone node has led nobody, so nothing has been adopted yet")
                                   .isZero();
 
+        commitLeaderKey(self, FIRST_SEQUENCE);
         commitLeaderKey(self, RECOMMIT_SEQUENCE);
 
         assertThat(term.current()).as("the registered ValuePut<LeaderKey> route re-adopts the committed sequence")
