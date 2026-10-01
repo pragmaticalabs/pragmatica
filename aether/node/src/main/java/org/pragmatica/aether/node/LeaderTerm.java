@@ -84,6 +84,19 @@ public final class LeaderTerm {
     /// Adopts the committed `viewSequence` of the election that named this node and returns the term
     /// now held. Max-merge: a replayed or out-of-order edge never regresses the term.
     public long onLeaderGained() {
+        return adoptCommitted();
+    }
+
+    /// Re-adopts on ANY committed `LeaderKey` write that names this node, not only on the gain edge (#1797).
+    /// A same-leader re-commit (the leader's `viewSequence` advancing while it already leads) emits no new
+    /// gain edge, so without this the held term would stay below the committed sequence the KV applier
+    /// accepted. Same max-merge as [#onLeaderGained()]: never lowers, and a record naming another node
+    /// leaves the held term alone.
+    public long onLeaderKeyCommitted() {
+        return adoptCommitted();
+    }
+
+    private long adoptCommitted() {
         return committedLeader.get()
                               .filter(this::namesSelf)
                               .map(LeaderValue::viewSequence)

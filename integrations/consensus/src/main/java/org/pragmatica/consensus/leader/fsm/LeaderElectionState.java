@@ -319,6 +319,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
             ctx.resetStuckElectionCount();
             adoptLeaderFromKvIfPresent(ctx);
@@ -593,6 +594,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            ctx.clearProposalInFlight();
             ctx.resetStuckElectionCount();
             clearLeaderAndNotify(ctx);
             adoptLeaderFromKvIfPresent(ctx);
@@ -975,6 +977,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
+        if (ctx.fsm().current() != owner) {
+            // #1797 F1: a tick's own KV-pull adoption moved the FSM out of `owner` before this point;
+            // `owner.onExit` already cleared the guard, `tryStartProposal` just re-set it, and a proposal
+            // sent from the left state would store its timeout on a dead record (so nothing ever
+            // releases the guard) and double-propose the round the commit already settled.
+            ctx.clearProposalInFlight();
+
+            return;
+        }
+
         sendProposal(ctx, owner, handler, candidate);
     }
 
@@ -1040,13 +1052,17 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        ctx.clearProposalInFlight();
         if (event.success()) {
-            log.debug("Proposal submitted ({}) — waiting for LeaderCommitted", event.detail());
+            // #1797: "submitted" is NOT "committed". The guard stays held until the commit moves the FSM
+            // out of Electing/ReElecting (their `onExit` clears it) or the proposal timeout settles as a
+            // failure (below) — clearing here let a tick or topology reschedule in the submit-to-commit
+            // gap propose a second time, advancing the committed viewSequence twice for one round.
+            log.debug("Proposal submitted ({}) — guard held until LeaderCommitted or timeout", event.detail());
 
             return;
         }
 
+        ctx.clearProposalInFlight();
         log.debug("Proposal failed ({}) — retry scheduled", event.detail());
         ctx.incrementStuckElectionCount();
         rescheduleCurrentTick(ctx);

@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -81,6 +82,55 @@ class LeaderTermTest {
 
         commitLeader(NODE_A);
         assertThat(restarted.onLeaderGained()).isGreaterThan(priorTerm);
+    }
+
+    /// #1797: a same-leader re-commit (the committed sequence advancing while this node already leads)
+    /// emits no gain edge. The re-adopt on a committed `LeaderKey` naming self raises the held term to it.
+    @Test
+    void onLeaderKeyCommitted_raisesTheTerm_whenALaterSelfNamingCommitAdvancesTheSequence() {
+        var termA = elect(NODE_A);
+
+        commitLeader(NODE_A);
+
+        assertThat(terms.get(NODE_A).current()).as("no gain edge, so nothing adopted yet").isEqualTo(termA);
+        assertThat(terms.get(NODE_A).onLeaderKeyCommitted()).isEqualTo(termA + 1);
+        assertThat(terms.get(NODE_A).current()).isEqualTo(termA + 1);
+    }
+
+    /// The wiring: the `ValuePut<LeaderKey>` notification the node routes is what drives the re-adopt, and a
+    /// put on any other key does not (the control that makes the positive case mean the key filter works).
+    @Test
+    void onLeaderKeyCommit_notification_raisesTheTermOnlyForTheLeaderKey() {
+        var termA = elect(NODE_A);
+        var term = terms.get(NODE_A);
+        var otherKey = ConsumerAssignmentKey.consumerAssignmentKey(STREAM, PARTITION, GROUP);
+
+        commitLeader(NODE_A);
+        AetherNode.onLeaderKeyCommit(new KVStoreNotification.ValuePut<>(new KVCommand.Put<>(otherKey, "x"),
+                                                                        Option.none()),
+                                     term);
+        assertThat(term.current()).as("a put on another key is not a leader commit").isEqualTo(termA);
+
+        AetherNode.onLeaderKeyCommit(new KVStoreNotification.ValuePut<>(new KVCommand.Put<>(LeaderKey.INSTANCE,
+                                                                                            LeaderValue.leaderValue(NODE_A,
+                                                                                                                    viewSequence.get())),
+                                                                        Option.none()),
+                                     term);
+        assertThat(term.current()).isEqualTo(termA + 1);
+    }
+
+    /// Monotone and self-only: a record naming another node, or a lower sequence, never moves the term.
+    @Test
+    void onLeaderKeyCommitted_neverLowersTheTerm_andIgnoresAnotherNodesCommit() {
+        var committed = new AtomicReference<>(some(LeaderValue.leaderValue(NODE_A, 5L)));
+        var term = LeaderTerm.leaderTerm(NODE_A, committed::get);
+
+        term.onLeaderKeyCommitted();
+        committed.set(some(LeaderValue.leaderValue(NODE_A, 3L)));
+        assertThat(term.onLeaderKeyCommitted()).as("a lower self-naming sequence").isEqualTo(5L);
+        committed.set(some(LeaderValue.leaderValue(NODE_B, 9L)));
+        assertThat(term.onLeaderKeyCommitted()).as("another node's higher commit").isEqualTo(5L);
+        assertThat(term.current()).isEqualTo(5L);
     }
 
     @Test
