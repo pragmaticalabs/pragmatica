@@ -188,7 +188,11 @@ public sealed interface StreamError extends Cause {
     /// materialized right now because this node already has `reshuffle_concurrency` (default 2) partitions
     /// concurrently in materialize+backfill state, so the materialization is QUEUED at the `buildAndInstall`
     /// pacing seam (system streams first, then FIFO) and re-driven once a slot frees (a completed backfill or
-    /// a release). DISTINCT from {@link General#PARTITION_NOT_LOCAL} (a genuine non-replica the caller
+    /// a release). The queue is a transient work list, so the re-drive is ALSO level-triggered: every reconcile
+    /// tick re-queues every partition this node holds that has no ring (#1805) — a lost queue entry, or a role
+    /// that flapped through NONE for any length of time, cannot strand it; a partition held but unmaterialized for
+    /// ~60s is WARNed. An owner-role queued partition needs no slot and drains regardless of free permits.
+    /// DISTINCT from {@link General#PARTITION_NOT_LOCAL} (a genuine non-replica the caller
     /// FORWARDS) and from {@link MaterializeBudgetExceeded} (an off-heap shortage): this node IS the holder
     /// and has budget — it is bounding concurrent reshuffle work — so the caller RETRIES (reconcile hook next
     /// tick / owner-append client retry), never a forward loop. Implements
