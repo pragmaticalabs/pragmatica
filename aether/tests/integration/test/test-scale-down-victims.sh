@@ -11,7 +11,7 @@
 #   V7-V10  the retarget prefers a removed voter that HOSTS the load's slice (current owner first); falls back honestly
 #   V11 the step line records whether the target hosts the slice and whether a slice host was a victim
 #   P1-P3  put_artifact_retry_503 (the Seed marker PUT): body recorded, ONE retry on 503 only, 500 never retried
-#   M1-M4  _seed_membership_settled (the Seed gate): installed==target and members==voters, on two reads
+#   M1-M7, T2  _seed_membership_settled (the Seed gate) against the REAL node body: STABLE + members==voters settles; tripwire rc 2 (loud) when the parser is blind
 #   T1  tripwire: the voter keys the helper parses are components of the real VoterReconfigurationStatus record
 #   Mutations: always "no" victim reddens V1; the flag ignored reddens V2; the retarget removed reddens V3; the loop
 #   not reading the override reddens V5.   INTEG_DIR_UNDER_TEST selects another copy of aether/tests/integration.
@@ -50,7 +50,7 @@ log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }
 CLOUD_MODE=false; TARGET_HOST=h; APP_PORT=8070
 api_get() { echo x >> "$CALLS"; cat "$STATUS_BODY"; }
 STUB
-for f in _cluster_voters _id_set_difference _app_endpoint_for_node log_scale_down_step scale_load_retarget_to_victim slice_hosts_for slice_owner_for; do extract "$f"; done
+for f in _voters_in _cluster_voters _id_set_difference _app_endpoint_for_node log_scale_down_step scale_load_retarget_to_victim slice_hosts_for slice_owner_for; do extract "$f"; done
 } > "$WORK/fns.sh"
 BEFORE=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5\nnode-6\nnode-7'; AFTER=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5'
 
@@ -223,24 +223,53 @@ if [ "$(cat "$WORK/put.p3")" = "503" ] && [ "$(cat "$WORK/calls.put.p3")" = "2" 
     ok "P3 503 twice: exactly ONE retry (2 calls), the final 503 is reported"
 else fail "P3 st=$(cat "$WORK/put.p3") calls=$(cat "$WORK/calls.put.p3")"; fi
 
-settled_run() {  # <label> <inst> <target> <members> [flip-after-polls: first N polls report the unsettled values]
-    local label="$1"; shift
+# The settle gate, driven by the REAL node body (fixtures/node-status-real-stable.json: a node's actual
+# /api/v1/nodes/status; STABLE, installedVoters bh-1..bh-5, NO targetVoters key — the serializer omits empty lists). The
+# first version of these tests fed `_cluster_voters` a targetVoters list that the real node never sends when STABLE, so it
+# shared the gate's wrong premise (settled = installed == target) and the gate never settled on a real cluster
+# (driver-20261001T1307Z-diag: installed=[core-0..core-4] target=[] members=5, "not settled within 90s").
+REAL_STATUS="${SCRIPT_DIR}/fixtures/node-status-real-stable.json"
+# REQUESTED is DERIVED from the real body (stage + a targetVoters roster, as the record serializes a pending request), not captured.
+sed 's/"stage":"STABLE"/"stage":"REQUESTED"/; s/"installedVoters":\(\[[^]]*\]\)/"installedVoters":\1,"targetVoters":["bh-1","bh-2","bh-3"]/' "$REAL_STATUS" > "$WORK/status.requested.json"
+settled_run() {  # <label> <body file> <members> [first N polls answer with the REQUESTED body]
+    local label="$1" body="$2" members="$3" unsettled="${4:-0}"
     echo 0 > "$WORK/polls.$label"
-    ( export CALLS="$WORK/polls.$label" SEED_SETTLE_POLL_S=0.1 SEED_SETTLE_UNSETTLED_POLLS="${5:-0}" I="$1" T="$2" M="$3"
-      _cluster_voters() { local n; n=$(cat "$CALLS"); if [ "$1" = installedVoters ]; then echo $((n + 1)) > "$CALLS"; fi
-          if [ "$n" -lt "$SEED_SETTLE_UNSETTLED_POLLS" ]; then [ "$1" = installedVoters ] && printf 'a\nb\nc\nd\ne\nf\ng\n' || printf 'a\nb\nc\nd\ne\n'
-          else [ "$1" = installedVoters ] && printf '%s' "$I" | tr ' ' '\n' || printf '%s' "$T" | tr ' ' '\n'; fi; }
+    ( export CALLS="$WORK/polls.$label" SEED_SETTLE_POLL_S=0.1 UNSETTLED="$unsettled" BODY="$body" REQ="$WORK/status.requested.json" M="$members"
+      log_fail() { echo "FAIL $*" > "$WORK/logfail.$label"; }
+      api_get() { local n; n=$(cat "$CALLS"); echo $((n + 1)) > "$CALLS"; if [ "$n" -lt "$UNSETTLED" ]; then cat "$REQ"; else [ -n "$BODY" ] && cat "$BODY"; fi; }
       cluster_member_count() { echo "$M"; }
-      eval "$(extract _seed_membership_settled)"
+      eval "$(extract _voters_in)"; eval "$(extract _seed_membership_settled)"
       _seed_membership_settled 2; echo $? > "$WORK/msrc.$label" )
 }
-settled_run m1 "a b c d e" "a b c d e" 5
-settled_run m2 "a b c d e f g" "a b c d e" 5
-settled_run m3 "a b c d e" "a b c d e" 7
-settled_run m4 "a b c d e" "a b c d e" 5 3
+printf '{"voterReconfiguration":{"installedVoters":"bh-1"}}' > "$WORK/body.nostage"                    # parser-blind shape 1
+printf '{"voterReconfiguration":{"stage":"STABLE","installedVoters":"bh-1,bh-2"}}' > "$WORK/body.badlist"  # parser-blind shape 2
+# CATCHING_UP is DERIVED too: a change was applied and a member has not caught up; no requested roster, so NO targetVoters key
+sed 's/"stage":"STABLE"/"stage":"CATCHING_UP"/' "$REAL_STATUS" > "$WORK/status.catchingup.json"
+settled_run m1 "$REAL_STATUS" 5
+settled_run m8 "$WORK/status.catchingup.json" 5
+settled_run m2 "$WORK/status.requested.json" 5
+settled_run m3 "$REAL_STATUS" 7
+settled_run m4 "$REAL_STATUS" 5 3
+settled_run m5 "$WORK/body.nostage" 5
+settled_run m6 "$WORK/body.badlist" 5
+settled_run m7 "" 5
 if [ "$(cat "$WORK/msrc.m1")" = "0" ] && [ "$(cat "$WORK/msrc.m2")" = "1" ] && [ "$(cat "$WORK/msrc.m3")" = "1" ] && [ "$(cat "$WORK/msrc.m4")" = "0" ]; then
-    ok "M1-M4 the membership gate: settled -> 0; installed!=target (reconfiguring) -> 1; members!=voters (a replica still departing) -> 1; settles after 3 polls -> 0"
+    ok "M1-M4 the REAL STABLE body (no targetVoters key, 5 installed, 5 members) SETTLES (rc 0); a REQUESTED roster -> 1; members!=voters -> 1; settles after 3 REQUESTED polls -> 0"
 else fail "M rc: m1=$(cat "$WORK/msrc.m1") m2=$(cat "$WORK/msrc.m2") m3=$(cat "$WORK/msrc.m3") m4=$(cat "$WORK/msrc.m4")"; fi
+if [ "$(cat "$WORK/msrc.m8")" = "1" ]; then ok "M8 stage CATCHING_UP (no targetVoters, members==voters) is NOT settled: the stage, not only the roster, decides"
+else fail "M8 rc=$(cat "$WORK/msrc.m8")"; fi
+if [ "$(cat "$WORK/msrc.m5")" = "2" ] && grep -q 'no parsable stage' "$WORK/logfail.m5" \
+   && [ "$(cat "$WORK/msrc.m6")" = "2" ] && grep -q 'installedVoters but the parser read none' "$WORK/logfail.m6"; then
+    ok "M5-M6 tripwire: a body that names voterReconfiguration/installedVoters but parses to no stage / no installed list is a LOUD log_fail with rc 2, not a warning-and-wait"
+else fail "M5/M6 rc: m5=$(cat "$WORK/msrc.m5") m6=$(cat "$WORK/msrc.m6") log5=$(cat "$WORK/logfail.m5" 2>/dev/null | head -c 120) log6=$(cat "$WORK/logfail.m6" 2>/dev/null | head -c 120)"; fi
+if [ "$(cat "$WORK/msrc.m7")" = "1" ] && [ ! -e "$WORK/logfail.m7" ]; then
+    ok "M7 control: an unreadable node (empty body) is NOT the tripwire: rc 1, no FAIL (keep waiting, then warn)"
+else fail "M7 rc=$(cat "$WORK/msrc.m7") logfail=$(cat "$WORK/logfail.m7" 2>/dev/null)"; fi
+# T2: the parser reads the real body's voters
+if [ "$(_cluster_voters_real=1; extract _voters_in > "$WORK/vin.sh"; bash -c "source $WORK/vin.sh; _voters_in installedVoters < $REAL_STATUS | tr '\n' ' '")" = "bh-1 bh-2 bh-3 bh-4 bh-5 " ] \
+   && [ -z "$(bash -c "source $WORK/vin.sh; _voters_in targetVoters < $REAL_STATUS")" ]; then
+    ok "T2 on the REAL body: installedVoters = bh-1..bh-5, targetVoters = empty (the key is absent when STABLE)"
+else fail "T2 real-body parse"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"
