@@ -1008,6 +1008,62 @@ run_in "$d" "$CLUSTER_LIB" case_revive_vm node-1
 check "$d" "KV7 control: address known, no server (rc 1) -> idempotent no-op, rc 0" \
     eval 'has "$d" "REVIVE_RC=0;" && has "$d" "already deleted/replaced"'
 
+
+# KR: kill then revive of a CTM node THIS run deleted (02w cleanup, cloud run 6): the deletion made the node's address
+# unresolvable, so the revive's cloud_server_id was rc 3 and the harness FAILED twice for its own deletion. The CTM node
+# resolves ONCE (the kill's lookup), then not (api_get answers only the first endpoint call), like a node that left the cluster.
+KR_CTM="aether-test-b-node-01m3w3rpp07g0g94kz3sdpx2g1"
+kr_setup() {  # <dir>
+    cat > "$1/setup.sh" <<SETUP
+export AETHER_RUN_ID="kr-\$(basename "\$STUB_DIR")"
+hcloud() {
+    if [ "\$1 \$2" = "server delete" ]; then echo "\$3" >> "\$STUB_DIR/deleted"; : > "\$STUB_DIR/hcloud-all-list"; return 0; fi
+    if [ "\$1 \$2" = "server poweron" ]; then echo "\$3" >> "\$STUB_DIR/poweron"; return 0; fi
+    stub_hcloud "\$@"
+}
+SETUP
+    printf '168265166 198.51.100.9\n' > "$1/hcloud-all-list"
+    resp "$1/api_api_v1_nodes_endpoint_${KR_CTM}.1" 0 '{"address":"198.51.100.9:7100"}'
+}
+case_kill_then_revive() {
+    local before; before=$(_harness_fail_lines)
+    cloud_kill_vm "$KR_CTM"; local krc=$?
+    cloud_revive_vm "$KR_CTM"; local rrc=$?
+    echo "KILL_RC=${krc} REVIVE_RC=${rrc} DELTA=$(( $(_harness_fail_lines) - before ));"
+    rm -f "$(_cloud_deleted_vms_file)"
+}
+d=$(new_case); kr_setup "$d"
+run_in "$d" "$CLUSTER_LIB" case_kill_then_revive
+check "$d" "KR1 kill then revive of a CTM node this run deleted: both rc 0, ZERO fail-file lines, an INFO 'deleted by this run's cloud kill', no poweron" \
+    eval 'has "$d" "KILL_RC=0 REVIVE_RC=0 DELTA=0;" && has "$d" "deleted by this run'"'"'s cloud kill (hetzner server 168265166)" && [ "$(cat "$d/deleted" 2>/dev/null)" = "168265166" ] && [ ! -f "$d/poweron" ]'
+
+case_start_after_kill() {
+    cloud_kill_vm "$KR_CTM" > /dev/null; CLOUD_MODE=true start_node "$KR_CTM"; echo "START_RC=$?;"
+    rm -f "$(_cloud_deleted_vms_file)"
+}
+d=$(new_case); kr_setup "$d"
+run_in "$d" "$CLUSTER_LIB" case_start_after_kill
+check "$d" "KR2 start_node (the 02w cleanup call) on the node this run deleted: rc 0, no 'poweron ... failed' FAIL" \
+    eval 'has "$d" "START_RC=0;" && ! has "$d" "poweron of" && ! has "$d" "cannot tell whether"'
+
+case_revive_other() {
+    cloud_kill_vm "$KR_CTM" > /dev/null
+    cloud_revive_vm "aether-test-b-node-01OTHERUNKNOWN0000000000"; echo "OTHER_RC=$?;"
+    rm -f "$(_cloud_deleted_vms_file)"
+}
+d=$(new_case); kr_setup "$d"
+run_in "$d" "$CLUSTER_LIB" case_revive_other
+check "$d" "KR3 control: a node this run did NOT delete, unresolvable -> still the loud FAIL (rc 1, 'cannot tell whether')" \
+    eval 'has "$d" "OTHER_RC=1;" && has "$d" "cannot tell whether"'
+
+case_revive_no_kill() { cloud_revive_vm "$KR_CTM"; echo "NOKILL_RC=$?;"; }
+d=$(new_case); kr_setup "$d"; rm -f "$d/api_api_v1_nodes_endpoint_${KR_CTM}.1"
+run_in "$d" "$CLUSTER_LIB" case_revive_no_kill
+check "$d" "KR4 control: the same node with NO kill recorded (unresolvable) -> loud FAIL, not a silent no-op" \
+    eval 'has "$d" "NOKILL_RC=1;" && has "$d" "cannot tell whether"'
+
+if grep -q 'aether-deleted-vms-\${AETHER_RUN_ID' "${INTEG_DIR}/run-tests.sh"; then ok "KR5 wiring: run-tests.sh removes this run's deleted-VM record on exit"; else fail "KR5 run-tests.sh does not remove the deleted-VM record"; fi
+
 echo "== F. exit-code step (test_survivor_exit_codes_are_two) on cloud jvm"
 
 case_h2() { TEST_FAIL_COUNT=0; test_survivor_exit_codes_are_two; local rc=$?; echo "FAILS=${TEST_FAIL_COUNT};"; return "$rc"; }
