@@ -18,6 +18,52 @@
 _CAPTURE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _failcap_root() { echo "${AETHER_FAILURE_LOGS_DIR:-${_CAPTURE_LIB_DIR}/../failure-logs}"; }
 
+# ---------------------------------------------------------------------------
+# VM registry (cloud): every VM a suite has touched, not only those the provider lists at capture time.
+# 2026-10-01 S-triple-prime: 03 Scale_down failed against core-4 (178.105.27.245), a scale-down VICTIM; the fail-time
+# capture (01:50:46) enumerated the provider's CURRENT VMs, core-4 had been drained and was gone, and the one node
+# the 503s hinged on was missing from the manifest. The registry remembers each VM seen at suite start, at the start
+# of every test, and at every capture; a capture then tries every remembered VM too, with a short bound for the ones
+# the provider no longer lists, and says in the manifest which of them were gone.
+# ---------------------------------------------------------------------------
+_capture_cluster_name() {
+    if [ "$1" = "a" ]; then echo "${CLUSTER_A_NAME:-${BOOTSTRAP_CLUSTER_NAME:-}}"; else echo "${CLUSTER_B_NAME:-${BOOTSTRAP_CLUSTER_NAME:-}}"; fi
+}
+# <cluster_name> <suite>  -> registry file path ("-restore-failed" suffix of a suite name is dropped)
+_capture_vm_registry_file() {
+    local suite="${2%-restore-failed}"
+    echo "$(_failcap_root)/vm-registries/${1}-${suite}.txt"
+}
+# capture_remember_vms <target_cluster> [suite]: add the provider's current VM IPs to the suite's registry. Quiet,
+# bounded, never fails the caller.
+capture_remember_vms() { _capture_remember_vms_body "$@" || true; }
+_capture_remember_vms_body() {
+    [ "${CLOUD_MODE:-false}" = "true" ] || return 0
+    local target="${1:-a}" suite="${2:-${SUITE_TAG:-no-suite}}" cluster ips ip reg
+    cluster=$(_capture_cluster_name "$target")
+    [ -n "$cluster" ] || return 0
+    reg=$(_capture_vm_registry_file "$cluster" "$suite")
+    mkdir -p "$(dirname "$reg")" 2>/dev/null || return 0
+    # _fork_bounded, NOT _run_with_timeout: _cloud_running_vm_ips is a shell FUNCTION, and _run_with_timeout execs
+    # coreutils `timeout`, which can only run a binary on PATH (rc 127 "failed to run command" for a function; the `|| return 0`
+    # below then swallowed it and the registry was never written, so a scale-down victim was omitted again). See common.sh.
+    ips=$(_fork_bounded "${CLOUD_CAPTURE_ENUM_TIMEOUT_S:-30}" _cloud_running_vm_ips "$cluster" 2>/dev/null) || return 0
+    for ip in $ips; do
+        printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+        grep -qxF "$ip" "$reg" 2>/dev/null || printf '%s\n' "$ip" >> "$reg" 2>/dev/null || true
+    done
+    return 0
+}
+# capture_forget_vms <target_cluster> [suite]: start a suite with an empty registry (no VM from a previous run).
+capture_forget_vms() {
+    local cluster reg
+    cluster=$(_capture_cluster_name "${1:-a}")
+    [ -n "$cluster" ] || return 0
+    reg=$(_capture_vm_registry_file "$cluster" "${2:-${SUITE_TAG:-no-suite}}")
+    rm -f "$reg" 2>/dev/null || true
+    return 0
+}
+
 # Best-effort node-log capture for a failed suite. Never fails the run: it exists to
 # preserve evidence, and losing evidence must not also lose the result that produced it.
 capture_node_logs() {
@@ -91,28 +137,47 @@ capture_node_logs() {
                 log_warn "${suite_name}: cloud node-log capture has no cluster name — nothing captured"
                 return 0
             fi
-            ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null) || enum_rc=$?
-            if [ "$enum_rc" -ne 0 ]; then
+            # Remember what the provider lists NOW, then capture current ∪ remembered: a VM removed mid-suite (a
+            # scale-down victim) is no longer listed but may still answer, and the manifest must say which are gone.
+            capture_remember_vms "$target_cluster" "$suite_name"
+            local registry remembered="" cur_ips=""
+            registry=$(_capture_vm_registry_file "$cluster_name" "$suite_name")
+            [ -f "$registry" ] && remembered=$(cat "$registry" 2>/dev/null || true)
+            cur_ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null) || enum_rc=$?
+            if [ "$enum_rc" -ne 0 ] && [ -z "$remembered" ]; then
                 # Unavailable is not empty (_cloud_running_vm_ips's own contract).
                 echo "VM enumeration UNAVAILABLE for cluster ${cluster_name} (rc=${enum_rc}) — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
                 log_warn "${suite_name}: cloud VM enumeration unavailable (rc=${enum_rc}) — nothing captured"
                 return 0
             fi
+            [ "$enum_rc" -ne 0 ] && echo "VM enumeration UNAVAILABLE (rc=${enum_rc}); capturing the remembered VM set only" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            # `|| true`: grep -v exits 1 when there is nothing to list, which under pipefail/set -e would end the capture
+            # before it wrote the "NO VMs found" line.
+            ips=$(printf '%s\n%s\n' "$cur_ips" "$remembered" | { grep -v '^$' || true; } | awk '!seen[$0]++')
             local remote_cmd="docker logs --timestamps --since ${since_epoch} aether-node"
             [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager --since @${since_epoch} -o short-iso"
             echo "window: since epoch ${since_epoch} (suite start)" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            local ssh_bound state
             for ip in $ips; do
                 attempted=$((attempted + 1))
+                state=current
+                if [ "$enum_rc" -eq 0 ] && ! printf '%s\n' "$cur_ips" | grep -qxF "$ip"; then state="remembered-not-listed"; fi
                 # Outer bound covers connect + transfer; the remote `timeout` covers a command that
                 # hangs on a live connection, which ssh keepalives cannot detect (#628 note at
-                # common.sh remote_exec_bounded). A capture must never stall the run it serves.
+                # common.sh remote_exec_bounded). A capture must never stall the run it serves. A VM the provider no
+                # longer lists gets a short bound: it is most likely gone.
+                ssh_bound="${CLOUD_CAPTURE_SSH_TIMEOUT_S:-90}"
+                [ "$state" = "remembered-not-listed" ] && ssh_bound="${CLOUD_CAPTURE_GONE_TIMEOUT_S:-20}"
                 rc=0
-                _run_with_timeout "${CLOUD_CAPTURE_SSH_TIMEOUT_S:-90}" \
+                _run_with_timeout "$ssh_bound" \
                     ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" \
                     "hostname; timeout ${CLOUD_CAPTURE_REMOTE_TIMEOUT_S:-60} ${remote_cmd}" > "${out_dir}/vm-${ip}.log" 2>&1 || rc=$?
                 [ "$rc" -eq 0 ] && ok=$((ok + 1))
-                printf 'vm %s rc=%s lines=%s\n' "$ip" "$rc" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" \
+                printf 'vm %s rc=%s lines=%s state=%s\n' "$ip" "$rc" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" "$state" \
                     >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                if [ "$state" = "remembered-not-listed" ] && [ "$rc" -ne 0 ]; then
+                    echo "vm ${ip} GONE: remembered from earlier in the suite, no longer listed by the provider, and unreachable (rc=${rc})" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                fi
             done
             provisioning_snapshot > "${out_dir}/provisioning-snapshot.txt" 2>&1 || true
             if [ "$attempted" -eq 0 ]; then

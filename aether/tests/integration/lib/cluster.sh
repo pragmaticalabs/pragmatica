@@ -399,6 +399,86 @@ _endpoint_node_id() {
         | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/' || true
 }
 
+# ---------------------------------------------------------------------------
+# Scale-down victim bookkeeping (03-scaling). The product, not the harness, picks scale-down victims (the leader's
+# reconciler: non-slice-owners first, ephemeral over configured, leader last), so the harness can only OBSERVE them:
+# a victim is a member that leaves the voter set. At S-triple-prime the load target (core-4) was a victim and 12 of
+# 482 requests answered 503; nothing recorded that the target was a victim.
+# ---------------------------------------------------------------------------
+
+# The consensus voters from /api/v1/nodes/status voterReconfiguration: <field> is installedVoters or targetVoters.
+# One node id per line, sorted. Empty when the read fails or the list is empty.
+_cluster_voters() {
+    api_get "/api/v1/nodes/status" 2>/dev/null \
+        | tr -d '\n ' | { grep -oE "\"$1\":\[[^]]*\]" || true; } | head -1 \
+        | { grep -oE '"[^"]+"' || true; } | { grep -v "^\"$1\"\$" || true; } | tr -d '"' | sort
+}
+
+# <list a> <list b>: ids in a that are not in b (one per line).
+_id_set_difference() {
+    local a="$1" b="$2" x
+    for x in $a; do
+        case " $(printf '%s' "$b" | tr '\n' ' ') " in *" $x "*) ;; *) printf '%s\n' "$x" ;; esac
+    done
+}
+
+# App endpoint of a node id, or empty when it cannot be derived. Cloud: the VM's public IP at the app port; docker:
+# `node-N` / `aether-<cluster>-node-N` maps to APP_PORT + N - 1 on TARGET_HOST.
+_app_endpoint_for_node() {
+    local id="$1" ip n
+    [ -n "$id" ] || return 0
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        ip=$(cloud_public_ip "$id" 2>/dev/null) || return 0
+        [ -n "$ip" ] && printf 'http://%s:%s' "$ip" "${APP_PORT:-8070}"
+    elif [[ "$id" =~ node-([0-9]+)$ ]]; then
+        n="${BASH_REMATCH[1]}"
+        printf 'http://%s:%s' "${TARGET_HOST}" "$(( ${APP_PORT:-8070} + n - 1 ))"
+    fi
+    return 0
+}
+
+# One INFO line per scale-down step: who left, and whether the load target was among them. <members before> <members
+# after> <load endpoint>. Records only; it never steers.
+log_scale_down_step() {
+    local before="$1" after="$2" endpoint="$3" removed id target_id="" m victim="no"
+    removed=$(_id_set_difference "$before" "$after")
+    for m in $before; do
+        [ "$(_app_endpoint_for_node "$m")" = "$endpoint" ] && { target_id="$m"; break; }
+    done
+    for id in $removed; do [ "$id" = "$target_id" ] && victim="yes"; done
+    [ -n "$target_id" ] || victim="unknown"
+    log_info "scale-down step: members before=[$(printf '%s' "$before" | tr '\n' ' ')] after=[$(printf '%s' "$after" | tr '\n' ' ')] removed=[$(printf '%s' "$removed" | tr '\n' ' ')]; load target=${endpoint} (node ${target_id:-<unresolved>}); load target was a victim: ${victim}"
+}
+
+# OPT-IN (SCALE_LOAD_TARGET_VICTIM=1, default OFF): re-aim the running load generator at a node that is being removed,
+# so the 03 defect is reproducible on demand. Victims are chosen by the product at the scale-down pass, so the harness
+# waits for the electorate to shrink (the removed nodes leave targetVoters within a fraction of a second of the pass)
+# and then points the load at one of them through the override file start_load's loop reads every tick. Flag off: this
+# does nothing at all. <voters before> [poll seconds]. Prints the chosen victim id, or nothing.
+scale_load_retarget_to_victim() {
+    [ "${SCALE_LOAD_TARGET_VICTIM:-0}" = "1" ] || return 0
+    local before="$1" budget="${2:-${SCALE_VICTIM_POLL_S:-15}}" deadline now v ep removed
+    deadline=$(( SECONDS + budget ))
+    while :; do
+        now=$(_cluster_voters targetVoters)
+        [ -n "$now" ] || now=$(_cluster_voters installedVoters)
+        removed=$(_id_set_difference "$before" "$now")
+        for v in $removed; do
+            ep=$(_app_endpoint_for_node "$v")
+            if [ -n "$ep" ]; then
+                printf '%s' "$ep" > "/tmp/load_endpoint_override_$$"
+                log_info "SCALE_LOAD_TARGET_VICTIM=1: re-aiming the load at victim ${v} (${ep}); removed from the electorate: [$(printf '%s' "$removed" | tr '\n' ' ')]" >&2
+                printf '%s' "$v"
+                return 0
+            fi
+        done
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "${SCALE_VICTIM_POLL_INTERVAL_S:-0.5}"
+    done
+    log_warn "SCALE_LOAD_TARGET_VICTIM=1: no removed node with a derivable app endpoint within ${budget}s (removed=[$(printf '%s' "${removed:-}" | tr '\n' ' ')]); the load keeps its target" >&2
+    return 0
+}
+
 # Management endpoint of a NAMED node, or empty when it cannot be derived. Cloud: the VM's public IP at
 # the uniform mgmt port; docker: `node-N` maps to MGMT_PORT + N - 1. For a caller that must read one
 # specific node's view (for example the leader across a partition) rather than whichever node the
