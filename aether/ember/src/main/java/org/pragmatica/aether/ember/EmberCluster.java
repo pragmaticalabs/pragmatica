@@ -1162,12 +1162,7 @@ public final class EmberCluster {
         slotsByNodeId.put(nodeId.id(), slot);
         lastSlotByNodeId.put(nodeId.id(), slot);
         nodeInfos.put(nodeId.id(), info);
-        var allNodes = nodeInfos.values()
-                                .stream()
-                                .filter(info -> mintTimePeers.map(peers -> peers.contains(info.id().id()) || info.id()
-                                                                                                                 .equals(nodeId))
-                                                             .or(true))
-                                .collect(Collectors.toCollection(ArrayList::new));
+        var allNodes = configuredPeerList(nodeId, mintTimePeers);
         var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, false);
 
         nodes.put(nodeId.id(), node);
@@ -1176,6 +1171,17 @@ public final class EmberCluster {
                    .map(_ -> nodeId)
                    .onSuccess(_ -> log.info("Node {} joined the cluster",
                                             nodeId.id()));
+    }
+
+    /// The core list a new node is configured with: the full current list, or only `mintTimePeers` plus the node
+    /// itself (see [#addCoreNode(String, Set)]).
+    private List<NodeInfo> configuredPeerList(NodeId self, Option<Set<String>> mintTimePeers) {
+        return nodeInfos.values()
+                        .stream()
+                        .filter(peer -> mintTimePeers.map(ids -> ids.contains(peer.id().id()) || peer.id()
+                                                                                                     .equals(self))
+                                                     .or(true))
+                        .collect(Collectors.toCollection(ArrayList::new));
     }
 
     public Promise<Unit> killNode(String nodeIdStr) {
