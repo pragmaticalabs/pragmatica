@@ -371,6 +371,8 @@ class RabiaReorderedDeliveryTest {
                                         5_000);
             assertThat(cluster.machines.get(2).getProcessedCommands()).as("seed %s", seed)
                                                                        .containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
+            // The commands-applied predicate holds inside the task that also advances the phase; settle waits for it.
+            cluster.settle();
             assertThat(cluster.engines.get(2).currentPhaseForTesting().compareTo(slot.successor())).as("seed %s", seed).isPositive();
             cluster.stop();
         }
@@ -473,6 +475,8 @@ class RabiaReorderedDeliveryTest {
         lagging.processDecision(decisions.getFirst());
         cluster.pumpWithTimersUntil(() -> cluster.machines.get(2).getProcessedCommands().size() == 2, 5_000);
         assertThat(cluster.machines.get(2).getProcessedCommands()).containsExactlyElementsOf(cluster.machines.getFirst().getProcessedCommands());
+        // The commands-applied predicate holds inside the task that also advances the phase; settle waits for it.
+        cluster.settle();
         assertThat(lagging.currentPhaseForTesting()).isEqualTo(Phase.phase(slot.value() + 2));
         assertThat(lagging.isActive()).isTrue();
         assertThat(cluster.events.get(2)).as("the replica never published a passive edge")
