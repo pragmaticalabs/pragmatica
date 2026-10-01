@@ -18,8 +18,15 @@
 - **The quiesced 503 is distinguishable from the startup 503.** "Node quiesced: no quorum" versus the
   unchanged "Node starting, routes not yet synchronized". The old literal appears nowhere else in the repo
   (searched the whole tracked tree excluding `.m2-local`, `target`, `.git`: harness, tests, docs).
-- **Not covered:** the hosting-victim shape of #1790 — a node that hosts the slice is exempt from the quiesce
-  through the local fast path, so its 503s are a separate, still untraced cause.
+- **The hosting node keeps serving too.** `NodeDeploymentManager` mapped every PASSIVE to
+  `QuorumDisappeared`, which suspends slices and unpublishes their routes — clearing the registry the local
+  fast path reads, so a demoted node refused even the traffic it hosts until DRAIN. A demotion now leaves the
+  slices published; genuine quorum loss (including after a demotion) still suspends them.
+- **Not changed:** other PASSIVE consumers keep their behaviour for a leaving node. Two of them do tear down
+  serving state on a demotion: `ScheduledTaskManager` (QuorumDisappeared) and `OwnerActivation` (clears stream
+  partition activations). They are outside this fix's scope and are reported, not altered.
 - **Pinned** by `RabiaDemotionNotificationTest` (demotion not quorum loss; quorum loss as voter; quorum loss
-  while observing) and `AppHttpServerDemotionRoutingTest` (demotion forwards; genuine loss 503s with the new
-  text; loss after demotion quiesces); each reddens under a single-hunk mutation.
+  while observing), `AppHttpServerDemotionRoutingTest` (demotion forwards; genuine loss 503s with the new
+  text; loss after demotion quiesces) and four `NodeDeploymentManagerTest` cases (demotion does not unpublish
+  routes or stop processing slice commands; quorum loss, alone or after a demotion, suspends); each reddens under
+  a single-hunk mutation.

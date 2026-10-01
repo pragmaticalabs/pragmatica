@@ -559,7 +559,8 @@ public interface NodeDeploymentManager {
         // still suspends.
         private void dispatchPassive(ClusterStateNotification notification) {
             if (notification.demoted()) {
-                log.info("Node {} demoted to observer of a live quorum — keeping slices serving", ctx.self().id());
+                log.info("Node {} demoted to observer of a live quorum — keeping slices serving",
+                         ctx.self().id());
 
                 return;
             }
