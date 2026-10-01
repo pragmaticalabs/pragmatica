@@ -42,6 +42,7 @@ chmod +x "$WORK/bin/timeout"
 cat > "$WORK/bin/ssh" <<'STUB'
 #!/bin/bash
 ip="${*: -2:1}"; ip="${ip#*@}"
+[ -n "${SSH_LOG:-}" ] && echo "$ip" >> "$SSH_LOG"
 case " ${GONE_IPS:-} " in *" $ip "*) echo "ssh: connect to host $ip port 22: Connection timed out" >&2; exit 255 ;; esac
 echo "node-log $ip"
 STUB
@@ -215,10 +216,16 @@ if grep -q 'RC=0' "$WORK/demou/out" && grep -q 'SSH_CALLS=0' "$WORK/demou/out" &
     ok "D3 outside run-tests.sh (unarmed): the hook does nothing and returns 0"
 else fail "D3 out=$(head -c 200 "$WORK/demou/out")"; fi
 
-cloud_scenario demo2 body_demotion ENV_TYPE=cloud TWICE=1
-if [ "$(ls -d "$WORK"/demo2/failure-logs/03-scaling/Scale_down/*-demotion 2>/dev/null | wc -l | tr -d ' ')" = "1" ] && grep -q 'RC2=0' "$WORK/demo2/out"; then
-    ok "D4 once per test: a second call for the same test captures nothing more"
-else fail "D4 dirs=$(ls -d "$WORK"/demo2/failure-logs/03-scaling/Scale_down/* 2>/dev/null | wc -l)"; fi
+cloud_scenario demo2 body_demotion ENV_TYPE=cloud TWICE=1 SSH_LOG="$WORK/ssh.demo2"
+if [ "$(grep -c . "$WORK/ssh.demo2")" = "2" ] && grep -q 'RC2=0' "$WORK/demo2/out"; then
+    ok "D4 once per test: a second call for the same test reads no log (2 ssh calls over two invocations, one per victim)"
+else fail "D4 ssh calls=$(grep -c . "$WORK/ssh.demo2" 2>/dev/null) out=$(head -c 120 "$WORK/demo2/out")"; fi
+
+# D5: whatever the body does, the hook returns 0 and cannot end a `set -e` caller
+body_demotion_hardfail() { _capture_at_demotion_body() { return 7; }; set -e; capture_at_demotion x 1; echo "SURVIVED"; }
+cloud_scenario demof body_demotion_hardfail ENV_TYPE=cloud
+if grep -q 'SURVIVED' "$WORK/demof/out"; then ok "D5 a body that fails (rc 7) cannot fail the caller or end a set -e script"
+else fail "D5 out=$(head -c 160 "$WORK/demof/out")"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"
