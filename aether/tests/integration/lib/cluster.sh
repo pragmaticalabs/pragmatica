@@ -2388,11 +2388,12 @@ ${out_rules%,
                 return "$rc"
             fi
 
-            # apply-to-resource returns when the ACTION is accepted; wait (bounded) for applied_to to show the
-            # server so the partition is really in force before the caller's window starts. Not fatal: a slow
-            # apply only shortens the effective window, so it warns.
+            # apply-to-resource returns when the ACTION is accepted, not when applied_to shows the server. CONFIRM the
+            # partition is in force (bounded) or FAIL: a test that carries on with no partition in place passes
+            # vacuously. An unreadable describe is not confirmation either.
             if ! _cloud_fw_wait_applied "$fw_name" applied "${CLOUD_PARTITION_APPLY_TIMEOUT_S:-30}"; then
-                log_warn "cloud_partition_node: firewall '${fw_name}' (id ${fw_id}) shows no applied resource after ${CLOUD_PARTITION_APPLY_TIMEOUT_S:-30}s (count=${CLOUD_FW_LAST_COUNT:-?}); ${node_id} may not be partitioned yet"
+                log_fail "cloud_partition_node: partition firewall '${fw_name}' (id ${fw_id}) never applied to server ${sid} within ${CLOUD_PARTITION_APPLY_TIMEOUT_S:-30}s (applied_to count=${CLOUD_FW_LAST_COUNT:-?}); ${node_id} is NOT partitioned and the test would pass vacuously"
+                return 1
             fi
 
             # Record the id for cleanup (cloud_heal_partition reads this).
@@ -2417,12 +2418,14 @@ _cloud_fw_applied_count() {
     if command -v jq >/dev/null 2>&1; then
         printf '%s' "$json" | jq -r '(.applied_to // []) | length' 2>/dev/null || printf '?'
     else
-        printf '%s' "$json" | tr -d '\n' | grep -oE '"server"[[:space:]]*:[[:space:]]*\{' | wc -l | tr -d ' '
+        # grep -o exits 1 on ZERO matches, which under pipefail would fail this function (and kill a plain
+        # `c=$(...)` caller under set -e) exactly when the answer is the valid count 0.
+        printf '%s' "$json" | tr -d '\n' | { grep -oE '"server"[[:space:]]*:[[:space:]]*\{' || true; } | wc -l | tr -d ' '
     fi
 }
 
 # Wait (bounded, $SECONDS-based) until firewall <name>'s applied count satisfies <mode>: "empty" (== 0) or
-# "applied" (>= 1; an unreadable "?" returns at once, nothing to wait on). Returns 0 on success, 1 on timeout; the last count read is left in CLOUD_FW_LAST_COUNT. `hcloud firewall remove-from-resource` / `apply-to-resource` return when the
+# "applied" (>= 1; an unreadable "?" is not confirmation). Returns 0 on success, 1 on timeout; the last count read is left in CLOUD_FW_LAST_COUNT. `hcloud firewall remove-from-resource` / `apply-to-resource` return when the
 # ACTION is accepted, not when the firewall's applied_to has settled, and a delete in between fails with
 # resource_in_use (S-triple-prime: node-01m3thk11zaa0jzk5mym15q76x stayed partitioned for the rest of the run).
 CLOUD_FW_LAST_COUNT=""
@@ -2433,8 +2436,8 @@ _cloud_fw_wait_applied() {
         CLOUD_FW_LAST_COUNT=$(_cloud_fw_applied_count "$name")
         case "$mode" in
             empty)   [ "$CLOUD_FW_LAST_COUNT" = "0" ] && return 0 ;;
-            # "?" (unreadable) cannot be waited out; the caller treats it as unverifiable, not as a failure
-            applied) case "$CLOUD_FW_LAST_COUNT" in 0) ;; *) return 0 ;; esac ;;
+            # "?" (an unreadable describe) is NOT confirmation: keep polling, then time out
+            applied) case "$CLOUD_FW_LAST_COUNT" in ''|'?'|0) ;; *) return 0 ;; esac ;;
         esac
         [ "$SECONDS" -ge "$deadline" ] && return 1
         sleep "$poll"

@@ -14,7 +14,12 @@
 #   H5  firewall already gone                                              -> ok (idempotent), no detach attempted
 #   H6  resource_in_use forever                                            -> fails at the budget, id+server named
 #   A1  create path: applied_to shows the server only after 3 polls        -> _cloud_fw_wait_applied waits and succeeds
-#   A2  create path: applied_to never shows it                             -> times out (the caller warns, not fatal)
+#   A2  create path: applied_to never shows it                             -> the wait times out
+#   A3  create path: describe UNREADABLE                                   -> NOT confirmed (times out)
+#   A4  cloud_partition_node, apply never shows the server                 -> FAILS ("would pass vacuously"), not a warning
+#   A5  cloud_partition_node, describe unreadable after apply              -> FAILS
+#   A6  cloud_partition_node control: applied after 2 polls                -> succeeds
+#   J1  no-jq fallback run as a plain `c=$(...)` under set -euo pipefail, count 0 -> survives, prints 0
 #   Mutations: no wait (H2 red), no verify (H4 red), no resource_in_use retry (H1 red).   LIB_UNDER_TEST selects a copy.
 set -uo pipefail
 unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN
@@ -52,6 +57,7 @@ case "$1 $2" in
   "firewall describe")
     if [ "$(get exists 1)" != "1" ]; then echo "hcloud: firewall not found (not_found)" >&2; exit 1; fi
     if printf '%s' "$*" | grep -q -- '-o json'; then
+        [ -n "${DESCRIBE_JSON_FAILS:-}" ] && { echo "hcloud: api error" >&2; exit 1; }
         ca=$(get clear_after -1)
         if [ "$ca" -ge 0 ] 2>/dev/null; then
             if [ "$ca" -eq 0 ]; then set_ applied 0; set_ clear_after -1; else set_ clear_after $((ca - 1)); fi
@@ -78,6 +84,8 @@ case "$1 $2" in
     if [ "$iu" -gt 0 ] 2>/dev/null; then set_ inuse_n $((iu - 1)); echo "hcloud: firewall with ID 11713049 is still in use (resource_in_use)" >&2; exit 1; fi
     [ -n "${DELETE_NOOP:-}" ] || set_ exists 0
     exit 0 ;;
+  "firewall create") echo 1 > "$FW/exists"; exit 0 ;;
+  "firewall apply-to-resource") [ -n "${APPLY_AFTER_POLLS:-}" ] && echo "$APPLY_AFTER_POLLS" > "$FW/apply_after"; exit 0 ;;
   *) exit 0 ;;
 esac
 STUB
@@ -123,15 +131,54 @@ if [ "$(cat "$WORK/rc.h6")" = "1" ] && grep -q 'still resource_in_use after 2s' 
 else fail "H6 rc=$(cat "$WORK/rc.h6") out=$(tail -1 "$WORK/out.h6" | cut -c1-160)"; fi
 
 # A1/A2: the create path's wait
-a_run() {  # <label> <apply_after> <budget>
+a_run() {  # <label> <apply_after> <budget> [VAR=value ...]
     local fw="$WORK/fw.$1"; mkdir -p "$fw"; : > "$fw/calls"; echo 0 > "$fw/applied"; echo 1 > "$fw/exists"; echo "$2" > "$fw/apply_after"
-    ( export FW="$fw" PATH="$WORK/bin:$PATH" CLOUD_FW_POLL_S=0.2
-      source "$WORK/fns.sh"; _cloud_fw_wait_applied fw applied "$3" ) > "$WORK/out.$1" 2>&1; echo $? > "$WORK/rc.$1"
+    local label="$1" budget="$3"; shift 3
+    ( export FW="$fw" PATH="$WORK/bin:$PATH" CLOUD_FW_POLL_S=0.2 "$@"
+      source "$WORK/fns.sh"; _cloud_fw_wait_applied fw applied "$budget" ) > "$WORK/out.$label" 2>&1; echo $? > "$WORK/rc.$label"
 }
 a_run a1 3 5
 if [ "$(cat "$WORK/rc.a1")" = "0" ]; then ok "A1 create path: applied_to shows the server after 3 polls; the wait succeeds"; else fail "A1 rc=$(cat "$WORK/rc.a1")"; fi
 a_run a2 100000 1
 if [ "$(cat "$WORK/rc.a2")" = "1" ]; then ok "A2 create path: applied_to never shows the server; the wait times out (the caller warns)"; else fail "A2 rc=$(cat "$WORK/rc.a2")"; fi
+a_run a3 100000 1 DESCRIBE_JSON_FAILS=1
+if [ "$(cat "$WORK/rc.a3")" = "1" ]; then ok "A3 create path: an unreadable describe is NOT confirmation (times out)"; else fail "A3 rc=$(cat "$WORK/rc.a3")"; fi
+
+# A4-A6 drive the REAL cloud_partition_node (real libs sourced, fake hcloud, cloud_server_id/ports stubbed)
+p_run() {  # <label> [VAR=value ...]
+    local label="$1"; shift
+    local fw="$WORK/fw.$label"; mkdir -p "$fw"; : > "$fw/calls"; echo 0 > "$fw/applied"; echo 0 > "$fw/exists"
+    ( export FW="$fw" PATH="$WORK/bin:$PATH" CLOUD_FW_POLL_S=0.2 CLOUD_PARTITION_APPLY_TIMEOUT_S=2 HOME="$WORK" TARGET_HOST=localhost BOOTSTRAP_CLUSTER_NAME=test-b "$@"
+      source "${INTEG_DIR}/lib/common.sh" >/dev/null 2>&1; source "$LIB" >/dev/null 2>&1
+      cloud_server_id() { echo 777; }; _cloud_transport_ports() { echo "8090 8190"; }
+      cloud_partition_node nodeP ) > "$WORK/out.$label" 2>&1
+    echo $? > "$WORK/rc.$label"; rm -f /tmp/aether-partition-fw-nodeP.id
+}
+p_run a4
+if [ "$(cat "$WORK/rc.a4")" != "0" ] && grep -q 'never applied' "$WORK/out.a4" && grep -q 'would pass vacuously' "$WORK/out.a4"; then ok "A4 apply never shows the server: cloud_partition_node FAILS (would pass vacuously), not a warning"
+else fail "A4 rc=$(cat "$WORK/rc.a4") out=$(tail -2 "$WORK/out.a4" | cut -c1-140 | tr '\n' '|')"; fi
+p_run a5 DESCRIBE_JSON_FAILS=1
+if [ "$(cat "$WORK/rc.a5")" != "0" ] && grep -q 'never applied' "$WORK/out.a5"; then ok "A5 describe unreadable after apply: cloud_partition_node FAILS (unreadable is not applied)"
+else fail "A5 rc=$(cat "$WORK/rc.a5") out=$(tail -2 "$WORK/out.a5" | cut -c1-140 | tr '\n' '|')"; fi
+p_run a6 APPLY_AFTER_POLLS=2
+if [ "$(cat "$WORK/rc.a6")" = "0" ] && ! grep -q 'never applied' "$WORK/out.a6"; then ok "A6 control: applied after 2 polls, cloud_partition_node succeeds"
+else fail "A6 rc=$(cat "$WORK/rc.a6") out=$(tail -2 "$WORK/out.a6" | cut -c1-140 | tr '\n' '|')"; fi
+
+# J1: the no-jq fallback as a PLAIN assignment under set -euo pipefail. jq is hidden by a PATH holding only the tools
+# the function uses plus the fake hcloud; count 0 makes grep -o exit 1, which pipefail would turn into a failed caller.
+mkdir -p "$WORK/bin2"; for tool in tr grep wc sed cat awk sleep date; do ln -sf "$(command -v $tool)" "$WORK/bin2/$tool"; done
+cp "$WORK/bin/hcloud" "$WORK/bin2/hcloud"
+mkdir -p "$WORK/fw.j1"; echo 0 > "$WORK/fw.j1/applied"; echo 1 > "$WORK/fw.j1/exists"
+j1=$( FW="$WORK/fw.j1" PATH="$WORK/bin2" /bin/bash -c '
+    set -euo pipefail
+    command -v jq >/dev/null 2>&1 && { echo "JQ-VISIBLE"; exit 0; }
+    '"$(extract "$LIB" _cloud_fw_applied_count)"'
+    c=$(_cloud_fw_applied_count fw)
+    echo "ALIVE:${c}"' 2>&1 )
+if [ "$j1" = "ALIVE:0" ]; then ok "J1 the no-jq fallback survives a plain assignment under set -euo pipefail with count 0"
+else fail "J1 got '${j1}'"; fi
+rm -f /tmp/aether-partition-fw-nodeP.id
+
 rm -f /tmp/aether-partition-fw-nodeX.id
 
 echo "  passed: ${PASS}"
