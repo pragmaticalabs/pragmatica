@@ -21,6 +21,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.storage.StorageError;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +62,13 @@ public interface MavenProtocolHandler {
 
         public static MavenResponse serverError(String message) {
             return new MavenResponse(500, "text/plain", message.getBytes(StandardCharsets.UTF_8));
+        }
+
+        /// A passing condition (DHT churn, quorum or peer loss, timeout): the same request may succeed
+        /// if retried. The route layer adds `Retry-After` to every 503 it writes, so callers back off
+        /// instead of reading the answer as a server defect the way they read 500.
+        public static MavenResponse unavailable(String message) {
+            return new MavenResponse(503, "text/plain", message.getBytes(StandardCharsets.UTF_8));
         }
     }
 
@@ -158,8 +166,29 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                                  return MavenResponse.notFound("Artifact not found: " + ap.file().asString());
                              }
 
-                                 return MavenResponse.serverError(cause.message());
+                                 return failureResponse("GET",
+                                                        ap.file(),
+                                                        cause);
                              });
+    }
+
+    /// Transient causes answer 503 (retry), everything else 500 (defect). Every 5xx is WARN-logged
+    /// with its cause: the response body is routinely discarded by clients (`curl -o /dev/null`),
+    /// and a 500 that left no log line once cost a diagnosis its only evidence.
+    private static MavenResponse failureResponse(String operation, ArtifactFile file, Cause cause) {
+        if (isTransientFailure(cause)) {
+            log.warn("{} {} unavailable (answering 503, retryable): {}", operation, file.asString(), cause.message());
+
+            return MavenResponse.unavailable(cause.message());
+        }
+
+        log.warn("{} {} failed (answering 500): {}", operation, file.asString(), cause.message());
+
+        return MavenResponse.serverError(cause.message());
+    }
+
+    private static boolean isTransientFailure(Cause cause) {
+        return cause.isTransient() || cause instanceof StorageError.TierNotAdmitted;
     }
 
     private Promise<MavenResponse> handleGetMetadata(ParsedPath.MetadataPath mp) {
@@ -236,13 +265,20 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     /// each client's "uploaded" semantics still hold (the PUT they sent did write
     /// content to the store) and `ArtifactStore.deploy` is idempotent at the chunk
     /// level (content-addressed BlockIds).
+    ///
+    /// The existence check is also the write-once guard (#1778): a re-push of an existing file answers
+    /// "already-present" and keeps the stored bytes, even when the new content differs. So a FAILED
+    /// check is NOT "absent" — deploying past it would let churn replace stored content. The failure
+    /// takes the same exit as any other: transient -> 503 + Retry-After (no deploy), else 500.
     private Promise<MavenResponse> handlePutArtifact(ParsedPath.ArtifactPath ap, byte[] content) {
         return store.metadata(ap.file())
                     .flatMap(metaOpt -> metaOpt.map(meta -> buildAlreadyPresentResponse(ap.artifact(),
                                                                                         meta))
                                                .or(() -> deployAndBuildResponse(ap.file(),
                                                                                 content)))
-                    .recover(cause -> MavenResponse.serverError(cause.message()));
+                    .recover(cause -> failureResponse("PUT",
+                                                      ap.file(),
+                                                      cause));
     }
 
     private Promise<MavenResponse> buildAlreadyPresentResponse(Artifact artifact, ArtifactStore.ArtifactMetadata meta) {
