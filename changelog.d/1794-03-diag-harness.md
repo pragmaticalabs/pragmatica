@@ -11,5 +11,10 @@
 - **The Seed marker PUT records its response body** and retries once on 503 only (a 500 stays visible); the seed waits for the
   membership to settle (installed == target voters, member count == voter count). The false "7->5 removes the two CTM nodes"
   premise comment is corrected.
-  [verified: `aether/tests/integration/test/test-load-bodies-and-vm-capture.sh` B1, B2, D1-D4 and `test-scale-down-victims.sh`
+- **Run-level warnings reach the summaries.** `log_run_warning` records a warning in a per-run file that `print_summary`, the
+  end-of-run report and each suite's entry in `test-results.json` (`warnings`, `warning_texts`) carry; the seed's
+  membership-not-settled warning uses it. The demotion capture cannot add a FAIL, closes fd 7, kills an ssh that ignores
+  SIGTERM (`timeout -k`) and is reaped at the end of its test. `--max-time 5` makes the load's error-rate stricter than
+  earlier runs (a slow answer now counts as a 000), so rates are not comparable across that change.
+  [verified: `aether/tests/integration/test/test-load-bodies-and-vm-capture.sh` B1, B2, D1-D9, RW1-RW4 (test-cloud-helpers) and `test-scale-down-victims.sh`
   V6-V11, P1-P3, M1-M4; each pin reddens with its production hunk reverted. No cloud run.]
