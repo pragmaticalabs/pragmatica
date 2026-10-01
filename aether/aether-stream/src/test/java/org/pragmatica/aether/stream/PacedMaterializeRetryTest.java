@@ -167,19 +167,42 @@ class PacedMaterializeRetryTest {
 
             caughtUp.add("app#0");
             caughtUp.add("app#1");            // both slots free
-            for (var i = 0; i < StreamPartitionManager.PACED_REFUSAL_NONE_GRACE_TICKS + 2; i++) {
+            for (var i = 0; i < 2 * StreamPartitionManager.HELD_UNMATERIALIZED_WARN_TICKS; i++) {
                 manager.reconcileReshuffle();
             }
 
             assertThat(manager.hydrationSnapshot().materializeQueueDepth()).isEqualTo(0L);
+            assertThat(materialized(manager, 2)).as("a partition this node no longer holds is never materialized").isFalse();
+            assertThat(manager.heldUnmaterializedWarnings()).as("not held, so nothing to WARN about").isEqualTo(0L);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// v1809 probe p4: a NONE stretch far longer than any grace, returning with no registry edge (the committed owner
+    /// record moves the role immediately; the registry only follows on a reconcile pass).
+    @Test
+    void longNoneStretch_thenHeldAgainWithNoEdge_stillMaterializes() {
+        var manager = manager(64 * 1024 * 1024L);
+        try {
+            hold(Role.REPLICA, 0, 1, 2);
+            materializeOrFail(manager, 0);
+            materializeOrFail(manager, 1);
+            refuseAsPaced(manager, 2);
+
+            hold(Role.NONE, 2);
+            for (var i = 0; i < 3 * StreamPartitionManager.HELD_UNMATERIALIZED_WARN_TICKS; i++) {
+                manager.reconcileReshuffle();
+            }
             assertThat(materialized(manager, 2)).isFalse();
 
-            hold(Role.REPLICA, 2);            // held again long after the grace: the ledger entry is gone
+            hold(Role.OWNER, 2);
             for (var i = 0; i < 3; i++) {
                 manager.reconcileReshuffle();
             }
 
-            assertThat(materialized(manager, 2)).as("past the NONE grace the refusal is forgotten, not re-driven").isFalse();
+            assertThat(materialized(manager, 2)).as("level-triggered: a held, unmaterialized partition is re-driven whatever happened before")
+                                                 .isTrue();
         } finally {
             manager.close();
         }
@@ -216,8 +239,8 @@ class PacedMaterializeRetryTest {
             refuseAsPaced(manager, 2);
             materializeOrFail(manager, 3);
 
-            for (var i = 0; i < StreamPartitionManager.HELD_UNMATERIALIZED_WARN_TICKS - 1; i++) {
-                manager.reconcileReshuffle();
+            for (var i = 0; i < StreamPartitionManager.HELD_UNMATERIALIZED_WARN_TICKS; i++) {
+                manager.reconcileReshuffle();     // first seen on tick 1, so tick 12 is 11 ticks in
             }
             assertThat(manager.heldUnmaterializedWarnings()).as("no WARN before the threshold").isEqualTo(0L);
             assertThat(materialized(manager, 2)).isFalse();
