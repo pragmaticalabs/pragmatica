@@ -1366,7 +1366,8 @@ public interface AetherNode extends ManageableNode {
     /// and the ring is built here the moment the role resolves to OWNER/REPLICA. Materialize is idempotent
     /// (a ring built at hydrate time is a no-op) and runs before backfill so the recovered events have a
     /// ring to land in; a materialize failure is logged and backfill still attempts (the owner-append
-    /// safety valve is the backstop).
+    /// safety valve is the backstop). A PACED refusal is not lost with this log line: the manager queues it and
+    /// re-drives it on every reconcile tick until the ring exists (#1805).
     @Contract
     private static void materializeThenBackfill(StreamPartitionManager manager,
                                                 PartitionBackfill backfill,
