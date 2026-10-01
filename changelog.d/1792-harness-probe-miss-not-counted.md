@@ -10,5 +10,7 @@
   `_s19_resolve_survivor_ip` no longer prints its WARN on the stdout it is captured from.
 - **`cloud_heal_partition` detaches from the servers named by the firewall's own `applied_to`**, not via a node-to-IP lookup.
   `run_test` prints any counted `[FAIL]` it could not show.
+- **"No KV-writes after drain trigger" is a visible SKIP on cloud.** It returned 0 before asserting anything and was scored PASS
+  (its "no docker/SSH on cloud" reason was false). No journalctl check is implemented.
   [verified: `aether/tests/integration/test/test-chaos-harness.sh` E9, `test-cloud-helpers.sh` P1-P8,
-  `test-partition-heal-detach.sh` S1-S2; each pin reddens with its production hunk reverted. No cloud run.]
+  `test-partition-heal-detach.sh` S1-S2, `test-chaos-harness.sh` G10; each pin reddens with its production hunk reverted. No cloud run.]

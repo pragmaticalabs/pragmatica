@@ -1002,6 +1002,19 @@ g9_lines=$(sed -n 's/^SECTION_LINES=\([0-9]*\);$/\1/p' "$d/out")
 check "$d" "G9 the scenario section records the exit-code step through its disposition and names S20 by its enforced budget" \
     eval '[ "${g9_lines:-0}" -ge 8 ] && has "$d" "SKIP_TEST|Survivor exit codes are 2 (Runtime.halt(2))|GAP-A (cloud --runtime container)" && ! has "$d" "RUN_TEST|Survivor exit codes are 2" && has "$d" "RUN_TEST|Cluster recovers to 5 healthy cores within 600s of drain confirmation (S20, cloud full drain)|test_cluster_recovers_to_five_on_duty" && has "$d" "PRINT_SUMMARY"'
 
+# G10: the post-drain KV-write check is docker-log based. On cloud it must be a visible SKIP, not a PASS recorded
+# for a test that returned 0 before asserting anything (it used to: `return 0` after a log_info, scored PASS).
+case_record_kv() { _s19_record_no_kv_writes_step; echo "P=${TESTS_PASSED} F=${TESTS_FAILED} S=${TESTS_SKIPPED};"; }
+d=$(new_case); echo cloud > "$d/env"; tier2_setup "$d" jvm
+run_in "$d" "$SELF_DRAIN_SUITE" case_record_kv
+check "$d" "G10a cloud: 'No KV-writes after drain trigger' is recorded SKIPPED with an honest reason, not PASS (P=0 F=0 S=1)" \
+    eval 'has "$d" "P=0 F=0 S=1;" && has "$d" "log-based KV-write check not implemented for cloud runtimes" && ! has "$d" "no docker/SSH on cloud"'
+d=$(new_case); echo docker > "$d/env"; tier2_setup "$d" jvm
+printf 'test_no_kv_writes_after_drain_trigger() { echo RAN_KV_TEST; }\n' >> "$d/setup.sh"
+run_in "$d" "$SELF_DRAIN_SUITE" case_record_kv
+check "$d" "G10b control, docker: the step still RUNS the test (recorded PASS, P=1 F=0 S=0)" \
+    eval 'has "$d" "RAN_KV_TEST" && has "$d" "P=1 F=0 S=0;"'
+
 echo "== H. H4 CAUGHT_UP wait (test_identify_owner_and_caught_up_replica)"
 
 REPL_KEY="api_api_v1_streams_ns_repl-failover-events_1_replicas_0"

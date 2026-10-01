@@ -1098,16 +1098,9 @@ test_drain_trigger_log_signature_present() {
 }
 
 test_no_kv_writes_after_drain_trigger() {
-    # GAP-A / cross-cutting (cloud): this empirical check reads `docker logs` over SSH
-    # (verify_no_kv_writes_after_drain). On cloud there is no shared docker daemon and
-    # CTM-provisioned survivor VMs do not carry the operator SSH key, so docker-log
-    # inspection is impossible. The structural guarantee is already enforced at compile
-    # time by SelfDrainCoordinatorTest.noConsensusOrKvImports; skip the docker-log
-    # complement on cloud rather than fail on an unreachable SSH/docker call.
-    if [ "${CLOUD_MODE:-false}" = "true" ]; then
-        log_info "GAP-A (cloud): skipping post-drain docker-log KV-write negative check (no docker/SSH on cloud) — compile-time noConsensusOrKvImports remains the structural guarantee"
-        return 0
-    fi
+    # Docker only: the check reads `docker logs` (verify_no_kv_writes_after_drain). On cloud it is not
+    # run at all (_s19_record_no_kv_writes_step records a SKIP): an early `return 0` here was scored
+    # PASS with zero assertions.
     # Empirical complement to the compile-time assertion
     # `SelfDrainCoordinatorTest.noConsensusOrKvImports`. After the drain
     # signature line, the survivor MUST NOT log evidence of consensus/KV
@@ -1284,6 +1277,19 @@ _s19_exit_code_disposition() {
     echo "run"
 }
 
+# The post-drain KV-write check is docker-log based. On cloud it is a visible SKIP, never a PASS: a test
+# that returns 0 before asserting anything is scored PASS by run_test. The structural guarantee remains the
+# compile-time SelfDrainCoordinatorTest.noConsensusOrKvImports. (The old reason, "no docker/SSH on cloud",
+# was false: tier 2 SSHes to the same survivors. A journalctl-based check is not implemented.)
+_s19_record_no_kv_writes_step() {
+    local name="No KV-writes after drain trigger (negative assertion)"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        skip_test "$name" "log-based KV-write check not implemented for cloud runtimes (compile-time noConsensusOrKvImports remains the structural guarantee)"
+    else
+        run_test "$name" test_no_kv_writes_after_drain_trigger
+    fi
+}
+
 _s19_record_exit_code_step() {
     local name="Survivor exit codes are 2 (Runtime.halt(2))" disposition
     disposition=$(_s19_exit_code_disposition)
@@ -1417,7 +1423,7 @@ run_test "Survivors self-drain and exit within ${SURVIVOR_EXIT_BUDGET_S}s (S19)"
 run_test "Arm D: auto-heal state during the quorum-loss window" test_arm_d_autoheal_state_in_window
 _s19_record_exit_code_step
 run_test "Drain-trigger log signature present on survivors" test_drain_trigger_log_signature_present
-run_test "No KV-writes after drain trigger (negative assertion)" test_no_kv_writes_after_drain_trigger
+_s19_record_no_kv_writes_step
 run_test "$(_s20_test_label)" test_cluster_recovers_to_five_on_duty
 run_test "Arm D: auto-heal state after recovery" test_arm_d_autoheal_state_after_recovery
 print_summary
