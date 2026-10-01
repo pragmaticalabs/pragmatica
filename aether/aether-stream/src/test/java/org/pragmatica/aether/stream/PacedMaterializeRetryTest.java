@@ -18,6 +18,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.lang.Option;
 
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.IntStream;
 
@@ -35,7 +36,7 @@ class PacedMaterializeRetryTest {
     private static final int PARTITIONS = 8;
 
     private final ConcurrentHashMap<String, Role> roles = new ConcurrentHashMap<>();
-    private final java.util.Set<String> caughtUp = ConcurrentHashMap.newKeySet();
+    private final Set<String> caughtUp = ConcurrentHashMap.newKeySet();
 
     private static StreamConfig cfg() {
         var retention = RetentionPolicy.retentionPolicy(100, 64 * 1024L, 3_600_000L);

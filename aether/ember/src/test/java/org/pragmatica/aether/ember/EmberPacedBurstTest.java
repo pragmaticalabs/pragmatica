@@ -10,6 +10,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -95,7 +96,7 @@ class EmberPacedBurstTest {
         return cluster.allNodes().stream().allMatch(node -> viewOf(node) != null);
     }
 
-    private java.util.List<String> deferredByNode() {
+    private List<String> deferredByNode() {
         return cluster.allNodes()
                       .stream()
                       .filter(node -> viewOf(node) != null && viewOf(node).partitionsDeferred() > 0)
