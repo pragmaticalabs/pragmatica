@@ -98,7 +98,7 @@ test_seed_marker() {
     # member count equals the voter count, on two reads 2 s apart. Bounded; on timeout it warns and seeds anyway (the PUT
     # below records its body and retries once on 503), so a ring that never settles is attributed, not hidden.
     _seed_membership_settled "${SEED_MEMBERSHIP_SETTLE_S:-90}" \
-        || log_warn "test_seed_marker: membership not settled within ${SEED_MEMBERSHIP_SETTLE_S:-90}s (installed=[$(_cluster_voters installedVoters | tr '\n' ' ')] target=[$(_cluster_voters targetVoters | tr '\n' ' ')] members=$(cluster_member_count)) — seeding anyway"
+        || log_run_warning "test_seed_marker: membership not settled within ${SEED_MEMBERSHIP_SETTLE_S:-90}s (installed=[$(_cluster_voters installedVoters | tr '\n' ' ')] target=[$(_cluster_voters targetVoters | tr '\n' ' ')] members=$(cluster_member_count)) — seeding anyway"
 
     local status
     # Rotate to a live core before the write — the pinned CLUSTER_ENDPOINT may be a
@@ -160,7 +160,8 @@ test_scale_down_under_load() {
     scale_cluster 5
     # Evidence from every voter the scale-down removes, read while it still runs (it halts seconds after demotion and its
     # log was never available afterwards). Background, bounded, and unable to fail this test (see capture.sh).
-    ( capture_at_demotion "$voters_before" ) > /dev/null 2>&1 &
+    ( capture_at_demotion "$voters_before" ) > /dev/null 2>&1 7>&- &
+    local demotion_capture_pid=$!
     # Opt-in reproduction aid (default OFF, no-op): re-aim the load at a node that is leaving, preferring one that hosts the
     # load's slice. See lib/cluster.sh.
     scale_load_retarget_to_victim "$voters_before" "" "$ECHO_BLUEPRINT" > /dev/null
@@ -173,6 +174,9 @@ test_scale_down_under_load() {
     for pid in "${LOAD_PIDS[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
+
+    # The background capture is bounded by its own budget and ssh bounds; reap it anyway so no job outlives this test.
+    reap_bg_job "$demotion_capture_pid" "${DEMOTION_REAP_S:-15}"
 
     local result
     result=$(stop_load)

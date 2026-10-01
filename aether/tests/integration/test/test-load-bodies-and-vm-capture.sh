@@ -34,6 +34,7 @@ mkdir -p "$WORK/bin"
 # _cloud_running_vm_ips`. NO `_run_with_timeout` stub below: the tests use the real helper, so they walk the production path.
 cat > "$WORK/bin/timeout" <<'STUB'
 #!/bin/bash
+[ "$1" = "-k" ] && shift 2
 shift
 exec "$@"
 STUB
@@ -226,6 +227,68 @@ body_demotion_hardfail() { _capture_at_demotion_body() { return 7; }; set -e; ca
 cloud_scenario demof body_demotion_hardfail ENV_TYPE=cloud
 if grep -q 'SURVIVED' "$WORK/demof/out"; then ok "D5 a body that fails (rc 7) cannot fail the caller or end a set -e script"
 else fail "D5 out=$(head -c 160 "$WORK/demof/out")"; fi
+
+# D6 (N1): a log_fail raised INSIDE the capture must not add a [FAIL] to the test (HARNESS_FAIL_FILE=/dev/null, as _failcap_capture)
+body_demotion_logfail() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX"); export ENV_TYPE=cloud
+    _capture_at_demotion_body() { log_fail "inner failure"; }
+    local before; before=$(_harness_fail_lines); TEST_FAIL_COUNT=0
+    capture_at_demotion x 1
+    echo "DELTA=$(( $(_harness_fail_lines) - before )) TFC=${TEST_FAIL_COUNT} RC=$?"
+}
+cloud_scenario demolf body_demotion_logfail ENV_TYPE=cloud
+if grep -q 'DELTA=0 TFC=0 RC=0' "$WORK/demolf/out"; then ok "D6 a log_fail inside the demotion capture adds nothing to the fail file or the test's latch"
+else fail "D6 out=$(head -c 160 "$WORK/demolf/out")"; fi
+
+# D7 (N2a): fd 7 (the suite's saved stderr) is closed in the capture, so a background job cannot hold the suite's stderr pipe
+body_demotion_fd7() {
+    exec 7>&2
+    _capture_at_demotion_body() { if { true >&7; } 2>/dev/null; then echo FD7_OPEN; else echo FD7_CLOSED; fi > "$CAP_DIR/fd7"; }
+    capture_at_demotion x 1
+}
+cloud_scenario demofd body_demotion_fd7 ENV_TYPE=cloud
+if [ "$(cat "$WORK/demofd/fd7" 2>/dev/null)" = "FD7_CLOSED" ]; then ok "D7 the capture runs with fd 7 closed (it would otherwise hold the suite's stderr pipe)"
+else fail "D7 fd7=$(cat "$WORK/demofd/fd7" 2>/dev/null)"; fi
+
+# D8 (N2b): an ssh that IGNORES SIGTERM is still bounded (timeout -k): ssh-bound 1s + kill grace 1s, never forever
+mkdir -p "$WORK/bin-realtimeout"
+cat > "$WORK/bin-realtimeout/ssh" <<'STUB'
+#!/bin/bash
+trap '' TERM
+while :; do sleep 1; done
+STUB
+chmod +x "$WORK/bin-realtimeout/ssh"
+body_demotion_hang() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX"); export ENV_TYPE=cloud; TEST_TAG=Scale_down
+    echo 0 > "$CAP_DIR/vcalls"
+    _cluster_voters() { local n; n=$(( $(cat "$CAP_DIR/vcalls") + 1 )); echo "$n" > "$CAP_DIR/vcalls"
+        if [ "$n" -le 1 ]; then printf 'node-1\nnode-6\n'; else printf 'node-1\n'; fi; }
+    cloud_public_ip() { echo 6.6.6.6; }
+    DEMOTION_CAPTURE_POLL_INTERVAL_S=0.1
+    local t0=$SECONDS
+    capture_at_demotion $'node-1\nnode-6' 10
+    echo "ELAPSED=$(( SECONDS - t0 ))"
+}
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+    cloud_scenario demohang body_demotion_hang ENV_TYPE=cloud PATH="$WORK/bin-realtimeout:$PATH" FAILCAP_SSH_TIMEOUT_S=1 TIMEOUT_KILL_GRACE_S=1
+    el=$(sed -n 's/^ELAPSED=//p' "$WORK/demohang/out")
+    if [ -n "$el" ] && [ "$el" -le 8 ]; then ok "D8 an ssh that ignores SIGTERM is killed after the grace: the capture ended in ${el}s (bound 1s + grace 1s)"
+    else fail "D8 elapsed=[${el}] out=$(head -c 160 "$WORK/demohang/out")"; fi
+    pkill -KILL -f "$WORK/bin-realtimeout/ssh" 2>/dev/null
+else ok "D8 (skipped: no timeout/gtimeout binary on this host; the fallback loop kills -9)"; fi
+
+# D9 (N2c): reap_bg_job ends a job that ignores SIGTERM within its bound (+ the kill step)
+body_reap() {
+    ( trap '' TERM; while :; do sleep 1; done ) &
+    local pid=$!
+    local t0=$SECONDS
+    reap_bg_job "$pid" 2
+    local alive=no; kill -0 "$pid" 2>/dev/null && alive=yes
+    echo "REAP alive=${alive} elapsed=$(( SECONDS - t0 ))"
+}
+cloud_scenario reap body_reap
+if grep -q 'REAP alive=no elapsed=[0-5]$' "$WORK/reap/out"; then ok "D9 reap_bg_job: a job ignoring SIGTERM is gone within its bound (2s) plus the kill step"
+else fail "D9 out=$(head -c 160 "$WORK/reap/out")"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"

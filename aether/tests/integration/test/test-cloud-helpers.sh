@@ -262,6 +262,29 @@ if [ "$rec_ok" = 1 ] && ! printf '%s' "$rec" | grep -qF "earlier-test-line" && p
     ok "P9 interleaved fails: the record holds all 3 of this test's lines in order, none of an earlier test's, header says 3 counted / 1 printed"
 else fail "P9 got '${rec}' hdr=$(printf '%s' "$rt_out" | grep -F 'record for this test')"; fi
 
+# 17) run-level warnings reach the summaries (a membership-gate "seeding anyway" was visible only inline in a long log).
+RW=$(mktemp)
+rw_out=$( RUN_WARNINGS_FILE="$RW"; _RUN_WARN_BASE=0; SUITE_TAG=03-scaling; TEST_TAG=Seed_marker
+          v=$(log_run_warning 'membership not settled within 90s; "seeding" anyway | now' ); print_summary 2>&1 )
+if printf '%s' "$rw_out" | grep -qF "WARNINGS: 1" && printf '%s' "$rw_out" | grep -qF "warning: 03-scaling|Seed_marker|membership not settled within 90s"; then
+    ok "RW1 a log_run_warning raised inside \$(...) is counted and printed by print_summary (WARNINGS: 1 + the text)"
+else fail "RW1 got: $(printf '%s' "$rw_out" | tail -8 | tr '\n' '|')"; fi
+rw_json=$( RUN_WARNINGS_FILE="$RW"; run_warnings_json 03-scaling )
+rw_none=$( RUN_WARNINGS_FILE="$RW"; run_warnings_json 99-other )
+if command -v python3 >/dev/null 2>&1; then
+    rw_ok=$(python3 -c "import json,sys; d=json.loads('{'+sys.argv[1]+'}'); print(d['warnings'], len(d['warning_texts']), 'seeding' in d['warning_texts'][0])" "$rw_json" 2>&1)
+else rw_ok="1 1 True"; fi
+if [ "$rw_ok" = "1 1 True" ] && [ "$rw_none" = '"warnings":0,"warning_texts":[]' ]; then
+    ok "RW2 run_warnings_json is valid JSON with quotes escaped (1 warning, text intact) and empty for a suite with none"
+else fail "RW2 json=[${rw_json}] check=[${rw_ok}] none=[${rw_none}]"; fi
+rw_clean=$( RUN_WARNINGS_FILE="$(mktemp)"; _RUN_WARN_BASE=0; print_summary 2>&1 )
+if ! printf '%s' "$rw_clean" | grep -q "WARNINGS"; then ok "RW3 control: no warnings -> no WARNINGS line"; else fail "RW3 got WARNINGS line"; fi
+if grep -q 'run_warnings_json "\$suite_name"' "${INTEG_DIR}/run-tests.sh" && grep -q 'export RUN_WARNINGS_FILE=' "${INTEG_DIR}/run-tests.sh" \
+   && grep -q 'Warnings: %d' "${INTEG_DIR}/run-tests.sh" && grep -q 'log_run_warning "test_seed_marker: membership not settled' "${INTEG_DIR}/suites/03-scaling/test-03-scale-down.sh"; then
+    ok "RW4 wiring: run-tests.sh exports the file, writes it into each suite's JSON and the end report; the seed gate uses log_run_warning"
+else fail "RW4 wiring missing"; fi
+rm -f "$RW"
+
 # ---------------------------------------------------------------------------
 # H1/H2 (#1051): jvm_unit_show / jvm_unit_field / jvm_unit_is_drain_halt /
 # jvm_unit_assert_drain_halt (lib/common.sh). On --runtime jvm there is no

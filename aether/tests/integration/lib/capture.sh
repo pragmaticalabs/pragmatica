@@ -284,7 +284,10 @@ _failcap_on_fail_body() {
 # Armed only inside run-tests.sh (SUITE_FAILCAP_DIR), once per test, capped per suite; writes NOTHING to stdout/stderr
 # (notes file only) and can never fail the caller: thin wrapper `body || true`, as #1768's hooks. Callers background it.
 FAILCAP_MAX_DEMOTION="${FAILCAP_MAX_DEMOTION:-3}"
-capture_at_demotion() { _capture_at_demotion_body "$@" > /dev/null 2>&1 || true; return 0; }
+# Runs in a subshell with HARNESS_FAIL_FILE=/dev/null (a log_fail inside it must not add a [FAIL] to the test, as in
+# _failcap_capture) and with stdio AND fd 7 (generation.sh's saved stderr) closed, so a background job never holds the
+# suite's stderr pipe open after the suite is done.
+capture_at_demotion() { ( HARNESS_FAIL_FILE=/dev/null; _capture_at_demotion_body "$@" ) > /dev/null 2>&1 7>&- || true; return 0; }
 _capture_at_demotion_body() {
     local before="${1:-}" budget="${2:-${DEMOTION_CAPTURE_POLL_S:-60}}" deadline now removed id ip n
     _failcap_armed || return 0
@@ -324,7 +327,7 @@ _capture_at_demotion_body() {
         fi
         (
             rc=0
-            _run_with_timeout "$bound" ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY:-/dev/null}" "${CLOUD_SSH_USER:-root}@${ip}" \
+            _run_with_timeout_kill "$bound" ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY:-/dev/null}" "${CLOUD_SSH_USER:-root}@${ip}" \
                 "hostname; timeout ${CLOUD_CAPTURE_REMOTE_TIMEOUT_S:-25} ${remote_cmd}" > "${dir}/voter-${id}.log" 2>&1 || rc=$?
             printf 'voter %s (%s) rc=%s lines=%s\n' "$id" "$ip" "$rc" "$(wc -l < "${dir}/voter-${id}.log" | tr -d ' ')" >> "${dir}/capture-manifest.txt" 2>/dev/null || true
         ) &
