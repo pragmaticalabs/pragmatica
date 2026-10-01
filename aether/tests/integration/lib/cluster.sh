@@ -437,41 +437,105 @@ _app_endpoint_for_node() {
     return 0
 }
 
+# PUT a file to <url> (octet-stream, API key), recording the response body in <body file> (never /dev/null). Prints the
+# final HTTP status. ONE retry, on 503 only (the designed transient refusal); a 500 is a recovered store failure and is
+# NOT retried, so the defect it signals stays visible. Every non-200 answer is warned with its body (stderr).
+put_artifact_retry_503() {
+    local file="$1" url="$2" body_file="$3" attempt status
+    for attempt in 1 2; do
+        status=$(curl -sk -o "$body_file" -w "%{http_code}" -X PUT -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/octet-stream" --data-binary "@${file}" "$url")
+        [ "$status" = "200" ] && break
+        log_warn "PUT ${url} attempt ${attempt} answered ${status}; body: $(head -c 500 "$body_file" 2>/dev/null | tr '\n' ' ')" >&2
+        { [ "$status" = "503" ] && [ "$attempt" -lt 2 ]; } || break
+        sleep "${PUT_RETRY_DELAY_S:-3}"
+    done
+    printf '%s' "$status"
+}
+
+# Wait (bounded) until the membership has settled: installedVoters == targetVoters and the member count equals the voter
+# count, on two consecutive reads a poll apart. <budget seconds>. rc 0 settled, 1 not within the budget.
+_seed_membership_settled() {
+    local budget="${1:-90}" deadline inst tgt members stable=0
+    deadline=$(( SECONDS + budget ))
+    while :; do
+        inst=$(_cluster_voters installedVoters | tr '\n' ' ')
+        tgt=$(_cluster_voters targetVoters | tr '\n' ' ')
+        members=$(cluster_member_count)
+        if [ -n "$inst" ] && [ "$inst" = "$tgt" ] && [ "$members" = "$(printf '%s' "$inst" | wc -w | tr -d ' ')" ]; then
+            stable=$((stable + 1))
+            [ "$stable" -ge 2 ] && return 0
+        else
+            stable=0
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && return 1
+        sleep "${SEED_SETTLE_POLL_S:-2}"
+    done
+}
+
 # One INFO line per scale-down step: who left, and whether the load target was among them. <members before> <members
 # after> <load endpoint>. Records only; it never steers.
 log_scale_down_step() {
-    local before="$1" after="$2" endpoint="$3" removed id target_id="" m victim="no"
+    local before="$1" after="$2" endpoint="$3" hosts="${4:-}" removed id target_id="" m victim="no" hosts_slice="unknown" host_victim="unknown"
     removed=$(_id_set_difference "$before" "$after")
     for m in $before; do
         [ "$(_app_endpoint_for_node "$m")" = "$endpoint" ] && { target_id="$m"; break; }
     done
     for id in $removed; do [ "$id" = "$target_id" ] && victim="yes"; done
     [ -n "$target_id" ] || victim="unknown"
-    log_info "scale-down step: members before=[$(printf '%s' "$before" | tr '\n' ' ')] after=[$(printf '%s' "$after" | tr '\n' ' ')] removed=[$(printf '%s' "$removed" | tr '\n' ' ')]; load target=${endpoint} (node ${target_id:-<unresolved>}); load target was a victim: ${victim}"
+    # <hosts> (optional 4th): the nodes hosting the load's slice when the scale-down started. Whether the TARGET hosts it,
+    # and whether ANY host was a victim (#1790's shape: the node that hosts the route is the one demoted).
+    if [ -n "$hosts" ]; then
+        host_victim="no"
+        for id in $removed; do case " $(printf '%s' "$hosts" | tr '\n' ' ') " in *" $id "*) host_victim="yes" ;; esac; done
+        if [ -n "$target_id" ]; then
+            hosts_slice="no"
+            case " $(printf '%s' "$hosts" | tr '\n' ' ') " in *" ${target_id} "*) hosts_slice="yes" ;; esac
+        fi
+    fi
+    log_info "scale-down step: members before=[$(printf '%s' "$before" | tr '\n' ' ')] after=[$(printf '%s' "$after" | tr '\n' ' ')] removed=[$(printf '%s' "$removed" | tr '\n' ' ')]; load target=${endpoint} (node ${target_id:-<unresolved>}); load target was a victim: ${victim}; load target hosts slice: ${hosts_slice}; slice hosts=[$(printf '%s' "$hosts" | tr '\n' ' ')], a slice host was a victim: ${host_victim}"
 }
 
 # OPT-IN (SCALE_LOAD_TARGET_VICTIM=1, default OFF): re-aim the running load generator at a node that is being removed,
 # so the 03 defect is reproducible on demand. Victims are chosen by the product at the scale-down pass, so the harness
 # waits for the electorate to shrink (the removed nodes leave targetVoters within a fraction of a second of the pass)
 # and then points the load at one of them through the override file start_load's loop reads every tick. Flag off: this
-# does nothing at all. <voters before> [poll seconds]. Prints the chosen victim id, or nothing.
+# does nothing at all. <voters before> [poll seconds] [slice coords]. Prints the chosen victim id, or nothing.
+# With slice coords the choice PREFERS a removed voter that HOSTS the load's slice (the current owner first when it is a
+# victim): #1790's shape is the node that hosts the route being demoted, and a victim that hosts nothing answers by
+# forwarding, which does not exercise it. Without coords, or when no victim hosts it, the first removed voter with a
+# derivable endpoint (the previous behaviour).
 scale_load_retarget_to_victim() {
     [ "${SCALE_LOAD_TARGET_VICTIM:-0}" = "1" ] || return 0
-    local before="$1" budget="${2:-${SCALE_VICTIM_POLL_S:-15}}" deadline now v ep removed
+    local before="$1" budget="${2:-${SCALE_VICTIM_POLL_S:-15}}" coords="${3:-}" deadline now v ep removed hosts="" ordered h hosts_slice
     deadline=$(( SECONDS + budget ))
     while :; do
         now=$(_cluster_voters targetVoters)
         [ -n "$now" ] || now=$(_cluster_voters installedVoters)
         removed=$(_id_set_difference "$before" "$now")
-        for v in $removed; do
-            ep=$(_app_endpoint_for_node "$v")
-            if [ -n "$ep" ]; then
-                printf '%s' "$ep" > "/tmp/load_endpoint_override_$$"
-                log_info "SCALE_LOAD_TARGET_VICTIM=1: re-aiming the load at victim ${v} (${ep}); removed from the electorate: [$(printf '%s' "$removed" | tr '\n' ' ')]" >&2
-                printf '%s' "$v"
-                return 0
-            fi
-        done
+        if [ -n "$removed" ]; then
+            ordered=""
+            hosts=""
+            [ -n "$coords" ] && hosts=$(slice_hosts_for "$coords" all 2>/dev/null || true)
+            for h in $hosts; do
+                case " $(printf '%s' "$removed" | tr '\n' ' ') " in *" $h "*) ordered="${ordered} ${h}" ;; esac
+            done
+            for v in $removed; do
+                case " ${ordered} " in *" ${v} "*) ;; *) ordered="${ordered} ${v}" ;; esac
+            done
+            for v in $ordered; do
+                ep=$(_app_endpoint_for_node "$v")
+                if [ -n "$ep" ]; then
+                    hosts_slice="no"
+                    [ -z "$coords" ] && hosts_slice="unknown"
+                    case " $(printf '%s' "$hosts" | tr '\n' ' ') " in *" ${v} "*) hosts_slice="yes" ;; esac
+                    printf '%s' "$ep" > "/tmp/load_endpoint_override_$$"
+                    log_info "SCALE_LOAD_TARGET_VICTIM=1: re-aiming the load at ${v} (${ep}); victim: yes, hosts slice: ${hosts_slice}; removed from the electorate: [$(printf '%s' "$removed" | tr '\n' ' ')]; slice hosts: [$(printf '%s' "$hosts" | tr '\n' ' ')]" >&2
+                    printf '%s' "$v"
+                    return 0
+                fi
+            done
+        fi
         [ "$SECONDS" -ge "$deadline" ] && break
         sleep "${SCALE_VICTIM_POLL_INTERVAL_S:-0.5}"
     done
@@ -1358,11 +1422,15 @@ slices_total_instances() {
 # `org:test-persistence:1.0.0` shares the `org:test-persistence` prefix with the slice
 # artifact `org:test-persistence-persistence-slice:1.0.0`; matching on the
 # `${coords%:*}` (group:artifact) prefix catches both forms.
-slice_owner_for() {
-    local coords="$1"
+slice_owner_for() { slice_hosts_for "$1"; }
+
+# Nodes hosting an ACTIVE instance of the slice, one per line, in the order the slices API lists them (the first is what
+# slice_owner_for returns). <coords> [all]: without "all" only the first host is printed.
+slice_hosts_for() {
+    local coords="$1" all="${2:-}"
     local prefix="${coords%:*}"
     cluster_slices \
-        | awk -v prefix="$prefix" '
+        | awk -v prefix="$prefix" -v all="$all" '
             BEGIN { in_match = 0; pending_node = "" }
             # Track when we enter a slice block whose artifact matches the prefix.
             /"artifact"[[:space:]]*:[[:space:]]*"/ {
@@ -1383,7 +1451,8 @@ slice_owner_for() {
             }
             in_match && pending_node != "" && /"state"[[:space:]]*:[[:space:]]*"ACTIVE"/ {
                 print pending_node
-                exit 0
+                if (all == "") exit 0
+                pending_node = ""
             }
             # Reset pending_node when we cross to the next instance without ACTIVE.
             in_match && /"state"[[:space:]]*:[[:space:]]*"/ {

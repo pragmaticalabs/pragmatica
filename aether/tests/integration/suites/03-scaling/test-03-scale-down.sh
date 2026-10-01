@@ -23,9 +23,10 @@ MARKER_PUSH_FILE="${TMPDIR}/aether-test-03-marker-$$.bin"
 MARKER_SHA_FILE="${TMPDIR}/aether-test-03-marker-$$.sha"
 MARKER_PATH_FILE="${TMPDIR}/aether-test-03-marker-$$.path"
 MARKER_RESOLVE_FILE="${TMPDIR}/aether-test-03-marker-$$.resolved.bin"
+MARKER_PUT_BODY_FILE="${TMPDIR}/aether-test-03-marker-$$.put-body"
 
 cleanup_marker() {
-    rm -f "$MARKER_PUSH_FILE" "$MARKER_SHA_FILE" "$MARKER_PATH_FILE" "$MARKER_RESOLVE_FILE"
+    rm -f "$MARKER_PUSH_FILE" "$MARKER_SHA_FILE" "$MARKER_PATH_FILE" "$MARKER_RESOLVE_FILE" "$MARKER_PUT_BODY_FILE"
 }
 trap cleanup_marker EXIT
 
@@ -91,16 +92,22 @@ test_seed_marker() {
     local marker_path="/repository/org/test/scale-down-marker/${marker_version}/marker.bin"
     printf '%s' "$marker_path" > "$MARKER_PATH_FILE"
 
+    # Gate on MEMBERSHIP settled, not only generation quiescence: the previous suite's scale-up nodes depart PHYSICALLY after
+    # the voter count has already flipped (S-triple-prime: the marker PUT, 6 s after Restore_to_5 reported 5 nodes, answered
+    # 500 while the DHT ring was still dropping a departing replica). Settled = installedVoters == targetVoters and the
+    # member count equals the voter count, on two reads 2 s apart. Bounded; on timeout it warns and seeds anyway (the PUT
+    # below records its body and retries once on 503), so a ring that never settles is attributed, not hidden.
+    _seed_membership_settled "${SEED_MEMBERSHIP_SETTLE_S:-90}" \
+        || log_warn "test_seed_marker: membership not settled within ${SEED_MEMBERSHIP_SETTLE_S:-90}s (installed=[$(_cluster_voters installedVoters | tr '\n' ' ')] target=[$(_cluster_voters targetVoters | tr '\n' ' ')] members=$(cluster_member_count)) — seeding anyway"
+
     local status
     # Rotate to a live core before the write — the pinned CLUSTER_ENDPOINT may be a
     # node killed/scaled by a prior step (mirrors the read path in No_data_loss).
     _refresh_mgmt_entry_point || true
-    status=$(curl -sk -o /dev/null -w "%{http_code}" \
-        -X PUT \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/octet-stream" \
-        --data-binary "@${MARKER_PUSH_FILE}" \
-        "${CLUSTER_ENDPOINT}${marker_path}")
+    # The response body is RECORDED (it used to go to /dev/null, so the 500 was unattributable). ONE retry, on 503 only
+    # (the designed transient refusal: not-admitted / retry later). A 500 is a recovered store failure and is NOT retried:
+    # retrying it would mask exactly the defect this step can find.
+    status=$(put_artifact_retry_503 "$MARKER_PUSH_FILE" "${CLUSTER_ENDPOINT}${marker_path}" "$MARKER_PUT_BODY_FILE")
     # 200 (not 201): a stored artifact PUT returns the deploy JSON ("uploaded"/"already-present"),
     # same as .jar PUTs. The old 201 reflected the now-fixed bug where non-.jar PUTs were discarded.
     assert_eq "$status" "200" "Marker PUT stored, returned 200 (sha=${push_sha:0:12}…)"
@@ -130,18 +137,20 @@ test_scale_down_under_load() {
     # /api/echo/health until routed (positive readiness). Without this the load hits
     # the dead LB port (LB_PORT=9090, LB module removed) and EVERY request fails — a
     # false 100% error rate that has nothing to do with scale-down drain. Mirrors
-    # 02-chaos/test-kill-under-load.sh. The 7->5 scale-down removes the two
-    # CTM-provisioned nodes (6,7), so a retarget to any surviving seed stays valid
-    # throughout the load window.
+    # 02-chaos/test-kill-under-load.sh. WHICH nodes the 7->5 scale-down removes is the product's choice at the
+    # scale-down pass, NOT fixed to the two CTM-provisioned nodes: S-triple-prime (and 0120Z) removed the SEEDS core-3 and
+    # core-4 and kept both CTM nodes, and the retargeted slice owner (core-4) was a victim. So nothing here may assume the
+    # pinned owner survives; the load re-resolves the owner after 3 consecutive failures (start_load's 6th argument).
     retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "scale-down-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
     # Record who is in the cluster and who votes BEFORE the scale-down, so the step line below can say whether the
     # load target was a victim. Recording only: nothing here steers the load unless SCALE_LOAD_TARGET_VICTIM=1.
-    local members_before voters_before load_target
+    local members_before voters_before load_target slice_hosts_before
     members_before=$(cloud_running_cores | sort)
     voters_before=$(_cluster_voters installedVoters)
     load_target="${APP_ENDPOINT}"
+    slice_hosts_before=$(slice_hosts_for "$ECHO_BLUEPRINT" all) || slice_hosts_before=""
 
     start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health" "" "$ECHO_BLUEPRINT"
     sleep 5
@@ -149,12 +158,16 @@ test_scale_down_under_load() {
     # Scale down to 5
     log_info "Scaling down to 5 under load"
     scale_cluster 5
-    # Opt-in reproduction aid (default OFF, no-op): re-aim the load at a node that is leaving. See lib/cluster.sh.
-    scale_load_retarget_to_victim "$voters_before" > /dev/null
+    # Evidence from every voter the scale-down removes, read while it still runs (it halts seconds after demotion and its
+    # log was never available afterwards). Background, bounded, and unable to fail this test (see capture.sh).
+    ( capture_at_demotion "$voters_before" ) > /dev/null 2>&1 &
+    # Opt-in reproduction aid (default OFF, no-op): re-aim the load at a node that is leaving, preferring one that hosts the
+    # load's slice. See lib/cluster.sh.
+    scale_load_retarget_to_victim "$voters_before" "" "$ECHO_BLUEPRINT" > /dev/null
 
     # Wait for scale-down (fast poll — see test-02-scale-up.sh comment)
     wait_for_node_count_fast 5 180
-    log_scale_down_step "$members_before" "$(cloud_running_cores | sort)" "$([ -s "/tmp/load_endpoint_override_$$" ] && cat "/tmp/load_endpoint_override_$$" || printf '%s' "$load_target")"
+    log_scale_down_step "$members_before" "$(cloud_running_cores | sort)" "$([ -s "/tmp/load_endpoint_override_$$" ] && cat "/tmp/load_endpoint_override_$$" || printf '%s' "$load_target")" "$slice_hosts_before"
 
     # Wait for load to complete
     for pid in "${LOAD_PIDS[@]}"; do

@@ -11,6 +11,9 @@
 #   C2  a remembered VM that is gone and unreachable is logged as GONE in the manifest, and the rest are captured
 #   C3  control: a registry left by a PREVIOUS run is forgotten at suite start (its VM is not captured)
 #   C4  wiring: run_test and run_suite remember/forget the VM set
+#   B1  the suite-end capture KEEPS this run's load-failure bodies (its stale-clear used to delete them)
+#   B2  a 000 after a 503-with-body has an EMPTY detail (scratch truncated per tick); curl is bounded (--connect-timeout/--max-time)
+#   D1-D4  the logs of every voter removed by a scale-down are captured at demotion, bounded, once per test, never failing
 #   Mutations: dropping the body capture reddens L1/L2; ignoring the registry reddens C1 and C2; going back to
 #   `_run_with_timeout _cloud_running_vm_ips` (a function under a real `timeout`) reddens C1-C3.
 #   INTEG_DIR_UNDER_TEST=<path> selects another copy of aether/tests/integration.
@@ -132,6 +135,90 @@ if grep -q 'capture_remember_vms "\${CLUSTER_ID:-a}"' "${INTEG_DIR}/lib/common.s
    && grep -q 'capture_forget_vms "\$target_cluster"' "${INTEG_DIR}/run-tests.sh" && grep -q 'capture_remember_vms "\$target_cluster"' "${INTEG_DIR}/run-tests.sh"; then
     ok "C4 wiring: run_test remembers the VM set at every test start; run_suite forgets then remembers at suite start"
 else fail "C4 wiring missing in common.sh run_test or run-tests.sh run_suite"; fi
+
+# ---- 03 diagnostics hardening (round: fix/03-diag-harness) -----------------------------------------------------------
+# B1: the suite-end capture's stale-clear deleted load-failures-<test>.log (written by stop_load just before it).
+body_persist_then_capture() {
+    local d="$AETHER_FAILURE_LOGS_DIR/03-scaling"
+    mkdir -p "$d"
+    printf 'x\n' > "$d/vm-9.9.9.9.log"                                   # a stale node log of an earlier run
+    printf 'old\tbody\n' > "$d/load-failures-OldTest.log"; touch -t 202001010000 "$d/load-failures-OldTest.log"  # earlier run's bodies
+    source "$INTEG_DIR/lib/load.sh" > /dev/null 2>&1
+    printf '2026-10-01T00:00:00Z\t503\thttp://h:8070/api/echo/health\t{"detail":"Quorum disappeared"}\n' > "/tmp/load_failure_bodies_$$.txt"
+    SUITE_TAG=03-scaling TEST_TAG=Scale_down _load_persist_failure_bodies > /dev/null 2>&1
+    printf '1.1.1.1\n' > "$CAP_DIR/listed"
+    capture_forget_vms b 03-scaling; capture_remember_vms b 03-scaling
+    capture_node_logs 03-scaling b 1700000000 > /dev/null 2>&1               # the suite-end capture (no out_dir)
+}
+cloud_scenario persist body_persist_then_capture
+D="$WORK/persist/failure-logs/03-scaling"
+if grep -q 'Quorum disappeared' "$D/load-failures-Scale_down.log" 2>/dev/null && [ -s "$D/vm-1.1.1.1.log" ] \
+   && [ ! -e "$D/vm-9.9.9.9.log" ] && [ ! -e "$D/load-failures-OldTest.log" ]; then
+    ok "B1 the suite-end capture KEEPS this run's load-failure bodies, still clears stale node logs and an earlier run's bodies"
+else fail "B1 files=$(ls "$D" 2>/dev/null | tr '\n' ' ') out=$(head -c 200 "$WORK/persist/out")"; fi
+
+# B2: a 000 (no answer) after a 503-with-body must not inherit the 503's body; curl is bounded
+cat > "$WORK/bin/curl-seq" <<'STUB'
+#!/bin/bash
+out=""; args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do [ "${args[$i]}" = "-o" ] && out="${args[$((i + 1))]}"; done
+echo "$*" >> "$ARGS_LOG"
+n=$(( $(cat "$CALLS" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS"
+if [ "$n" -eq 1 ]; then printf '{"detail":"Quorum disappeared"}' > "$out"; printf '503'; else printf '000'; fi
+STUB
+chmod +x "$WORK/bin/curl-seq"; cp "$WORK/bin/curl" "$WORK/bin/curl-keep"; cp "$WORK/bin/curl-seq" "$WORK/bin/curl"
+rm -f "$WORK/tick.calls" "$WORK/tick.args" "$WORK/tick.bodies"
+( export PATH="$WORK/bin:$PATH" CALLS="$WORK/tick.calls" ARGS_LOG="$WORK/tick.args" TARGET_HOST=localhost API_KEY=k
+  source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
+  S=$(mktemp)
+  _load_tick "$WORK/tick.bodies" "$S" GET http://h:8070/x > /dev/null
+  _load_tick "$WORK/tick.bodies" "$S" GET http://h:8070/x > /dev/null )
+row1=$(sed -n 1p "$WORK/tick.bodies"); row2=$(sed -n 2p "$WORK/tick.bodies")
+d2=$(printf '%s' "$row2" | awk -F'\t' '{print $4}'); s2=$(printf '%s' "$row2" | awk -F'\t' '{print $2}')
+if printf '%s' "$row1" | grep -q 'Quorum disappeared' && [ "$s2" = "000" ] && [ -z "$d2" ] \
+   && [ "$(grep -c -- '--connect-timeout 2 --max-time 5' "$WORK/tick.args")" = "2" ]; then
+    ok "B2 a 503-with-body then a 000: the 000 row's detail is EMPTY (scratch truncated per tick); both requests carry --connect-timeout 2 --max-time 5"
+else fail "B2 row1=[$(printf '%s' "$row1" | cut -c1-80)] row2=[$(printf '%s' "$row2" | cut -c1-80)] args=$(head -c 160 "$WORK/tick.args")"; fi
+cp "$WORK/bin/curl-keep" "$WORK/bin/curl"
+
+# D: capture at demotion
+body_demotion() {
+    export SUITE_FAILCAP_DIR; SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/failcap-stub.XXXXXX")
+    export ENV_TYPE=cloud; TEST_TAG=Scale_down
+    echo 0 > "$CAP_DIR/vcalls"
+    _cluster_voters() { local n; n=$(( $(cat "$CAP_DIR/vcalls") + 1 )); echo "$n" > "$CAP_DIR/vcalls"
+        if [ "$n" -le 2 ]; then printf 'node-1\nnode-2\nnode-3\nnode-4\nnode-5\nnode-6\nnode-7\n'; else printf 'node-1\nnode-2\nnode-3\nnode-4\nnode-5\n'; fi; }
+    cloud_public_ip() { case "$1" in node-6) echo 6.6.6.6 ;; node-7) echo 7.7.7.7 ;; esac; }
+    DEMOTION_CAPTURE_POLL_INTERVAL_S=0.1
+    before=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5\nnode-6\nnode-7'
+    capture_at_demotion "$before" 10; echo "RC=$?"
+    [ -n "${TWICE:-}" ] && { echo 0 > "$CAP_DIR/vcalls"; capture_at_demotion "$before" 10; echo "RC2=$?"; }
+    return 0
+}
+cloud_scenario demo body_demotion ENV_TYPE=cloud
+dd=$(ls -d "$WORK"/demo/failure-logs/03-scaling/Scale_down/*-demotion 2>/dev/null | head -1)
+if [ -n "$dd" ] && [ -s "$dd/voter-node-6.log" ] && [ -s "$dd/voter-node-7.log" ] && grep -q 'removed voters \[node-6 node-7' "$dd/capture-manifest.txt" \
+   && grep -q 'RC=0' "$WORK/demo/out" && [ "$(grep -c . "$WORK/demo/out")" = "1" ]; then
+    ok "D1 at demotion EVERY removed voter's log is captured while it still answers (node-6 and node-7), rc 0, nothing printed"
+else fail "D1 dir=[${dd:-none}] files=$(ls "$dd" 2>/dev/null | tr '\n' ' ') out=$(head -c 200 "$WORK/demo/out")"; fi
+
+cloud_scenario demog body_demotion ENV_TYPE=cloud GONE_IPS=6.6.6.6
+dd=$(ls -d "$WORK"/demog/failure-logs/03-scaling/Scale_down/*-demotion 2>/dev/null | head -1)
+if [ -n "$dd" ] && [ -s "$dd/voter-node-7.log" ] && grep -q 'voter node-6 (6.6.6.6) rc=255' "$dd/capture-manifest.txt" && grep -q 'RC=0' "$WORK/demog/out"; then
+    ok "D2 a victim that already halted (ssh fails) does not stop the other capture, is noted in the manifest, and the hook returns 0"
+else fail "D2 files=$(ls "$dd" 2>/dev/null | tr '\n' ' ') manifest=$(cat "$dd/capture-manifest.txt" 2>/dev/null | tr '\n' '|')"; fi
+
+body_demotion_unarmed() { unset SUITE_FAILCAP_DIR; export ENV_TYPE=cloud; _cluster_voters() { echo node-1; }
+    capture_at_demotion $'node-1\nnode-2' 2; echo "RC=$?"; echo "SSH_CALLS=$(ls "$CAP_DIR"/failure-logs/03-scaling/*/ 2>/dev/null | wc -l | tr -d ' ')"; }
+cloud_scenario demou body_demotion_unarmed ENV_TYPE=cloud
+if grep -q 'RC=0' "$WORK/demou/out" && grep -q 'SSH_CALLS=0' "$WORK/demou/out" && [ -z "$(ls -d "$WORK"/demou/failure-logs/03-scaling/*/*-demotion 2>/dev/null)" ]; then
+    ok "D3 outside run-tests.sh (unarmed): the hook does nothing and returns 0"
+else fail "D3 out=$(head -c 200 "$WORK/demou/out")"; fi
+
+cloud_scenario demo2 body_demotion ENV_TYPE=cloud TWICE=1
+if [ "$(ls -d "$WORK"/demo2/failure-logs/03-scaling/Scale_down/*-demotion 2>/dev/null | wc -l | tr -d ' ')" = "1" ] && grep -q 'RC2=0' "$WORK/demo2/out"; then
+    ok "D4 once per test: a second call for the same test captures nothing more"
+else fail "D4 dirs=$(ls -d "$WORK"/demo2/failure-logs/03-scaling/Scale_down/* 2>/dev/null | wc -l)"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"
