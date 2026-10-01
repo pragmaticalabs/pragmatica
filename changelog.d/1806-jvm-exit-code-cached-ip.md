@@ -5,6 +5,4 @@
   cached address (`_s19_resolve_survivor_ip` + `cloud_ssh_ip`) and proves WHICH VM answered: the same ssh command prints the
   VM's own `AETHER_NODE_ID` (`/etc/aether/node.env`); a different or missing id is a FAIL (cached IPs are recycled), and an
   unresolvable address is an honest FAIL, not a guess.
-- **S19 tier 2 proves identity too** at its cached address: the JVM read prints `AETHER_NODE_ID`, the container read adds the
-  `aether-node-id` label of the `aether-node` container to the same `docker inspect`; a different or missing id is a FAIL.
-  [verified: `aether/tests/integration/test/test-chaos-harness.sh` FJ1-FJ4, TI1-TI4, F1-F4 and G3 now carry the identity. No cloud run.]
+  [verified: `aether/tests/integration/test/test-chaos-harness.sh` FJ1-FJ4, F1-F4 and G3 now carry the identity. No cloud run.]
