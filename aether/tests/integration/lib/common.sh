@@ -1784,6 +1784,9 @@ run_test() {
     # Cleared at function exit so logs emitted by surrounding scaffolding don't
     # leak the last test's name.
     export TEST_TAG="$sanitized_name"
+    # Cloud: remember the VMs the provider lists NOW (nodes join and leave mid-suite); the capture tries every
+    # remembered VM, not only those still listed when a failure is finally captured (lib/capture.sh).
+    [ -n "${SUITE_FAILCAP_DIR:-}" ] && capture_remember_vms "${CLUSTER_ID:-a}" "${SUITE_TAG:-no-suite}" >/dev/null 2>&1 || true
     echo ""
     log_step "=== TEST: ${name} ==="
 

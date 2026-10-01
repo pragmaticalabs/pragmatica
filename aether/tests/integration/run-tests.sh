@@ -432,6 +432,9 @@ run_suite() {
     export SUITE_START_EPOCH="$start_time"
     export SUITE_FAILCAP_DIR
     SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aether-failcap-${suite_name}.XXXXXX" 2>/dev/null) || SUITE_FAILCAP_DIR=""
+    # Cloud VM registry for this suite: start empty (no VM from a previous run), remember what exists now.
+    capture_forget_vms "$target_cluster" "$suite_name"
+    capture_remember_vms "$target_cluster" "$suite_name"
     rm -f "$restore_marker"
     export SUITE_RESTORE_FAILED_MARKER="$restore_marker"
     local suite_pass=0 suite_fail=0
