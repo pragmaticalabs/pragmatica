@@ -17,9 +17,11 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.SegmentSink;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.storage.MemoryTier;
@@ -55,6 +57,11 @@ class TieredReadVisibleBoundTest {
     private static final NodeId PEER = NodeId.randomNodeId();
     private static final long RING_CAPACITY = 2;
     private static final long ONE_GB = 1024 * 1024 * 1024L;
+    /// How long the sink holds a seal's promise AFTER the segment is indexed. The sealer releases its retained
+    /// copy only once that promise resolves, so for this long an indexed offset still reads as
+    /// `SealInFlight` — the designed transient (#1234). Pinned wide so a wait that stops at the index fails here
+    /// every run instead of once in a few CI runs.
+    private static final long RELEASE_LAG_MS = 100;
 
     private StorageInstance storage;
     private SegmentIndex index;
@@ -71,7 +78,9 @@ class TieredReadVisibleBoundTest {
         registry.registerReplica(STREAM, PARTITION, SELF);
         registry.registerReplica(STREAM, PARTITION, PEER);
         replication = replicationManager(SELF, registry);
-        manager = streamPartitionManager(Long.MAX_VALUE, segmentSealer(storageSegmentSink(storage, index)), replication);
+        manager = streamPartitionManager(Long.MAX_VALUE,
+                                         segmentSealer(laggingRelease(storageSegmentSink(storage, index))),
+                                         replication);
         manager.createStream(StreamConfig.streamConfig(STREAM,
                                                        1,
                                                        RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
@@ -170,14 +179,39 @@ class TieredReadVisibleBoundTest {
         }
     }
 
-    /// Sealing runs off the appending thread (#1234); the tier holds the offset only once its seal is indexed.
+    /// The sink indexes a segment, THEN resolves its promise [#RELEASE_LAG_MS] later; the sealer drops its retained
+    /// copy only on that resolution.
+    private static SegmentSink laggingRelease(SegmentSink delegate) {
+        return (segment, log) -> delegate.seal(segment, log).flatMap(_ -> {
+            Promise<Unit> released = Promise.promise();
+
+            Thread.startVirtualThread(() -> {
+                try {
+                    Thread.sleep(RELEASE_LAG_MS);
+                } catch (InterruptedException _) {
+                    Thread.currentThread().interrupt();
+                }
+                released.succeed(Unit.unit());
+            });
+            return released;
+        });
+    }
+
+    /// Sealing runs off the appending thread (#1234). The tier serves an offset only once its seal is indexed AND
+    /// the sealer has released it: between the two the read is refused as `SealInFlight` (retry), by design, so
+    /// the index alone does not mean the offset is readable.
     private void awaitSealedThrough(long offset) {
         var deadline = System.nanoTime() + 5_000_000_000L;
 
-        while (index.lastSealedOffset(STREAM, PARTITION) < offset && System.nanoTime() < deadline) {
+        while (!servable(offset) && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
         assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("sealed through %d", offset).isGreaterThanOrEqualTo(offset);
+        assertThat(manager.sealInFlight(STREAM, PARTITION, offset)).as("offset %d released by the sealer", offset).isFalse();
+    }
+
+    private boolean servable(long offset) {
+        return index.lastSealedOffset(STREAM, PARTITION) >= offset && !manager.sealInFlight(STREAM, PARTITION, offset);
     }
 
     private static Serializer identitySerializer() {
