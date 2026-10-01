@@ -549,8 +549,22 @@ public interface NodeDeploymentManager {
                      quorumStateNotification);
             switch (quorumStateNotification.state()) {
                 case ACTIVE -> dispatchQuorumEstablished();
-                case PASSIVE -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+                case PASSIVE -> dispatchPassive(quorumStateNotification);
             }
+        }
+
+        // #1790: a demoted observer of a live quorum must keep its slices serving. Suspending them
+        // unpublishes the routes the local fast path reads, so the node would refuse traffic it hosts
+        // until DRAIN; the drain's admission gate is the one designed refusal. Genuine quorum loss
+        // still suspends.
+        private void dispatchPassive(ClusterStateNotification notification) {
+            if (notification.demoted()) {
+                log.info("Node {} demoted to observer of a live quorum — keeping slices serving", ctx.self().id());
+
+                return;
+            }
+
+            ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
 
         private void dispatchQuorumEstablished() {
