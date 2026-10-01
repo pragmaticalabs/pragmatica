@@ -9,6 +9,29 @@ source "${LIB_DIR}/common.sh"
 # ---------------------------------------------------------------------------
 LOAD_PIDS=()
 
+# One load request. Prints the HTTP status (000 = no answer) on stdout, like http_status. On a non-2xx it also appends
+# ONE line to the failure-body file ($1): UTC timestamp, status, full URL (the endpoint), and the response body
+# (first 512 bytes, newlines/tabs flattened), tab-separated. The status alone cannot say WHICH 503 branch answered
+# ("Quorum disappeared...", "Route table propagating...", a transient cause's message): 03 Scale_down failed at
+# S-triple-prime with 12 of 482 requests at 503 and nothing to attribute them with.
+# Usage: _load_tick <bodies-file> <method> <url> [json body]
+_load_tick() {
+    local bodies="$1" method="$2" url="$3" body="${4:-}" bf status detail
+    bf=$(mktemp)
+    if [ "$method" = "GET" ]; then
+        status=$(curl -sk -o "$bf" -w "%{http_code}" -H "X-API-Key: ${API_KEY}" "$url")
+    else
+        status=$(curl -sk -o "$bf" -w "%{http_code}" -X "$method" -H "X-API-Key: ${API_KEY}" \
+                      -H "Content-Type: application/json" -d "$body" "$url")
+    fi
+    if ! { [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; } 2>/dev/null; then
+        detail=$(head -c 512 "$bf" 2>/dev/null | tr '\n\t\r' '   ')
+        printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${status:-000}" "$url" "$detail" >> "$bodies" 2>/dev/null || true
+    fi
+    rm -f "$bf"
+    printf '%s' "${status:-000}"
+}
+
 # Start background HTTP load against the app endpoint
 # Usage: start_load <rps> <duration_seconds> <method> <path> [body] [reresolve_coords]
 #
@@ -40,7 +63,7 @@ start_load() {
     # so a previous window's stale 404s are not summed into this window's totals
     # (the 642-stale-404 over-count came from stop_load globbing /tmp/load_*_*.txt
     # across runs; both ends are now $$-scoped).
-    rm -f "/tmp/load_result_$$.txt" "/tmp/load_failures_$$.txt"
+    rm -f "/tmp/load_result_$$.txt" "/tmp/load_failures_$$.txt" "/tmp/load_failure_bodies_$$.txt"
 
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
 
@@ -48,15 +71,7 @@ start_load() {
         local success=0 failure=0 consec_fail=0
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
-            if [ "$method" = "GET" ]; then
-                status=$(http_status "${APP_ENDPOINT}${path}" -H "X-API-Key: ${API_KEY}")
-            else
-                status=$(http_status "${APP_ENDPOINT}${path}" \
-                    -X "$method" \
-                    -H "X-API-Key: ${API_KEY}" \
-                    -H "Content-Type: application/json" \
-                    -d "$body")
-            fi
+            status=$(_load_tick "/tmp/load_failure_bodies_$$.txt" "$method" "${APP_ENDPOINT}${path}" "$body")
             if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
                 consec_fail=0
@@ -119,6 +134,25 @@ start_mgmt_load() {
     LOAD_PIDS+=($!)
 }
 
+# Persist this window's failure lines (timestamp, status, endpoint, body) into the failure-logs dir, one line per
+# failure, and log a per-detail histogram next to the status histogram. The detail is the problem+json `detail` when
+# present, else the first 80 bytes of the body.
+_load_persist_failure_bodies() {
+    local fb="/tmp/load_failure_bodies_$$.txt" dest
+    [ -s "$fb" ] || { rm -f "$fb"; return 0; }
+    dest="$(_failcap_root)/${SUITE_TAG:-no-suite}/load-failures-${TEST_TAG:-outside-a-test}.log"
+    mkdir -p "$(dirname "$dest")" 2>/dev/null || true
+    cat "$fb" >> "$dest" 2>/dev/null || true
+    # (assigned first, outside any double-quoted string: bash 3.2 mis-parses quotes inside "$( ... )")
+    local hist
+    hist=$(awk -F'\t' '{
+            d = $4; if (match(d, /"detail"[ ]*:[ ]*"[^"]*"/)) { d = substr(d, RSTART, RLENGTH); sub(/^"detail"[ ]*:[ ]*"/, "", d); sub(/"$/, "", d) }
+            print $2 " | " substr(d, 1, 80) }' "$fb" | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; printf "[%sx%s] ", c, $0}')
+    log_info "Failure details (status | detail, count): ${hist}"
+    log_info "Failure bodies (one line per failure: time, status, endpoint, body): ${dest}"
+    rm -f "$fb"
+}
+
 # Stop all background load and collect results
 stop_load() {
     local total_success=0 total_failure=0
@@ -161,6 +195,7 @@ stop_load() {
             rm -f "$ff"
         fi
     done
+    _load_persist_failure_bodies >&2
 
     echo "${total_success}:${total_failure}"
 }
