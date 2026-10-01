@@ -3923,7 +3923,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (shouldMaterialize(ref.streamName(), ref.partition())) {
             var since = heldUnmaterializedSince.computeIfAbsent(ref, _ -> tick);
 
-            queueMaterialization(ref, isSystemStream(ref.streamName()));
+            queueIfBudgetFits(ref);
             warnIfStalled(ref, tick - since);
         } else {
             heldUnmaterializedSince.remove(ref);
@@ -3935,6 +3935,19 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(streams.get(ref.streamName())).map(entry -> entry.ringFor(ref.partition())
                                                                        .isEmpty())
                      .or(false);
+    }
+
+    /// A non-system partition whose floor does not fit the off-heap budget NOW is not queued: it would sit at the
+    /// app-class FIFO head, where the budget-AND ([#headCanProceed]) stops the whole class and starves every
+    /// fitting partition behind it, owners included. It is re-checked next tick, so it is queued the tick budget
+    /// frees. The drain keeps its head-of-line ordering unchanged (minimal change).
+    @Contract
+    private void queueIfBudgetFits(PartitionRef ref) {
+        var system = isSystemStream(ref.streamName());
+
+        if (headCanProceed(ref, system)) {
+            queueMaterialization(ref, system);
+        }
     }
 
     @Contract

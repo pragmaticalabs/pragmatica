@@ -39,9 +39,13 @@ class PacedMaterializeRetryTest {
     private final Set<String> caughtUp = ConcurrentHashMap.newKeySet();
 
     private static StreamConfig cfg() {
-        var retention = RetentionPolicy.retentionPolicy(100, 64 * 1024L, 3_600_000L);
+        return cfg("app", 100, 64 * 1024L);
+    }
 
-        return StreamConfig.streamConfig("app",
+    private static StreamConfig cfg(String name, int maxCount, long maxBytes) {
+        var retention = RetentionPolicy.retentionPolicy(maxCount, maxBytes, 3_600_000L);
+
+        return StreamConfig.streamConfig(name,
                                          PARTITIONS,
                                          retention,
                                          "latest",
@@ -249,6 +253,39 @@ class PacedMaterializeRetryTest {
 
             assertThat(manager.heldUnmaterializedWarnings()).as("WARN at the threshold").isEqualTo(1L);
             assertThat(materialized(manager, 2)).isFalse();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// v1809 p5: a budget-deferred big-floor partition must not be re-queued at the app-class head, where the budget-AND
+    /// would stop the whole class and starve a fitting small-floor partition (an owner included) behind it.
+    @Test
+    void budgetDeferredBigFloorPartition_doesNotStarveAFittingOneBehindIt() {
+        var smallFloor = FLOOR;
+        var manager = manager(3 * smallFloor + 50_000L);
+        try {
+            manager.onStreamConfigPut(new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey("big"),
+                                                                         StreamConfigValue.streamConfigValue(cfg("big", 1000, 256 * 1024L))),
+                                                     Option.none()));
+            hold(Role.REPLICA, 0, 1);
+            materializeOrFail(manager, 0);
+            materializeOrFail(manager, 1);
+            roles.put("big#0", Role.REPLICA);
+            manager.materializePartition("big", 0);   // budget-deferred: needs ~286 KB, ~118 KB free
+            assertThat(manager.partitionBuffer("big", 0).isPresent()).isFalse();
+            manager.reconcileReshuffle();             // the re-drive must not park it at the queue head
+
+            hold(Role.REPLICA, 2);
+            refuseAsPaced(manager, 2);
+            caughtUp.add("app#0");
+            caughtUp.add("app#1");
+            for (var i = 0; i < 3; i++) {
+                manager.reconcileReshuffle();
+            }
+
+            assertThat(materialized(manager, 2)).as("a fitting paced partition must not starve behind a budget-deferred head").isTrue();
+            assertThat(manager.partitionBuffer("big", 0).isPresent()).as("the budget is never bypassed").isFalse();
         } finally {
             manager.close();
         }
