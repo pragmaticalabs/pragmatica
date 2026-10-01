@@ -7,7 +7,6 @@ package org.pragmatica.aether.resource.interceptor;
 import org.pragmatica.aether.slice.MethodInterceptor;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -21,15 +20,8 @@ import org.slf4j.LoggerFactory;
 /// a per-call WARN during a DHT outage would be an unbounded log on the hottest path (#718's
 /// lesson); the outage itself is visible on the backend's own side.
 @SuppressWarnings("unchecked")
-public record CacheMethodInterceptor(CacheBackend cache,
-                                     CacheStrategy strategy,
-                                     Fn1<Object, ?> keyExtractor,
-                                     Option<String> cacheName) implements MethodInterceptor {
+public record CacheMethodInterceptor(CacheBackend cache, CacheStrategy strategy, Fn1<Object, ?> keyExtractor) implements MethodInterceptor {
     private static final Logger log = LoggerFactory.getLogger(CacheMethodInterceptor.class);
-
-    public CacheMethodInterceptor(CacheBackend cache, CacheStrategy strategy, Fn1<Object, ?> keyExtractor) {
-        this(cache, strategy, keyExtractor, Option.empty());
-    }
 
     @Override
     public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
