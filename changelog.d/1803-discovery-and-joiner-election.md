@@ -35,7 +35,7 @@
 - [verified: `ReplacementStalePeerListTest` (Heavy, 2 tests: a replacement minted without the leader, id below / above
   the leader's; 5 cores, 1 stopped, auto-heal blocked, replacement listed 3 live voters). Red at the unmodified base in
   both ("leader stale-peers-1 must count the replacement and the survivors": the leader counts only the 4 survivors for
-  the whole 3-minute budget); green 3 of 3 runs on the fix (about 38 s per test) plus a fourth green after the final edit.
+  the whole 3-minute budget); green 4 of 4 runs of the final test on the fix (about 38 s per test before the voter-admission wait, about 50 s after).
   Mutations on the fix: removing the `swim.requestMembershipView(...)` call at `AetherNode` reddens both; reverting
   the initiator rule to the mint-time list reddens only the above-the-leader test (the observer then waits for the
   60 s higher-id grace; the test's budget is 45 s); reverting the `AwaitingKvSync` hunks (entry adoption, timeout KV
