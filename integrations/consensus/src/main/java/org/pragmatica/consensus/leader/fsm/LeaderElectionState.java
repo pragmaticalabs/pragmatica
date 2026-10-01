@@ -195,8 +195,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///
     /// The timeout is not a wall-clock licence to elect (#1803). A node that joined a running cluster must
     /// not depose a live leader it has simply not read yet, so at the timeout it first follows any committed
-    /// leader it can see (the KV record, or the leader it observed while passive before being admitted as a
-    /// voter), and while its KV state is still catching up ([`LeaderElectionContext#isKvSyncPending`]) it
+    /// leader it can see (the KV record; on entry also the leader it observed while passive, before it was
+    /// admitted as a voter), and while its KV state is still catching up ([`LeaderElectionContext#isKvSyncPending`]) it
     /// waits another grace window, up to [`LeaderElectionContext#kvSyncMaxWait`]. Only a cluster that shows
     /// no leader and no sync in flight — or a sync that never settles — reaches `Electing`.
     ///
@@ -270,16 +270,18 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
     }
 
-    /// The wait's verdict at a grace timeout (#1803). A committed leader this node can see (its own
-    /// observation, or the KV record) is adopted — a joiner never elects against a live leader. With none
+    /// The wait's verdict at a grace timeout (#1803). A committed leader in the KV record is adopted even if its
+    /// push notification never reached this node — a joiner never elects against a live leader. With none
     /// visible and KV state still catching up, the wait is stretched by another grace window (bounded by
     /// [`LeaderElectionContext#kvSyncMaxWait`]) so the leader can still arrive through KV sync. Only a
     /// cluster that shows no leader and no sync in flight is genuinely leaderless and lets this node elect.
     private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
                                                 AwaitingKvSync waiting) {
-        committedLeaderVisible(ctx).onPresent(leader -> adoptVisibleLeader(ctx, leader, tx))
-                              .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
+        ctx.currentLeaderFromKvSupplier()
+           .get()
+           .onPresent(leader -> adoptVisibleLeader(ctx, leader, tx))
+           .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
     }
 
     private static void adoptVisibleLeader(LeaderElectionContext ctx,
@@ -319,14 +321,6 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                .set(SharedScheduler.schedule(() -> dispatchSelf(ctx,
                                                                 new KvSyncGraceTimeout()),
                                              ctx.kvSyncGraceDelay()));
-    }
-
-    /// A committed leader this node can already see: the KV record first (consensus truth), then the
-    /// leader it observed on its own while passive.
-    private static Option<NodeId> committedLeaderVisible(LeaderElectionContext ctx) {
-        return ctx.currentLeaderFromKvSupplier()
-                  .get()
-                  .orElse(ctx::currentLeader);
     }
 
     /// Adopts the leader this node already knows. Synchronous dispatch, like the KV pull: the `LeaderCommitted`

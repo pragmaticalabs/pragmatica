@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,6 +49,10 @@ class JoinerElectionTest {
     private final AtomicReference<LeaderElectionContext> context = new AtomicReference<>();
 
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness(Option<NodeId> kvLeader, TimeSpan grace) {
+        return harness(() -> kvLeader, grace);
+    }
+
+    private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness(Supplier<Option<NodeId>> kvLeader, TimeSpan grace) {
         LeaderProposalHandler handler = (candidate, viewSequence) -> countProposal();
 
         return FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("joiner-election-test",
@@ -62,7 +67,7 @@ class JoinerElectionTest {
 
     private LeaderElectionState initialState(org.pragmatica.statemachine.Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
                                              LeaderProposalHandler handler,
-                                             Option<NodeId> kvLeader,
+                                             Supplier<Option<NodeId>> kvLeader,
                                              TimeSpan grace) {
         var ctx = new LeaderElectionContext(fsm,
                                             SELF,
@@ -77,7 +82,7 @@ class JoinerElectionTest {
                                             LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                             LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                             () -> true,
-                                            () -> kvLeader,
+                                            kvLeader,
                                             grace);
 
         context.set(ctx);
@@ -106,6 +111,37 @@ class JoinerElectionTest {
         assertThat(h.state()).as("a joiner that observed the committed leader follows it").isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(LEADER);
         assertThat(proposals.get()).as("a joiner with a live committed leader never proposes").isZero();
+
+        h.dispatch(new ClusterFsmEvent.Shutdown());
+    }
+
+    @Test
+    void awaitingKvSync_leaderObservedWhilePassive_followsAtOnceWithoutPayingTheGrace() {
+        var h = harness(Option.none(), LONG);
+
+        joinAsObserverThenVoter(h);
+
+        assertThat(h.state()).as("the observed leader is followed on entry, not after the grace").isInstanceOf(LeaderElectionState.Led.class);
+        assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(LEADER);
+
+        h.dispatch(new ClusterFsmEvent.Shutdown());
+    }
+
+    @Test
+    void awaitingKvSync_leaderReachesKvWithoutAPush_isFollowedAtTheTimeout() {
+        var kvLeader = new AtomicReference<Option<NodeId>>(Option.none());
+        var h = harness(kvLeader::get, LONG);
+
+        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE));
+        h.dispatch(new LeaderElectionEvents.ConsensusReady());
+        assertThat(h.state()).as("precondition: waiting, nothing visible").isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
+
+        kvLeader.set(Option.some(LEADER));
+        h.dispatch(new KvSyncGraceTimeout());
+
+        assertThat(h.state()).as("the timeout reads KV again and follows the leader instead of electing").isInstanceOf(LeaderElectionState.Led.class);
+        assertThat(proposals.get()).isZero();
 
         h.dispatch(new ClusterFsmEvent.Shutdown());
     }
