@@ -266,15 +266,12 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     /// content to the store) and `ArtifactStore.deploy` is idempotent at the chunk
     /// level (content-addressed BlockIds).
     ///
-    /// The existence check only SHORT-CIRCUITS a redundant upload; it guards no immutability rule —
-    /// `deploy` itself never reads the meta key and overwrites it unconditionally. So a FAILED check
-    /// (a DHT read cannot vote "absent" while membership churns) means "unknown", not "refuse":
-    /// FER — degrade forward to `deploy`, which earns the same outcome a lost race above already
-    /// accepts (idempotent, content-addressed chunks). If `deploy` then fails transiently, 503.
+    /// The existence check is also the write-once guard (#1778): a re-push of an existing file answers
+    /// "already-present" and keeps the stored bytes, even when the new content differs. So a FAILED
+    /// check is NOT "absent" — deploying past it would let churn replace stored content. The failure
+    /// takes the same exit as any other: transient -> 503 + Retry-After (no deploy), else 500.
     private Promise<MavenResponse> handlePutArtifact(ParsedPath.ArtifactPath ap, byte[] content) {
         return store.metadata(ap.file())
-                    .recover(cause -> existenceUnknown(ap.file(),
-                                                       cause))
                     .flatMap(metaOpt -> metaOpt.map(meta -> buildAlreadyPresentResponse(ap.artifact(),
                                                                                         meta))
                                                .or(() -> deployAndBuildResponse(ap.file(),
@@ -282,12 +279,6 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                     .recover(cause -> failureResponse("PUT",
                                                       ap.file(),
                                                       cause));
-    }
-
-    private static Option<ArtifactStore.ArtifactMetadata> existenceUnknown(ArtifactFile file, Cause cause) {
-        log.warn("PUT {} existence check failed, deploying anyway (idempotent): {}", file.asString(), cause.message());
-
-        return Option.none();
     }
 
     private Promise<MavenResponse> buildAlreadyPresentResponse(Artifact artifact, ArtifactStore.ArtifactMetadata meta) {

@@ -17,31 +17,63 @@ import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// A DHT read that FAILS during membership churn (a replacement's "absent" must not vote) is not an
-/// answer about the artifact. PUT's existence check guards no immutability rule -- `deploy` overwrites
-/// unconditionally -- so a failed check means "unknown" and the PUT must still deploy. Transient
-/// failures on the paths that cannot degrade answer 503 (retry), never 500 (defect).
+/// answer about the artifact. PUT's existence check is also the write-once guard (#1778): `deploy`
+/// overwrites unconditionally, so deploying past a failed check could replace stored content. A
+/// transient failure answers 503 (retry) and `deploy` is NOT called; a non-transient one answers 500.
 class MavenProtocolHandlerTransientFailureTest {
     private static final String PATH = "/repository/org/example/test/1.0.0/test-1.0.0.jar";
     private static final byte[] CONTENT = "payload".getBytes(StandardCharsets.UTF_8);
 
     @Test
-    void handlePut_deploys_whenExistenceCheckFailsTransiently() {
-        var store = store(DHTError.quorumNotReached(2, 1).promise(), deploySucceeds(), notFound());
+    void handlePut_answers503WithoutDeploying_whenExistenceCheckFailsTransiently() {
+        var deployCalls = new AtomicInteger();
+        var store = store(DHTError.quorumNotReached(2, 1).promise(), deploySucceeds(), notFound(), deployCalls);
+
+        MavenProtocolHandler.mavenProtocolHandler(store)
+                            .handlePut(PATH, CONTENT)
+                            .await()
+                            .onFailureRun(Assertions::fail)
+                            .onSuccess(response -> assertThat(response.statusCode()).isEqualTo(503));
+        assertThat(deployCalls).as("a failed existence check must not overwrite stored content").hasValue(0);
+    }
+
+    @Test
+    void handlePut_answers500WithoutDeploying_whenExistenceCheckFailsNonTransiently() {
+        var deployCalls = new AtomicInteger();
+        var store = store(new ArtifactStore.ArtifactStoreError.CorruptedArtifact(file()).promise(),
+                          deploySucceeds(),
+                          notFound(),
+                          deployCalls);
+
+        MavenProtocolHandler.mavenProtocolHandler(store)
+                            .handlePut(PATH, CONTENT)
+                            .await()
+                            .onFailureRun(Assertions::fail)
+                            .onSuccess(response -> assertThat(response.statusCode()).isEqualTo(500));
+        assertThat(deployCalls).hasValue(0);
+    }
+
+    @Test
+    void handlePut_deploys_whenExistenceCheckSaysAbsent() {
+        var deployCalls = new AtomicInteger();
+        var store = store(Promise.success(Option.none()), deploySucceeds(), notFound(), deployCalls);
 
         MavenProtocolHandler.mavenProtocolHandler(store)
                             .handlePut(PATH, CONTENT)
                             .await()
                             .onFailureRun(Assertions::fail)
                             .onSuccess(response -> assertUploaded(response));
+        assertThat(deployCalls).hasValue(1);
     }
 
     @Test
-    void handlePut_answers503_whenExistenceCheckAndDeployBothFailTransiently() {
-        var store = store(DHTError.quorumNotReached(2, 1).promise(), DHTError.OPERATION_TIMEOUT.promise(), notFound());
+    void handlePut_answers503_whenDeployFailsTransiently() {
+        var store = store(Promise.success(Option.none()), DHTError.OPERATION_TIMEOUT.promise(), notFound());
 
         MavenProtocolHandler.mavenProtocolHandler(store)
                             .handlePut(PATH, CONTENT)
@@ -107,9 +139,18 @@ class MavenProtocolHandlerTransientFailureTest {
     private static ArtifactStore store(Promise<Option<ArtifactStore.ArtifactMetadata>> metadata,
                                        Promise<ArtifactStore.DeployResult> deploy,
                                        Promise<byte[]> resolve) {
+        return store(metadata, deploy, resolve, new AtomicInteger());
+    }
+
+    private static ArtifactStore store(Promise<Option<ArtifactStore.ArtifactMetadata>> metadata,
+                                       Promise<ArtifactStore.DeployResult> deploy,
+                                       Promise<byte[]> resolve,
+                                       AtomicInteger deployCalls) {
         return new ArtifactStore() {
             @Override
             public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
+                deployCalls.incrementAndGet();
+
                 return deploy;
             }
 
