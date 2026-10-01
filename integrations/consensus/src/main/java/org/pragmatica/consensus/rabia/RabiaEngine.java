@@ -697,7 +697,6 @@ public class RabiaEngine<C extends Command> {
         PASSIVE,
         OBSERVING,
         ACTIVE;
-
         static PublishedSense of(EngineState state) {
             if (state.isActive()) {
                 return ACTIVE;
