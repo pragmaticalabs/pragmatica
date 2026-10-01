@@ -38,10 +38,11 @@ class EmberWorkerDeadSeedTest {
     private static final int APP_OFFSET = 80;
     /// A port inside the block that no slot ever uses: the dead seed's address.
     private static final int DEAD_OFFSET = 30;
-    /// Disjoint from every other Ember/Forge range surveyed on 2026-09-28 (38100–39900 and 42100–43900 are
-    /// in open PRs; 45100 is fixed).
-    private static final int FIRST_CANDIDATE_BASE = 40100;
-    private static final int LAST_CANDIDATE_BASE = 41900;
+    /// Disjoint from every other Ember/Forge range, and below the Linux ephemeral floor (32768): a base inside
+    /// 32768-60999 can be taken by any concurrent module's outbound connection between probe and bind.
+    /// Registered in TEST_PORT_ALLOCATION.md ("3000-4800 scan").
+    private static final int FIRST_CANDIDATE_BASE = 3000;
+    private static final int LAST_CANDIDATE_BASE = 4800;
     private static final int CANDIDATE_STEP = 200;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
     private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
