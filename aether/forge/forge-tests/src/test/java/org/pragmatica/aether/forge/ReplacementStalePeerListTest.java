@@ -58,6 +58,11 @@ import static org.awaitility.Awaitility.await;
 class ReplacementStalePeerListTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final int CORES = 5;
+    /// A replacement whose id sorts above the leader's is the designated ACCEPTOR of that pair, so it waits for the
+    /// leader to dial it — which the leader cannot, not knowing it. The only other route is the reconciler's 60 s
+    /// higher-id grace; the bootstrap-initiator rule (the electorate as transfer peers) is what lets the observer
+    /// dial at once. This budget sits below that grace so the test separates the two (the join itself takes seconds).
+    private static final TimeSpan BEFORE_HIGHER_ID_GRACE = TimeSpan.timeSpan(45).seconds();
     /// The leader reconciler does not act on a deficit until the cluster has been up this long (auto-heal startup
     /// cooldown, 15 s); killing inside it measures the cooldown, not the replacement path.
     private static final TimeSpan STARTUP_SETTLE = TimeSpan.timeSpan(20).seconds();
@@ -73,15 +78,15 @@ class ReplacementStalePeerListTest {
 
     @Test
     void replacementSortingBelowTheLeader_mintedWithoutIt_reachesFullMembershipUnderTheSameLeader() {
-        replacementMintedWithoutTheLeader(BELOW_LEADER);
+        replacementMintedWithoutTheLeader(BELOW_LEADER, BUDGET);
     }
 
     @Test
     void replacementSortingAboveTheLeader_mintedWithoutIt_reachesFullMembershipUnderTheSameLeader() {
-        replacementMintedWithoutTheLeader(ABOVE_LEADER);
+        replacementMintedWithoutTheLeader(ABOVE_LEADER, BEFORE_HIGHER_ID_GRACE);
     }
 
-    private void replacementMintedWithoutTheLeader(String replacement) {
+    private void replacementMintedWithoutTheLeader(String replacement, TimeSpan countedWithin) {
         cluster.withComputeProviderDecorator(BlockedProvisioning::new);
         LifecycleAwait.settled("start stale-peers cluster", cluster, cluster.start());
         await().atMost(BUDGET.duration()).until(() -> committedLeader().isPresent());
@@ -104,7 +109,7 @@ class ReplacementStalePeerListTest {
         var expected = new HashSet<>(survivors);
 
         expected.add(replacement);
-        await().atMost(BUDGET.duration())
+        await().atMost(countedWithin.duration())
                .untilAsserted(() -> assertThat(counted(leader)).as("leader %s must count the replacement and the survivors", leader)
                                                                .containsExactlyInAnyOrderElementsOf(expected));
         assertThat(committedLeader()).as("the replacement must not depose the live leader").isEqualTo(Option.some(leader));
