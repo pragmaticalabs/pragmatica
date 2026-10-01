@@ -148,7 +148,9 @@ capture_node_logs() {
                 return 0
             fi
             [ "$enum_rc" -ne 0 ] && echo "VM enumeration UNAVAILABLE (rc=${enum_rc}); capturing the remembered VM set only" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
-            ips=$(printf '%s\n%s\n' "$cur_ips" "$remembered" | grep -v '^$' | awk '!seen[$0]++')
+            # `|| true`: grep -v exits 1 when there is nothing to list, which under pipefail/set -e would end the capture
+            # before it wrote the "NO VMs found" line.
+            ips=$(printf '%s\n%s\n' "$cur_ips" "$remembered" | { grep -v '^$' || true; } | awk '!seen[$0]++')
             local remote_cmd="docker logs --timestamps --since ${since_epoch} aether-node"
             [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager --since @${since_epoch} -o short-iso"
             echo "window: since epoch ${since_epoch} (suite start)" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true

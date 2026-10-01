@@ -64,7 +64,12 @@ expect_gate "R4 not leader (zeroed snapshot)"                            fail "$
 expect_gate "R5 deficit 10 (a leading 0 is not deficit 0)"               fail "$(snapshot 5 5 10 true)"
 
 # --- C: capture_node_logs cloud branch ----------------------------------------------------
-awk '/^capture_node_logs\(\) \{/,/^\}/' "${INTEG_DIR}/lib/capture.sh" > "${WORK}/cap_fn.sh"
+# capture_node_logs plus the VM-registry helpers it calls (capture_remember_vms et al.; with CLOUD_MODE unset the
+# remember step is a no-op, so these tests keep exercising the provider-listed path).
+: > "${WORK}/cap_fn.sh"
+for _f in _capture_cluster_name _capture_vm_registry_file capture_remember_vms _capture_remember_vms_body capture_node_logs; do
+    awk -v f="$_f" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "${INTEG_DIR}/lib/capture.sh" >> "${WORK}/cap_fn.sh"
+done
 if ! grep -q '^        cloud)' "${WORK}/cap_fn.sh"; then
     fail "C0 capture_node_logs has no cloud branch (extraction examined NOTHING)"
 fi
