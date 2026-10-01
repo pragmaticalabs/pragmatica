@@ -243,7 +243,10 @@ settled_run() {  # <label> <body file> <members> [first N polls answer with the 
 }
 printf '{"voterReconfiguration":{"installedVoters":"bh-1"}}' > "$WORK/body.nostage"                    # parser-blind shape 1
 printf '{"voterReconfiguration":{"stage":"STABLE","installedVoters":"bh-1,bh-2"}}' > "$WORK/body.badlist"  # parser-blind shape 2
+# CATCHING_UP is DERIVED too: a change was applied and a member has not caught up; no requested roster, so NO targetVoters key
+sed 's/"stage":"STABLE"/"stage":"CATCHING_UP"/' "$REAL_STATUS" > "$WORK/status.catchingup.json"
 settled_run m1 "$REAL_STATUS" 5
+settled_run m8 "$WORK/status.catchingup.json" 5
 settled_run m2 "$WORK/status.requested.json" 5
 settled_run m3 "$REAL_STATUS" 7
 settled_run m4 "$REAL_STATUS" 5 3
@@ -253,6 +256,8 @@ settled_run m7 "" 5
 if [ "$(cat "$WORK/msrc.m1")" = "0" ] && [ "$(cat "$WORK/msrc.m2")" = "1" ] && [ "$(cat "$WORK/msrc.m3")" = "1" ] && [ "$(cat "$WORK/msrc.m4")" = "0" ]; then
     ok "M1-M4 the REAL STABLE body (no targetVoters key, 5 installed, 5 members) SETTLES (rc 0); a REQUESTED roster -> 1; members!=voters -> 1; settles after 3 REQUESTED polls -> 0"
 else fail "M rc: m1=$(cat "$WORK/msrc.m1") m2=$(cat "$WORK/msrc.m2") m3=$(cat "$WORK/msrc.m3") m4=$(cat "$WORK/msrc.m4")"; fi
+if [ "$(cat "$WORK/msrc.m8")" = "1" ]; then ok "M8 stage CATCHING_UP (no targetVoters, members==voters) is NOT settled: the stage, not only the roster, decides"
+else fail "M8 rc=$(cat "$WORK/msrc.m8")"; fi
 if [ "$(cat "$WORK/msrc.m5")" = "2" ] && grep -q 'no parsable stage' "$WORK/logfail.m5" \
    && [ "$(cat "$WORK/msrc.m6")" = "2" ] && grep -q 'installedVoters but the parser read none' "$WORK/logfail.m6"; then
     ok "M5-M6 tripwire: a body that names voterReconfiguration/installedVoters but parses to no stage / no installed list is a LOUD log_fail with rc 2, not a warning-and-wait"
