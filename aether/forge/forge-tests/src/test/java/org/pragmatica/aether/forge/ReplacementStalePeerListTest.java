@@ -58,6 +58,7 @@ import static org.awaitility.Awaitility.await;
 class ReplacementStalePeerListTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final int CORES = 5;
+    private static final TimeSpan ELECTION_GATE_SETTLE = TimeSpan.timeSpan(10).seconds();
     /// A replacement whose id sorts above the leader's is the designated ACCEPTOR of that pair, so it waits for the
     /// leader to dial it — which the leader cannot, not knowing it. The only other route is the reconciler's 60 s
     /// higher-id grace; the bootstrap-initiator rule (the electorate as transfer peers) is what lets the observer
@@ -112,6 +113,10 @@ class ReplacementStalePeerListTest {
         await().atMost(countedWithin.duration())
                .untilAsserted(() -> assertThat(counted(leader)).as("leader %s must count the replacement and the survivors", leader)
                                                                .containsExactlyInAnyOrderElementsOf(expected));
+        // (b) needs the replacement to be ADMITTED as a voter: only then does it leave passive observation and reach
+        // the election gate. The leader reconfigures the electorate to take it in; give the gate time to act.
+        await().atMost(BUDGET.duration()).until(() -> isVoter(replacement));
+        settlePastElectionGate();
         assertThat(committedLeader()).as("the replacement must not depose the live leader").isEqualTo(Option.some(leader));
         assertThat(committedSequence(leader)).as("no election took place at all: the committed LeaderKey sequence is unchanged")
                                              .isEqualTo(electionSequence);
@@ -135,6 +140,18 @@ class ReplacementStalePeerListTest {
                          .filter(id -> !id.equals(leader))
                          .sorted()
                          .toList();
+    }
+
+    private boolean isVoter(String replacement) {
+        return cluster.getNode(replacement)
+                      .map(node -> node.topologyManager().coreNodes().contains(node.self()))
+                      .or(false);
+    }
+
+    /// The KV-sync grace (3 s) plus the first election tick (2 s base) and a margin: an election that was going to
+    /// happen has been proposed and committed by then.
+    private static void settlePastElectionGate() {
+        await().pollDelay(ELECTION_GATE_SETTLE.duration()).timeout(ELECTION_GATE_SETTLE.duration().plusSeconds(10)).until(() -> true);
     }
 
     private static void settlePastStartupCooldown() {
