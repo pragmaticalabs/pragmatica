@@ -10,7 +10,6 @@ import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -21,7 +20,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 public final class IdempotencyInterceptorFactory implements ResourceFactory<IdempotencyMethodInterceptor, IdempotencyConfig> {
-    private final NamedResourceRegistry<IdempotencyResources> resourceRegistry = new NamedResourceRegistry<>();
+    private final SharedByName<StoreAndClaims> stores = SharedByName.sharedByName();
 
     @Override
     public Class<IdempotencyMethodInterceptor> resourceType() {
@@ -43,22 +42,31 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
     public Promise<IdempotencyMethodInterceptor> provision(IdempotencyConfig config, ProvisioningContext context) {
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
 
-        return createStore(config, context).map(store -> resourceRegistry.acquire(config.storeName(),
-                                                                                  () -> new IdempotencyResources(store,
-                                                                                                                 new ConcurrentHashMap<>()),
-                                                                                  resources -> new IdempotencyMethodInterceptor(resources.store(),
-                                                                                                                                resources.claims(),
-                                                                                                                                keyExtractor,
-                                                                                                                                Option.present(config.storeName()))))
+        return createStore(config, context).map(store -> share(config.storeName(),
+                                                               store,
+                                                               keyExtractor))
                           .async();
     }
 
+    /// Releases this interceptor's hold on the store and claims shared under its store name; the
+    /// name is pruned from the registry when its last holder is released (#894). Neither the store
+    /// nor the claim map owns anything to close, so release is all unloading does.
     @Override
     public Promise<Unit> close(IdempotencyMethodInterceptor resource) {
-        // The boolean only reports whether this holder was registered; close is idempotent, so false is a no-op.
-        resource.storeName().onPresent(name -> resourceRegistry.release(name, resource));
+        return Promise.success(stores.release(resource));
+    }
 
-        return Promise.unitPromise();
+    /// Whether a store is currently registered under `storeName`.
+    boolean retains(String storeName) {
+        return stores.contains(storeName);
+    }
+
+    /// Store and in-flight claims live and die together under one name: interceptors sharing a
+    /// store must share its claims, or two of them could both run the same key.
+    private IdempotencyMethodInterceptor share(String storeName, CacheBackend candidate, Fn1<Object, ?> keyExtractor) {
+        return stores.acquire(storeName,
+                              StoreAndClaims.storeAndClaims(candidate),
+                              shared -> new IdempotencyMethodInterceptor(shared.store(), shared.claims(), keyExtractor));
     }
 
     private Result<? extends CacheBackend> createStore(IdempotencyConfig config, ProvisioningContext context) {
@@ -85,5 +93,9 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
                      .map(DHTCacheBackend::dhtCacheBackend);
     }
 
-    private record IdempotencyResources(CacheBackend store, ConcurrentHashMap<Object, Promise<Object>> claims) {}
+    private record StoreAndClaims(CacheBackend store, ConcurrentHashMap<Object, Promise<Object>> claims) {
+        static StoreAndClaims storeAndClaims(CacheBackend store) {
+            return new StoreAndClaims(store, new ConcurrentHashMap<>());
+        }
+    }
 }
