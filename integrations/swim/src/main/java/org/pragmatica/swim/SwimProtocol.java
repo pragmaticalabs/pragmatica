@@ -1932,6 +1932,25 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
+    /// One more ANNOUNCE round to `targets`, answered like the join announce with their membership view
+    /// (#1783, #1785) — without the join loop's "stop once probed" cut-off, which a node that has long been
+    /// part of the cluster has already tripped.
+    ///
+    /// Why a member needs it: the reply is merged through this node's membership scope, so a member the
+    /// scope did not yet cover when the join ack arrived was dropped, and gossip about it is a one-shot
+    /// that is long evicted. When the scope later grows (the node learned the committed electorate), this
+    /// is how the dropped members are asked for again (#1803). Nothing here is retried or scheduled; the
+    /// caller decides when. Refused after [#stop], like the join loop.
+    @Contract
+    public void requestMembershipView(NodeInfo self, String clusterName, List<InetSocketAddress> targets) {
+        var incarnation = selfIncarnation.get();
+        var bootToken = selfBootToken.get();
+
+        targets.stream()
+               .takeWhile(_ -> !announceStopped.get())
+               .forEach(target -> transport.send(target, Announce.announce(self, clusterName, incarnation, bootToken)));
+    }
+
     /// Boot-token gate for evidence about `peer` (owner ruling, session 28). `0` carries no process
     /// identity and is admitted. The first non-zero token is recorded; an equal token is admitted
     /// (same process — heals exactly as before). A different token retires the identity: the

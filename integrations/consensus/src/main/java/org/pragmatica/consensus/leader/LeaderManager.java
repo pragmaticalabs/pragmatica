@@ -56,6 +56,13 @@ public interface LeaderManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// Wires the signal that this node's KV state still trails the committed frontier (#1803), so a joiner
+    /// waits for a committed leader to arrive through KV sync instead of electing on a wall-clock grace.
+    /// Default no-op for implementations without an election gate.
+    default Unit installKvSyncProgress(Supplier<Boolean> pending) {
+        return Unit.unit();
+    }
+
     boolean isLeader();
     /// Returns the current leader's epoch (the cluster-side rabia term) iff this node is the
     /// elected leader; otherwise [`Option#none`]. Source: the [`Supplier<Long>`] injected at
@@ -358,6 +365,13 @@ public interface LeaderManager {
             previous.filter(node -> !context.isEligible(node))
                     .onPresent(node -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
                                                                                  context.currentTopology())));
+        }
+
+        @Override
+        public Unit installKvSyncProgress(Supplier<Boolean> pending) {
+            context.installKvSyncPending(pending);
+
+            return Unit.unit();
         }
 
         @Override

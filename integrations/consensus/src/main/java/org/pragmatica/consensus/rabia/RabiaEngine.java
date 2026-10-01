@@ -489,7 +489,16 @@ public class RabiaEngine<C extends Command> {
 
     private void joinFormedElectorate(VoterConfiguration formed) {
         log.info("Node {} joins the formed electorate: epoch {} {}", self, formed.epoch(), formed.members());
+        joinedFormedElectorate = true;
         installGenesis(formed);
+    }
+
+    /// Whether this node entered a cluster that was already running (it adopted a formed electorate), as
+    /// opposed to forming one at genesis or restarting from its own state. Only such a joiner can still be
+    /// missing a committed leader that exists elsewhere, so only it has reason to wait for KV sync before
+    /// electing (#1803).
+    public boolean joinedFormedElectorate() {
+        return joinedFormedElectorate;
     }
 
     private void cancelGenesisTimer() {
@@ -679,6 +688,7 @@ public class RabiaEngine<C extends Command> {
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private volatile boolean observerMode;
+    private volatile boolean joinedFormedElectorate;
     private final AtomicHolder<ClusterStateNotification> pendingQuorum = AtomicHolder.atomicHolder();
     /// Sink for engine-level `ConsensusEvent` emissions. The default no-op consumer keeps
     /// existing test constructors working; production wiring (`RabiaNode`) injects

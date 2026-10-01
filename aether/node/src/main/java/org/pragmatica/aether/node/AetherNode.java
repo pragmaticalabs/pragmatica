@@ -4321,6 +4321,7 @@ public interface AetherNode extends ManageableNode {
         metricsScheduler.setMetricsRecipient(node -> isCoreMember(membershipFsm, node));
         topologyObserver.setConsensusMembership(coreAdmission::isAllowed);
         var configuredTransferPeers = configuredVoters(config);
+        var transferPeer = transferPeers(configuredTransferPeers, () -> installedVoterIds(clusterNode));
         var dialingSinceNanos = new AtomicLong();
 
         topologyObserver.setStateTransferMembership(peer -> !peer.equals(config.self()) && (coreAdmission.isAllowed(peer) || configuredTransferPeers.contains(peer)));
@@ -4650,8 +4651,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                             config.self(),
                                                                                                                             configuredTransferPeers,
                                                                                                                             dialingSinceNanos),
-                                                                                                         configuredTransferPeers.contains(peer)) || hierarchyPeerPolicy.isConnectionInitiator(peer,
-                                                                                                                                                                                              configuredTransferPeers.contains(peer) || routingCoreIds.get()
+                                                                                                         transferPeer.test(peer)) || hierarchyPeerPolicy.isConnectionInitiator(peer,
+                                                                                                                                                                                              transferPeer.test(peer) || routingCoreIds.get()
                                                                                                                                                                                                                                                       .contains(peer) || membershipFsm.memberDescriptor(peer)
                                                                                                                                                                                                                                                                                       .map(MemberDescriptor::isCore)
                                                                                                                                                                                                                                                                                       .or(false),
@@ -6360,6 +6361,14 @@ public interface AetherNode extends ManageableNode {
                                                  dialingSince(dialingSinceNanos)));
     }
 
+    /// The peers a bootstrapping core initiates toward regardless of the single-dialer order: the cores it was
+    /// configured with at mint time AND the committed electorate it learns after joining (#1803). Mint-time
+    /// peers alone are frozen at mint — a replacement minted before the current leader existed would otherwise
+    /// wait for a leader that does not know it to dial first.
+    static Predicate<NodeId> transferPeers(Set<NodeId> configured, Supplier<Set<NodeId>> electorate) {
+        return peer -> configured.contains(peer) || electorate.get().contains(peer);
+    }
+
     private static long dialingSince(AtomicLong dialingSinceNanos) {
         var _ = dialingSinceNanos.compareAndSet(0L, System.nanoTime());
 
@@ -7953,6 +7962,9 @@ public interface AetherNode extends ManageableNode {
                                                 .map(target -> dialNodeInfo(target,
                                                                             membership.memberDescriptor(target.id())))
                                                 .toList());
+            // #1803: the scope above now covers the committed electorate; ask for the voters this node's SWIM
+            // view still lacks (a replacement minted before the current leader existed was never told of it).
+            swim.requestMembershipView(installedVoterIds(cluster));
         }
     }
 
