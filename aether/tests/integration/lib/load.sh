@@ -91,8 +91,12 @@ start_load() {
                     new_owner=$(slice_owner_for "$reresolve_coords" 2>/dev/null || true)
                     if [ -n "$new_owner" ]; then
                         if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-                            new_ip=$(cloud_public_ip "$new_owner" 2>/dev/null || true)
-                            [ -n "$new_ip" ] && APP_ENDPOINT="http://${new_ip}:${app_port}"
+                            new_ip=$(cloud_public_ip "$new_owner" 2>/dev/null) || new_ip=""
+                            if [ -n "$new_ip" ]; then
+                                APP_ENDPOINT="http://${new_ip}:${app_port}"
+                            else
+                                log_warn "load: cloud_public_ip(${new_owner}) returned empty; APP_ENDPOINT unchanged"
+                            fi
                         fi
                     fi
                     consec_fail=0

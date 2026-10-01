@@ -186,6 +186,82 @@ else
     fail "cloud_server_id provider 'aws' expected rc=2, got rc=${rc}"
 fi
 
+# 15) A lookup MISS is a probe miss, never a counted [FAIL] (cloud run 4: 02-chaos S19 x2, 12-network S05).
+#     log_fail prints on the stdout a caller captures with $(...) AND appends to the fail file that run_test
+#     counts (#1511), so a captured miss was a FAIL with no visible line, and its text became the "address".
+#     The assertion is on the FAIL-FILE DELTA, not on output: `! grep 'no entry'` is vacuous here because that
+#     text is exactly what the old code swallowed into the variable. (The earlier ghost fixtures above pass an
+#     address-shaped check on stdout, so they could not see the count: they shared the premise that a miss may
+#     be a log_fail.)
+miss_probe() {  # <label> <command...>: capture stdout exactly as callers do; report rc, stdout, fail-file delta
+    local label="$1" before after out rc; shift
+    before=$(_harness_fail_lines)
+    out=$("$@" 2>/dev/null); rc=$?
+    after=$(_harness_fail_lines)
+    MISS_RC=$rc; MISS_OUT=$out; MISS_DELTA=$((after - before)); MISS_LABEL=$label
+}
+miss_probe "ghost no entry" cloud_public_ip ghost
+if [ "$MISS_RC" -ne 0 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P1 cloud_public_ip miss: rc!=0, nothing on stdout, fail-file delta 0"
+else fail "P1 cloud_public_ip ghost: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA} (want rc!=0, empty, 0)"; fi
+before=$(_harness_fail_lines)
+out=$(BOOTSTRAP_CLUSTER_NAME="cloud-helpers-test-nonexistent-$$" cloud_public_ip node-1 2>/dev/null); rc=$?
+after=$(_harness_fail_lines)
+if [ "$rc" -ne 0 ] && [ -z "$out" ] && [ "$((after - before))" -eq 0 ]; then
+    ok "P2 cloud_public_ip missing state file: rc!=0, nothing on stdout, fail-file delta 0"
+else fail "P2 missing state file: rc=${rc} stdout='${out}' delta=$((after - before))"; fi
+miss_probe "server id, no server has the IP" cloud_server_id node-1
+if [ "$MISS_RC" -eq 1 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P3 cloud_server_id (address known, no server holds it): rc 1 = GONE, nothing on stdout, fail-file delta 0"
+else fail "P3 cloud_server_id node-1: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+miss_probe "server id, node does not resolve" cloud_server_id ghost
+if [ "$MISS_RC" -eq 3 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P4 cloud_server_id (address unresolvable): rc 3 = UNKNOWN (never rc 1 = gone), nothing on stdout, fail-file delta 0"
+else fail "P4 cloud_server_id ghost: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+# P4b: hcloud itself failing is UNKNOWN too (rc 3), not "no server holds the address" (rc 1).
+p4b=$( hcloud() { return 1; }; miss_probe "server id, hcloud list fails" cloud_server_id node-1; echo "${MISS_RC}|${MISS_OUT}|${MISS_DELTA}" )
+if [ "$p4b" = "3||0" ]; then
+    ok "P4b cloud_server_id (address known, hcloud server list FAILS): rc 3 = UNKNOWN, not rc 1 (gone)"
+else fail "P4b hcloud list failing: got '${p4b}' (want '3||0')"; fi
+# Positive control for the instrument: an argument error is a harness bug and STAYS loud and counted, so the
+# delta measure demonstrably sees a log_fail raised inside a capture.
+miss_probe "argument error (control)" cloud_public_ip
+if [ "$MISS_RC" -eq 2 ] && [ "$MISS_DELTA" -eq 1 ]; then
+    ok "P5 control: an argument error still counts through the fail file (delta 1, rc 2) - the delta measure can see a captured log_fail"
+else fail "P5 control: rc=${MISS_RC} delta=${MISS_DELTA} (want rc=2, delta=1)"; fi
+# resolved ids still print and count nothing
+miss_probe "hit" cloud_public_ip node-1
+if [ "$MISS_RC" -eq 0 ] && [ "$MISS_OUT" = "203.0.113.10" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P6 control: a hit still prints the address, rc 0, delta 0"
+else fail "P6 hit: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+
+# 16) run_test prints a counted [FAIL] it could not show. A [FAIL] raised inside $(...) counts through the fail file
+#     but its text goes into the caller's variable; run_test used to report only "emitted N [FAIL] line(s)" and the
+#     lines themselves were nowhere in the log (S19 x2: found only by reading the run's $TMPDIR fail file).
+swallow_fn() { local v; v=$(log_fail "swallowed-probe-text"); return 0; }
+visible_fn() { log_fail "visible-probe-text" >/dev/null; return 0; }
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Swallow probe (T1)" swallow_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
+if printf '%s' "$rt_out" | grep -qF "counted [FAIL] record for this test (1 counted, 0 printed above)" && printf '%s' "$rt_out" | grep -qF "swallowed-probe-text" \
+   && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1" && ! printf '%s' "$rt_out" | grep -qF "(swallowed)"; then
+    ok "P7 run_test: a [FAIL] swallowed by \$(...) is recorded as FAIL AND the test's fail-file record is printed (no claim about which line was hidden)"
+else fail "P7 run_test swallowed: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Visible probe (T2)" visible_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
+if ! printf '%s' "$rt_out" | grep -qF "counted [FAIL] record" && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1"; then
+    ok "P8 control: an in-process [FAIL] (counted by both latches) prints no extra record"
+else fail "P8 run_test visible: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
+# P9: interleaved captured / in-process / captured fails: the record is exactly this test's fail-file lines, in order,
+# starting AFTER what earlier tests wrote (the first line used to be omitted and an already-visible one mislabelled).
+mixed_fn() { local v; v=$(log_fail "mix-sw-1"); log_fail "mix-vis-2" >/dev/null; v=$(log_fail "mix-sw-3"); return 0; }
+log_fail "earlier-test-line" >/dev/null
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Mixed probe (T3)" mixed_fn 2>&1 )
+rec=$(printf '%s\n' "$rt_out" | grep -E '^    \| ' | tr '\n' '#')
+case "$rec" in
+    *"mix-sw-1"*"#"*"mix-vis-2"*"#"*"mix-sw-3"*"#") rec_ok=1 ;; *) rec_ok=0 ;;
+esac
+if [ "$rec_ok" = 1 ] && ! printf '%s' "$rec" | grep -qF "earlier-test-line" && printf '%s' "$rt_out" | grep -qF "(3 counted, 1 printed above)"; then
+    ok "P9 interleaved fails: the record holds all 3 of this test's lines in order, none of an earlier test's, header says 3 counted / 1 printed"
+else fail "P9 got '${rec}' hdr=$(printf '%s' "$rt_out" | grep -F 'record for this test')"; fi
+
 # ---------------------------------------------------------------------------
 # H1/H2 (#1051): jvm_unit_show / jvm_unit_field / jvm_unit_is_drain_halt /
 # jvm_unit_assert_drain_halt (lib/common.sh). On --runtime jvm there is no
@@ -289,7 +365,7 @@ set --
 # --- node_app_endpoints on cloud (2026-09-24): one http://<public-ip>:<app port> per live core ------
 # Uses the REAL cloud_public_ip against this file's fixture: node-1 resolves from bootstrap-state,
 # the CTM replacement resolves via /api/v1/nodes/endpoint, and "ghost" misses — which cloud_public_ip
-# reports through log_fail on STDOUT, the exact output a capture must not mistake for an address.
+# reports as a stderr warning with rc 1 (it used to be a log_fail on STDOUT, which counted a phantom FAIL — see P1).
 app_eps() {  # members... -> "rc|<stdout joined by ,>"
     ( CLOUD_MODE=true; APP_PORT=8070
       source "${INTEG_DIR}/lib/cluster.sh" >/dev/null 2>&1
