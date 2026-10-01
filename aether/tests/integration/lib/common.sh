@@ -1749,14 +1749,45 @@ jvm_unit_is_drain_halt() {
 # systemctl show — the JVM-runtime analog of `docker inspect .State.ExitCode`. An
 # SSH/systemctl read failure is a hard log_fail, never a silent pass. Unit-tested via
 # test/test-cloud-helpers.sh and test/test-chaos-harness.sh with a stubbed ssh.
+#
+# With a THIRD argument (even empty) the read goes to that ADDRESS (cloud_ssh_ip) instead of resolving <node id> live, and
+# proves WHICH VM answered: the same ssh command first prints the VM's own AETHER_NODE_ID (/etc/aether/node.env, written by
+# the node's user-data), and a mismatch or missing id is a FAIL. After a quorum-loss drain a CTM survivor no longer resolves
+# live (it is not in bootstrap-state.json and the cluster API is down), so callers pass the pre-kill cached address; and a
+# cached address may have been RECYCLED onto another VM, which would answer with its own unit state (a successful read from
+# the wrong subject). An empty address is an honest FAIL ("SSH not attempted"), never a guess.
 jvm_unit_assert_drain_halt() {
     local node_id="$1" label="${2:-$1}"
     local show rc active_state exec_status
-    show=$(jvm_unit_show "$node_id" "ActiveState,ExecMainStatus")
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-        log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}): $(printf '%s' "$show" | head -c 300)"
-        return 1
+    if [ "$#" -ge 3 ]; then
+        local ip="$3" expected="$1" observed
+        if [ -z "$ip" ]; then
+            log_fail "${label} systemd unit unread: IP unresolvable (no pre-kill cache entry, live lookup failed) — SSH not attempted"
+            return 1
+        fi
+        [[ "$expected" =~ ^node-([0-9]+)$ ]] && expected="${CLOUD_SOURCE_NAME}-core-$(( ${BASH_REMATCH[1]} - 1 ))"
+        show=$(cloud_ssh_ip "$ip" "grep -m1 '^AETHER_NODE_ID=' /etc/aether/node.env 2>&1; systemctl show aether-node --property=ActiveState,ExecMainStatus 2>&1")
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}) at ${ip}: $(printf '%s' "$show" | head -c 300)"
+            return 1
+        fi
+        observed=$(jvm_unit_field "$show" "AETHER_NODE_ID" | tr -d '"')
+        if [ -z "$observed" ]; then
+            log_fail "${label} identity indeterminate: ${ip} returned no AETHER_NODE_ID, so it cannot be shown WHICH VM answered — the read is void, not a pass"
+            return 1
+        fi
+        if [ "$observed" != "$expected" ]; then
+            log_fail "${label} identity violation: read ${ip} expecting node '${expected}' but node '${observed}' answered — the cached survivor IP has been recycled onto another VM; its unit state says nothing about ${expected}"
+            return 1
+        fi
+    else
+        show=$(jvm_unit_show "$node_id" "ActiveState,ExecMainStatus")
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}): $(printf '%s' "$show" | head -c 300)"
+            return 1
+        fi
     fi
     active_state=$(jvm_unit_field "$show" "ActiveState")
     exec_status=$(jvm_unit_field "$show" "ExecMainStatus")

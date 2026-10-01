@@ -1052,8 +1052,14 @@ test_survivor_exit_codes_are_two() {
             log_fail "Survivors file missing entries (s1='${s1}', s2='${s2}') — no survivor to read the halt reason from"
             return 1
         fi
-        jvm_unit_assert_drain_halt "$s1" "Survivor ${s1}"
-        jvm_unit_assert_drain_halt "$s2" "Survivor ${s2}"
+        # Read at the PRE-KILL cached address, with the VM's identity proven (see jvm_unit_assert_drain_halt): after the
+        # quorum-loss drain a CTM survivor does not resolve live, which made this step FAIL on VMs that had halted with
+        # exit 2 (S19 tier 2 had already read ExecMainStatus=2 from the same VMs).
+        local ip1 ip2
+        ip1=$(_s19_resolve_survivor_ip "$s1") || ip1=""
+        ip2=$(_s19_resolve_survivor_ip "$s2") || ip2=""
+        jvm_unit_assert_drain_halt "$s1" "Survivor ${s1}" "$ip1"
+        jvm_unit_assert_drain_halt "$s2" "Survivor ${s2}" "$ip2"
         return
     fi
     # The node's DrainProcedure ends in its jvmExit hook, which
