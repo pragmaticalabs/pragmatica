@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -48,6 +49,10 @@ import static org.awaitility.Awaitility.await;
 /// it cannot mint the replacements with a full list and mask the staleness.
 ///
 /// Five cores, two killed: three survivors keep the quorum.
+///
+/// Heavy until it has a measured pass rate on the per-PR runner: it kills two of five cores and waits out the
+/// failure detector (about a minute) before the replacements join.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class ReplacementStalePeerListTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
