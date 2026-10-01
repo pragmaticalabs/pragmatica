@@ -319,6 +319,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
             ctx.resetStuckElectionCount();
             adoptLeaderFromKvIfPresent(ctx);
@@ -593,6 +594,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            ctx.clearProposalInFlight();
             ctx.resetStuckElectionCount();
             clearLeaderAndNotify(ctx);
             adoptLeaderFromKvIfPresent(ctx);
@@ -971,6 +973,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // in-flight proposal.
             log.warn("triggerElection swallowed by GUARD[proposal-in-flight]: a proposal is "
                     + "already in flight — skipping (timeout will reschedule)");
+
+            return;
+        }
+
+        if (ctx.fsm().current() != owner) {
+            // #1797 F1: a tick's own KV-pull adoption moved the FSM out of `owner` before this point;
+            // `owner.onExit` already cleared the guard, `tryStartProposal` just re-set it, and a proposal
+            // sent from the left state would store its timeout on a dead record (so nothing ever
+            // releases the guard) and double-propose the round the commit already settled.
+            ctx.clearProposalInFlight();
 
             return;
         }

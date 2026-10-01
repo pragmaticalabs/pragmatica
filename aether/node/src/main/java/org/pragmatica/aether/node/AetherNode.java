@@ -2026,7 +2026,8 @@ public interface AetherNode extends ManageableNode {
                           long startTimeMs,
                           AtomicLong swimBootAt,
                           PeriodicTasks periodicTasks,
-                          Option<KvBackupService> kvBackupService) implements AetherNode {
+                          Option<KvBackupService> kvBackupService,
+                          LeaderTerm leaderTerm) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -5780,7 +5781,8 @@ public interface AetherNode extends ManageableNode {
                                   startTimeMs,
                                   swimBootAtMs,
                                   periodicTasks,
-                                  kvBackupService);
+                                  kvBackupService,
+                                  leaderTerm);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -5998,7 +6000,8 @@ public interface AetherNode extends ManageableNode {
                                                                         startTimeMs,
                                                                         swimBootAtMs,
                                                                         periodicTasks,
-                                                                        kvBackupService);
+                                                                        kvBackupService,
+                                                                        leaderTerm);
                                               }
 
                                                   return node;

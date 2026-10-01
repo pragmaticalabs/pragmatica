@@ -23,8 +23,11 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -47,6 +50,13 @@ class LeaderProposalInFlightTest {
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> buildHarness(LeaderProposalHandler handler,
                                                                               TimeSpan retryDelay,
                                                                               TimeSpan proposalTimeout) {
+        return buildHarness(handler, retryDelay, proposalTimeout, Option::none);
+    }
+
+    private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> buildHarness(LeaderProposalHandler handler,
+                                                                              TimeSpan retryDelay,
+                                                                              TimeSpan proposalTimeout,
+                                                                              Supplier<Option<NodeId>> kvLeader) {
         return FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness(
                 "leader-proposal-in-flight-test",
                 fsm -> new LeaderElectionContext(fsm,
@@ -62,7 +72,7 @@ class LeaderProposalInFlightTest {
                                                  LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                  LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                  () -> true,
-                                                 Option::none,
+                                                 kvLeader,
                                                  LONG,
                                                  LONG).dormant());
     }
@@ -188,6 +198,42 @@ class LeaderProposalInFlightTest {
         }
 
         assertThat(proposals.get()).as("the timeout released the guard and the retry re-proposed").isEqualTo(2);
+        h.dispatch(new ClusterFsmEvent.Shutdown());
+    }
+
+    /// #1797 F1: a tick whose own KV-pull adoption moves the FSM to `Led` (the commit was observed but its
+    /// `LeaderCommitted` had not reached the FSM) must not then propose from the state it just left. Before
+    /// the re-check the same handler proposed again on the exited record, whose timeout lives on a dead
+    /// record — the guard leaked and the next `ReElecting` could not propose until another node committed.
+    @Test
+    void electing_tickWhoseAdoptionLeavesTheState_proposesNothingFromTheLeftState() throws InterruptedException {
+        var proposals = new CopyOnWriteArrayList<Long>();
+        LeaderProposalHandler handler = (candidate, viewSeq) -> {
+            proposals.add(viewSeq);
+            return Promise.success(Unit.unit());
+        };
+        var kvLeader = new AtomicReference<>(Option.<NodeId>none());
+        var h = buildHarness(handler, SHORT_RETRY, SHORT_PROPOSAL_TIMEOUT, kvLeader::get);
+
+        enterElecting(h);
+        var ctx = ctxOf(h);
+        h.dispatch(new ElectionTick());
+        assertThat(proposals).containsExactly(1L);
+
+        kvLeader.set(Option.some(PEER_A));
+        ctx.observeViewSequence(1L);
+        h.dispatch(new ElectionTick());
+
+        assertThat(h.state()).as("the tick's adoption moved the FSM to Led").isInstanceOf(LeaderElectionState.Led.class);
+        assertThat(proposals).as("no proposal from the left state").containsExactly(1L);
+        assertThat(ctx.proposalInFlight()).as("no leaked guard").isFalse();
+
+        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_A, List.of(SELF, PEER_B)));
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
+        kvLeader.set(Option.none());
+        h.dispatch(new ElectionTick());
+
+        assertThat(proposals.size()).as("the next ReElecting round can propose").isEqualTo(2);
         h.dispatch(new ClusterFsmEvent.Shutdown());
     }
 }
