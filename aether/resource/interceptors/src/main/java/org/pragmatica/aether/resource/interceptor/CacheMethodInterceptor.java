@@ -20,6 +20,9 @@ import org.slf4j.LoggerFactory;
 /// does not fail a call whose business work already succeeded. The failure is logged at DEBUG —
 /// a per-call WARN during a DHT outage would be an unbounded log on the hottest path (#718's
 /// lesson); the outage itself is visible on the backend's own side.
+///
+/// `cacheName` names the shared backend in those log lines; [CacheInterceptorFactory] supplies it,
+/// and an interceptor built directly over a backend carries none.
 @SuppressWarnings("unchecked")
 public record CacheMethodInterceptor(CacheBackend cache,
                                      CacheStrategy strategy,
@@ -28,7 +31,7 @@ public record CacheMethodInterceptor(CacheBackend cache,
     private static final Logger log = LoggerFactory.getLogger(CacheMethodInterceptor.class);
 
     public CacheMethodInterceptor(CacheBackend cache, CacheStrategy strategy, Fn1<Object, ?> keyExtractor) {
-        this(cache, strategy, keyExtractor, Option.empty());
+        this(cache, strategy, keyExtractor, Option.none());
     }
 
     @Override

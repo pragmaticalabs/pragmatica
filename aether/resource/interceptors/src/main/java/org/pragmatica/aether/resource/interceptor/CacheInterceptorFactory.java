@@ -8,18 +8,18 @@ import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
 public final class CacheInterceptorFactory implements ResourceFactory<CacheMethodInterceptor, CacheConfig> {
-    private final NamedResourceRegistry<CacheBackend> cacheRegistry = new NamedResourceRegistry<>();
+    private final SharedByName<CacheBackend> caches = SharedByName.sharedByName();
 
     @Override
     public Class<CacheMethodInterceptor> resourceType() {
@@ -41,21 +41,30 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
     public Promise<CacheMethodInterceptor> provision(CacheConfig config, ProvisioningContext context) {
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
 
-        return createCache(config, context).map(cache -> cacheRegistry.acquire(config.cacheName(),
-                                                                               () -> cache,
-                                                                               sharedCache -> new CacheMethodInterceptor(sharedCache,
-                                                                                                                         config.strategy(),
-                                                                                                                         keyExtractor,
-                                                                                                                         Option.present(config.cacheName()))))
+        return createCache(config, context).map(cache -> share(cache, config, keyExtractor))
                           .async();
     }
 
+    /// Releases this interceptor's hold on the backend shared under its cache name; the name is
+    /// pruned from the registry when its last holder is released (#894). The backend itself owns
+    /// nothing to close, so release is all unloading does.
     @Override
     public Promise<Unit> close(CacheMethodInterceptor resource) {
-        // The boolean only reports whether this holder was registered; close is idempotent, so false is a no-op.
-        resource.cacheName().onPresent(name -> cacheRegistry.release(name, resource));
+        return Promise.success(caches.release(resource));
+    }
 
-        return Promise.unitPromise();
+    /// Whether a backend is currently registered under `cacheName`.
+    boolean retains(String cacheName) {
+        return caches.contains(cacheName);
+    }
+
+    private CacheMethodInterceptor share(CacheBackend candidate, CacheConfig config, Fn1<Object, ?> keyExtractor) {
+        return caches.acquire(config.cacheName(),
+                              candidate,
+                              cache -> new CacheMethodInterceptor(cache,
+                                                                  config.strategy(),
+                                                                  keyExtractor,
+                                                                  some(config.cacheName())));
     }
 
     private Result<? extends CacheBackend> createCache(CacheConfig config, ProvisioningContext context) {

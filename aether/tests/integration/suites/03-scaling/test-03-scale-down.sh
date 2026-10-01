@@ -94,10 +94,14 @@ test_seed_marker() {
 
     # Gate on MEMBERSHIP settled, not only generation quiescence: the previous suite's scale-up nodes depart PHYSICALLY after
     # the voter count has already flipped (S-triple-prime: the marker PUT, 6 s after Restore_to_5 reported 5 nodes, answered
-    # 500 while the DHT ring was still dropping a departing replica). Settled = installedVoters == targetVoters and the
-    # member count equals the voter count, on two reads 2 s apart. Bounded; on timeout it warns and seeds anyway (the PUT
+    # 500 while the DHT ring was still dropping a departing replica). Settled = stage STABLE (an absent targetVoters is the
+    # settled state) and the member count equals the voter count, on two reads 2 s apart. Bounded; on timeout it warns and seeds anyway (the PUT
     # below records its body and retries once on 503), so a ring that never settles is attributed, not hidden.
-    _seed_membership_settled "${SEED_MEMBERSHIP_SETTLE_S:-90}" \
+    local settle_rc=0
+    _seed_membership_settled "${SEED_MEMBERSHIP_SETTLE_S:-90}" || settle_rc=$?
+    # rc 2 is a harness parser bug, already a visible counted FAIL; do not seed on top of it.
+    [ "$settle_rc" -eq 2 ] && return 1
+    [ "$settle_rc" -eq 0 ] \
         || log_run_warning "test_seed_marker: membership not settled within ${SEED_MEMBERSHIP_SETTLE_S:-90}s (installed=[$(_cluster_voters installedVoters | tr '\n' ' ')] target=[$(_cluster_voters targetVoters | tr '\n' ' ')] members=$(cluster_member_count)) — seeding anyway"
 
     local status
