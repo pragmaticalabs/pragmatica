@@ -56,6 +56,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.*;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
+import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusDemoted;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -685,11 +686,27 @@ public class RabiaEngine<C extends Command> {
     /// authoritative source for `ClusterStateNotification` (E2 Phase 2c.0, 2026-05-28).
     private final Consumer<ConsensusEvent> consensusEventListener;
 
-    /// Single-fire-per-transition gate for `ConsensusActive` / `ConsensusPassive`. Tracks the
-    /// last published "active" sense; the consumer fires only on true edges
-    /// (false → true emits `ConsensusActive`, true → false emits `ConsensusPassive`).
-    /// Initialized `false` because every engine starts in `Stopped` (not active).
-    private final java.util.concurrent.atomic.AtomicBoolean lastPublishedActive = new java.util.concurrent.atomic.AtomicBoolean(false);
+    /// Single-fire-per-transition gate for `ConsensusActive` / `ConsensusPassive` / `ConsensusDemoted`.
+    /// Tracks the last published sense; the consumer fires only on true edges. Three senses, not two,
+    /// because "not active" has two causes the app layer must tell apart (#1790): an observer of a live
+    /// quorum (`OBSERVING`) still applies committed decisions, any other non-active state (`PASSIVE`)
+    /// does not. Initialized `PASSIVE` because every engine starts in `Stopped` (not active).
+    private final java.util.concurrent.atomic.AtomicReference<PublishedSense> lastPublishedSense = new java.util.concurrent.atomic.AtomicReference<>(PublishedSense.PASSIVE);
+
+    private enum PublishedSense {
+        PASSIVE,
+        OBSERVING,
+        ACTIVE;
+        static PublishedSense of(EngineState state) {
+            if (state.isActive()) {
+                return ACTIVE;
+            }
+
+            return state.isObserving()
+                   ? OBSERVING
+                   : PASSIVE;
+        }
+    }
 
     // Single-thread executor with DiscardPolicy to silently drop tasks after shutdown
     private final ExecutorService executor = new ThreadPoolExecutor(1,
@@ -2695,29 +2712,57 @@ public class RabiaEngine<C extends Command> {
     /// `ClusterStateNotification.ACTIVE` / `PASSIVE` on the cluster `MessageRouter`.
     @Contract
     private void notifyConsensusStateTransition() {
-        var nowActive = engineState.get().isActive();
-        var prev = lastPublishedActive.get();
+        var next = PublishedSense.of(engineState.get());
+        var prev = lastPublishedSense.get();
 
-        if (nowActive == prev) {
+        if (next == prev) {
             return;
         }
 
-        if (!lastPublishedActive.compareAndSet(prev, nowActive)) {
+        if (!lastPublishedSense.compareAndSet(prev, next)) {
             return;
         }
 
-        if (nowActive) {
-            // Single authority for downstream ClusterStateNotification: TopologyObserver feeds the
-            // quorum edge to this engine privately, and this emission (via ConsensusBridge) is now
-            // the sole shared-bus producer of Rabia's active status. CAS-latch above stays as
-            // belt-and-suspenders: notifyConsensusStateTransition runs off several state-mutation
-            // sites that are not all on the single apply executor, so the edge guard is load-bearing.
-            log.info("Node {}: emitting ConsensusActive (cluster active)", self);
-            consensusEventListener.accept(new ConsensusActive(self));
-        } else {
-            log.info("Node {}: emitting ConsensusPassive (cluster passive)", self);
-            consensusEventListener.accept(new ConsensusPassive(self));
+        publishTransition(prev, next);
+    }
+
+    @Contract
+    private void publishTransition(PublishedSense prev, PublishedSense next) {
+        switch (next) {
+            case ACTIVE -> emitActive();
+            case OBSERVING -> emitObserving(prev);
+            case PASSIVE -> emitPassive();
         }
+    }
+
+    // Single authority for downstream ClusterStateNotification: TopologyObserver feeds the
+    // quorum edge to this engine privately, and this emission (via ConsensusBridge) is now
+    // the sole shared-bus producer of Rabia's active status. The CAS-latch in
+    // notifyConsensusStateTransition stays as belt-and-suspenders: it runs off several
+    // state-mutation sites that are not all on the single apply executor, so the edge guard
+    // is load-bearing.
+    @Contract
+    private void emitActive() {
+        log.info("Node {}: emitting ConsensusActive (cluster active)", self);
+        consensusEventListener.accept(new ConsensusActive(self));
+    }
+
+    @Contract
+    private void emitPassive() {
+        log.info("Node {}: emitting ConsensusPassive (cluster passive)", self);
+        consensusEventListener.accept(new ConsensusPassive(self));
+    }
+
+    // Only Active -> Observing is a demotion: a voter reconfiguration removed this node while the
+    // cluster kept quorum. Passive -> Observing (cold-start observer) was never published and stays so.
+    @Contract
+    private void emitObserving(PublishedSense prev) {
+        if (prev != PublishedSense.ACTIVE) {
+            return;
+        }
+
+        log.info("Node {}: emitting ConsensusDemoted (left the electorate; observing a live quorum)", self);
+        consensusEventListener.accept(new ConsensusDemoted(self));
     }
 
     /// Creates a periodic stall detector that re-broadcasts the held proposal set and this
