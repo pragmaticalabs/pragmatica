@@ -144,6 +144,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// production scheduler runs the reconcile every {@code STREAM_RESHUFFLE_RECONCILE_INTERVAL} (5s), so
     /// `2` ticks ≈ the ~10s wall-clock debounce spec §5.4 suggests.
     static final int RELEASE_DEBOUNCE_TICKS = 2;
+    /// Reconcile ticks a paced-refused partition may stay held but unmaterialized before the manager WARNs
+    /// ([#redrivePacedRefusals]). At the 5s reconcile interval this is ~60s — well past the ~30s a stalled slot
+    /// takes to be preempted ([#RESHUFFLE_SLOT_MAX_TICKS]), so reaching it means the re-drive is not converging.
+    /// Repeats every this many ticks while the condition holds.
+    static final int HELD_UNMATERIALIZED_WARN_TICKS = 12;
+
+    /// Reconcile ticks a paced-refused partition may sit at role NONE before its re-drive entry is dropped. A
+    /// transient NONE (ownership re-mint / membership flap, the #1734 shape) must NOT forget the refusal — the
+    /// role returns with no new registry edge, so nothing else would re-drive it (#1805) — while a partition
+    /// that really moved away must not stay on the ledger forever. ~60s at the 5s reconcile interval.
+    static final int PACED_REFUSAL_NONE_GRACE_TICKS = 12;
 
     /// The `system:*` namespace prefix (mirrors `ReplicaSetController.SYSTEM_NAMESPACE_PREFIX`). System
     /// streams are cluster-critical and full-cluster placed; per owner decision 2026-07-05 they BYPASS the
@@ -348,6 +359,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Dedup set across both queues + a fast "is queued" membership test — a repeat materialize request for an
     /// already-queued partition is a no-op (idempotent, like the lazy-materialize path itself).
     private final Set<PartitionRef> queuedMaterializations = ConcurrentHashMap.newKeySet();
+    /// Re-drive ledger (#1805): every partition whose materialize was refused as paced, keyed to when it was
+    /// refused and when it was last seen held. The queues above are TRANSIENT work lists — a drain failure or a
+    /// stale-purge (role flapped to NONE for a tick) removes the entry, and the only producers of a materialize
+    /// attempt are edge-triggered (the registry-add edge behind `onBecameReplica`, an owner append) — so without
+    /// this level-triggered record a refused partition that lost its queue entry stayed held-but-not-materialized
+    /// forever. Each [#reconcileReshuffle] tick re-queues every ledger partition that is still unmaterialized and
+    /// held. Removed when the ring exists, the stream is gone, or the role stayed NONE past
+    /// [#PACED_REFUSAL_NONE_GRACE_TICKS].
+    private final Map<PartitionRef, PacedRefusal> pacedRefusals = new ConcurrentHashMap<>();
+    /// WARNs raised for partitions held-but-unmaterialized past [#HELD_UNMATERIALIZED_WARN_TICKS] since boot.
+    private final AtomicLong heldUnmaterializedWarnings = new AtomicLong(0);
 
     /// Reconcile tick at which each in-flight partition ACQUIRED its slot — the input to starvation
     /// preemption ([#preemptStalledSlots]). Removed when the slot is freed or preempted.
@@ -3507,6 +3529,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         systemMaterializeQueue.clear();
         appMaterializeQueue.clear();
         queuedMaterializations.clear();
+        pacedRefusals.clear();
         releaseCandidacy.clear();
         // #642: this manager owns the replication manager, and the batcher underneath it arms a
         // one-shot flush per batch (#1246) on the process-wide SharedScheduler. Nothing else called its
@@ -3840,13 +3863,33 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partition is a no-op. Returns the named {@link StreamError.ReshufflePaced} so the caller retries
     /// (reconcile hook next tick / owner-append client retry), never forwards.
     private Result<OffHeapRingBuffer> enqueueMaterialize(PartitionRef ref, boolean system) {
+        var tick = reconcileTick.get();
+
+        pacedRefusals.putIfAbsent(ref, PacedRefusal.pacedRefusal(tick));
+        queueMaterialization(ref, system);
+
+        return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), reshuffleConcurrency).result();
+    }
+
+    @Contract
+    private void queueMaterialization(PartitionRef ref, boolean system) {
         if (queuedMaterializations.add(ref)) {
             (system
              ? systemMaterializeQueue
              : appMaterializeQueue).add(ref);
         }
+    }
 
-        return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), reshuffleConcurrency).result();
+    /// A partition whose materialize was refused as paced: first refusal tick, and the last tick it was seen
+    /// held (role OWNER/REPLICA) — the NONE-grace clock of [#PACED_REFUSAL_NONE_GRACE_TICKS].
+    private record PacedRefusal(long refusedTick, long lastHeldTick) {
+        static PacedRefusal pacedRefusal(long tick) {
+            return new PacedRefusal(tick, tick);
+        }
+
+        PacedRefusal heldAt(long tick) {
+            return new PacedRefusal(refusedTick, tick);
+        }
     }
 
     /// Periodic reshuffle-lifecycle reconcile (#265 increment 5) — the release state machine + slot pacing
@@ -3867,7 +3910,59 @@ public final class StreamPartitionManager implements AutoCloseable {
         freeCompletedSlots();
         preemptStalledSlots();
         evaluateReleaseCandidates();
+        redrivePacedRefusals();
         drainMaterializeQueue();
+    }
+
+    /// Level-triggered re-drive of paced refusals (#1805): every ledger partition still held and unmaterialized
+    /// is (re-)queued, so a lost queue entry or a role that flapped through NONE cannot strand it. Idempotent —
+    /// [#queueMaterialization] dedups, and the drain still goes through [#materializePartition], so the
+    /// `reshuffle_concurrency` bound and the budget-AND apply unchanged. Escalates to a WARN every
+    /// [#HELD_UNMATERIALIZED_WARN_TICKS] ticks while a partition stays held but unmaterialized.
+    @Contract
+    private void redrivePacedRefusals() {
+        pacedRefusals.forEach(this::redrivePaced);
+    }
+
+    @Contract
+    private void redrivePaced(PartitionRef ref, PacedRefusal refusal) {
+        var tick = reconcileTick.get();
+
+        if (!awaitsMaterialize(ref)) {
+            pacedRefusals.remove(ref);
+        } else if (shouldMaterialize(ref.streamName(), ref.partition())) {
+            pacedRefusals.put(ref, refusal.heldAt(tick));
+            queueMaterialization(ref, isSystemStream(ref.streamName()));
+            warnIfStalled(ref, tick - refusal.refusedTick());
+        } else if (tick - refusal.lastHeldTick() >= PACED_REFUSAL_NONE_GRACE_TICKS) {
+            pacedRefusals.remove(ref);
+        }
+    }
+
+    /// The stream exists and the partition has no ring yet.
+    private boolean awaitsMaterialize(PartitionRef ref) {
+        return option(streams.get(ref.streamName())).map(entry -> entry.ringFor(ref.partition())
+                                                                       .isEmpty())
+                     .or(false);
+    }
+
+    @Contract
+    private void warnIfStalled(PartitionRef ref, long ticksRefused) {
+        if (ticksRefused > 0 && ticksRefused % HELD_UNMATERIALIZED_WARN_TICKS == 0) {
+            heldUnmaterializedWarnings.incrementAndGet();
+            log.warn("Stream partition {}[{}] has been held but not materialized for {} reconcile ticks — paced by reshuffle_concurrency={} ({} queued); writes to it are refused until it materializes",
+                     ref.streamName(),
+                     ref.partition(),
+                     ticksRefused,
+                     reshuffleConcurrency,
+                     queuedMaterializations.size());
+        }
+    }
+
+    /// WARNs raised for held-but-unmaterialized paced partitions since boot (#1805); a test seam for the
+    /// stall escalation.
+    long heldUnmaterializedWarnings() {
+        return heldUnmaterializedWarnings.get();
     }
 
     /// Anti-starvation preemption. A slot was held for as long as a partition stayed a not-caught-up REPLICA,
@@ -4050,9 +4145,35 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void drainClass(Deque<PartitionRef> queue, boolean system) {
         queue.removeIf(this::purgeStaleQueued);
-        while (!queue.isEmpty() && reshuffleSlots.availablePermits() > 0 && headCanProceed(queue.peekFirst(), system)) {
-            materializeQueued(queue.removeFirst());
+        var attempts = queue.size();
+        // Bounded by the entry size: a ref that is paced again is re-queued at the tail and must not be re-tried
+        // within the same tick.
+        while (attempts--> 0 && drainOne(queue, system)) {
+            continue;
         }
+    }
+
+    /// Materialize the next drainable queued ref, if its budget-AND allows. False when nothing proceeded.
+    private boolean drainOne(Deque<PartitionRef> queue, boolean system) {
+        return nextDrainable(queue).filter(ref -> headCanProceed(ref, system))
+                            .filter(queue::remove)
+                            .onPresent(this::materializeQueued)
+                            .isPresent();
+    }
+
+    /// First queued ref that needs no slot or has one free. With a free permit that is the FIFO head; with none
+    /// it is the first partition that has since become OWNER — an owner materialize is never paced
+    /// ([#buildAndInstall]), so it must not wait behind replica backfills for a permit it will not take (#1805).
+    private Option<PartitionRef> nextDrainable(Deque<PartitionRef> queue) {
+        return queue.stream()
+                    .filter(this::slotAvailableFor)
+                    .findFirst()
+                    .map(Option::some)
+                    .orElseGet(Option::none);
+    }
+
+    private boolean slotAvailableFor(PartitionRef ref) {
+        return reshuffleSlots.availablePermits() > 0 || placementRoleSupplier.roleFor(ref.streamName(), ref.partition()) == Role.OWNER;
     }
 
     /// Drop a queued ref no longer drainable — stream removed, this node no longer holds the partition (role
