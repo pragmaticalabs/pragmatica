@@ -408,9 +408,17 @@ _endpoint_node_id() {
 
 # The consensus voters from /api/v1/nodes/status voterReconfiguration: <field> is installedVoters or targetVoters.
 # One node id per line, sorted. Empty when the read fails or the list is empty.
+#
+# THE WIRE SHAPE (a real node's body: test/fixtures/node-status-real-stable.json): when no reconfiguration is requested the
+# serializer OMITS empty lists, so a STABLE node has `"voterReconfiguration":{"stage":"STABLE","installedEpoch":0,
+# "installedVoters":[...]}` and NO targetVoters key at all (docs: "targetVoters: the requested roster, empty when none").
+# An empty targetVoters is therefore the NORMAL settled state, not a parse failure.
 _cluster_voters() {
-    api_get "/api/v1/nodes/status" 2>/dev/null \
-        | tr -d '\n ' | { grep -oE "\"$1\":\[[^]]*\]" || true; } | head -1 \
+    api_get "/api/v1/nodes/status" 2>/dev/null | _voters_in "$1"
+}
+# stdin: a /api/v1/nodes/status body. <field>: the ids of that voter list, one per line, sorted.
+_voters_in() {
+    tr -d '\n ' | { grep -oE "\"$1\":\[[^]]*\]" || true; } | head -1 \
         | { grep -oE '"[^"]+"' || true; } | { grep -v "^\"$1\"\$" || true; } | tr -d '"' | sort
 }
 
@@ -453,16 +461,37 @@ put_artifact_retry_503() {
     printf '%s' "$status"
 }
 
-# Wait (bounded) until the membership has settled: installedVoters == targetVoters and the member count equals the voter
-# count, on two consecutive reads a poll apart. <budget seconds>. rc 0 settled, 1 not within the budget.
+# Wait (bounded) until the membership has settled: the node reports voterReconfiguration stage STABLE (no requested roster,
+# nobody catching up), any targetVoters it does report equals installedVoters, and the member count equals the voter count,
+# on two consecutive reads a poll apart. An ABSENT targetVoters is the settled state (see _cluster_voters). <budget seconds>.
+# rc 0 settled, 1 not within the budget (or the node unreadable), 2 HARNESS BUG: the body names voterReconfiguration /
+# installedVoters but the parser reads no stage / no installed list from it, i.e. the parser no longer matches the wire shape;
+# that is a loud log_fail, never a warning (a gate that can never settle looks exactly like a cluster that never does).
 _seed_membership_settled() {
-    local budget="${1:-90}" deadline inst tgt members stable=0
+    local budget="${1:-90}" deadline body stage inst tgt members stable=0
     deadline=$(( SECONDS + budget ))
     while :; do
-        inst=$(_cluster_voters installedVoters | tr '\n' ' ')
-        tgt=$(_cluster_voters targetVoters | tr '\n' ' ')
+        body=$(api_get "/api/v1/nodes/status" 2>/dev/null) || body=""
+        stage=$(printf '%s' "$body" | tr -d '\n ' | { grep -oE '"stage":"[A-Z_]+"' || true; } | head -1 | sed 's/.*:"\(.*\)"/\1/')
+        inst=$(printf '%s' "$body" | _voters_in installedVoters | tr '\n' ' ')
+        tgt=$(printf '%s' "$body" | _voters_in targetVoters | tr '\n' ' ')
+        case "$body" in
+            *'"voterReconfiguration"'*)
+                if [ -z "$stage" ]; then
+                    log_fail "_seed_membership_settled: the status body has voterReconfiguration but no parsable stage — the gate's parser is out of step with the wire shape (harness bug, not an unsettled cluster)"
+                    return 2
+                fi ;;
+        esac
+        case "$body" in
+            *'"installedVoters"'*)
+                if [ -z "$inst" ]; then
+                    log_fail "_seed_membership_settled: the status body has installedVoters but the parser read none — the gate's parser is out of step with the wire shape (harness bug, not an unsettled cluster)"
+                    return 2
+                fi ;;
+        esac
         members=$(cluster_member_count)
-        if [ -n "$inst" ] && [ "$inst" = "$tgt" ] && [ "$members" = "$(printf '%s' "$inst" | wc -w | tr -d ' ')" ]; then
+        if [ "$stage" = "STABLE" ] && [ -n "$inst" ] && { [ -z "$tgt" ] || [ "$inst" = "$tgt" ]; } \
+           && [ "$members" = "$(printf '%s' "$inst" | wc -w | tr -d ' ')" ]; then
             stable=$((stable + 1))
             [ "$stable" -ge 2 ] && return 0
         else
@@ -2277,11 +2306,13 @@ cloud_kill_vm() {
                 # (concurrent auto-heal). Treat as success — the VM is gone either way.
                 if printf '%s' "$out" | grep -qiE 'not found|does not exist'; then
                     log_warn "cloud_kill_vm: server ${sid} (node '${node_id}') already gone at delete time (idempotent no-op)"
+                    _cloud_record_deleted_vm "$node_id" "$sid"
                     return 0
                 fi
                 log_fail "cloud_kill_vm: hcloud server delete ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
                 return "$rc"
             fi
+            _cloud_record_deleted_vm "$node_id" "$sid"
             return 0
             ;;
         *)
@@ -2355,6 +2386,13 @@ cloud_revive_vm() {
             if ! command -v hcloud >/dev/null 2>&1; then
                 log_fail "cloud_revive_vm: hcloud CLI not found (required for provider 'hetzner')"
                 return 2
+            fi
+            # A VM this run deleted through cloud_kill_vm cannot be revived and its address no longer resolves (rc 3 below would be
+            # a counted FAIL for the harness's own deletion). The record says so: nothing to do, the baseline scale-up restores N.
+            local deleted_sid
+            if deleted_sid=$(_cloud_deleted_vm_server "$node_id"); then
+                log_info "cloud_revive_vm: '${node_id}' was deleted by this run's cloud kill (hetzner server ${deleted_sid}); restored by the baseline scale-up, not revived (no-op)"
+                return 0
             fi
             local sid sid_rc
             sid=$(cloud_server_id "$node_id" 2>/dev/null); sid_rc=$?
