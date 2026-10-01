@@ -291,6 +291,10 @@ public final class MavenProtocolRoutes implements RouteHandler {
     private void sendProtocolResponse(ResponseWriter response, MavenResponse mavenResponse) {
         var status = findHttpStatus(mavenResponse.statusCode());
 
+        if (status == HttpStatus.SERVICE_UNAVAILABLE) {
+            response.header("Retry-After", String.valueOf(TIER_NOT_ADMITTED_RETRY_AFTER_SECONDS));
+        }
+
         response.write(status,
                        mavenResponse.content(),
                        ContentType.contentType(mavenResponse.contentType(), categoryFor(mavenResponse.contentType())));
