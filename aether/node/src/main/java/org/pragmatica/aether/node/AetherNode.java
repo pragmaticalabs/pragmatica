@@ -4652,16 +4652,16 @@ public interface AetherNode extends ManageableNode {
                                                                                                                             configuredTransferPeers,
                                                                                                                             dialingSinceNanos),
                                                                                                          transferPeer.test(peer)) || hierarchyPeerPolicy.isConnectionInitiator(peer,
-                                                                                                                                                                                              transferPeer.test(peer) || routingCoreIds.get()
-                                                                                                                                                                                                                                                      .contains(peer) || membershipFsm.memberDescriptor(peer)
-                                                                                                                                                                                                                                                                                      .map(MemberDescriptor::isCore)
-                                                                                                                                                                                                                                                                                      .or(false),
-                                                                                                                                                                                              membershipFsm.memberDescriptor(peer)
-                                                                                                                                                                                                           .map(AetherNode::isWorkerDescriptor)
-                                                                                                                                                                                                           .or(false),
-                                                                                                                                                                                              workerEndpointDirectory.entries()
-                                                                                                                                                                                                                     .get()
-                                                                                                                                                                                                                     .containsKey(peer)));
+                                                                                                                                                                               transferPeer.test(peer) || routingCoreIds.get()
+                                                                                                                                                                                                                        .contains(peer) || membershipFsm.memberDescriptor(peer)
+                                                                                                                                                                                                                                                        .map(MemberDescriptor::isCore)
+                                                                                                                                                                                                                                                        .or(false),
+                                                                                                                                                                               membershipFsm.memberDescriptor(peer)
+                                                                                                                                                                                            .map(AetherNode::isWorkerDescriptor)
+                                                                                                                                                                                            .or(false),
+                                                                                                                                                                               workerEndpointDirectory.entries()
+                                                                                                                                                                                                      .get()
+                                                                                                                                                                                                      .containsKey(peer)));
         clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm,
                                                                          workerEndpointDirectory,
                                                                          peer -> hierarchyPeerPolicy.shouldConnect(peer) || (configuredWorker(config) && routingCoreIds.get()
@@ -6366,7 +6366,8 @@ public interface AetherNode extends ManageableNode {
     /// peers alone are frozen at mint — a replacement minted before the current leader existed would otherwise
     /// wait for a leader that does not know it to dial first.
     static Predicate<NodeId> transferPeers(Set<NodeId> configured, Supplier<Set<NodeId>> electorate) {
-        return peer -> configured.contains(peer) || electorate.get().contains(peer);
+        return peer -> configured.contains(peer) || electorate.get()
+                                                              .contains(peer);
     }
 
     private static long dialingSince(AtomicLong dialingSinceNanos) {

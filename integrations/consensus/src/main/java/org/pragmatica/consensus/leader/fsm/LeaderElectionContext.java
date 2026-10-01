@@ -64,10 +64,8 @@ public final class LeaderElectionContext {
     /// Production callers can override via the full-arity factory; the default is intentionally
     /// conservative so a misconfiguration doesn't introduce a deadlock-shaped bug.
     public static final TimeSpan DEFAULT_KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(3).seconds();
-
     /// How many grace windows a pending sync may stretch the `AwaitingKvSync` wait to (#1803).
     static final long KV_SYNC_MAX_WAIT_GRACES = 10L;
-
     /// Cadence for the independent peer-observation timer scheduled in
     /// [`LeaderElectionState.Electing`] / [`LeaderElectionState.ReElecting`]. Names a real
     /// architectural smell: `Electing.handle` previously conflated "drive my own proposal" with
@@ -634,7 +632,8 @@ public final class LeaderElectionContext {
     /// `true` while the node's KV state still trails the committed frontier, so a committed leader may
     /// yet arrive through KV sync.
     public boolean isKvSyncPending() {
-        return kvSyncPending.get().get();
+        return kvSyncPending.get()
+                            .get();
     }
 
     /// Observation cadence for the independent peer-observation timer scheduled in

@@ -436,7 +436,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// while the protocol is not running.
     @Contract
     public void requestMembershipView(Set<NodeId> electorate) {
-        protocol().onPresent(protocol -> pendingAnnounceJoin.onPresent(call -> resyncMembership(protocol, call, electorate)));
+        protocol().onPresent(protocol -> pendingAnnounceJoin.onPresent(call -> resyncMembership(protocol,
+                                                                                                call,
+                                                                                                electorate)));
     }
 
     private void resyncMembership(SwimProtocol protocol, AnnounceJoinCall call, Set<NodeId> electorate) {

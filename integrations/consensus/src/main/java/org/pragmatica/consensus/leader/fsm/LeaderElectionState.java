@@ -193,6 +193,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///     - `KvSyncGraceTimeout` (no peer has committed a leader within the grace window;
     ///       cluster is genuinely fresh — fall through to `Electing`/`ReElecting`).
     ///
+    /// The timeout is not a wall-clock licence to elect (#1803). A node that joined a running cluster must
+    /// not depose a live leader it has simply not read yet, so at the timeout it first follows any committed
+    /// leader it can see (the KV record, or the leader it observed while passive before being admitted as a
+    /// voter), and while its KV state is still catching up ([`LeaderElectionContext#isKvSyncPending`]) it
+    /// waits another grace window, up to [`LeaderElectionContext#kvSyncMaxWait`]. Only a cluster that shows
+    /// no leader and no sync in flight — or a sync that never settles — reaches `Electing`.
+    ///
     /// On entry the state ALSO consults [`LeaderElectionContext#currentLeaderFromKvSupplier`]
     /// (pull-side) and dispatches a synthetic `LeaderCommitted` if the local KV already records
     /// a leader. This handles the auto-heal path: a single replacement node joining a live
@@ -272,7 +279,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
                                                 AwaitingKvSync waiting) {
         committedLeaderVisible(ctx).onPresent(leader -> adoptVisibleLeader(ctx, leader, tx))
-                                   .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
+                              .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
     }
 
     private static void adoptVisibleLeader(LeaderElectionContext ctx,
@@ -301,21 +308,25 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     private static boolean waitedLessThanMax(LeaderElectionContext ctx, AwaitingKvSync waiting) {
-        return System.nanoTime() - waiting.enteredAtNanos() < ctx.kvSyncMaxWait().nanos();
+        return System.nanoTime() - waiting.enteredAtNanos() < ctx.kvSyncMaxWait()
+                                                                 .nanos();
     }
 
     private static void rearmGrace(LeaderElectionContext ctx, AwaitingKvSync waiting) {
         log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
                  ctx.kvSyncGraceDelay().millis());
         waiting.graceTimeoutFuture()
-               .set(SharedScheduler.schedule(() -> dispatchSelf(ctx, new KvSyncGraceTimeout()),
+               .set(SharedScheduler.schedule(() -> dispatchSelf(ctx,
+                                                                new KvSyncGraceTimeout()),
                                              ctx.kvSyncGraceDelay()));
     }
 
     /// A committed leader this node can already see: the KV record first (consensus truth), then the
     /// leader it observed on its own while passive.
     private static Option<NodeId> committedLeaderVisible(LeaderElectionContext ctx) {
-        return ctx.currentLeaderFromKvSupplier().get().orElse(ctx::currentLeader);
+        return ctx.currentLeaderFromKvSupplier()
+                  .get()
+                  .orElse(ctx::currentLeader);
     }
 
     /// Adopts the leader this node already knows. Synchronous dispatch, like the KV pull: the `LeaderCommitted`

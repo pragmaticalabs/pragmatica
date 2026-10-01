@@ -1948,7 +1948,8 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         targets.stream()
                .takeWhile(_ -> !announceStopped.get())
-               .forEach(target -> transport.send(target, Announce.announce(self, clusterName, incarnation, bootToken)));
+               .forEach(target -> transport.send(target,
+                                                 Announce.announce(self, clusterName, incarnation, bootToken)));
     }
 
     /// Boot-token gate for evidence about `peer` (owner ruling, session 28). `0` carries no process
