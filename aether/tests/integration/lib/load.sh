@@ -18,10 +18,14 @@ LOAD_PIDS=()
 # Usage: _load_tick <bodies-file> <body-scratch> <method> <url> [json body]
 _load_tick() {
     local bodies="$1" bf="$2" method="$3" url="$4" body="${5:-}" status detail
+    # The scratch file is reused across ticks, and a request that gets NO answer (status 000) writes nothing to it: without
+    # the truncate its stale content is the PREVIOUS tick's body, and the 000 row would carry another request's detail.
+    # --connect-timeout/--max-time: a request to a halted node must end in seconds, not whenever the kernel gives up.
+    : > "$bf" 2>/dev/null || true
     if [ "$method" = "GET" ]; then
-        status=$(curl -sk -o "$bf" -w "%{http_code}" -H "X-API-Key: ${API_KEY}" "$url")
+        status=$(curl -sk --connect-timeout 2 --max-time 5 -o "$bf" -w "%{http_code}" -H "X-API-Key: ${API_KEY}" "$url")
     else
-        status=$(curl -sk -o "$bf" -w "%{http_code}" -X "$method" -H "X-API-Key: ${API_KEY}" \
+        status=$(curl -sk --connect-timeout 2 --max-time 5 -o "$bf" -w "%{http_code}" -X "$method" -H "X-API-Key: ${API_KEY}" \
                       -H "Content-Type: application/json" -d "$body" "$url")
     fi
     if ! { [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; } 2>/dev/null; then
@@ -67,12 +71,21 @@ start_load() {
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
 
     (
-        local success=0 failure=0 consec_fail=0 tick_scratch
+        local success=0 failure=0 consec_fail=0 tick_scratch applied_override=""
         tick_scratch=$(mktemp)
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
             # SCALE_LOAD_TARGET_VICTIM (opt-in, 03-scaling): scale_load_retarget_to_victim writes the new target here.
-            [ -s "/tmp/load_endpoint_override_$$" ] && APP_ENDPOINT=$(cat "/tmp/load_endpoint_override_$$")
+            # Applied ONCE per distinct value, not every tick: re-applying it each tick overwrote the re-resolve below, so a
+            # load aimed at a victim that halted could never leave it (the loop kept returning to the dead endpoint).
+            if [ -s "/tmp/load_endpoint_override_$$" ]; then
+                local ovr
+                ovr=$(cat "/tmp/load_endpoint_override_$$")
+                if [ "$ovr" != "$applied_override" ]; then
+                    APP_ENDPOINT="$ovr"
+                    applied_override="$ovr"
+                fi
+            fi
             status=$(_load_tick "/tmp/load_failure_bodies_$$.txt" "$tick_scratch" "$method" "${APP_ENDPOINT}${path}" "$body")
             if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))

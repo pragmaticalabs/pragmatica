@@ -41,6 +41,9 @@ SKIP_IMAGE_PUSH=false
 KEEP_ON_FAILURE_FLAG=""
 
 RESULTS_FILE="$(mktemp /tmp/aether-test-results.XXXXXX)"
+# Run-level warnings (log_run_warning in lib/common.sh): one line per warning, shared by every suite process, reported in
+# each suite's summary, the end-of-run report and test-results.json.
+export RUN_WARNINGS_FILE="$(mktemp /tmp/aether-run-warnings.XXXXXX)"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
 TIMINGS_FILE="$(mktemp /tmp/aether-test-timings.XXXXXX)"
 # Child processes (suites) may record per-await durations here.
@@ -476,7 +479,7 @@ run_suite() {
         capture_node_logs "$suite_name" "$target_cluster" "$start_time" || true
     fi
 
-    echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration}}" >> "$RESULTS_FILE"
+    echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration},$(run_warnings_json "$suite_name")}" >> "$RESULTS_FILE"
 
     log_info "${suite_name}: ${suite_pass} passed, ${suite_fail} failed (${duration}s)"
 
@@ -1038,6 +1041,12 @@ print_results() {
     echo "========================================"
     printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d | Unrecoverable: %d\n" \
         "$total" "$passed" "$failed" "$skipped" "$unrecoverable"
+    local nwarn
+    nwarn=$(_run_warning_lines)
+    if [ "$nwarn" -gt 0 ]; then
+        printf "  Warnings: %d (a green run with warnings is not a clean run)\n" "$nwarn"
+        sed 's/^/    [WARN] /' "$RUN_WARNINGS_FILE"
+    fi
     echo "========================================"
 
     print_timing_report
@@ -1466,7 +1475,7 @@ FINAL_RESULT=$?
 set -e
 
 # Cleanup temp files (teardown runs from EXIT trap installed earlier)
-rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
+rm -f "$RESULTS_FILE" "$TIMINGS_FILE" "$RUN_WARNINGS_FILE"
 
 RUN_REACHED_END=true
 exit "$FINAL_RESULT"
