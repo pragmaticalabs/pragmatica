@@ -4743,6 +4743,8 @@ public interface AetherNode extends ManageableNode {
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
                                                                                       bootstrapModule)));
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                 notification -> onLeaderKeyCommit(notification, leaderTerm)));
         // RC1 Step 2: snapshot-then-tail wiring. BootstrapModule consumes the current KV snapshot
         // via its `kvSnapshotSupplier` at the time of `projectFromCommittedAtoms`. The route attached
         // below provides the "tail" — every MembershipDecision variant routed by the
@@ -7212,6 +7214,14 @@ public interface AetherNode extends ManageableNode {
             bootstrapModule.retryIfNeeded();
             deploymentManager.reloadRestoredState();
             abTestManager.reloadRestoredState();
+        }
+    }
+
+    /// #1797: a committed `LeaderKey` naming this node raises the held term even without a leader-gain edge.
+    @Contract
+    static void onLeaderKeyCommit(KVStoreNotification.ValuePut<?, ?> notification, LeaderTerm leaderTerm) {
+        if (notification.cause().key() instanceof LeaderKey) {
+            leaderTerm.onLeaderKeyCommitted();
         }
     }
 
