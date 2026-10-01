@@ -77,6 +77,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -126,6 +127,8 @@ class LeaderReconcilerTest {
     /// test sets another.
     private static final TimeSpan EXPECTED_POLL_INTERVAL = membershipConfig().splitTimeout();
     private static final TimeSpan DEFAULT_REPLACEMENT_CEILING = timeSpan(10).minutes();
+    /// Poll intervals (15s) that fit inside the default ten-minute ceiling window.
+    private static final int CEILING_WINDOW_INTERVALS = 40;
     /// #1049 round 3 — a never-listed replacement counts as deleted only after twelve consecutive successful
     /// listings omit it AND three minutes have passed since it became pollable (its create call resolved).
     private static final TimeSpan EXPECTED_FIRST_LISTING_FLOOR = timeSpan(3).minutes();
@@ -1765,10 +1768,10 @@ class LeaderReconcilerTest {
             var minted = dispatchOneReplacement();
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
-            advancePollIntervals(12);
+            advancePollIntervals(5);
 
             assertThat(ctm.provisionReplacementCalls())
-                .as("three minutes in (4x the old 45s expiry) a replacement the provider reports booting is not minted twice")
+                .as("75s in (past the old 45s expiry, inside the 90s join grace) a replacement the provider reports booting is not minted twice")
                 .hasSize(1);
             assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(minted);
             assertThat(ctm.instanceStateQueries())
@@ -1817,7 +1820,7 @@ class LeaderReconcilerTest {
             pendingProvision.succeed(ProvisionDisposition.dispatched());
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
-            advancePollIntervals(EXPECTED_ABSENT_LISTINGS + 2);
+            advancePollIntervals(1);
 
             assertThat(ctm.provisionReplacementCalls())
                 .as("one lagged listing after a slow create is not a deletion")
@@ -1936,11 +1939,13 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void inFlightEntry_pastHardCeiling_isReDispatched_evenWhileProviderReportsBooting() {
+        void inFlightEntry_pastHardCeiling_isReDispatched_whileTheProviderNeverConfirmsIt() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var minted = dispatchOneReplacement();
 
-            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            // UNKNOWN keeps the entry unconfirmed, so only the ceiling bounds it (a CONFIRMED one is discounted by
+            // the join grace first — see inFlightEntry_confirmedButNeverJoins_deficitReappearsAfterJoinGrace_beforeCeiling).
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
             advancePollIntervals(8);
 
             assertThat(ctm.provisionReplacementCalls())
@@ -1952,8 +1957,234 @@ class LeaderReconcilerTest {
 
             assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
             assertThat(ctm.provisionReplacementCalls())
-                .as("the per-source ceiling re-dispatches although the provider still reports booting")
+                .as("the per-source ceiling re-dispatches although the provider never said the instance is gone")
                 .hasSize(2);
+        }
+
+        /// #1783 — a replacement the provider lists (CONFIRMED) that never joins membership stops masking the
+        /// deficit once the join grace (6 x splitTimeout = 90s) has passed since its mint: the deficit re-opens and
+        /// re-dispatches one debounce later, at about two minutes, long before the ten-minute ceiling. Inside the
+        /// grace the booting replacement is still counted (no duplicate mint).
+        @Test
+        void inFlightEntry_confirmedButNeverJoins_deficitReappearsAfterJoinGrace_beforeCeiling() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(5);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("75s after its mint, inside the 90s join grace, a booting replacement still counts")
+                .hasSize(1);
+
+            advancePollIntervals(2);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("past the grace the unjoined CONFIRMED entry no longer counts: the deficit re-opens and re-dispatches")
+                .hasSize(2);
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the unjoined instance is kept for adoption, only its count is withdrawn")
+                .contains(minted);
+        }
+
+        /// #1786 — replacements the provider lists but that never join (Addendum 7's shape, repeating): one
+        /// missing slot mints at most an original and ONE substitute per ceiling window, never a chain of them —
+        /// the ceiling forgets an entry without terminating its instance, so each mint is a paid server.
+        /// Worst case in flight for the slot: 2. (Adopted from v1770's P1 probe.)
+        @Test
+        void inFlightEntry_neverJoiningConfirmedReplacements_mintAtMostOneSubstitutePerSlot() {
+            dispatchOneReplacement();
+            var peakInFlight = reconciler.inFlightProvisioningCount();
+
+            for (var i = 0; i < 42; i++) {
+                ctm.provisionReplacementCalls()
+                   .forEach(id -> ctm.reportInstanceState(id, ReplacementInstanceState.PRESENT));
+                advanceOnePollInterval();
+                peakInFlight = Math.max(peakInFlight, reconciler.inFlightProvisioningCount());
+            }
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("mints for ONE missing slot over ~630s (more than the 600s ceiling)")
+                .hasSizeLessThanOrEqualTo(2);
+            assertThat(peakInFlight).as("peak concurrent in-flight entries for one slot").isLessThanOrEqualTo(2);
+        }
+
+        /// #1786 — a stuck slot (every replacement listed, none joins) with a leader handover every
+        /// `tenureIntervals` poll intervals. The new leader inherits every unjoined id, re-minted on the fake
+        /// timeline so its ULID mint time matches (the CTM mints on the real wall clock, which would silently
+        /// restart the grace). Returns the mints for the one missing slot. Adopted from v1770's P3 probe.
+        private int mintsWithHandovers(int tenureIntervals, int totalIntervals) {
+            dispatchOneReplacement();
+            var dispatchedAtFakeMs = new LinkedHashMap<NodeId, Long>();
+            var live = new LinkedHashSet<NodeId>(ctm.provisionReplacementCalls());
+
+            live.forEach(id -> dispatchedAtFakeMs.put(id, timeSource.nanoTime() / 1_000_000));
+            var seen = ctm.provisionReplacementCalls().size();
+
+            for (var i = 1; i <= totalIntervals; i++) {
+                live.forEach(id -> ctm.reportInstanceState(id, ReplacementInstanceState.PRESENT));
+                advanceOnePollInterval();
+                var calls = ctm.provisionReplacementCalls();
+
+                for (var k = seen; k < calls.size(); k++) {
+                    live.add(calls.get(k));
+                    dispatchedAtFakeMs.put(calls.get(k), timeSource.nanoTime() / 1_000_000);
+                }
+                seen = calls.size();
+                live.retainAll(reconciler.inFlightProvisioningKeys());
+
+                if (i % tenureIntervals == 0) {
+                    live = handOver(live, dispatchedAtFakeMs);
+                }
+            }
+
+            return ctm.provisionReplacementCalls().size();
+        }
+
+        /// One leader handover: the surviving unjoined ids are re-minted with their original fake-timeline mint
+        /// time, deactivated and re-inherited by the next term. Returns the re-minted ids.
+        private LinkedHashSet<NodeId> handOver(LinkedHashSet<NodeId> live, Map<NodeId, Long> dispatchedAtFakeMs) {
+            var nowFakeMs = timeSource.nanoTime() / 1_000_000;
+            var carried = new LinkedHashSet<NodeId>();
+
+            for (var id : live) {
+                var reminted = mintedAt(System.currentTimeMillis() - (nowFakeMs - dispatchedAtFakeMs.get(id)));
+
+                dispatchedAtFakeMs.put(reminted, dispatchedAtFakeMs.get(id));
+                ctm.reportInstanceState(reminted, ReplacementInstanceState.PRESENT);
+                carried.add(reminted);
+            }
+            reconciler.deactivate();
+            leaderTerm.set(leaderTerm.get() + 1);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.copyOf(carried));
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).forEach(ManualTask::runIfLive);
+
+            return carried;
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_noHandover_sameHarness_mintsAtMostTwo() {
+            assertThat(mintsWithHandovers(1000, 42)).as("control: same harness, no handover in ~630s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery60s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(4, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 60s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery105s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(7, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 105s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery120s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(8, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 120s").isLessThanOrEqualTo(2);
+        }
+
+        /// #1786 — the residual the inference cannot close: once the ceiling has evicted the ORIGINAL (600s), a
+        /// handover leaves the substitute as a lone unjoined id, indistinguishable from a genuine first
+        /// replacement, so it reads as generation 0 and may be discounted and substituted once more. This is the
+        /// ceiling's own re-dispatch (the pre-#1786 behaviour at that point), bounded at one extra mint per
+        /// ceiling window; spend stays at most original + substitute + one ceiling re-dispatch.
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery60s_pastTheOriginalsCeiling_mayMintOneMore() {
+            assertThat(mintsWithHandovers(4, 42)).as("mints over ~630s, handover every 60s").isLessThanOrEqualTo(3);
+        }
+
+        /// #1786 — the documented misclassification of the handover inference: two genuinely missing slots whose
+        /// replacements were minted more than the grace apart read, to the inheriting leader, as original +
+        /// substitute. The later one is never discounted (pre-#1786 ceiling behaviour, slower to heal, no extra
+        /// spend): after both are long past the grace, exactly one more mint covers the earlier slot, where two
+        /// generation-0 entries would both be discounted and mint twice.
+        @Test
+        void newLeader_twoGenuineSlotsMintedMoreThanGraceApart_laterIsReadAsSubstitute_keepsCounting() {
+            var earlier = mintedAt(System.currentTimeMillis() - 120_000L);
+            var later = mintedAt(System.currentTimeMillis() - 10_000L);
+
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(earlier, later));
+            ctm.reportInstanceState(earlier, ReplacementInstanceState.PRESENT);
+            ctm.reportInstanceState(later, ReplacementInstanceState.PRESENT);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            advancePollIntervals(11);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("only the earlier entry is discounted: one mint, not two")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).contains(earlier, later);
+        }
+
+        /// #1783 — the discounted replacement then joins late, after its substitute was dispatched. The cluster
+        /// must converge to the configured count, not sit at target + 1: the late joiner clears its entry, the
+        /// substitute is still in flight (counted), and once the substitute joins as well the existing surplus
+        /// path (`computePeersToDrain`) drains exactly one node. Nothing is drained while the substitute has not
+        /// yet joined (the floor holds at the configured count).
+        @Test
+        void inFlightEntry_discountedReplacementJoinsLate_afterSubstituteDispatched_convergesToTarget() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(7);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+            var substitute = ctm.provisionReplacementCalls().getLast();
+
+            seedClusterWithPeers(minted);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the late joiner's entry is cleared by membership; only the substitute remains in flight")
+                .containsExactly(substitute);
+            assertThat(ctm.drainNodeCalls())
+                .as("five members at target: nothing is drained before the substitute joins")
+                .isEmpty();
+
+            seedClusterWithPeers(substitute);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("six members against a target of five: exactly one surplus node is drained")
+                .hasSize(1);
+
+            removePeers(ctm.drainNodeCalls().getFirst());
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("converged: no third provision").hasSize(2);
+            assertThat(ctm.drainNodeCalls()).as("converged: no second drain").hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+
+        /// #1783 — the grace clock survives a leader handover: it runs from the entry's mint (the ULID the
+        /// inherited id carries), not from the moment this leader took over. Minted 60s ago and inherited with
+        /// the provider reporting it listed, the entry is discounted at 105s of age, only 45s after inheritance,
+        /// and re-dispatched one debounce later — a clock restarted at inheritance would keep counting it until
+        /// 90s after the handover.
+        @Test
+        void newLeader_inheritedConfirmedEntry_graceRunsFromMint_notFromInheritance() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - timeSpan(60).seconds().millis()),
+                                               ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(2);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("90s after its mint (30s after inheritance) it is not yet past the grace")
+                .isEmpty();
+
+            advancePollIntervals(1);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("105s after its mint, 45s after inheritance, the unjoined confirmed entry is discounted and replaced")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).contains(inherited);
         }
 
         @Test
@@ -1980,10 +2211,10 @@ class LeaderReconcilerTest {
         void newLeader_inheritedEntryProviderReportsBooting_isNotReDispatched() {
             var inherited = inheritOneReplacement(ReplacementInstanceState.PRESENT);
 
-            advancePollIntervals(12);
+            advancePollIntervals(5);
 
             assertThat(ctm.provisionReplacementCalls())
-                .as("a new leader keeps an inherited replacement the provider reports booting — no duplicate mint")
+                .as("a new leader keeps an inherited replacement the provider reports booting, inside the join grace — no duplicate mint")
                 .isEmpty();
             assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(inherited);
             assertThat(ctm.instanceStateQueries())
@@ -2107,7 +2338,7 @@ class LeaderReconcilerTest {
         void newLeader_inheritedIdWithoutUlid_restartsCeilingAtInheritance() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var inherited = inheritReplacement(NodeId.nodeId("aether-test-cluster-node-5").unwrap(),
-                                               ReplacementInstanceState.PRESENT);
+                                               ReplacementInstanceState.UNKNOWN);
 
             advancePollIntervals(8);
 
@@ -2128,7 +2359,7 @@ class LeaderReconcilerTest {
         void newLeader_inheritedIdMintedInTheFuture_isClampedToNow() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() + timeSpan(1).hours().millis()),
-                                               ReplacementInstanceState.PRESENT);
+                                               ReplacementInstanceState.UNKNOWN);
 
             advancePollIntervals(8);
 
