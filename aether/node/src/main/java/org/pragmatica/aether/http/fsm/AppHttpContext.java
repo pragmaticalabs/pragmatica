@@ -133,6 +133,10 @@ public final class AppHttpContext {
         return fsm.current() instanceof AppHttpState.RouteReady || fsm.current() instanceof AppHttpState.CertRotating;
     }
 
+    public boolean isQuiesced() {
+        return fsm.current() instanceof AppHttpState.Quiesced;
+    }
+
     public record ServerPair(Option<HttpServer> server, Option<HttpServer> h3) {}
 
     public ServerPair currentServers() {

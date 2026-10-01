@@ -772,6 +772,12 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Override
     @Contract
     public void onQuorumStateChange(ClusterStateNotification notification) {
+        if (notification.demoted()) {
+            keepRoutingAsObserver();
+
+            return;
+        }
+
         var established = notification.state() == ClusterStateNotification.State.ACTIVE;
 
         quorumEstablished = established;
@@ -783,6 +789,16 @@ class AppHttpServerAdapter implements AppHttpServer {
             log.warn("Quorum disappeared — quiescing app HTTP routing (split-brain protection)");
             context.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
+    }
+
+    // #1790: leaving the electorate of a live quorum is not quorum loss. The node keeps applying
+    // committed decisions as an observer, so its route registry stays current and quiescing would only
+    // refuse requests it can forward. Routing and `quorumEstablished` are deliberately left untouched:
+    // the drain's admission gate (InvocationAdmission DRAINING) is the one designed refusal. A genuine
+    // quorum loss while observing arrives as a plain PASSIVE and quiesces through the branch above.
+    @Contract
+    private void keepRoutingAsObserver() {
+        log.info("Demoted to observer of a live quorum — keeping app HTTP routing; drain admission gate governs refusal");
     }
 
     @Override
@@ -1029,18 +1045,11 @@ class AppHttpServerAdapter implements AppHttpServer {
         var routeReady = isRouteReady();
 
         if (!routeReady && httpRoutePublisher.isPresent()) {
-            logRouteNotReadyRejection("Node starting, routes not yet synchronized",
-                                      method,
-                                      request.path(),
-                                      requestId,
-                                      routeReady,
-                                      false);
+            var reason = notReadyReason();
+
+            logRouteNotReadyRejection(reason, method, request.path(), requestId, routeReady, false);
             recordRouteNotReadyRejection(method, request.path());
-            sendProblem(response,
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "Node starting, routes not yet synchronized",
-                        request.path(),
-                        requestId);
+            sendProblem(response, HttpStatus.SERVICE_UNAVAILABLE, reason, request.path(), requestId);
 
             return;
         }
@@ -1071,6 +1080,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static final long ROUTE_NOT_READY_LOG_EVERY_NTH = 100L;
+    private static final String NODE_STARTING_REASON = "Node starting, routes not yet synchronized";
+    private static final String NODE_QUIESCED_REASON = "Node quiesced: no quorum";
+
+    private String notReadyReason() {
+        return context.isQuiesced()
+               ? NODE_QUIESCED_REASON
+               : NODE_STARTING_REASON;
+    }
 
     @Contract
     private void logRouteNotReadyRejection(String reason,

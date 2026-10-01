@@ -18,6 +18,7 @@ package org.pragmatica.consensus.rabia;
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
+import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusDemoted;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
@@ -56,6 +57,7 @@ public final class ConsensusBridge {
         switch (event) {
             case ConsensusActive active -> publishActive(active);
             case ConsensusPassive passive -> publishPassive(passive);
+            case ConsensusDemoted demoted -> publishDemoted(demoted);
         }
     }
 
@@ -69,5 +71,11 @@ public final class ConsensusBridge {
     private void publishPassive(ConsensusPassive event) {
         log.info("ConsensusBridge: PASSIVE for {}", event.self());
         router.route(ClusterStateNotification.passive());
+    }
+
+    @Contract
+    private void publishDemoted(ConsensusDemoted event) {
+        log.info("ConsensusBridge: DEMOTED (observer of a live quorum) for {}", event.self());
+        router.route(ClusterStateNotification.demotion());
     }
 }
