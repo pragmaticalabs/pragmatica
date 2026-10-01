@@ -32,13 +32,25 @@
   not duplicated.
 - Test seam: `EmberCluster.addCoreNode(id, mintTimePeers)` configures a node with exactly the peers that existed when it
   was minted (every other harness path hands a new node the full current list, which hides both defects).
+- [verified: `ReplacementStalePeerListTest` (Heavy, 2 tests: a replacement minted without the leader, id below / above
+  the leader's; 5 cores, 1 stopped, auto-heal blocked, replacement listed 3 live voters). Red at the unmodified base in
+  both ("leader stale-peers-1 must count the replacement and the survivors": the leader counts only the 4 survivors for
+  the whole 3-minute budget); green 3 of 3 runs on the fix (about 38 s per test) plus a fourth green after the final edit.
+  Mutations on the fix: removing the `swim.requestMembershipView(...)` call at `AetherNode` reddens both; reverting
+  the initiator rule to the mint-time list reddens only the above-the-leader test (the observer then waits for the
+  60 s higher-id grace; the test's budget is 45 s); reverting the `AwaitingKvSync` hunks (entry adoption, timeout KV
+  re-read, sync-pending wait) reddens both — the replacement DEPOSES the live leader (below: leader becomes
+  `stale-peers-0-low`) or the committed `LeaderKey` sequence moves 1 to 2 (above) — i.e. the incident's (b), reproduced at
+  cluster level.]
 - [verified: `JoinerElectionTest` — 5 of 7 red against base-equivalent `AwaitingKvSync` behaviour (entry adoption, KV re-read
-  at the timeout, observed-leader timeout, sync-pending wait), the 2 controls (a leaderless joiner still elects; a sync that never settles still
-  elects at ten windows) green both ways; each of four single-hunk mutations reddens exactly its own test.]
+  at the timeout, observed-leader timeout, sync-pending wait), the 2 controls (a leaderless joiner still elects; a sync that
+  never settles still elects at ten windows) green both ways; each of four single-hunk mutations reddens exactly its own test.]
   [verified: `SwimJoinSyncTest#requestMembershipView_afterTheScopeGrew_recoversTheMemberTheJoinAckDropped`,
   `CoreSwimHealthDetectorMembershipViewTest` (3), `MembershipResyncPolicyTest` (6), `TransferPeersTest` (2) — each reddens
   under its own mutation.]
-- [unverified: the two `AetherNode` call sites (`swim.requestMembershipView(installedVoterIds(cluster))` in
-  `refreshHierarchyPeerPolicy`, and the `transferPeer` predicate in the connection initiator) and the `RabiaNode`
-  `installKvSyncProgress` line are glue; the unit pins above cover the pieces they call, and only the Ember scenario
-  `ReplacementStalePeerListTest` reaches the call sites.]
+- [unverified: the `RabiaNode` line that installs the sync-pending signal
+  (`leaderManager.installKvSyncProgress(() -> consensus.joinedFormedElectorate() && consensus.isPendingCatchUp())`) is glue
+  no automated test reaches: `JoinerElectionTest` drives the same install through `LeaderManager` directly, and the Forge
+  scenario does not make a joiner's sync lag. Removing the line is not detected.]
+- [unverified: the incident's one-fast / two-slow boot timing is not modelled; the scenario models the stale list, not the
+  boot-time race.]
