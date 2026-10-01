@@ -211,13 +211,18 @@ if [ "$rc" -ne 0 ] && [ -z "$out" ] && [ "$((after - before))" -eq 0 ]; then
     ok "P2 cloud_public_ip missing state file: rc!=0, nothing on stdout, fail-file delta 0"
 else fail "P2 missing state file: rc=${rc} stdout='${out}' delta=$((after - before))"; fi
 miss_probe "server id, no server has the IP" cloud_server_id node-1
-if [ "$MISS_RC" -ne 0 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
-    ok "P3 cloud_server_id (IP maps to no server): rc!=0, nothing on stdout, fail-file delta 0"
+if [ "$MISS_RC" -eq 1 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P3 cloud_server_id (address known, no server holds it): rc 1 = GONE, nothing on stdout, fail-file delta 0"
 else fail "P3 cloud_server_id node-1: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
 miss_probe "server id, node does not resolve" cloud_server_id ghost
-if [ "$MISS_RC" -ne 0 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
-    ok "P4 cloud_server_id (node does not resolve): rc!=0, nothing on stdout, fail-file delta 0"
+if [ "$MISS_RC" -eq 3 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P4 cloud_server_id (address unresolvable): rc 3 = UNKNOWN (never rc 1 = gone), nothing on stdout, fail-file delta 0"
 else fail "P4 cloud_server_id ghost: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+# P4b: hcloud itself failing is UNKNOWN too (rc 3), not "no server holds the address" (rc 1).
+p4b=$( hcloud() { return 1; }; miss_probe "server id, hcloud list fails" cloud_server_id node-1; echo "${MISS_RC}|${MISS_OUT}|${MISS_DELTA}" )
+if [ "$p4b" = "3||0" ]; then
+    ok "P4b cloud_server_id (address known, hcloud server list FAILS): rc 3 = UNKNOWN, not rc 1 (gone)"
+else fail "P4b hcloud list failing: got '${p4b}' (want '3||0')"; fi
 # Positive control for the instrument: an argument error is a harness bug and STAYS loud and counted, so the
 # delta measure demonstrably sees a log_fail raised inside a capture.
 miss_probe "argument error (control)" cloud_public_ip
@@ -236,14 +241,26 @@ else fail "P6 hit: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
 swallow_fn() { local v; v=$(log_fail "swallowed-probe-text"); return 0; }
 visible_fn() { log_fail "visible-probe-text" >/dev/null; return 0; }
 rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Swallow probe (T1)" swallow_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
-if printf '%s' "$rt_out" | grep -qF "[FAIL] (swallowed) " && printf '%s' "$rt_out" | grep -qF "swallowed-probe-text" \
-   && printf '%s' "$rt_out" | grep -qF "counted 1 [FAIL] line(s) raised inside command substitutions" && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1"; then
-    ok "P7 run_test: a [FAIL] swallowed by \$(...) is recorded as FAIL AND its text is printed from the fail file"
+if printf '%s' "$rt_out" | grep -qF "counted [FAIL] record for this test (1 counted, 0 printed above)" && printf '%s' "$rt_out" | grep -qF "swallowed-probe-text" \
+   && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1" && ! printf '%s' "$rt_out" | grep -qF "(swallowed)"; then
+    ok "P7 run_test: a [FAIL] swallowed by \$(...) is recorded as FAIL AND the test's fail-file record is printed (no claim about which line was hidden)"
 else fail "P7 run_test swallowed: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
 rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Visible probe (T2)" visible_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
-if ! printf '%s' "$rt_out" | grep -qF "(swallowed)" && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1"; then
-    ok "P8 control: an in-process [FAIL] (counted by both latches) is not re-printed as swallowed"
+if ! printf '%s' "$rt_out" | grep -qF "counted [FAIL] record" && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1"; then
+    ok "P8 control: an in-process [FAIL] (counted by both latches) prints no extra record"
 else fail "P8 run_test visible: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
+# P9: interleaved captured / in-process / captured fails: the record is exactly this test's fail-file lines, in order,
+# starting AFTER what earlier tests wrote (the first line used to be omitted and an already-visible one mislabelled).
+mixed_fn() { local v; v=$(log_fail "mix-sw-1"); log_fail "mix-vis-2" >/dev/null; v=$(log_fail "mix-sw-3"); return 0; }
+log_fail "earlier-test-line" >/dev/null
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Mixed probe (T3)" mixed_fn 2>&1 )
+rec=$(printf '%s\n' "$rt_out" | grep -E '^    \| ' | tr '\n' '#')
+case "$rec" in
+    *"mix-sw-1"*"#"*"mix-vis-2"*"#"*"mix-sw-3"*"#") rec_ok=1 ;; *) rec_ok=0 ;;
+esac
+if [ "$rec_ok" = 1 ] && ! printf '%s' "$rec" | grep -qF "earlier-test-line" && printf '%s' "$rt_out" | grep -qF "(3 counted, 1 printed above)"; then
+    ok "P9 interleaved fails: the record holds all 3 of this test's lines in order, none of an earlier test's, header says 3 counted / 1 printed"
+else fail "P9 got '${rec}' hdr=$(printf '%s' "$rt_out" | grep -F 'record for this test')"; fi
 
 # ---------------------------------------------------------------------------
 # H1/H2 (#1051): jvm_unit_show / jvm_unit_field / jvm_unit_is_drain_halt /

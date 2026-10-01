@@ -105,10 +105,21 @@ _kill_and_confirm_departure() {
     # but we must ALSO short-circuit the event-wait — the departure already happened
     # before our baseline, so polling for a post-baseline NODE_LEFT would time out.
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
-        if ! cloud_server_id "$victim" >/dev/null 2>&1; then
-            log_info "Victim ${victim} already gone (no server resolves) — CTM auto-heal removed it; treating as satisfied departure"
-            return 0
-        fi
+        # Only rc 1 (address known, no server holds it) is evidence the VM is gone. rc 3 = UNKNOWN (address
+        # unresolvable / hcloud list failed): the victim may be running and was never killed — a visible failure.
+        local sid_rc=0
+        cloud_server_id "$victim" >/dev/null 2>&1 || sid_rc=$?
+        case "$sid_rc" in
+            0) ;;
+            1)
+                log_info "Victim ${victim} already gone (no server holds its address) — CTM auto-heal removed it; treating as satisfied departure"
+                return 0
+                ;;
+            *)
+                log_fail "Victim ${victim}: cannot tell whether its VM exists (cloud_server_id rc=${sid_rc}: address unresolvable or hcloud list failed) — NOT killed and NOT assumed gone"
+                return 1
+                ;;
+        esac
     fi
 
     # Per-kill baseline: capture topology NOW, immediately before this kill, so the

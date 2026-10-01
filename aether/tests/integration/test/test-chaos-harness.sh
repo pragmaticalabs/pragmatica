@@ -900,16 +900,113 @@ check "$d" "E9a CTM survivor, IP only in the pre-kill cache: tier 2 SSHes to the
 check "$d" "E9b the same case adds ZERO lines to the fail file (a miss is not a counted [FAIL])" \
     has "$d" "FILE_DELTA=0;"
 
-# E9c: no cache entry and no live answer -> honest WARN, ssh never attempted, no counted [FAIL], and not the SSH-lockout
-# attribution (which implied a connection that was never made); degrades to the next tier.
+# E9c: no cache entry and no live answer -> honest WARN, ssh never attempted, no SSH-lockout attribution (it implied a
+# connection that was never made); degrades to the next tiers, which cannot prove departure -> FAIL (see E9d-g).
 d=$(new_case); tier2_setup "$d" container
 cat >> "$d/setup.sh" <<SETUP
 printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
 SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
 SETUP
 run_in "$d" "$SELF_DRAIN_SUITE" case_e9
-check "$d" "E9c unresolvable survivor: WARN 'IP unresolvable — SSH not attempted', no ssh call, no lockout attribution, FILE_DELTA=0" \
-    eval 'has "$d" "IP unresolvable — SSH not attempted" && [ ! -f "$d/ssh-calls" ] && ! has "$d" "likely #441 item 3 SSH lockout" && has "$d" "FILE_DELTA=0;"'
+check "$d" "E9c unresolvable survivor (no cache, dead lookup): WARN 'IP unresolvable — SSH not attempted', no ssh call, no lockout attribution, and the VERDICT is rc 1 (FILE_DELTA=1: one visible FAIL)" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "IP unresolvable — SSH not attempted" && [ ! -f "$d/ssh-calls" ] && ! has "$d" "likely #441 item 3 SSH lockout" && has "$d" "FILE_DELTA=1;"'
+
+
+# E9d-g: cloud_server_id distinguishes rc 1 (address known, no server holds it: GONE) from rc 3 (address unresolvable or
+# hcloud list failed: UNKNOWN, says nothing about the VM). Every existence probe may read ONLY rc 1 as "gone"; reading
+# rc 3 that way scored a still-running survivor as departed (S19 tier 4) and skipped a kill (kill-multiple).
+# E9c above is the unresolvable case end to end through the REAL cloud_server_id (it used to assert only the WARN,
+# no ssh call and FILE_DELTA — never the verdict, so it observed the vacuous pass without pinning it).
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9d survivor unresolvable (no cache, dead lookup): tier 4 FAILS — departure UNPROVEN, counted once, never a PASS" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "departure UNPROVEN" && has "$d" "cloud_server_id rc=3" && ! has "$d" "treating as satisfied departure" && has "$d" "FILE_DELTA=1;"'
+
+case_e9_scored() {   # the verdict as run_test scores it, with the VM still LISTED by hcloud
+    TESTS_PASSED=0; TESTS_FAILED=0
+    vp_fn() { _confirm_survivor_departure "$CTM_SURV" ""; }
+    run_test "E9 scored" vp_fn
+    echo "VERDICT P=${TESTS_PASSED} F=${TESTS_FAILED};"
+}
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+SETUP
+printf '99 198.51.100.7\n' > "$d/hcloud-all-list"
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9_scored
+check "$d" "E9e CTM survivor, empty cache, dead lookup, VM STILL LISTED by hcloud: scored FAIL (P=0 F=1), never PASS" \
+    has "$d" "VERDICT P=0 F=1;"
+
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+cloud_server_id() { return 1; }
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9f control: cloud_server_id rc 1 (address known, no server) IS departure evidence -> confirmed, no [FAIL]" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "already departed" && has "$d" "FILE_DELTA=0;"'
+
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+cloud_server_id() { return 3; }
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9g cloud_server_id rc 3 (unknown) -> FAIL, the exact counterpart of E9f" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "departure UNPROVEN" && has "$d" "FILE_DELTA=1;"'
+
+echo "== E2. kill paths read only rc 1 as 'gone' (kill-multiple, cloud_kill_vm, cloud_revive_vm)"
+KM_SUITE="${INTEG_DIR}/suites/02-chaos/test-kill-multiple.sh"
+KM_FILE="${WORK}/km-fn.sh"
+{ echo "source \"${CLUSTER_LIB}\""; sed -n '/^_kill_and_confirm_departure() {/,/^}/p' "$KM_SUITE"; } > "$KM_FILE"
+case_km() {
+    export CLOUD_MODE=true
+    TESTS_PASSED=0; TESTS_FAILED=0
+    kill_node() { echo "KILL_NODE_CALLED $*"; }
+    topology_now() { echo base; }
+    local before; before=$(_harness_fail_lines)
+    km_fn() { _kill_and_confirm_departure "$CTM_SURV"; }
+    run_test "KM scored" km_fn
+    echo "VERDICT P=${TESTS_PASSED} F=${TESTS_FAILED} DELTA=$(( $(_harness_fail_lines) - before ));"
+}
+d=$(new_case); printf '99 198.51.100.7\n' > "$d/hcloud-all-list"
+run_in "$d" "$KM_FILE" case_km
+check "$d" "KV1 kill-multiple: victim unresolvable, VM still listed -> FAIL (P=0 F=1), counted once, never PASS, no 'already gone'" \
+    eval 'has "$d" "VERDICT P=0 F=1 DELTA=1;" && has "$d" "cannot tell whether its VM exists" && ! has "$d" "already gone"'
+d=$(new_case); echo 'cloud_server_id() { return 1; }' > "$d/setup.sh"
+run_in "$d" "$KM_FILE" case_km
+check "$d" "KV2 control: cloud_server_id rc 1 (address known, no server) -> already gone, satisfied departure (P=1 F=0), no kill" \
+    eval 'has "$d" "VERDICT P=1 F=0 DELTA=0;" && has "$d" "already gone" && ! has "$d" "KILL_NODE_CALLED"'
+
+case_kill_vm() { cloud_kill_vm "$1"; local rc=$?; echo "KILLVM_RC=${rc};"; return "$rc"; }
+d=$(new_case)
+run_in "$d" "$CLUSTER_LIB" case_kill_vm "$CTM_SURV"
+check "$d" "KV3 cloud_kill_vm: unresolvable node -> rc 1 with a visible FAIL, NOT 'already deleted', no hcloud delete" \
+    eval 'has "$d" "KILLVM_RC=1;" && has "$d" "cannot tell whether" && ! has "$d" "already deleted" && ! grep -q "server delete" "$d/hcloud-calls" 2>/dev/null'
+d=$(new_case)
+run_in "$d" "$CLUSTER_LIB" case_kill_vm node-1
+check "$d" "KV4 control: node-1's address resolves and no server holds it (rc 1) -> idempotent no-op, rc 0" \
+    eval 'has "$d" "KILLVM_RC=0;" && has "$d" "already deleted/replaced"'
+d=$(new_case); echo 1 > "$d/hcloud-list-rc"
+run_in "$d" "$CLUSTER_LIB" case_kill_vm node-1
+check "$d" "KV5 cloud_kill_vm: hcloud list FAILS (address known) -> rc 1 FAIL, not 'already deleted'" \
+    eval 'has "$d" "KILLVM_RC=1;" && has "$d" "cannot tell whether" && ! has "$d" "already deleted"'
+case_revive_vm() { cloud_revive_vm "$1"; local rc=$?; echo "REVIVE_RC=${rc};"; return "$rc"; }
+d=$(new_case)
+run_in "$d" "$CLUSTER_LIB" case_revive_vm "$CTM_SURV"
+check "$d" "KV6 cloud_revive_vm: unresolvable node -> rc 1 with a visible FAIL, not 'already deleted'" \
+    eval 'has "$d" "REVIVE_RC=1;" && has "$d" "cannot tell whether" && ! has "$d" "already deleted"'
+d=$(new_case)
+run_in "$d" "$CLUSTER_LIB" case_revive_vm node-1
+check "$d" "KV7 control: address known, no server (rc 1) -> idempotent no-op, rc 0" \
+    eval 'has "$d" "REVIVE_RC=0;" && has "$d" "already deleted/replaced"'
 
 echo "== F. exit-code step (test_survivor_exit_codes_are_two) on cloud jvm"
 

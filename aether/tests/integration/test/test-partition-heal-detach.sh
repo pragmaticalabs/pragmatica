@@ -22,6 +22,9 @@
 #   S1  S05 shape: node lookup would MISS (poisoned cloud_server_id), applied to TWO servers -> detaches from both ids
 #                  read from applied_to, no lookup, no garbage --server, healed
 #   S2  _cloud_fw_applied_server_ids with jq and without jq read the same ids
+#   S3  the REAL hcloud 1.62.2 shape (fixtures/hcloud-firewall-describe-label-selector.json: a server entry plus a
+#       label_selector entry whose NESTED applied_to_resources holds another server) -> only the direct server, with
+#       jq AND without jq (the no-jq reader used to return the nested one too)
 #   J1  no-jq fallback run as a plain `c=$(...)` under set -euo pipefail, count 0 -> survives, prints 0
 #   Mutations: no wait (H2 red), no verify (H4 red), no resource_in_use retry (H1 red).   LIB_UNDER_TEST selects a copy.
 set -uo pipefail
@@ -65,6 +68,8 @@ case "$1 $2" in
     if [ "$(get exists 1)" != "1" ]; then echo "hcloud: firewall not found (not_found)" >&2; exit 1; fi
     if printf '%s' "$*" | grep -q -- '-o json'; then
         [ -n "${DESCRIBE_JSON_FAILS:-}" ] && { echo "hcloud: api error" >&2; exit 1; }
+        # DESCRIBE_JSON_FILE: serve a captured REAL hcloud 1.62.2 document verbatim (pretty-printed, multi-line)
+        [ -n "${DESCRIBE_JSON_FILE:-}" ] && { cat "$DESCRIBE_JSON_FILE"; exit 0; }
         ca=$(get clear_after -1)
         if [ "$ca" -ge 0 ] 2>/dev/null; then
             if [ "$ca" -eq 0 ]; then set_ applied 0; set_ clear_after -1; else set_ clear_after $((ca - 1)); fi
@@ -159,6 +164,18 @@ if command -v jq >/dev/null 2>&1; then ids_jq=$(s2_run "$WORK/bin3:$(dirname "$(
 if [ "$ids_nojq" = "168166138 168166139 " ] && [ "$ids_jq" = "168166138 168166139 " ]; then
     ok "S2 applied_to ids read identically with jq and without ('${ids_nojq% }')"
 else fail "S2 nojq='${ids_nojq}' jq='${ids_jq}'"; fi
+
+# S3: captured real hcloud 1.62.2 output, both readers
+s3_run() {  # <PATH> -> ids, space-joined
+    mkdir -p "$WORK/fw.s3"; echo 1 > "$WORK/fw.s3/exists"
+    FW="$WORK/fw.s3" DESCRIBE_JSON_FILE="${SCRIPT_DIR}/fixtures/hcloud-firewall-describe-label-selector.json" PATH="$1" /bin/bash -c "$(extract "$LIB" _cloud_fw_applied_server_ids)"'
+        _cloud_fw_applied_server_ids fw | tr "\n" " "'
+}
+s3_nojq=$(s3_run "$WORK/bin3")
+if command -v jq >/dev/null 2>&1; then s3_jq=$(s3_run "$WORK/bin3:$(dirname "$(command -v jq)"):/usr/bin:/bin"); else s3_jq="$s3_nojq"; fi
+if [ "$s3_nojq" = "168166138 " ] && [ "$s3_jq" = "168166138 " ]; then
+    ok "S3 real hcloud shape (label_selector entry with nested server 555): only the direct server 168166138, with jq and without"
+else fail "S3 nojq='${s3_nojq}' jq='${s3_jq}'"; fi
 
 # A1/A2: the create path's wait
 a_run() {  # <label> <apply_after> <budget> [VAR=value ...]

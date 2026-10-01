@@ -2103,13 +2103,23 @@ cloud_kill_vm() {
                 log_fail "cloud_kill_vm: hcloud CLI not found (required for provider 'hetzner')"
                 return 2
             fi
-            local sid
-            sid=$(cloud_server_id "$node_id" 2>/dev/null) || {
-                # No live server resolved → already gone (deleted/replaced). Idempotent
-                # no-op: the post-condition ("victim VM absent") already holds.
-                log_warn "cloud_kill_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
-                return 0
-            }
+            local sid sid_rc
+            sid=$(cloud_server_id "$node_id" 2>/dev/null); sid_rc=$?
+            case "$sid_rc" in
+                0) ;;
+                1)
+                    # Address known, no server holds it → already gone (deleted/replaced). Idempotent
+                    # no-op: the post-condition ("victim VM absent") already holds.
+                    log_warn "cloud_kill_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
+                    return 0
+                    ;;
+                *)
+                    # rc 3 = UNKNOWN (address unresolvable / hcloud list failed): the VM may be running. Not a kill,
+                    # not "gone": a visible failure, counted once.
+                    log_fail "cloud_kill_vm: cannot tell whether '${node_id}' has a VM (cloud_server_id rc=${sid_rc}: address unresolvable or hcloud list failed); NOT killed and NOT assumed gone"
+                    return 1
+                    ;;
+            esac
             log_info "cloud_kill_vm: deleting ${node_id} (hetzner server ${sid})"
             local out rc
             out=$(hcloud server delete "$sid" 2>&1); rc=$?
@@ -2197,19 +2207,29 @@ cloud_revive_vm() {
                 log_fail "cloud_revive_vm: hcloud CLI not found (required for provider 'hetzner')"
                 return 2
             fi
-            local sid
-            sid=$(cloud_server_id "$node_id" 2>/dev/null) || {
-                # No live server resolves → the VM was DELETED (cloud_kill_vm) and CTM
-                # auto-heal has provisioned a replacement that carries the load. In the
-                # best-effort recovery model (restart_all_nodes ignores this rc), reviving
-                # a deleted node is a benign no-op — mirror cloud_kill_vm's idempotent
-                # not-found path (log_warn + return 0) so it does NOT emit a spurious
-                # [FAIL] that records an otherwise-passing recovery test as FAIL. A STOPPED
-                # VM (cloud_stop_vm) still resolves, so the stop/revive contract is intact:
-                # this path only triggers for a genuinely deleted node.
-                log_warn "cloud_revive_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
-                return 0
-            }
+            local sid sid_rc
+            sid=$(cloud_server_id "$node_id" 2>/dev/null); sid_rc=$?
+            case "$sid_rc" in
+                0) ;;
+                1)
+                    # No live server holds the address → the VM was DELETED (cloud_kill_vm) and CTM
+                    # auto-heal has provisioned a replacement that carries the load. In the
+                    # best-effort recovery model (restart_all_nodes ignores this rc), reviving
+                    # a deleted node is a benign no-op — mirror cloud_kill_vm's idempotent
+                    # not-found path (log_warn + return 0) so it does NOT emit a spurious
+                    # [FAIL] that records an otherwise-passing recovery test as FAIL. A STOPPED
+                    # VM (cloud_stop_vm) still resolves, so the stop/revive contract is intact:
+                    # this path only triggers for a genuinely deleted node.
+                    log_warn "cloud_revive_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
+                    return 0
+                    ;;
+                *)
+                    # rc 3 = UNKNOWN (address unresolvable / hcloud list failed): the VM may exist and be stopped.
+                    # Never read as "deleted"; a visible failure, counted once.
+                    log_fail "cloud_revive_vm: cannot tell whether '${node_id}' has a VM (cloud_server_id rc=${sid_rc}: address unresolvable or hcloud list failed); NOT powered on and NOT assumed deleted"
+                    return 1
+                    ;;
+            esac
             log_info "cloud_revive_vm: powering on ${node_id} (hetzner server ${sid})"
             local out rc
             out=$(hcloud server poweron "$sid" 2>&1); rc=$?
@@ -2425,8 +2445,10 @@ _cloud_fw_applied_count() {
 }
 
 # Server ids a Hetzner firewall is applied to, one per line, read from the firewall's OWN `applied_to`
-# (`hcloud firewall describe <name> -o json`: "applied_to":[{"type":"server","server":{"id":N}}, ...]); label_selector
-# entries carry no server and are ignored. Prints nothing (rc 0) for none applied or an unreadable describe. This is
+# (`hcloud firewall describe <name> -o json`: "applied_to":[{"type":"server","server":{"id":N}}, ...]). Only TOP-LEVEL
+# type=server entries count: a label_selector entry carries its own nested "applied_to_resources":[{"type":"server",...}]
+# (real hcloud 1.62.2 output, test/fixtures/hcloud-firewall-describe-label-selector.json), which is not a direct
+# attachment this heal made, so it is ignored by both paths. Prints nothing (rc 0) for none applied or an unreadable describe. This is
 # what a heal must detach from: a node->IP->server lookup cannot resolve a CTM-replacement node that has left the
 # cluster's endpoint API, and its miss used to become a garbage `--server` argument (12-network S05, cloud run 4).
 _cloud_fw_applied_server_ids() {
@@ -2436,9 +2458,28 @@ _cloud_fw_applied_server_ids() {
     if command -v jq >/dev/null 2>&1; then
         printf '%s' "$json" | jq -r '(.applied_to // [])[] | select(.type == "server") | .server.id' 2>/dev/null || true
     else
-        printf '%s' "$json" | tr -d '\n' \
-            | { grep -oE '"server"[[:space:]]*:[[:space:]]*\{[[:space:]]*"id"[[:space:]]*:[[:space:]]*[0-9]+' || true; } \
-            | { grep -oE '[0-9]+$' || true; }
+        # No jq: walk the applied_to array tracking bracket depth, taking an entry that STARTS at depth 1 (a direct
+        # element of applied_to) and opens {"type":"server","server":{"id":N}. Nested entries start deeper.
+        printf '%s' "$json" | tr -d ' \t\r\n' | awk '{
+            s = $0; key = "\"applied_to\":["; p = index(s, key)
+            if (p == 0) exit
+            depth = 0
+            for (i = p + length(key) - 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "[" || c == "{") {
+                    if (c == "{" && depth == 1) {
+                        rest = substr(s, i)
+                        if (match(rest, /^\{"type":"server","server":\{"id":[0-9]+/)) {
+                            id = substr(rest, RSTART, RLENGTH); sub(/.*:/, "", id); print id
+                        }
+                    }
+                    depth++
+                } else if (c == "]" || c == "}") {
+                    depth--
+                    if (depth == 0) exit
+                }
+            }
+        }'
     fi
     return 0
 }

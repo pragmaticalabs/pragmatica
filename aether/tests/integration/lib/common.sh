@@ -1456,6 +1456,12 @@ _registered_by_to_offset() {
 # log_fail prints on the stdout that callers capture with $(...) while still counting through the fail
 # file, so a miss became a counted [FAIL] with no visible line (12-network S05, cloud run 4). A caller
 # for which a miss is fatal logs its own log_fail on rc!=0. Argument/provider errors (rc 2) stay loud.
+#
+# THREE distinct non-success outcomes, and callers must not conflate them:
+#   rc 1  the node's address is KNOWN and no server holds it: the VM is gone (the only "departed" evidence);
+#   rc 3  UNKNOWN: the address could not be resolved, or hcloud could not list servers. Says NOTHING about the
+#         VM, which may be running. An existence probe treats rc 3 as "cannot tell", never as "gone".
+#   rc 2  harness/argument/provider error.
 cloud_server_id() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1470,15 +1476,18 @@ cloud_server_id() {
             fi
             local ip
             ip=$(cloud_public_ip "$node_id") || {
-                log_warn "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed)" >&2
-                return 1
+                log_warn "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed); the VM's existence is UNKNOWN" >&2
+                return 3
             }
             # Map IP -> numeric server id. `hcloud -o columns -o noheader` prints
             # `id<WS>ipv4` per server; awk exact-matches column 2 and prints the id.
             # No manual JSON parsing — hcloud handles the (multi-line) API body.
-            local sid
-            sid=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null \
-                    | awk -v ip="$ip" '$2==ip{print $1; exit}')
+            local sid servers
+            servers=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null) || {
+                log_warn "cloud_server_id: hcloud server list failed; the existence of '${node_id}' (${ip}) is UNKNOWN" >&2
+                return 3
+            }
+            sid=$(printf '%s\n' "$servers" | awk -v ip="$ip" '$2==ip{print $1; exit}')
             if [ -z "$sid" ]; then
                 log_warn "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')" >&2
                 return 1
@@ -1808,13 +1817,12 @@ run_test() {
     fi
     fails_logged=$(( $(_harness_fail_lines) - fails_before ))
     # A [FAIL] raised inside a $(...) capture counts through the fail file but its text went into the
-    # caller's variable, so the log shows no line for it. Print those lines: a counted [FAIL] must
-    # never appear only as a number. In-process fails bump both counters, so the surplus is exactly
-    # the invisible ones (the last N lines are exact when they are the only invisible kind).
+    # caller's variable, so the log may show no line for it. When more were counted than the in-process
+    # latch saw, print the test's whole fail-file record (every line from fails_before+1, exactly as counted;
+    # which of them were already visible is not knowable here), so a counted [FAIL] never appears only as a number.
     if [ "$fails_logged" -gt "${TEST_FAIL_COUNT:-0}" ] && [ -f "${HARNESS_FAIL_FILE:-}" ]; then
-        local hidden=$(( fails_logged - ${TEST_FAIL_COUNT:-0} ))
-        log_info "run_test: '${name}' counted ${hidden} [FAIL] line(s) raised inside command substitutions (not shown above); from the fail file:"
-        tail -n "$hidden" "$HARNESS_FAIL_FILE" | sed 's/^/[FAIL] (swallowed) /'
+        log_info "run_test: '${name}' counted [FAIL] record for this test (${fails_logged} counted, ${TEST_FAIL_COUNT:-0} printed above):"
+        sed -n "$((fails_before + 1)),\$p" "$HARNESS_FAIL_FILE" | sed 's/^/    | /'
     fi
     [ "${TEST_FAIL_COUNT:-0}" -gt "$fails_logged" ] && fails_logged=${TEST_FAIL_COUNT:-0}
     HARNESS_FAIL_CONSUMED=$(_harness_fail_lines)

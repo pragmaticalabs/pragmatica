@@ -759,10 +759,21 @@ _confirm_survivor_departure() {
     fi
 
     # Tier 4: last-resort VM-existence fallback (pre-existing).
-    if ! cloud_server_id "$survivor" >/dev/null 2>&1; then
-        log_info "Survivor ${survivor} VM no longer resolves — already departed (event lost to publish-vs-halt race or pre-baseline); treating as satisfied departure"
-        return 0
-    fi
+    # Only rc 1 (address known, no server holds it) is POSITIVE evidence the VM is gone. rc 3 = UNKNOWN (address
+    # unresolvable / hcloud list failed): says nothing about the VM, so departure is unproven — a visible failure.
+    local sid_rc=0
+    cloud_server_id "$survivor" >/dev/null 2>&1 || sid_rc=$?
+    case "$sid_rc" in
+        0) ;;
+        1)
+            log_info "Survivor ${survivor} VM no longer resolves — already departed (event lost to publish-vs-halt race or pre-baseline); treating as satisfied departure"
+            return 0
+            ;;
+        *)
+            log_fail "S19 violation (cloud): survivor ${survivor} departure UNPROVEN — no departure event, SSH proof unavailable (rc=${ssh_rc}), mgmt endpoint unresolvable, and its VM's existence is UNKNOWN (cloud_server_id rc=${sid_rc}: address unresolvable or hcloud list failed), which is not evidence of departure"
+            return 1
+            ;;
+    esac
     log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/v1/events, SSH docker-inspect proof unavailable (rc=${ssh_rc}) with mgmt endpoint unresolvable, and its VM still resolves (still running)"
     return 1
 }
