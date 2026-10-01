@@ -873,6 +873,44 @@ run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E6 container path unchanged: docker inspect exit 2 -> confirmed" \
     eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect --format '"'"'{{.State.ExitCode}}|{{.State.FinishedAt}}'"'"' aether-node" "$d/ssh-calls"'
 
+# E9: a CTM-replacement survivor (KSUID id, ABSENT from the fixture bootstrap-state.json) whose live lookup cannot work
+# mid-quorum-loss (api_get stubbed to fail). Tier 2 must read the pre-kill IP CACHE and SSH to that address; it used to
+# resolve through cloud_ssh -> cloud_public_ip, miss, count a [FAIL] on the swallowed stdout, never invoke ssh, and pass
+# only through the approximate tier-3 proof (cloud run 4, S19 x2). FILE_DELTA is the fail-file line count the case added.
+CTM_SURV="aether-test-b-node-01m3tk5gfr70v0xbzh8v0dkjyv"
+case_e9() {
+    local before after rc
+    before=$(_harness_fail_lines)
+    _confirm_survivor_departure "$CTM_SURV" ""
+    rc=$?
+    after=$(_harness_fail_lines)
+    echo "FILE_DELTA=$((after - before));"
+    return "$rc"
+}
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/survivor-ips"
+printf '%s %s\n' "$CTM_SURV" "${SURV1_IP}" > "\$SURVIVOR_IPS_FILE"
+SETUP
+resp "$d/ssh-${SURV1_IP}" 0 '2|2026-10-01T02:11:00Z\n'
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9a CTM survivor, IP only in the pre-kill cache: tier 2 SSHes to the cached IP and confirms exit code 2" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect" "$d/ssh-calls"'
+check "$d" "E9b the same case adds ZERO lines to the fail file (a miss is not a counted [FAIL])" \
+    has "$d" "FILE_DELTA=0;"
+
+# E9c: no cache entry and no live answer -> honest WARN, ssh never attempted, no counted [FAIL], and not the SSH-lockout
+# attribution (which implied a connection that was never made); degrades to the next tier.
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9c unresolvable survivor: WARN 'IP unresolvable — SSH not attempted', no ssh call, no lockout attribution, FILE_DELTA=0" \
+    eval 'has "$d" "IP unresolvable — SSH not attempted" && [ ! -f "$d/ssh-calls" ] && ! has "$d" "likely #441 item 3 SSH lockout" && has "$d" "FILE_DELTA=0;"'
+
 echo "== F. exit-code step (test_survivor_exit_codes_are_two) on cloud jvm"
 
 case_h2() { TEST_FAIL_COUNT=0; test_survivor_exit_codes_are_two; local rc=$?; echo "FAILS=${TEST_FAIL_COUNT};"; return "$rc"; }

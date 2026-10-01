@@ -19,6 +19,9 @@
 #   A4  cloud_partition_node, apply never shows the server                 -> FAILS ("would pass vacuously"), not a warning
 #   A5  cloud_partition_node, describe unreadable after apply              -> FAILS
 #   A6  cloud_partition_node control: applied after 2 polls                -> succeeds
+#   S1  S05 shape: node lookup would MISS (poisoned cloud_server_id), applied to TWO servers -> detaches from both ids
+#                  read from applied_to, no lookup, no garbage --server, healed
+#   S2  _cloud_fw_applied_server_ids with jq and without jq read the same ids
 #   J1  no-jq fallback run as a plain `c=$(...)` under set -euo pipefail, count 0 -> survives, prints 0
 #   Mutations: no wait (H2 red), no verify (H4 red), no resource_in_use retry (H1 red).   LIB_UNDER_TEST selects a copy.
 set -uo pipefail
@@ -39,10 +42,14 @@ extract() { sed -n "/^$2() {/,/^}/p" "$1"; }
 {
 cat <<'STUB'
 log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }; log_fail() { echo "FAIL $*"; }
-cloud_server_id() { echo 168166138; }
+# POISONED: cloud_heal_partition must take its server ids from the firewall's applied_to, never from a node->IP lookup
+# (a CTM-replacement node does not resolve, and the miss text used to become a `--server` argument). Any call marks
+# $FW/sid-called and yields what a lookup miss used to yield. (The H tests used to stub this with the applied server's
+# id, which encoded the lookup as the specification: they could not tell the two sources apart.)
+cloud_server_id() { : > "$FW/sid-called"; echo "[FAIL] cloud_server_id: could not resolve a public IP"; return 0; }
 CLOUD_PROVIDER=hetzner
 STUB
-for f in _cloud_partition_fw_name _cloud_fw_applied_count _cloud_fw_wait_applied cloud_heal_partition; do extract "$LIB" "$f"; done
+for f in _cloud_partition_fw_name _cloud_fw_applied_count _cloud_fw_applied_server_ids _cloud_fw_wait_applied cloud_heal_partition; do extract "$LIB" "$f"; done
 } > "$WORK/fns.sh"
 
 # Fake hcloud. State in $FW/: exists (1/0), applied (count), clear_after (describe-json polls until applied -> 0, set
@@ -125,10 +132,33 @@ run h5 0 0
 if [ "$(cat "$WORK/rc.h5")" = "0" ] && ! grep -q 'remove-from-resource' "$WORK/fw.h5/calls" && grep -q 'already healed' "$WORK/out.h5"; then ok "H5 an already-healed firewall is a no-op success (no detach attempted)"
 else fail "H5 rc=$(cat "$WORK/rc.h5")"; fi
 
-INUSE_N=100000 HEAL_BUDGET=2 run h6 0 1
+INUSE_N=100000 HEAL_BUDGET=2 DETACH_LAG=0 run h6 1 1
 if [ "$(cat "$WORK/rc.h6")" = "1" ] && grep -q 'still resource_in_use after 2s' "$WORK/out.h6" && grep -q 'id 11713049' "$WORK/out.h6" && grep -q '168166138' "$WORK/out.h6"; then
     ok "H6 resource_in_use forever fails at the budget, naming the firewall id and server"
 else fail "H6 rc=$(cat "$WORK/rc.h6") out=$(tail -1 "$WORK/out.h6" | cut -c1-160)"; fi
+
+# S1: the S05 shape. cloud_server_id is poisoned; the firewall is applied to two servers.
+run s1 2 1 DETACH_LAG=0
+if [ "$(cat "$WORK/rc.s1")" = "0" ] && [ "$(cat "$WORK/fw.s1/exists")" = "0" ] \
+   && grep -qx 'firewall remove-from-resource aether-partition-aether-nodeX --type server --server 168166138' "$WORK/fw.s1/calls" \
+   && grep -qx 'firewall remove-from-resource aether-partition-aether-nodeX --type server --server 168166139' "$WORK/fw.s1/calls" \
+   && ! grep -q -- '--server .*FAIL' "$WORK/fw.s1/calls" && [ ! -e "$WORK/fw.s1/sid-called" ] && ! grep -q '^FAIL' "$WORK/out.s1"; then
+    ok "S1 S05 shape: detached from BOTH servers named by applied_to, no node lookup, no garbage --server, healed with no [FAIL]"
+else fail "S1 rc=$(cat "$WORK/rc.s1") sid-called=$([ -e "$WORK/fw.s1/sid-called" ] && echo yes || echo no) calls=$(grep remove "$WORK/fw.s1/calls" | tr '\n' '|') out=$(tail -2 "$WORK/out.s1" | cut -c1-140 | tr '\n' '|')"; fi
+
+# S2: the id reader, with and without jq, and a label_selector entry that must be ignored
+s2_run() {  # <PATH> -> ids, space-joined
+    mkdir -p "$WORK/fw.s2"; echo 2 > "$WORK/fw.s2/applied"; echo 1 > "$WORK/fw.s2/exists"
+    FW="$WORK/fw.s2" PATH="$1" /bin/bash -c "$(extract "$LIB" _cloud_fw_applied_server_ids)"'
+        _cloud_fw_applied_server_ids fw | tr "\n" " "'
+}
+mkdir -p "$WORK/bin3"; for tool in tr grep wc sed cat awk sleep date; do ln -sf "$(command -v $tool)" "$WORK/bin3/$tool"; done
+cp "$WORK/bin/hcloud" "$WORK/bin3/hcloud"
+ids_nojq=$(s2_run "$WORK/bin3")
+if command -v jq >/dev/null 2>&1; then ids_jq=$(s2_run "$WORK/bin3:$(dirname "$(command -v jq)"):/usr/bin:/bin"); else ids_jq="$ids_nojq"; fi
+if [ "$ids_nojq" = "168166138 168166139 " ] && [ "$ids_jq" = "168166138 168166139 " ]; then
+    ok "S2 applied_to ids read identically with jq and without ('${ids_nojq% }')"
+else fail "S2 nojq='${ids_nojq}' jq='${ids_jq}'"; fi
 
 # A1/A2: the create path's wait
 a_run() {  # <label> <apply_after> <budget> [VAR=value ...]

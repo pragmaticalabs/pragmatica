@@ -803,7 +803,7 @@ bootstrap_cloud_cluster_a() {
     # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
     # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
     local cluster_a_ip
-    cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1) || cluster_a_ip=""
     if [ -n "$cluster_a_ip" ]; then
         CLUSTER_A_MGMT="http://${cluster_a_ip}:8080"
         CLUSTER_A_APP_DIRECT="http://${cluster_a_ip}:8070"
@@ -823,7 +823,7 @@ bootstrap_cloud_cluster_b() {
     aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     local cluster_b_ip
-    cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1) || cluster_b_ip=""
     if [ -n "$cluster_b_ip" ]; then
         CLUSTER_B_MGMT="http://${cluster_b_ip}:8080"
         CLUSTER_B_APP_DIRECT="http://${cluster_b_ip}:8070"

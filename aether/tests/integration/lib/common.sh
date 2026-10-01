@@ -1451,6 +1451,11 @@ _registered_by_to_offset() {
 #
 # Provider-agnostic shell: dispatches on CLOUD_PROVIDER so an aws/gcp branch slots
 # in later. Hetzner is the only implemented backend today.
+#
+# A NOT-FOUND outcome is a PROBE MISS, not a failure: nothing on stdout, a log_warn on stderr, rc 1.
+# log_fail prints on the stdout that callers capture with $(...) while still counting through the fail
+# file, so a miss became a counted [FAIL] with no visible line (12-network S05, cloud run 4). A caller
+# for which a miss is fatal logs its own log_fail on rc!=0. Argument/provider errors (rc 2) stay loud.
 cloud_server_id() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1465,7 +1470,7 @@ cloud_server_id() {
             fi
             local ip
             ip=$(cloud_public_ip "$node_id") || {
-                log_fail "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed)"
+                log_warn "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed)" >&2
                 return 1
             }
             # Map IP -> numeric server id. `hcloud -o columns -o noheader` prints
@@ -1475,7 +1480,7 @@ cloud_server_id() {
             sid=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null \
                     | awk -v ip="$ip" '$2==ip{print $1; exit}')
             if [ -z "$sid" ]; then
-                log_fail "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')"
+                log_warn "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')" >&2
                 return 1
             fi
             printf '%s\n' "$sid"
@@ -1498,8 +1503,12 @@ cloud_server_id() {
 # Cluster name resolution: $BOOTSTRAP_CLUSTER_NAME (set by run-tests.sh per cluster);
 # falls back to CLOUD_BOOTSTRAP_CLUSTER for ad-hoc invocations.
 #
-# Returns the IP on stdout. Logs a failure (without exiting the caller) and returns
-# non-zero if the state file is missing or the node has no recorded address.
+# Returns the IP on stdout. A NOT-FOUND outcome (state file missing, arrays missing, no entry for the
+# node) is a PROBE MISS: nothing on stdout, a log_warn on stderr, rc 1 — never log_fail. log_fail prints
+# on the stdout a caller captures with $(...) while still counting through the fail file (#1511), so a
+# miss became a counted [FAIL] with no visible line (02-chaos S19 x2, 12-network S05; cloud run 4). The
+# caller decides whether a miss is fatal and logs its own log_fail then. Argument errors (rc 2) are
+# harness bugs and stay loud.
 cloud_public_ip() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1513,7 +1522,7 @@ cloud_public_ip() {
     fi
     local state_file="${HOME}/.aether/clusters/${cluster}/bootstrap-state.json"
     if [ ! -f "$state_file" ]; then
-        log_fail "cloud_public_ip: bootstrap-state.json not found at ${state_file}"
+        log_warn "cloud_public_ip: bootstrap-state.json not found at ${state_file}" >&2
         return 1
     fi
     # Translate friendly node-N → bootstrap nodeId form.
@@ -1535,7 +1544,7 @@ cloud_public_ip() {
         if (RSTART > 0) print substr($0, RSTART, RLENGTH);
     }' "$state_file")
     if [ -z "$ids_raw" ] || [ -z "$addrs_raw" ]; then
-        log_fail "cloud_public_ip: provisionedNodeIds or collectedAddresses missing from ${state_file}"
+        log_warn "cloud_public_ip: provisionedNodeIds or collectedAddresses missing from ${state_file}" >&2
         return 1
     fi
     # Strip key + brackets, split into one quoted token per line, drop quotes.
@@ -1582,7 +1591,7 @@ cloud_public_ip() {
             printf '%s\n' "$ip"
             return 0
         fi
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address"
+        log_warn "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address" >&2
         return 1
     fi
     printf '%s\n' "$ip"
@@ -1609,6 +1618,13 @@ cloud_ssh() {
     local node_id="$1"; shift
     local target_ip
     target_ip=$(cloud_public_ip "$node_id") || return $?
+    cloud_ssh_ip "$target_ip" "$@"
+}
+
+# SSH to an already-resolved address. For callers that resolve through a cache (S19's pre-kill
+# survivor IPs) and must not re-resolve mid-quorum-loss; cloud_ssh is this plus the live lookup.
+cloud_ssh_ip() {
+    local target_ip="$1"; shift
     ssh "${SSH_OPTS[@]}" \
         -i "${AETHER_SSH_KEY}" \
         "${CLOUD_SSH_USER:-root}@${target_ip}" "$@"
@@ -1791,6 +1807,15 @@ run_test() {
         fn_rc=$?
     fi
     fails_logged=$(( $(_harness_fail_lines) - fails_before ))
+    # A [FAIL] raised inside a $(...) capture counts through the fail file but its text went into the
+    # caller's variable, so the log shows no line for it. Print those lines: a counted [FAIL] must
+    # never appear only as a number. In-process fails bump both counters, so the surplus is exactly
+    # the invisible ones (the last N lines are exact when they are the only invisible kind).
+    if [ "$fails_logged" -gt "${TEST_FAIL_COUNT:-0}" ] && [ -f "${HARNESS_FAIL_FILE:-}" ]; then
+        local hidden=$(( fails_logged - ${TEST_FAIL_COUNT:-0} ))
+        log_info "run_test: '${name}' counted ${hidden} [FAIL] line(s) raised inside command substitutions (not shown above); from the fail file:"
+        tail -n "$hidden" "$HARNESS_FAIL_FILE" | sed 's/^/[FAIL] (swallowed) /'
+    fi
     [ "${TEST_FAIL_COUNT:-0}" -gt "$fails_logged" ] && fails_logged=${TEST_FAIL_COUNT:-0}
     HARNESS_FAIL_CONSUMED=$(_harness_fail_lines)
     if [ "$fn_rc" -eq 0 ] && [ "$fails_logged" -eq 0 ]; then

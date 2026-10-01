@@ -1378,9 +1378,9 @@ first_seed_host_app_port() {
 # not exist: cloud returned 1 unconditionally, so 02y/02w sent no app traffic at all and their
 # durability assertions failed in 0s against nothing.
 #
-# A member that does not resolve is SKIPPED, not failed: cloud_public_ip reports a miss through
-# log_fail on STDOUT, which a capture would otherwise read as the address (and would add a counted
-# [FAIL] to whatever test happens to be enumerating). Only a bare host is accepted.
+# A member that does not resolve is SKIPPED, not failed: cloud_public_ip reports a miss as a stderr
+# log_warn plus rc 1 (never a counted [FAIL]), so the `|| continue` below is the whole handling.
+# Only a bare host is accepted.
 _cloud_node_app_endpoints() {
     local inport="$1" id ip out=""
     for id in $(cloud_running_cores); do
@@ -2424,6 +2424,25 @@ _cloud_fw_applied_count() {
     fi
 }
 
+# Server ids a Hetzner firewall is applied to, one per line, read from the firewall's OWN `applied_to`
+# (`hcloud firewall describe <name> -o json`: "applied_to":[{"type":"server","server":{"id":N}}, ...]); label_selector
+# entries carry no server and are ignored. Prints nothing (rc 0) for none applied or an unreadable describe. This is
+# what a heal must detach from: a node->IP->server lookup cannot resolve a CTM-replacement node that has left the
+# cluster's endpoint API, and its miss used to become a garbage `--server` argument (12-network S05, cloud run 4).
+_cloud_fw_applied_server_ids() {
+    local json
+    json=$(hcloud firewall describe "$1" -o json 2>/dev/null) || return 0
+    [ -n "$json" ] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$json" | jq -r '(.applied_to // [])[] | select(.type == "server") | .server.id' 2>/dev/null || true
+    else
+        printf '%s' "$json" | tr -d '\n' \
+            | { grep -oE '"server"[[:space:]]*:[[:space:]]*\{[[:space:]]*"id"[[:space:]]*:[[:space:]]*[0-9]+' || true; } \
+            | { grep -oE '[0-9]+$' || true; }
+    fi
+    return 0
+}
+
 # Wait (bounded, $SECONDS-based) until firewall <name>'s applied count satisfies <mode>: "empty" (== 0) or
 # "applied" (>= 1; an unreadable "?" is not confirmation). Returns 0 on success, 1 on timeout; the last count read is left in CLOUD_FW_LAST_COUNT. `hcloud firewall remove-from-resource` / `apply-to-resource` return when the
 # ACTION is accepted, not when the firewall's applied_to has settled, and a delete in between fails with
@@ -2471,23 +2490,24 @@ cloud_heal_partition() {
                 log_info "cloud_heal_partition: no partition firewall '${fw_name}' for ${node_id} (already healed)"
                 return 0
             fi
-            # Detach from the node's server (if still applied), WAIT for the detach to settle, then delete (retrying
-            # on resource_in_use), then VERIFY the firewall is gone. Resolve the server id best-effort: if the VM is
-            # gone (CTM replaced it) the detach is unnecessary and delete still succeeds.
-            local sid out rc budget="${CLOUD_HEAL_TIMEOUT_S:-60}" deadline delay="${CLOUD_HEAL_RETRY_DELAY_S:-2}"
+            # Detach from every server the firewall is applied to, WAIT for the detach to settle, then delete (retrying
+            # on resource_in_use), then VERIFY the firewall is gone. The servers come from the firewall's own applied_to,
+            # never from a node->IP lookup: that lookup cannot resolve a CTM-replacement node, and a miss became a garbage
+            # `--server` argument. Nothing applied (VM gone, already detached) needs no detach and delete still succeeds.
+            local sid out rc budget="${CLOUD_HEAL_TIMEOUT_S:-60}" deadline delay="${CLOUD_HEAL_RETRY_DELAY_S:-2}" one_sid
             deadline=$(( SECONDS + budget ))
-            sid=$(cloud_server_id "$node_id" 2>/dev/null || true)
-            if [ -n "$sid" ]; then
-                out=$(hcloud firewall remove-from-resource "$fw_name" --type server --server "$sid" 2>&1); rc=$?
+            sid=$(_cloud_fw_applied_server_ids "$fw_name" | tr '\n' ' ' | sed 's/ *$//')
+            for one_sid in $sid; do
+                out=$(hcloud firewall remove-from-resource "$fw_name" --type server --server "$one_sid" 2>&1); rc=$?
                 if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'not applied|not_found|not found'; then
-                    log_warn "cloud_heal_partition: detach '${fw_name}' from server ${sid} returned rc=${rc}: ${out} (waiting for applied_to to clear)"
+                    log_warn "cloud_heal_partition: detach '${fw_name}' from server ${one_sid} returned rc=${rc}: ${out} (waiting for applied_to to clear)"
                 fi
-            fi
+            done
             if ! _cloud_fw_wait_applied "$fw_name" empty "$budget"; then
                 case "$CLOUD_FW_LAST_COUNT" in
                     '?') ;;   # unreadable: the firewall may already be gone; the delete below decides
                     *)
-                        log_fail "cloud_heal_partition: firewall '${fw_name}' (id ${fw_id}) is STILL applied to ${CLOUD_FW_LAST_COUNT} resource(s) ${budget}s after detaching from server ${sid:-<unresolved>}; ${node_id} stays PARTITIONED, left for the driver's proof of zero (the record /tmp/aether-partition-fw-${node_id}.id is kept)"
+                        log_fail "cloud_heal_partition: firewall '${fw_name}' (id ${fw_id}) is STILL applied to ${CLOUD_FW_LAST_COUNT} resource(s) ${budget}s after detaching from server ${sid:-<none applied>}; ${node_id} stays PARTITIONED, left for the driver's proof of zero (the record /tmp/aether-partition-fw-${node_id}.id is kept)"
                         return 1
                         ;;
                 esac
@@ -2499,7 +2519,7 @@ cloud_heal_partition() {
                 fi
                 if printf '%s' "$out" | grep -qiE 'resource_in_use|still in use'; then
                     if [ "$SECONDS" -ge "$deadline" ]; then
-                        log_fail "cloud_heal_partition: firewall '${fw_name}' (id ${fw_id}) still resource_in_use after ${budget}s of retries (server ${sid:-<unresolved>}); ${node_id} stays PARTITIONED, left for the driver's proof of zero: ${out}"
+                        log_fail "cloud_heal_partition: firewall '${fw_name}' (id ${fw_id}) still resource_in_use after ${budget}s of retries (server ${sid:-<none applied>}); ${node_id} stays PARTITIONED, left for the driver's proof of zero: ${out}"
                         return 1
                     fi
                     log_warn "cloud_heal_partition: delete '${fw_name}' (id ${fw_id}) refused resource_in_use; retrying in ${delay}s"
@@ -2507,12 +2527,12 @@ cloud_heal_partition() {
                     delay=$(awk -v d="$delay" 'BEGIN { d = d * 2; if (d > 8) d = 8; print d }')
                     continue
                 fi
-                log_fail "cloud_heal_partition: hcloud firewall delete '${fw_name}' (id ${fw_id}, server ${sid:-<unresolved>}) failed (rc=${rc}): ${out}"
+                log_fail "cloud_heal_partition: hcloud firewall delete '${fw_name}' (id ${fw_id}, server ${sid:-<none applied>}) failed (rc=${rc}): ${out}"
                 return "$rc"
             done
             # Do not trust the exit code: the firewall must be GONE.
             if hcloud firewall describe "$fw_name" -o 'format={{.ID}}' >/dev/null 2>&1; then
-                log_fail "cloud_heal_partition: delete of '${fw_name}' (id ${fw_id}, server ${sid:-<unresolved>}) reported success but the firewall still exists; ${node_id} may stay PARTITIONED, left for the driver's proof of zero"
+                log_fail "cloud_heal_partition: delete of '${fw_name}' (id ${fw_id}, server ${sid:-<none applied>}) reported success but the firewall still exists; ${node_id} may stay PARTITIONED, left for the driver's proof of zero"
                 return 1
             fi
             rm -f "/tmp/aether-partition-fw-${node_id}.id" 2>/dev/null || true
