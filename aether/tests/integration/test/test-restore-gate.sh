@@ -120,7 +120,7 @@ chmod +x "${WORK}/bin/hcloud"
 partition() {  # exists(0|1) [describe-json] -> prints the hcloud call log; output -> $WORK/hc-<exists>.out
     local node="restore-gate-test-$$"
     # common.sh requires TARGET_HOST; localhost is inert here (partition never ssh's).
-    ( export PATH="${WORK}/bin:$PATH" HC_LOG="${WORK}/hc-$1.log" HC_EXISTS="$1" HOME="${WORK}" TARGET_HOST=localhost
+    ( export PATH="${WORK}/bin:$PATH" HC_LOG="${WORK}/hc-$1.log" HC_EXISTS="$1" HOME="${WORK}" TARGET_HOST=localhost CLOUD_PARTITION_APPLY_TIMEOUT_S=1 CLOUD_FW_POLL_S=0.2
       [ -n "${2:-}" ] && export HC_DESC_JSON="$2"
       : > "$HC_LOG"
       source "${INTEG_DIR}/lib/common.sh" >/dev/null 2>&1 || echo "SOURCE-FAILED common.sh" >> "$HC_LOG"
