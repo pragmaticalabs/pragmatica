@@ -71,7 +71,9 @@ class TieredReadVisibleBoundTest {
         registry.registerReplica(STREAM, PARTITION, SELF);
         registry.registerReplica(STREAM, PARTITION, PEER);
         replication = replicationManager(SELF, registry);
-        manager = streamPartitionManager(Long.MAX_VALUE, segmentSealer(storageSegmentSink(storage, index)), replication);
+        manager = streamPartitionManager(Long.MAX_VALUE,
+                                         segmentSealer(SealReleaseLag.laggingRelease(storageSegmentSink(storage, index))),
+                                         replication);
         manager.createStream(StreamConfig.streamConfig(STREAM,
                                                        1,
                                                        RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
@@ -170,14 +172,8 @@ class TieredReadVisibleBoundTest {
         }
     }
 
-    /// Sealing runs off the appending thread (#1234); the tier holds the offset only once its seal is indexed.
     private void awaitSealedThrough(long offset) {
-        var deadline = System.nanoTime() + 5_000_000_000L;
-
-        while (index.lastSealedOffset(STREAM, PARTITION) < offset && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
-        }
-        assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("sealed through %d", offset).isGreaterThanOrEqualTo(offset);
+        SealReleaseLag.awaitReadable(index, manager, STREAM, PARTITION, offset);
     }
 
     private static Serializer identitySerializer() {
