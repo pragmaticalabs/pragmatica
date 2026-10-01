@@ -136,15 +136,25 @@ test_scale_down_under_load() {
     retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "scale-down-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
+    # Record who is in the cluster and who votes BEFORE the scale-down, so the step line below can say whether the
+    # load target was a victim. Recording only: nothing here steers the load unless SCALE_LOAD_TARGET_VICTIM=1.
+    local members_before voters_before load_target
+    members_before=$(cloud_running_cores | sort)
+    voters_before=$(_cluster_voters installedVoters)
+    load_target="${APP_ENDPOINT}"
+
     start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health" "" "$ECHO_BLUEPRINT"
     sleep 5
 
     # Scale down to 5
     log_info "Scaling down to 5 under load"
     scale_cluster 5
+    # Opt-in reproduction aid (default OFF, no-op): re-aim the load at a node that is leaving. See lib/cluster.sh.
+    scale_load_retarget_to_victim "$voters_before" > /dev/null
 
     # Wait for scale-down (fast poll — see test-02-scale-up.sh comment)
     wait_for_node_count_fast 5 180
+    log_scale_down_step "$members_before" "$(cloud_running_cores | sort)" "$([ -s "/tmp/load_endpoint_override_$$" ] && cat "/tmp/load_endpoint_override_$$" || printf '%s' "$load_target")"
 
     # Wait for load to complete
     for pid in "${LOAD_PIDS[@]}"; do

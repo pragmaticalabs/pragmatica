@@ -63,7 +63,7 @@ start_load() {
     # so a previous window's stale 404s are not summed into this window's totals
     # (the 642-stale-404 over-count came from stop_load globbing /tmp/load_*_*.txt
     # across runs; both ends are now $$-scoped).
-    rm -f "/tmp/load_result_$$.txt" "/tmp/load_failures_$$.txt" "/tmp/load_failure_bodies_$$.txt"
+    rm -f "/tmp/load_result_$$.txt" "/tmp/load_failures_$$.txt" "/tmp/load_failure_bodies_$$.txt" "/tmp/load_endpoint_override_$$"
 
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
 
@@ -71,6 +71,8 @@ start_load() {
         local success=0 failure=0 consec_fail=0
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
+            # SCALE_LOAD_TARGET_VICTIM (opt-in, 03-scaling): scale_load_retarget_to_victim writes the new target here.
+            [ -s "/tmp/load_endpoint_override_$$" ] && APP_ENDPOINT=$(cat "/tmp/load_endpoint_override_$$")
             status=$(_load_tick "/tmp/load_failure_bodies_$$.txt" "$method" "${APP_ENDPOINT}${path}" "$body")
             if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
@@ -196,6 +198,7 @@ stop_load() {
         fi
     done
     _load_persist_failure_bodies >&2
+    rm -f "/tmp/load_endpoint_override_$$"
 
     echo "${total_success}:${total_failure}"
 }

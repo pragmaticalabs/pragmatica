@@ -8,5 +8,11 @@
   manifest. A per-suite VM registry (reset at suite start, filled at suite start, every test start and every
   capture) is captured too; a remembered VM the provider no longer lists is still tried with a short bound and
   marked `remembered-not-listed`, or `GONE` when it does not answer.
-  [verified: `aether/tests/integration/test/test-load-bodies-and-vm-capture.sh` (6 stub tests); dropping the body
-  capture reddens 2, ignoring the registry reddens 2. No cloud run.]
+- **03 Scale_down records who left and whether the load target was among them.** One INFO line per scale-down step
+  (members before/after, removed nodes, the load target and its node id, "load target was a victim: yes/no/unknown").
+  Recording only. An opt-in `SCALE_LOAD_TARGET_VICTIM=1` (default off, a no-op) re-aims the running load at a node
+  that leaves the voter set, to reproduce the defect on demand.
+  [verified: `aether/tests/integration/test/test-load-bodies-and-vm-capture.sh` (6 stub tests) and
+  `test-scale-down-victims.sh` (6); dropping the body
+  capture reddens 2, ignoring the registry reddens 2; always-"no" victim logging, the flag ignored, the retarget
+  removed and the load loop ignoring the override each redden their pin. No cloud run.]
