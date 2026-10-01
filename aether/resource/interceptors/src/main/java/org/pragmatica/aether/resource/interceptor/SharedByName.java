@@ -45,6 +45,8 @@ final class SharedByName<V> {
     /// holder currently has one — and returns the holder `holderFactory` builds over the shared value.
     <H> H acquire(String name, V candidate, Fn1<H, V> holderFactory) {
         var share = shares.compute(name, (_, existing) -> retain(existing, candidate));
+        // Counted before the holder exists; a throwing holderFactory would leak this count. Unreachable
+        // today: both factories pass record constructors, which cannot throw.
         var holder = holderFactory.apply(share.value());
 
         holders.put(Holder.holder(holder), name);
