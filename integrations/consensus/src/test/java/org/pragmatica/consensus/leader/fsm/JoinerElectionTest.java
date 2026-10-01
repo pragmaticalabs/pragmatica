@@ -10,6 +10,7 @@ package org.pragmatica.consensus.leader.fsm;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
@@ -179,7 +180,7 @@ class JoinerElectionTest {
         var catchingUp = new AtomicBoolean(true);
         var h = harness(Option.none(), SHORT_GRACE);
 
-        context.get().installKvSyncPending(catchingUp::get);
+        installThroughTheManager(catchingUp::get);
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE));
         h.dispatch(new LeaderElectionEvents.ConsensusReady());
@@ -211,6 +212,13 @@ class JoinerElectionTest {
                              .isInstanceOfAny(LeaderElectionState.Electing.class, LeaderElectionState.ReElecting.class);
 
         h.dispatch(new ClusterFsmEvent.Shutdown());
+    }
+
+    /// The production route: the consensus wiring hands the signal to the `LeaderManager`, which owns the context.
+    private void installThroughTheManager(Supplier<Boolean> pending) {
+        var ctx = context.get();
+
+        new LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false).installKvSyncProgress(pending);
     }
 
     private static void awaitNotAwaiting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) throws InterruptedException {
