@@ -835,27 +835,27 @@ EOF
     if [ "$2" = "-unset-" ]; then echo "unset CLOUD_RUNTIME" >> "$1/setup.sh"; else echo "export CLOUD_RUNTIME=$2" >> "$1/setup.sh"; fi
 }
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E1 jvm failed/2 -> departure confirmed from systemctl show" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "designed drain halt confirmed via SSH systemctl-show" && grep -qF "${SURV1_IP}|systemctl show aether-node --property=ActiveState,ExecMainStatus" "$d/ssh-calls"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "designed drain halt confirmed via SSH systemctl-show" && grep -qF "${SURV1_IP}|grep -m1 '"'"'^AETHER_NODE_ID='"'"' /etc/aether/node.env 2>&1; systemctl show aether-node --property=ActiveState,ExecMainStatus" "$d/ssh-calls"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=active\nExecMainStatus=2\n'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}ActiveState=active\nExecMainStatus=2\n"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E2 jvm active/2 -> S19 violation naming the state read" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "systemd unit reports ActiveState='"'"'active'"'"' ExecMainStatus='"'"'2'"'"'"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=failed\nExecMainStatus=0\n'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}ActiveState=failed\nExecMainStatus=0\n"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E3 jvm failed/0 -> S19 violation" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "ExecMainStatus='"'"'0'"'"' — not a designed drain halt"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=failed\r\nExecMainStatus=2\r\n'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "AETHER_NODE_ID=hetzner-eu-core-0\r\nActiveState=failed\r\nExecMainStatus=2\r\n"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E4 jvm failed/2 with CRLF line ends -> still confirmed" \
     eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "designed drain halt confirmed"'
 
-d=$(new_case); tier2_setup "$d" -unset-; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"
+d=$(new_case); tier2_setup "$d" -unset-; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E5 CLOUD_RUNTIME unset -> refused, no docker inspect default" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "CLOUD_RUNTIME is '"'"'<unset>'"'"'" && [ ! -f "$d/ssh-calls" ]'
@@ -870,10 +870,30 @@ run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E8 SSH unreachable with no output -> degrades with a warning naming the runtime, not a violation at tier 2" \
     eval 'has "$d" "tier-2 (SSH drain-state read, jvm runtime) corroboration unavailable (rc=255" && ! has "$d" "remote drain-state read (jvm runtime) failed"'
 
-d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z\n'
+d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z|hetzner-eu-core-0\n'
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E6 container path unchanged: docker inspect exit 2 -> confirmed" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect --format '"'"'{{.State.ExitCode}}|{{.State.FinishedAt}}'"'"' aether-node" "$d/ssh-calls"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect --format '"'"'{{.State.ExitCode}}|{{.State.FinishedAt}}|{{index .Config.Labels \"aether-node-id\"}}'"'"' aether-node" "$d/ssh-calls"'
+
+
+# TI: S19 tier 2 reads an exit state at a PRE-KILL CACHED address, and cloud IPs are recycled: it must prove which VM answered
+# (JVM: AETHER_NODE_ID in /etc/aether/node.env; container: the aether-node-id label of the aether-node container).
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "AETHER_NODE_ID=hetzner-eu-core-4\n${UNIT_FAILED_2}"
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI1 jvm: a DIFFERENT node answers at the cached IP (failed/2 on a stranger) -> identity violation FAIL, never 'confirmed'" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity violation: read ${SURV1_IP} expecting survivor '"'"'hetzner-eu-core-0'"'"' but node '"'"'hetzner-eu-core-4'"'"' answered" && ! has "$d" "designed drain halt confirmed"'
+d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z|hetzner-eu-core-4\n'
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI2 container: a DIFFERENT node's label at the cached IP -> identity violation FAIL, never 'confirmed'" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity violation" && has "$d" "but node '"'"'hetzner-eu-core-4'"'"' answered" && ! has "$d" "container exit code=2"'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${UNIT_FAILED_2}"
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI3 jvm: no AETHER_NODE_ID in the reply -> identity indeterminate FAIL (void, not a pass)" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity indeterminate" && ! has "$d" "designed drain halt confirmed"'
+d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z\n'
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI4 container: an empty label (no third field) -> identity indeterminate FAIL" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity indeterminate"'
 
 # E9: a CTM-replacement survivor (KSUID id, ABSENT from the fixture bootstrap-state.json) whose live lookup cannot work
 # mid-quorum-loss (api_get stubbed to fail). Tier 2 must read the pre-kill IP CACHE and SSH to that address; it used to
@@ -895,7 +915,7 @@ printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
 SURVIVOR_IPS_FILE="\$STUB_DIR/survivor-ips"
 printf '%s %s\n' "$CTM_SURV" "${SURV1_IP}" > "\$SURVIVOR_IPS_FILE"
 SETUP
-resp "$d/ssh-${SURV1_IP}" 0 '2|2026-10-01T02:11:00Z\n'
+resp "$d/ssh-${SURV1_IP}" 0 "2|2026-10-01T02:11:00Z|${CTM_SURV}\n"
 run_in "$d" "$SELF_DRAIN_SUITE" case_e9
 check "$d" "E9a CTM survivor, IP only in the pre-kill cache: tier 2 SSHes to the cached IP and confirms exit code 2" \
     eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect" "$d/ssh-calls"'

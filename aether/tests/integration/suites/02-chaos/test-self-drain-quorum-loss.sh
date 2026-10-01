@@ -572,6 +572,23 @@ _s19_require_cloud_runtime() {
     return 1
 }
 
+# <survivor> <observed id read from the VM> <ip>: rc 0 when the VM at the (cached, possibly recycled) address is the survivor;
+# otherwise a counted log_fail and rc 1 — a recycled address answers with a stranger's unit state, and a read that SUCCEEDS
+# from the wrong subject is a false pass, not a degraded tier. An unreadable id is void evidence, not a pass.
+_s19_survivor_identity_ok() {
+    local survivor="$1" observed="$2" ip="$3" expected="$1"
+    [[ "$expected" =~ ^node-([0-9]+)$ ]] && expected="${CLOUD_SOURCE_NAME}-core-$(( ${BASH_REMATCH[1]} - 1 ))"
+    if [ -z "$observed" ]; then
+        log_fail "S19 tier-2 identity indeterminate: ${ip} returned no node id for expected survivor '${expected}', so it cannot be shown WHICH VM answered — the read is void, not a pass"
+        return 1
+    fi
+    if [ "$observed" != "$expected" ]; then
+        log_fail "S19 tier-2 identity violation: read ${ip} expecting survivor '${expected}' but node '${observed}' answered — the cached survivor IP has been recycled onto another VM; its exit state says nothing about ${expected}"
+        return 1
+    fi
+    return 0
+}
+
 # Confirm a survivor's self-drain DEPARTURE on cloud, tolerant of the
 # re-resolve-at-kill race. Tiered proof, each tier only consulted when the
 # previous one is unavailable/times out:
@@ -661,9 +678,9 @@ _confirm_survivor_departure() {
     _s19_require_cloud_runtime || return 1
     local insp="" ssh_rc="none" ssh_attempted=false ssh_stderr remote_cmd runtime="$CLOUD_RUNTIME" ip mgmt_port status
     if [ "$runtime" = "jvm" ]; then
-        remote_cmd="systemctl show aether-node --property=ActiveState,ExecMainStatus 2>&1"
+        remote_cmd="grep -m1 '^AETHER_NODE_ID=' /etc/aether/node.env 2>&1; systemctl show aether-node --property=ActiveState,ExecMainStatus 2>&1"
     else
-        remote_cmd="docker inspect --format '{{.State.ExitCode}}|{{.State.FinishedAt}}' aether-node 2>&1"
+        remote_cmd="docker inspect --format '{{.State.ExitCode}}|{{.State.FinishedAt}}|{{index .Config.Labels \"aether-node-id\"}}' aether-node 2>&1"
     fi
     # Resolve through the pre-kill cache first (_s19_resolve_survivor_ip) and SSH to that address: a live
     # cloud_public_ip lookup mid-quorum-loss cannot resolve a CTM-replacement survivor (it is not in
@@ -682,6 +699,16 @@ _confirm_survivor_departure() {
         log_warn "Survivor ${survivor} tier-2 (SSH drain-state read, ${runtime} runtime) skipped: IP unresolvable — SSH not attempted — falling through to mgmt-port/VM-existence corroboration"
     fi
     if [ "$ssh_attempted" = true ] && [ "$ssh_rc" -eq 0 ]; then
+        # The address came from a PRE-KILL cache and cloud IPs are recycled: prove WHICH VM answered before trusting its
+        # exit state. Identity source on both runtimes is the id the node's user-data gave it: JVM /etc/aether/node.env
+        # AETHER_NODE_ID, container the `aether-node-id` label of the aether-node container (NodeUserDataRenderer).
+        local observed_id
+        if [ "$runtime" = "jvm" ]; then
+            observed_id=$(jvm_unit_field "$insp" "AETHER_NODE_ID" | tr -d '"')
+        else
+            observed_id=$(printf '%s' "$insp" | tr -d '\r' | awk -F'|' 'NF >= 3 { print $3; exit }')
+        fi
+        _s19_survivor_identity_ok "$survivor" "$observed_id" "$ip" || return 1
         if [ "$runtime" = "jvm" ]; then
             local active_state exec_status
             # jvm_unit_field and jvm_unit_is_drain_halt (lib/common.sh) are
@@ -700,6 +727,7 @@ _confirm_survivor_departure() {
         local code finished_at
         code="${insp%%|*}"
         finished_at="${insp#*|}"
+        finished_at="${finished_at%%|*}"
         if [ "$code" = "2" ] && [ -n "$finished_at" ] && [ "$finished_at" != "0001-01-01T00:00:00Z" ]; then
             log_info "Survivor ${survivor} container exit code=2 (Runtime.halt(2)) FinishedAt=${finished_at} — designed drain halt confirmed via SSH docker-inspect (event/membership signal was unavailable, consistent with simultaneous last-survivor drain)"
             return 0
