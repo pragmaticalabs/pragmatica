@@ -44,7 +44,10 @@ _capture_remember_vms_body() {
     [ -n "$cluster" ] || return 0
     reg=$(_capture_vm_registry_file "$cluster" "$suite")
     mkdir -p "$(dirname "$reg")" 2>/dev/null || return 0
-    ips=$(_run_with_timeout "${CLOUD_CAPTURE_ENUM_TIMEOUT_S:-30}" _cloud_running_vm_ips "$cluster" 2>/dev/null) || return 0
+    # _fork_bounded, NOT _run_with_timeout: _cloud_running_vm_ips is a shell FUNCTION, and _run_with_timeout execs
+    # coreutils `timeout`, which can only run a binary on PATH (rc 127 "failed to run command" for a function; the `|| return 0`
+    # below then swallowed it and the registry was never written, so a scale-down victim was omitted again). See common.sh.
+    ips=$(_fork_bounded "${CLOUD_CAPTURE_ENUM_TIMEOUT_S:-30}" _cloud_running_vm_ips "$cluster" 2>/dev/null) || return 0
     for ip in $ips; do
         printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
         grep -qxF "$ip" "$reg" 2>/dev/null || printf '%s\n' "$ip" >> "$reg" 2>/dev/null || true

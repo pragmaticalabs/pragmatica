@@ -14,10 +14,10 @@ LOAD_PIDS=()
 # (first 512 bytes, newlines/tabs flattened), tab-separated. The status alone cannot say WHICH 503 branch answered
 # ("Quorum disappeared...", "Route table propagating...", a transient cause's message): 03 Scale_down failed at
 # S-triple-prime with 12 of 482 requests at 503 and nothing to attribute them with.
-# Usage: _load_tick <bodies-file> <method> <url> [json body]
+# <body-scratch> is ONE reusable file per load loop (no per-tick mktemp/rm: that cost ~8ms per request).
+# Usage: _load_tick <bodies-file> <body-scratch> <method> <url> [json body]
 _load_tick() {
-    local bodies="$1" method="$2" url="$3" body="${4:-}" bf status detail
-    bf=$(mktemp)
+    local bodies="$1" bf="$2" method="$3" url="$4" body="${5:-}" status detail
     if [ "$method" = "GET" ]; then
         status=$(curl -sk -o "$bf" -w "%{http_code}" -H "X-API-Key: ${API_KEY}" "$url")
     else
@@ -28,7 +28,6 @@ _load_tick() {
         detail=$(head -c 512 "$bf" 2>/dev/null | tr '\n\t\r' '   ')
         printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${status:-000}" "$url" "$detail" >> "$bodies" 2>/dev/null || true
     fi
-    rm -f "$bf"
     printf '%s' "${status:-000}"
 }
 
@@ -68,12 +67,13 @@ start_load() {
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
 
     (
-        local success=0 failure=0 consec_fail=0
+        local success=0 failure=0 consec_fail=0 tick_scratch
+        tick_scratch=$(mktemp)
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
             # SCALE_LOAD_TARGET_VICTIM (opt-in, 03-scaling): scale_load_retarget_to_victim writes the new target here.
             [ -s "/tmp/load_endpoint_override_$$" ] && APP_ENDPOINT=$(cat "/tmp/load_endpoint_override_$$")
-            status=$(_load_tick "/tmp/load_failure_bodies_$$.txt" "$method" "${APP_ENDPOINT}${path}" "$body")
+            status=$(_load_tick "/tmp/load_failure_bodies_$$.txt" "$tick_scratch" "$method" "${APP_ENDPOINT}${path}" "$body")
             if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
                 consec_fail=0
@@ -100,6 +100,7 @@ start_load() {
             fi
             sleep "$interval"
         done
+        rm -f "$tick_scratch"
         echo "${success}:${failure}" > "/tmp/load_result_$$.txt"
     ) &
     LOAD_PIDS+=($!)

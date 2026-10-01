@@ -70,23 +70,34 @@ expect_gate "R5 deficit 10 (a leading 0 is not deficit 0)"               fail "$
 for _f in _capture_cluster_name _capture_vm_registry_file capture_remember_vms _capture_remember_vms_body capture_node_logs; do
     awk -v f="$_f" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "${INTEG_DIR}/lib/capture.sh" >> "${WORK}/cap_fn.sh"
 done
+awk '/^_run_with_timeout\(\) \{/,/^\}/' "${INTEG_DIR}/lib/common.sh" >> "${WORK}/cap_fn.sh"   # the real helper, not a stub
 if ! grep -q '^        cloud)' "${WORK}/cap_fn.sh"; then
     fail "C0 capture_node_logs has no cloud branch (extraction examined NOTHING)"
 fi
+mkdir -p "${WORK}/capbin"
+cat > "${WORK}/capbin/timeout" <<'STUB'
+#!/bin/bash
+shift
+exec "$@"
+STUB
+cat > "${WORK}/capbin/ssh" <<'STUB'
+#!/bin/bash
+case "$CAP_MODE" in
+    denied) echo "Permission denied (publickey)." >&2; exit 255 ;;
+    *) echo "node-log ${*: -1}" ;;
+esac
+STUB
+chmod +x "${WORK}/capbin/timeout" "${WORK}/capbin/ssh"
 capture() {  # mode vms enum_rc -> runs a capture for cluster b into $WORK/<mode>
     local dir="${WORK}/$1"; mkdir -p "$dir"
     ( set -euo pipefail
       AETHER_FAILURE_LOGS_DIR="$dir/failure-logs"; ENV_TYPE=cloud; CLUSTER_A_NAME=test-a; CLUSTER_B_NAME=test-b
       AETHER_SSH_KEY=/dev/null; SSH_OPTS=(-o ConnectTimeout=1); CAP_MODE="$1"
       log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }
-      _run_with_timeout() { shift; "$@"; }
       provisioning_snapshot() { echo '{"countedCoreMembers":4}'; }
-      ssh() {
-          case "$CAP_MODE" in
-              denied) echo "Permission denied (publickey)." >&2; return 255 ;;
-              *) echo "node-log ${*: -1}" ;;
-          esac
-      }
+      # the REAL _run_with_timeout, with ssh and `timeout` as binaries on PATH (production shape; a function stub of
+      # _run_with_timeout would also hide any shell-function call that a real `timeout` cannot run)
+      export PATH="${WORK}/capbin:$PATH" CAP_MODE
       _failcap_root() { echo "$AETHER_FAILURE_LOGS_DIR"; }
       source "${WORK}/cap_fn.sh"
       _cloud_running_vm_ips() { [ "$1" = test-b ] || return 1; [ "$CAP_ENUM_RC" -eq 0 ] || return "$CAP_ENUM_RC"; printf '%s' "$CAP_VMS"; }

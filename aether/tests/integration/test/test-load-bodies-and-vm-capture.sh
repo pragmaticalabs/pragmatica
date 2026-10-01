@@ -11,7 +11,8 @@
 #   C2  a remembered VM that is gone and unreachable is logged as GONE in the manifest, and the rest are captured
 #   C3  control: a registry left by a PREVIOUS run is forgotten at suite start (its VM is not captured)
 #   C4  wiring: run_test and run_suite remember/forget the VM set
-#   Mutations: dropping the body capture reddens L1/L2; ignoring the registry reddens C1 and C2.
+#   Mutations: dropping the body capture reddens L1/L2; ignoring the registry reddens C1 and C2; going back to
+#   `_run_with_timeout _cloud_running_vm_ips` (a function under a real `timeout`) reddens C1-C3.
 #   INTEG_DIR_UNDER_TEST=<path> selects another copy of aether/tests/integration.
 set -uo pipefail
 unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN
@@ -25,6 +26,23 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 WORK=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "WORK=$WORK" >&2 || rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bin"
+# A `timeout` binary that behaves like coreutils': it can run a BINARY on PATH only. Given a shell function it exec-fails
+# with rc 127 ("failed to run command"), which is how a production run on Linux treated `_run_with_timeout
+# _cloud_running_vm_ips`. NO `_run_with_timeout` stub below: the tests use the real helper, so they walk the production path.
+cat > "$WORK/bin/timeout" <<'STUB'
+#!/bin/bash
+shift
+exec "$@"
+STUB
+chmod +x "$WORK/bin/timeout"
+# ssh as a real executable (a binary, like production), so the real `timeout` path can run it.
+cat > "$WORK/bin/ssh" <<'STUB'
+#!/bin/bash
+ip="${*: -2:1}"; ip="${ip#*@}"
+case " ${GONE_IPS:-} " in *" $ip "*) echo "ssh: connect to host $ip port 22: Connection timed out" >&2; exit 255 ;; esac
+echo "node-log $ip"
+STUB
+chmod +x "$WORK/bin/ssh"
 
 # ---- L: load generator -------------------------------------------------------------------------------------------
 # Stub curl: parses `-o <file>` and answers every request 503; odd calls say "Quorum disappeared", even "Route table
@@ -63,15 +81,13 @@ else fail "L2 histogram: ${hist:-<none>}"; fi
 cloud_scenario() {  # <name> <body-fn> [ENV=VAL...]
     local name="$1" body="$2"; shift 2
     local d="${WORK}/${name}"; mkdir -p "$d"
-    env -i PATH="$PATH" HOME="$WORK" TARGET_HOST=localhost CLOUD_MODE=true CLOUD_RUNTIME=container CLUSTER_ID=b \
+    env -i PATH="$WORK/bin:$PATH" HOME="$WORK" TARGET_HOST=localhost CLOUD_MODE=true CLOUD_RUNTIME=container CLUSTER_ID=b \
         BOOTSTRAP_CLUSTER_NAME=test-b AETHER_SSH_KEY=/dev/null SUITE_TAG=03-scaling SUITE_START_EPOCH=1700000000 \
         AETHER_FAILURE_LOGS_DIR="${d}/failure-logs" CAP_DIR="$d" INTEG_DIR="$INTEG_DIR" "$@" \
         bash -c '
             set -uo pipefail
             source "$INTEG_DIR/lib/common.sh" > /dev/null 2>&1; source "$INTEG_DIR/lib/cluster.sh" > /dev/null 2>&1
-            _run_with_timeout() { shift; "$@"; }
             _cloud_running_vm_ips() { [ "$1" = test-b ] && cat "$CAP_DIR/listed" 2>/dev/null; return 0; }
-            ssh() { local ip="${*: -2:1}"; ip="${ip#*@}"; case " ${GONE_IPS:-} " in *" $ip "*) echo "ssh: connect to host $ip port 22: Connection timed out" >&2; return 255 ;; esac; echo "node-log $ip"; }
             provisioning_snapshot() { echo "{}"; }
             '"$(declare -f "$body")
 $body" > "${d}/out" 2>&1
