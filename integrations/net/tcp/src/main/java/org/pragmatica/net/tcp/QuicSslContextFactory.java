@@ -233,7 +233,9 @@ public final class QuicSslContextFactory {
     public static Result<QuicSslContext> createInsecureClient() {
         try {
             log.warn("Creating insecure QUIC client context - FOR DEVELOPMENT ONLY!");
-            var context = QuicSslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE).build();
+            var context = withoutHostnameVerification(QuicSslContextBuilder.forClient())
+                .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                .build();
 
             return Result.success(context);
         } catch (Exception e) {
@@ -263,7 +265,7 @@ public final class QuicSslContextFactory {
                                                                 TlsConfig.Trust trust,
                                                                 String[] applicationProtocols) {
         try {
-            var builder = QuicSslContextBuilder.forClient();
+            var builder = withoutHostnameVerification(QuicSslContextBuilder.forClient());
 
             if (keyMaterial != null) {
                 configureClientIdentity(builder, keyMaterial);
@@ -278,6 +280,17 @@ public final class QuicSslContextFactory {
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
         }
+    }
+
+    /// Keeps the pre-4.2.11 client behaviour: the peer chain is verified against the configured trust anchor
+    /// (the cluster CA), but the server name is not matched against the certificate. Netty 4.2.11 (#16426)
+    /// turned hostname verification on by default for QUIC clients; Aether nodes dial peers by IP and node
+    /// certificates carry no IP SAN, so the default refuses every cluster handshake. Peer identity is
+    /// enforced by the intended-peer Hello check (#1758), not by TLS hostname matching. Owner decision
+    /// 2026-10-01. Real hostname verification (IP SANs plus a verified server name on dial) is future work.
+    @SuppressWarnings("JBCT-NULL-01")  // Netty API: a null algorithm disables endpoint identification
+    private static QuicSslContextBuilder withoutHostnameVerification(QuicSslContextBuilder builder) {
+        return builder.endpointIdentificationAlgorithm(null);
     }
 
     @SuppressWarnings("JBCT-NULL-01")  // Netty API requires nullable password parameter

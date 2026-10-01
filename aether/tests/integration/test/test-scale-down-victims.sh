@@ -7,6 +7,11 @@
 #   V3  SCALE_LOAD_TARGET_VICTIM=1: the load is re-aimed at a node removed from the electorate: target ∈ victims
 #   V4  flag ON but nobody leaves within the budget: no override, a WARN, the load keeps its target
 #   V5  start_load's loop honours the override file mid-run; without it every request hits the original endpoint
+#   V6  the override is applied once per value, so the load's re-resolve can leave a victim that halted
+#   V7-V10  the retarget prefers a removed voter that HOSTS the load's slice (current owner first); falls back honestly
+#   V11 the step line records whether the target hosts the slice and whether a slice host was a victim
+#   P1-P3  put_artifact_retry_503 (the Seed marker PUT): body recorded, ONE retry on 503 only, 500 never retried
+#   M1-M4  _seed_membership_settled (the Seed gate): installed==target and members==voters, on two reads
 #   T1  tripwire: the voter keys the helper parses are components of the real VoterReconfigurationStatus record
 #   Mutations: always "no" victim reddens V1; the flag ignored reddens V2; the retarget removed reddens V3; the loop
 #   not reading the override reddens V5.   INTEG_DIR_UNDER_TEST selects another copy of aether/tests/integration.
@@ -45,7 +50,7 @@ log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }
 CLOUD_MODE=false; TARGET_HOST=h; APP_PORT=8070
 api_get() { echo x >> "$CALLS"; cat "$STATUS_BODY"; }
 STUB
-for f in _cluster_voters _id_set_difference _app_endpoint_for_node log_scale_down_step scale_load_retarget_to_victim; do extract "$f"; done
+for f in _cluster_voters _id_set_difference _app_endpoint_for_node log_scale_down_step scale_load_retarget_to_victim slice_hosts_for slice_owner_for; do extract "$f"; done
 } > "$WORK/fns.sh"
 BEFORE=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5\nnode-6\nnode-7'; AFTER=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5'
 
@@ -110,6 +115,132 @@ if grep -q 'http://orig:8070' "$WORK/hits.vl1" && grep -q 'http://victim:8075' "
     ok "V5 the load loop switches to the override mid-run; without the file every request hits the original endpoint"
 else fail "V5 with=$(sort "$WORK/hits.vl1" | uniq -c | tr '\n' ' ') without=$(sort "$WORK/hits.vl0" | uniq -c | tr '\n' ' ')"; fi
 rm -f /tmp/load_endpoint_override_$$
+
+# ---- #1790 harness round -----------------------------------------------------------------------------------------------
+# V6: the override is applied ONCE per value. The load is aimed at a victim; the victim halts (503/000); start_load's
+# re-resolve finds the new owner. Re-applying the override every tick sent it straight back to the dead victim.
+cat > "$WORK/bin/curl" <<'STUB'
+#!/bin/bash
+url="${*: -1}"; echo "$url" >> "$HITS"
+case "$url" in http://victim:8075*) printf '503' ;; *) printf '200' ;; esac
+STUB
+chmod +x "$WORK/bin/curl"
+reresolve_run() {  # <label>
+    : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$
+    ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 ENV_TYPE=cloud
+      source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
+      slice_owner_for() { echo node-new; }; cloud_public_ip() { echo newhost; }
+      start_load 10 4 GET /api/echo/health "" "g:a:v" > /dev/null 2>&1
+      sleep 1
+      printf 'http://victim:8075' > "/tmp/load_endpoint_override_$$"
+      sleep 4
+      stop_load > /dev/null 2>&1 )
+}
+reresolve_run rr
+last=$(tail -1 "$WORK/hits.rr")
+if grep -q 'http://victim:8075' "$WORK/hits.rr" && grep -q 'http://newhost:8070' "$WORK/hits.rr" && [ "${last%%/api*}" = "http://newhost:8070" ]; then
+    ok "V6 aimed at a victim that fails, the load RE-RESOLVES to the new owner and STAYS there (the override is applied once, not every tick)"
+else fail "V6 hits=$(sort "$WORK/hits.rr" | uniq -c | tr '\n' ' ') last=${last}"; fi
+rm -f /tmp/load_endpoint_override_$$
+
+# V7-V10: the retarget prefers a removed voter that HOSTS the load's slice. Slices fixture is line-oriented JSON like
+# `aether slices --format json` (the shape slice_hosts_for's awk already reads).
+slices_json() {  # <host nodes...> -> one echo artifact with those ACTIVE instances (in order), plus an unrelated artifact
+    local h first=1
+    printf '{\n"slices": [\n{\n"artifact": "org.other:thing:1.0.0",\n"instances": [\n{\n"nodeId": "node-3",\n"state": "ACTIVE"\n}\n]\n},\n{\n"artifact": "org.pragmatica.aether.test:test-echo:1.0.0",\n"instances": [\n'
+    for h in "$@"; do
+        [ "$first" = 1 ] || printf ',\n'; first=0
+        printf '{\n"nodeId": "%s",\n"state": "ACTIVE"\n}' "$h"
+    done
+    printf '\n]\n}\n]\n}\n'
+}
+cat >> "$WORK/fns.sh" <<'STUB'
+cluster_slices() { cat "$SLICES_BODY"; }
+STUB
+TARGET="node-1 node-2 node-3 node-4 node-5" status_json $BEFORE > "$WORK/status.v7"
+slices_json node-7 node-2 > "$WORK/slices.v7"
+run v7 'v=$(scale_load_retarget_to_victim "$B" 3 "org.pragmatica.aether.test:test-echo:1.0.0" 2>"$WORK/err.v7"); echo "VICTIM=$v"; cat "$WORK/err.v7"' B="$BEFORE" SCALE_LOAD_TARGET_VICTIM=1 SLICES_BODY="$WORK/slices.v7"
+if grep -q '^VICTIM=node-7$' "$WORK/out.v7" && grep -q 'victim: yes, hosts slice: yes' "$WORK/out.v7" && [ "$(cat /tmp/load_endpoint_override_$$ 2>/dev/null)" = "http://h:8076" ]; then
+    ok "V7 two victims (node-6, node-7), only node-7 hosts the slice: node-7 is chosen, not the first removed; logged 'victim: yes, hosts slice: yes'"
+else fail "V7 out=$(head -c 300 "$WORK/out.v7")"; fi
+rm -f /tmp/load_endpoint_override_$$
+slices_json node-7 node-6 > "$WORK/slices.v8"; cp "$WORK/status.v7" "$WORK/status.v8"
+run v8 'v=$(scale_load_retarget_to_victim "$B" 3 "org.pragmatica.aether.test:test-echo:1.0.0" 2>/dev/null); echo "VICTIM=$v"' B="$BEFORE" SCALE_LOAD_TARGET_VICTIM=1 SLICES_BODY="$WORK/slices.v8"
+if grep -q '^VICTIM=node-7$' "$WORK/out.v8"; then ok "V8 both victims host it: the CURRENT owner (listed first, node-7) is kept as the target"
+else fail "V8 out=$(head -c 200 "$WORK/out.v8")"; fi
+rm -f /tmp/load_endpoint_override_$$
+slices_json node-1 > "$WORK/slices.v9"; cp "$WORK/status.v7" "$WORK/status.v9"
+run v9 'v=$(scale_load_retarget_to_victim "$B" 3 "org.pragmatica.aether.test:test-echo:1.0.0" 2>"$WORK/err.v9"); echo "VICTIM=$v"; cat "$WORK/err.v9"' B="$BEFORE" SCALE_LOAD_TARGET_VICTIM=1 SLICES_BODY="$WORK/slices.v9"
+if grep -q '^VICTIM=node-6$' "$WORK/out.v9" && grep -q 'victim: yes, hosts slice: no' "$WORK/out.v9"; then
+    ok "V9 no victim hosts the slice: falls back to the first removed voter, logged 'victim: yes, hosts slice: no'"
+else fail "V9 out=$(head -c 300 "$WORK/out.v9")"; fi
+rm -f /tmp/load_endpoint_override_$$
+slices_json node-7 > "$WORK/slices.v10"; cp "$WORK/status.v7" "$WORK/status.v10"
+run v10 'v=$(scale_load_retarget_to_victim "$B" 3 2>"$WORK/err.v10"); echo "VICTIM=$v"; cat "$WORK/err.v10"' B="$BEFORE" SCALE_LOAD_TARGET_VICTIM=1 SLICES_BODY="$WORK/slices.v10"
+if grep -q '^VICTIM=node-6$' "$WORK/out.v10" && grep -q 'hosts slice: unknown' "$WORK/out.v10"; then
+    ok "V10 no slice coords: the previous behaviour (first removed voter), hosts slice reported unknown, not guessed"
+else fail "V10 out=$(head -c 300 "$WORK/out.v10")"; fi
+rm -f /tmp/load_endpoint_override_$$
+
+# V11: the step line says whether the target hosts the slice and whether a host was a victim
+run v11a 'log_scale_down_step "$B" "$A" "http://h:8075" "$H"' B="$BEFORE" A="$AFTER" H=$'node-6\nnode-2'
+run v11b 'log_scale_down_step "$B" "$A" "http://h:8070" "$H"' B="$BEFORE" A="$AFTER" H=$'node-7'
+if grep -q 'load target hosts slice: yes' "$WORK/out.v11a" && grep -q 'a slice host was a victim: yes' "$WORK/out.v11a" \
+   && grep -q 'load target hosts slice: no' "$WORK/out.v11b" && grep -q 'a slice host was a victim: yes' "$WORK/out.v11b"; then
+    ok "V11 the step line records 'load target hosts slice' (yes/no) and 'a slice host was a victim'"
+else fail "V11 $(cat "$WORK/out.v11a" "$WORK/out.v11b" | cut -c150-420 | tr '\n' '|')"; fi
+
+# ---- Q2 harness: the seed's PUT and the membership gate ----------------------------------------------------------------
+cat > "$WORK/bin/curl" <<'STUB'
+#!/bin/bash
+out=""; args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do [ "${args[$i]}" = "-o" ] && out="${args[$((i + 1))]}"; done
+echo "OUT=$out" >> "$ARGS_LOG"
+n=$(( $(cat "$CALLS" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS"
+code=$(sed -n "${n}p" "$SEQ"); code="${code:-200}"
+printf '{"call":%s,"code":%s}' "$n" "$code" > "$out"
+printf '%s' "$code"
+STUB
+chmod +x "$WORK/bin/curl"
+put_run() {  # <label> <status sequence...> -> status in put.<label>, calls in put.<label>.calls
+    local label="$1"; shift
+    printf '%s\n' "$@" > "$WORK/seq.$label"; rm -f "$WORK/calls.put.$label" "$WORK/args.$label" "$WORK/body.$label"
+    ( export PATH="$WORK/bin:$PATH" CALLS="$WORK/calls.put.$label" SEQ="$WORK/seq.$label" ARGS_LOG="$WORK/args.$label" API_KEY=k PUT_RETRY_DELAY_S=0
+      log_warn() { echo "WARN $*"; }
+      eval "$(extract put_artifact_retry_503)"
+      : > "$WORK/f.bin"; st=$(put_artifact_retry_503 "$WORK/f.bin" http://h/x "$WORK/body.$label" 2>"$WORK/err.put.$label"); echo "$st" > "$WORK/put.$label" )
+}
+put_run p1 503 200
+put_run p2 500
+put_run p3 503 503
+if [ "$(cat "$WORK/put.p1")" = "200" ] && [ "$(cat "$WORK/calls.put.p1")" = "2" ] && grep -q '"call":2' "$WORK/body.p1" && ! grep -q 'OUT=/dev/null' "$WORK/args.p1"; then
+    ok "P1 503 then 200: ONE retry succeeds, status 200, the body is recorded in a file (never -o /dev/null)"
+else fail "P1 st=$(cat "$WORK/put.p1") calls=$(cat "$WORK/calls.put.p1") body=$(cat "$WORK/body.p1")"; fi
+if [ "$(cat "$WORK/put.p2")" = "500" ] && [ "$(cat "$WORK/calls.put.p2")" = "1" ] && grep -q '"code":500' "$WORK/body.p2" && grep -q '"code":500' "$WORK/err.put.p2"; then
+    ok "P2 a 500 is NOT retried (1 call), the status stays 500, and its body is recorded and warned"
+else fail "P2 st=$(cat "$WORK/put.p2") calls=$(cat "$WORK/calls.put.p2") err=$(cat "$WORK/err.put.p2" | head -c 160)"; fi
+if [ "$(cat "$WORK/put.p3")" = "503" ] && [ "$(cat "$WORK/calls.put.p3")" = "2" ]; then
+    ok "P3 503 twice: exactly ONE retry (2 calls), the final 503 is reported"
+else fail "P3 st=$(cat "$WORK/put.p3") calls=$(cat "$WORK/calls.put.p3")"; fi
+
+settled_run() {  # <label> <inst> <target> <members> [flip-after-polls: first N polls report the unsettled values]
+    local label="$1"; shift
+    echo 0 > "$WORK/polls.$label"
+    ( export CALLS="$WORK/polls.$label" SEED_SETTLE_POLL_S=0.1 SEED_SETTLE_UNSETTLED_POLLS="${5:-0}" I="$1" T="$2" M="$3"
+      _cluster_voters() { local n; n=$(cat "$CALLS"); if [ "$1" = installedVoters ]; then echo $((n + 1)) > "$CALLS"; fi
+          if [ "$n" -lt "$SEED_SETTLE_UNSETTLED_POLLS" ]; then [ "$1" = installedVoters ] && printf 'a\nb\nc\nd\ne\nf\ng\n' || printf 'a\nb\nc\nd\ne\n'
+          else [ "$1" = installedVoters ] && printf '%s' "$I" | tr ' ' '\n' || printf '%s' "$T" | tr ' ' '\n'; fi; }
+      cluster_member_count() { echo "$M"; }
+      eval "$(extract _seed_membership_settled)"
+      _seed_membership_settled 2; echo $? > "$WORK/msrc.$label" )
+}
+settled_run m1 "a b c d e" "a b c d e" 5
+settled_run m2 "a b c d e f g" "a b c d e" 5
+settled_run m3 "a b c d e" "a b c d e" 7
+settled_run m4 "a b c d e" "a b c d e" 5 3
+if [ "$(cat "$WORK/msrc.m1")" = "0" ] && [ "$(cat "$WORK/msrc.m2")" = "1" ] && [ "$(cat "$WORK/msrc.m3")" = "1" ] && [ "$(cat "$WORK/msrc.m4")" = "0" ]; then
+    ok "M1-M4 the membership gate: settled -> 0; installed!=target (reconfiguring) -> 1; members!=voters (a replica still departing) -> 1; settles after 3 polls -> 0"
+else fail "M rc: m1=$(cat "$WORK/msrc.m1") m2=$(cat "$WORK/msrc.m2") m3=$(cat "$WORK/msrc.m3") m4=$(cat "$WORK/msrc.m4")"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"

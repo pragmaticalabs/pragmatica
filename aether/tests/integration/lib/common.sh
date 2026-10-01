@@ -261,6 +261,70 @@ _discover_endpoint_by_label() {
 # `if timeout ...; then` (a missing binary just evaluates false); this helper
 # is for callers like _cloud_running_vm_ips that must also cap wall-clock time
 # on macOS dev boxes and turn "took too long" into an honest non-zero rc.
+# Like _run_with_timeout, but escalates to SIGKILL <grace> seconds after the TERM (TIMEOUT_KILL_GRACE_S, default 5), so a
+# command that ignores SIGTERM still ends. For background callers nobody reaps. The fallback (no timeout binary) already
+# uses kill -9.
+_run_with_timeout_kill() {
+    local secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k "${TIMEOUT_KILL_GRACE_S:-5}" "$secs" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout -k "${TIMEOUT_KILL_GRACE_S:-5}" "$secs" "$@"
+        return $?
+    fi
+    _run_with_timeout "$secs" "$@"
+}
+
+# Reap a background job: wait up to <seconds> for it to end, then kill it and its children (TERM, then KILL). Never fails.
+# Usage: reap_bg_job <pid> [seconds]
+reap_bg_job() {
+    local pid="${1:-}" bound="${2:-10}" waited=0
+    [ -n "$pid" ] || return 0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$bound" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        pkill -TERM -P "$pid" 2>/dev/null || true
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep 1
+        pkill -KILL -P "$pid" 2>/dev/null || true
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    return 0
+}
+
+# A run-level warning: logged, AND recorded in RUN_WARNINGS_FILE (exported by run-tests.sh) so print_summary, the end-of-run
+# report and test-results.json carry it. A warning visible only inline in a long suite log is invisible to whoever reads
+# the summary. One line per warning: suite|test|text.
+log_run_warning() {
+    log_warn "$1"
+    [ -n "${RUN_WARNINGS_FILE:-}" ] && printf '%s|%s|%s\n' "${SUITE_TAG:-no-suite}" "${TEST_TAG:-outside-a-test}" "$(printf '%s' "$1" | tr '\n|' '  ')" >> "$RUN_WARNINGS_FILE" 2>/dev/null
+    return 0
+}
+_run_warning_lines() {
+    if [ -f "${RUN_WARNINGS_FILE:-}" ]; then wc -l < "$RUN_WARNINGS_FILE" | tr -d ' '; else echo 0; fi
+}
+# JSON fragment for one suite: "warnings":N,"warning_texts":["...",...]
+run_warnings_json() {
+    local suite="$1" n=0 texts="" line text
+    if [ -f "${RUN_WARNINGS_FILE:-}" ]; then
+        while IFS= read -r line; do
+            [ "${line%%|*}" = "$suite" ] || continue
+            text="${line#*|}"; text="${text#*|}"
+            text=$(printf '%s' "$text" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')
+            texts="${texts}${texts:+,}\"${text}\""
+            n=$((n + 1))
+        done < "$RUN_WARNINGS_FILE"
+    fi
+    printf '"warnings":%s,"warning_texts":[%s]' "$n" "$texts"
+}
+_RUN_WARN_BASE=$(_run_warning_lines)
+
 _run_with_timeout() {
     local secs="$1"
     shift
@@ -1876,6 +1940,11 @@ print_summary() {
     echo "  PASSED:  ${TESTS_PASSED}"
     echo "  FAILED:  ${TESTS_FAILED}"
     echo "  SKIPPED: ${TESTS_SKIPPED}"
+    local warned=$(( $(_run_warning_lines) - ${_RUN_WARN_BASE:-0} ))
+    if [ "$warned" -gt 0 ]; then
+        echo "  WARNINGS: ${warned}"
+        tail -n "$warned" "$RUN_WARNINGS_FILE" | sed 's/^/    warning: /'
+    fi
     echo "========================================"
 
     if [[ "${COLLECT_METRICS:-false}" == "true" ]]; then

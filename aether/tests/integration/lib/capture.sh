@@ -81,7 +81,18 @@ capture_node_logs() {
         # Clear STALE captures first: this dir accumulates across runs, and run3's diagnosis
         # nearly used run2's node-5.log sitting beside run3's fresh files. A capture must
         # only ever contain THIS run's evidence.
-        rm -f "${out_dir}"/*.log "${out_dir}/provisioning-snapshot.txt" 2>/dev/null || true
+        # NOT `*.log`: this directory also holds the load generator's failure bodies (load-failures-<test>.log, written by
+        # _load_persist_failure_bodies at stop_load, BEFORE this suite-end capture runs). A blanket `*.log` clear deleted
+        # them at every suite end (03 Scale_down, S-triple-prime: the 503 bodies were written and then erased). Node
+        # logs go; a load-failures file goes only when a PREVIOUS run wrote it (mtime before this suite's start).
+        find "${out_dir}" -maxdepth 1 -name '*.log' ! -name 'load-failures-*' -exec rm -f {} + 2>/dev/null || true
+        rm -f "${out_dir}/provisioning-snapshot.txt" 2>/dev/null || true
+        local lf lf_mtime
+        for lf in "${out_dir}"/load-failures-*.log; do
+            [ -f "$lf" ] || continue
+            lf_mtime=$(stat -c %Y "$lf" 2>/dev/null || stat -f %m "$lf" 2>/dev/null || echo 0)
+            [ "$lf_mtime" -lt "$since_epoch" ] 2>/dev/null && rm -f "$lf" 2>/dev/null
+        done
     else
         mkdir -p "$out_dir" 2>/dev/null || return 0
     fi
@@ -263,6 +274,68 @@ _failcap_on_fail_body() {
     # mkdir is the atomic once-per-test latch and, unlike a shell variable, holds across subshells.
     mkdir "${SUITE_FAILCAP_DIR}/first-fail-${SUITE_TAG:-no-suite}-${TEST_TAG:-outside-a-test}" 2>/dev/null || return 0
     _failcap_capture "first-fail"
+    return 0
+}
+
+# capture_at_demotion <voters before> [budget seconds] — the logs of every voter REMOVED from the electorate, taken while it
+# still runs. A scale-down victim halts a few seconds after demotion (3s in S-triple-prime, ~18s in 0120Z) and is gone by
+# the time any fail-time or suite-end capture runs, so its log was never available. Polls targetVoters until it differs
+# from <before>, then reads each removed node's own log in parallel (cloud: ssh `docker logs`/`journalctl`, bounded).
+# Armed only inside run-tests.sh (SUITE_FAILCAP_DIR), once per test, capped per suite; writes NOTHING to stdout/stderr
+# (notes file only) and can never fail the caller: thin wrapper `body || true`, as #1768's hooks. Callers background it.
+FAILCAP_MAX_DEMOTION="${FAILCAP_MAX_DEMOTION:-3}"
+# Runs in a subshell with HARNESS_FAIL_FILE=/dev/null (a log_fail inside it must not add a [FAIL] to the test, as in
+# _failcap_capture) and with stdio AND fd 7 (generation.sh's saved stderr) closed, so a background job never holds the
+# suite's stderr pipe open after the suite is done.
+capture_at_demotion() { ( HARNESS_FAIL_FILE=/dev/null; _capture_at_demotion_body "$@" ) > /dev/null 2>&1 7>&- || true; return 0; }
+_capture_at_demotion_body() {
+    local before="${1:-}" budget="${2:-${DEMOTION_CAPTURE_POLL_S:-60}}" deadline now removed id ip n
+    _failcap_armed || return 0
+    [ -n "$before" ] || return 0
+    [ "${ENV_TYPE:-docker}" = "cloud" ] || { _failcap_note "[INFO]  capture_at_demotion: only implemented for cloud runs; nothing captured"; return 0; }
+    n=$(ls -d "${SUITE_FAILCAP_DIR}"/demotion-* 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${n:-0}" -ge "$FAILCAP_MAX_DEMOTION" ]; then
+        _failcap_note "[WARN]  capture_at_demotion: cap of ${FAILCAP_MAX_DEMOTION} demotion captures reached for this suite — not capturing"
+        return 0
+    fi
+    mkdir "${SUITE_FAILCAP_DIR}/demotion-${SUITE_TAG:-no-suite}-${TEST_TAG:-outside-a-test}" 2>/dev/null || return 0
+    deadline=$(( SECONDS + budget ))
+    while :; do
+        now=$(_cluster_voters targetVoters 2>/dev/null) || now=""
+        [ -n "$now" ] || now=$(_cluster_voters installedVoters 2>/dev/null) || now=""
+        if [ -n "$now" ]; then
+            removed=$(_id_set_difference "$before" "$now")
+            [ -n "$removed" ] && break
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            _failcap_note "[WARN]  capture_at_demotion: no voter left the electorate within ${budget}s — nothing captured"
+            return 0
+        fi
+        sleep "${DEMOTION_CAPTURE_POLL_INTERVAL_S:-0.5}"
+    done
+    local dir since="${SUITE_START_EPOCH:-$(( $(date +%s) - 3600 ))}" remote_cmd pids="" bound="${FAILCAP_SSH_TIMEOUT_S:-30}"
+    dir="$(_failcap_root)/${SUITE_TAG:-no-suite}/${TEST_TAG:-outside-a-test}/$(date -u '+%Y%m%dT%H%M%SZ')-demotion"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    remote_cmd="docker logs --timestamps --since ${since} aether-node"
+    [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager --since @${since} -o short-iso"
+    printf 'demotion capture %s: removed voters [%s]\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(printf '%s' "$removed" | tr '\n' ' ')" > "${dir}/capture-manifest.txt" 2>/dev/null || true
+    for id in $removed; do
+        ip=$(cloud_public_ip "$id" 2>/dev/null) || ip=""
+        if [ -z "$ip" ]; then
+            printf 'voter %s: address unresolvable, not captured\n' "$id" >> "${dir}/capture-manifest.txt" 2>/dev/null || true
+            continue
+        fi
+        (
+            rc=0
+            _run_with_timeout_kill "$bound" ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY:-/dev/null}" "${CLOUD_SSH_USER:-root}@${ip}" \
+                "hostname; timeout ${CLOUD_CAPTURE_REMOTE_TIMEOUT_S:-25} ${remote_cmd}" > "${dir}/voter-${id}.log" 2>&1 || rc=$?
+            printf 'voter %s (%s) rc=%s lines=%s\n' "$id" "$ip" "$rc" "$(wc -l < "${dir}/voter-${id}.log" | tr -d ' ')" >> "${dir}/capture-manifest.txt" 2>/dev/null || true
+        ) &
+        pids="${pids} $!"
+    done
+    # shellcheck disable=SC2086
+    [ -n "$pids" ] && wait $pids 2>/dev/null
+    _failcap_note "[INFO]  demotion capture of [$(printf '%s' "$removed" | tr '\n' ' ')] -> ${dir}"
     return 0
 }
 
