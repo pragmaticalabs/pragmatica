@@ -662,7 +662,9 @@ class ArtifactStoreImpl implements ArtifactStore {
                                .flatMap(stored -> acceptIfSame(file, stored, offered));
     }
 
-    private Promise<DeployResult> acceptIfSame(ArtifactFile file, ArtifactMetadata stored, ArtifactContentValue offered) {
+    private Promise<DeployResult> acceptIfSame(ArtifactFile file,
+                                               ArtifactMetadata stored,
+                                               ArtifactContentValue offered) {
         return sameContent(stored, offered)
                ? reassertRegistration(file, stored)
                : new ArtifactStoreError.ContentConflict(file,
@@ -675,9 +677,12 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// Size, MD5, SHA-1 AND SHA-256 must all match: a collision of the two old digests is not enough to pass.
     private static boolean sameContent(ArtifactMetadata stored, ArtifactContentValue offered) {
         return stored.size() == offered.size()
-               && stored.md5().equals(offered.md5())
-               && stored.sha1().equals(offered.sha1())
-               && stored.sha256().equals(offered.sha256());
+               && stored.md5()
+                        .equals(offered.md5())
+               && stored.sha1()
+                        .equals(offered.sha1())
+               && stored.sha256()
+                        .equals(offered.sha256());
     }
 
     private Promise<DeployResult> reassertRegistration(ArtifactFile file, ArtifactMetadata stored) {
@@ -907,12 +912,22 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                            int chunkCount,
                                                            ArtifactContentValue digest) {
         var hexIds = blockIds.stream().map(BlockId::hexString).toList();
-        var metadata = new ArtifactMetadata(digest.size(), chunkCount, digest.md5(), digest.sha1(), digest.sha256(), clock.getAsLong(), hexIds);
+        var metadata = new ArtifactMetadata(digest.size(),
+                                            chunkCount,
+                                            digest.md5(),
+                                            digest.sha1(),
+                                            digest.sha256(),
+                                            clock.getAsLong(),
+                                            hexIds);
 
         return dhtPutWithRetry(metaKey(file),
                                metadata.toBytes()).flatMap(_ -> publishVersion(file.artifact()))
                               .flatMap(_ -> registerFile(file))
-                              .map(_ -> recordDeployMetrics(file, (int) digest.size(), chunkCount, digest.md5(), digest.sha1()));
+                              .map(_ -> recordDeployMetrics(file,
+                                                            (int) digest.size(),
+                                                            chunkCount,
+                                                            digest.md5(),
+                                                            digest.sha1()));
     }
 
     private Promise<ResolvedArtifact> resolveChunksFromStorage(ArtifactFile file, ArtifactMetadata meta) {
