@@ -16,6 +16,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeo
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.PassiveDirectory;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.VoterReadmitted;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -156,6 +157,29 @@ class JoinerElectionTest {
 
         assertThat(h.state()).as("the grace timeout must not depose a live committed leader").isInstanceOf(LeaderElectionState.Led.class);
         assertThat(proposals.get()).isZero();
+
+        h.dispatch(new ClusterFsmEvent.Shutdown());
+    }
+
+    /// A leader observed while passive but voted OUT of the configuration that readmits this node is not an eligible
+    /// leader: entry adoption must not follow it (eligibility is installed before the readmission).
+    @Test
+    void awaitingKvSync_observedLeaderVotedOutOfTheReadmittingConfiguration_isNotFollowed() {
+        var h = harness(Option.none(), LONG);
+
+        h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
+        h.dispatch(new LeaderCommitted(LEADER, 1L));
+        assertThat(context.get().currentLeader()).as("precondition: observed while passive").isEqualTo(Option.some(LEADER));
+
+        var ctx = context.get();
+
+        new LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false).installVoterConfiguration(
+                VoterConfiguration.voterConfiguration(1L, List.of(SELF, PEER)).unwrap());
+
+        assertThat(h.state()).as("readmitted under a configuration without the old leader").isNotInstanceOf(LeaderElectionState.Passive.class);
+        if (h.state() instanceof LeaderElectionState.Led led) {
+            assertThat(led.leader()).as("must not follow a leader excluded from the installed electorate").isNotEqualTo(LEADER);
+        }
 
         h.dispatch(new ClusterFsmEvent.Shutdown());
     }
