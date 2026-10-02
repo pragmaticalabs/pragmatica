@@ -494,8 +494,8 @@ locally by any node holding the partition's log and forwarded to the owner only 
 > exists in production Java. Everything in §6 is design intent. **Owner decision D4 (2026-10-02):** §7.9's
 > definition registration and version-binding rules apply to workflows too — registration through the
 > slice factory, pin at creation (definition + artifact + dependency versions), all bound work and
-> dependent calls routed by the binding, loud failure on missing bound code, fingerprint-only codec
-> coexistence (D8, replacing D5), drain-then-retire with reconcile-only retention (D3), rollback of new starts only.
+> dependent calls routed by the binding, loud failure on missing bound code, per-binding decoding with a
+> drift guard and contract fingerprints (D8 refined), drain-then-retire with reconcile-only retention (D3), rollback of new starts only.
 > **This is added scope for #353**: the workflow façade carries the same rollout-side work as #354, and its
 > acceptance needs the A4–A9 rows of §7.11 restated for workflow instances.
 
@@ -1257,7 +1257,8 @@ waiting instance.
 **Error surface.** `SagaError` (sealed, extends `Cause`), named per #432's entity-centric convention:
 `SagaNotFound`, `SagaAlreadyTerminated(phase)`, `ResolutionNotApplicable(phase, resolution)`,
 `SignalRejected(reason)` (§7.8), `BoundVersionUnavailable(artifact)` (§7.9),
-`DefinitionNotRegistered(definitionId)` (§7.9), `IncompatibleDurableCodec(keyspace, detail)` (§7.9),
+`DefinitionNotRegistered(definitionId)` (§7.9), `BoundVersionFingerprintMismatch(binding, expected, found)`
+(§7.9), `ContractFingerprintMismatch(instance, expected, presented)` (§7.9),
 plus the entity's own `EntityError` cases passed through unchanged (fence, ownership, storage).
 
 ### 7.8 `WAIT_SIGNAL` — waits, signals and deadlines (R5)
@@ -1418,14 +1419,16 @@ public interface SagaRegistry<S, D extends SagaData> {
 #### Version binding at creation (R4a)
 
 `run` creates the instance on the version the **existing** rollout/split policy selects for that request
-(rolling, A/B split, canary stage — whatever `activeRouting` would pick for a new start) and persists, in
-the create record, a `VersionBinding`:
+(rolling, A/B split, canary stage — whatever `activeRouting` would pick for a new start), restricted to
+versions whose contract fingerprint equals the caller's (D8 refined, (3) below), and persists, in the create
+record, a `VersionBinding`:
 
 ```java
 public record VersionBinding(String definitionName, int definitionVersion,
                              String sliceArtifact,                    // groupId:artifactId:version
                              Map<String, String> dependencyVersions,  // artifactBase -> version: the FULL resolved closure (D7c)
-                             String codecFingerprint) {}              // SHA-256 of the TAG/ENUM/SHAPE lines (D8)
+                             String stateFingerprint,                 // private types: S + runtime records (D8 refined)
+                             String contractFingerprint) {}           // boundary types: run input, P, receipts, outcome (D8 refined)
 ```
 
 **The pin is transitive (owner decision D7c, closes v1828 B4).** `dependencyVersions` records the full
@@ -1452,21 +1455,82 @@ exhausted budget parks it, in `NeedsReconciliation(BoundVersionUnavailable)`; be
 made, this is never an `OutcomeUnknown`. Under D3 and D7c a version with bound work is never unloaded, so
 the park signals lost capacity, not retirement, and is resolved by `Resume` or `Abandon` (§7.7).
 
-**Shared keyspace — fingerprint-only coexistence (owner decision D8, replacing D5's mechanism).** v1 and
-v2 may host the same durable keyspace at once **only if their codec fingerprints are identical.**
+**Coexistence in one keyspace — per-binding decoding (owner decision D8, refined 2026-10-02; supersedes
+D5 and the earlier fingerprint-only D8 text).** Pin-at-creation means an instance's private data is only
+ever written and read by its bound version. That removes the reason to restrict coexistence on it, and puts
+the whole burden on two things: every decode goes through the binding, and anything encoded by someone
+**outside** the binding is checked before it is decoded.
 
-*Why not evolution in place.* The shipped record codec is **positional**: a generated `readBody` reads
+*Why the codec forces this.* The shipped record codec is **positional**: a generated `readBody` reads
 exactly its own component list in declaration order, with no field count, no lengths and no field ids
-(`CodecClassGenerator.java:422-484`). A reader whose component list differs from the writer's does not
-skip what it does not know — it desynchronises: an older reader misreads whatever follows a record with an
-extra component, and a newer reader runs past the end of an older record. No "additive optional field"
-rule can be made to hold on that wire, in either direction. (v0.8.0's D5 text required exactly that; it is
-withdrawn.)
+(`CodecClassGenerator.java:422-484`). A reader whose component list differs from the writer's does not skip
+what it does not know — it desynchronises. So a record must be decoded by the code that encoded it, or by
+code with an identical layout; no "additive optional field" rule can hold on this wire (v0.8.0's D5 text,
+which required one, is withdrawn).
 
-**The fingerprint.** For a saga or workflow keyspace, the fingerprint covers every type whose bytes reach
-the keyspace's log: the state `S`, every record in the data root `D`'s sealed closure (step results and
-signal payloads), the saga's runtime command and ledger records, and every type reachable through their
-components. It is the SHA-256 of the sorted lines that describe those types in the wire baseline's
+**(1) Private data: no coexistence restriction.** `S`, step records, `S_j` snapshots, the ledger and every
+runtime record about an instance are written only by its bound version. v1-bound and v2-bound instances may
+share a keyspace **even when their `S` differs**. The hard requirement is that **every decode site
+dispatches on the instance's `VersionBinding`, never on "current" code.** Each saga-keyspace log record
+is therefore wrapped in a runtime-owned **envelope** with a fixed codec that no slice owns — the
+`SagaInstanceId`, a reference to the binding, the record kind — and its payload bytes are decoded only
+through the registry entry that matches that binding (§7.9 registration). The decode sites, all of which
+must do this (#354):
+
+| Decode site | What it decodes |
+|---|---|
+| Owner fold on takeover, restart and catch-up | every record of every instance in the partition, to rebuild `SagaInstance` |
+| Replica-held reads (`status` at `BOUNDED_STALE` on a non-owner, §8.1) | the instance's state and ledger |
+| Checkpoint restore (`EntityCheckpointDriver` snapshot → fold) | the snapshotted instance state |
+| Operator listing and `status` (management API, CLI) | phase, `Reconcile` reason, state and results, for display |
+| Reconciliation (`resolve`) | the suspended phase, `R_j`, `S_j`, and the operator-supplied receipt |
+| Step execution and compensation | `S`, `S_j`, `R_j` handed to forward, lookup and compensation |
+| Timer fires (`DeadlineFired`, `DeadlineFireFailed`) | the timer command and the waiting state it guards |
+| Signal consumption | a buffered `SignalRecord` payload, folded into `S` |
+| Retirement-gate counting | envelope only (binding and phase) — never a payload |
+
+A node that does not host an instance's bound version decodes none of its payloads; under §7.9's
+takeover-eligibility rule it is never that instance's owner, and for display it reports the envelope
+(id, binding, phase) and that the payload is unreadable here — never a misdecode.
+
+**(2) Drift guard.** The binding records, at creation, the fingerprints of the bound version's types
+(below). A version id is supposed to name one build; if the code later registered under that same
+`sliceArtifact` version has a **different** fingerprint — a rebuild with changed types under an unchanged
+version — nothing is decoded with it: registration of that definition fails loudly at slice load with
+`SagaError.BoundVersionFingerprintMismatch(binding, expected, found)` while any live binding names the
+version, and every decode site re-checks the registry entry's fingerprint against the binding as a
+backstop, failing with the same typed error instead of decoding.
+
+**(3) Inbound contract.** Some bytes reach an instance from callers that are **not** bound to its version:
+the `run` request (its initial state), signal payloads (§7.8), operator receipts in a `Resolution`, entity
+commands forwarded from other nodes (#596), and the `SagaOutcome`/`status` payload returned to those callers.
+These form the definition's **contract**, and its fingerprint is recorded in the binding separately from
+the private-state fingerprint. A caller may address an instance only if its contract fingerprint **equals**
+the bound version's:
+
+- **Detection.** Every binary-encoded inbound request carries the caller's `contractFingerprint` in the
+  runtime envelope (the caller's own registry entry computes it); the owner compares it with the instance's
+  binding **before decoding the payload**. A mismatch is refused with `SagaError.ContractFingerprintMismatch(
+  instance, expected, presented)` — never a positional misdecode. For `run`, which has no instance yet, the
+  owner binds the new instance only to a version that the rollout policy permits **and** whose contract
+  fingerprint equals the request's; if there is none the request is refused with the same error. The
+  management API's JSON surface is not positional: it decodes operator input through the bound version's
+  types (decode-site table) and needs no fingerprint.
+- **A changed contract** therefore does not break existing instances: callers keep using the old contract to
+  reach old instances until those drain, while new instances bind to the version whose contract new callers
+  present. The alternative is a new keyspace or an explicit migration.
+- *Consequence, stated:* because `run` takes the initial `S` and `SagaOutcome` returns `S`, a change to `S`
+  is also a contract change. Different `S` versions coexist in one keyspace as (1) says, but each caller can
+  address only the instances whose contract it shares. An author who wants `S` to evolve without touching
+  the contract has to keep `S` off the boundary (a separate input and output type) — **[author note: the
+  current `Saga` API puts `S` on the boundary; changing that is an API decision for #354]**.
+
+**The two fingerprints.** `stateFingerprint` covers `S` and every runtime record type of the instance;
+`contractFingerprint` covers the inbound and outbound boundary types above: the `run` input, every signal
+payload `P`, every result type in `D` that a `Resolution` can carry, and `SagaOutcome`'s payload.
+
+**How a fingerprint is computed.** A fingerprint covers a SET of types and every type reachable through
+their components. It is the SHA-256 of the sorted lines that describe those types in the wire baseline's
 format (`aether/node/src/test/resources/wire-assignment-baseline.txt:1-14` defines it;
 `WireAssignmentTripwireTest` derives it from the generator), **with component names removed**:
 
@@ -1486,27 +1550,23 @@ exactly what changes the bytes or the meaning of the bytes.
 same type exchanging names (`String from, String to` → `String to, String from`). The bytes are unchanged,
 so neither version misreads them, but each now interprets the other's value under the other's meaning.
 This is a semantic change the codec cannot see; the baseline pins names precisely so such a swap shows up in
-its diff. The fingerprint does not catch it; code review of the type change has to.
+its diff. Under (1) it is harmless for private types, which only their own version ever reads; it matters
+for **contract** types, where callers on one version and instances on another read the same bytes. The
+fingerprint does not catch it there; code review of a contract-type change has to.
 
 Today the TAG/ENUM/SHAPE derivation covers the node's `@Codec` types; producing the same lines for a
 slice's generated codecs is #354 implementation work.
 
-- **Identical fingerprint:** the rollout proceeds through the normal rolling/split/canary path, and v1 and v2
-  read each other's records because the bytes are the same layout.
-- **Any difference:** the rollout is **refused at deploy** with `IncompatibleDurableCodec`, through the same
-  pre-flight path that already refuses a deploy over a missing config section (#1067) — never at first read.
-  The change then needs **a new keyspace, or an explicit migration** that rewrites the old records before
-  the new version takes the keyspace.
+**What it costs.** Changing private types costs nothing at deploy: new instances bind to the new version and
+old ones finish on theirs. Changing contract types splits callers by contract until old instances drain, or
+needs a new keyspace or a migration. Rebuilding a version id with different types is refused.
 
-**The cost, stated:** every schema change to a durable saga's or workflow's state, results, payloads or
-commands is a migration or a new keyspace. Adding one field to `S` is not a rolling update.
+*Out of scope, not promised:* a framed envelope around each payload (a field count and per-field lengths)
+would let a reader skip what it does not know and could relax (3). It is a wire-format change of its own,
+and nothing in this spec depends on it.
 
-*Out of scope, not promised:* a framed envelope (a field count and per-field lengths around each record)
-would let a reader skip what it does not know, and could later relax this rule. It is a wire-format change
-of its own, and nothing in this spec depends on it.
-
-This applies to keyspaces backing sagas and workflows; whether plain `DurableEntity` keyspaces take the
-same gate is a follow-up (§7.11.1 shows they have the same exposure).
+This applies to keyspaces backing sagas and workflows; whether plain `DurableEntity` keyspaces take the same
+envelope and checks is a follow-up (§7.11.1 shows they have the same exposure).
 
 #### Retirement — drain, then retire (R4b)
 
@@ -1657,7 +1717,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint), on a step with no earlier attempts and the default budget, (a) for 300 s, then restore it; (b) for 600 s | the call is never made against another version; (a) retried with backoff and succeeds, no park (300 s < 381 s); (b) parks `NeedsReconciliation(BoundVersionUnavailable)` when the 20th attempt fails, at 381–476 s (R4a, D7a, E4) | a dependent call served by a non-bound version; a park in (a); no park in (b) |
-| A9 | **Codec coexistence, fingerprint-only** (D8; rename ruling) | (a) deploy v2 whose saga types are unchanged; (b) deploy v2 that only renames a component, at the same type and position; (c) deploy v2 that adds, removes, reorders or retypes a component of any fingerprinted type, or adds a variant to `D` | (a) and (b) accepted — identical fingerprints, so v1 and v2 share the keyspace and read each other's records; (c) refused at deploy with `IncompatibleDurableCodec`, naming the differing lines — the change needs a new keyspace or a migration | a deploy accepted with any fingerprint difference; a pure rename refused; a refusal surfacing only at first read; a v1 or v2 reader freezing on the other's record after an accepted deploy |
+| A9 | **Coexistence by binding** (D8 refined; rename ruling) | (a) v1 and v2 with DIFFERENT `S` share a keyspace: create instances on both, then exercise every decode site (owner takeover, replica `status`, checkpoint restore, listing, `resolve`, a deadline fire, a signal); (b) rebuild v1's version id with a changed component type and deploy it while v1 instances are live; (c) a caller whose contract fingerprint differs signals, resolves and `run`s against v1 instances; (d) v2 differs from v1 only by a component rename | (a) both coexist; every decode uses the instance's binding; (b) registration fails loudly with `BoundVersionFingerprintMismatch`, and nothing is decoded with the drifted build; (c) each request refused with `ContractFingerprintMismatch` before its payload is decoded, `run` binding only to a version with the caller's contract; (d) identical fingerprints — accepted as the same contract and state layout | a payload decoded by a version other than the instance's binding; a decode with a drifted build; a request decoded despite a contract mismatch; a pure rename treated as a change |
 | A10 | **Recovery past the key window** (v1828 B1, N3) | for a `Replayable` and a `Lookup` step: a first attempt ends `Sent`, later re-invokes keep failing `Sent`, then resume once `now − origin ≥ keyRetention − clockSafetyMargin`, where origin is the FIRST attempt's `at`; repeat with the first attempt's evidence unrecorded (crash) | no re-invocation and no lookup after that point, although the LATEST attempt is still inside the window; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1, E3, E7) | an invocation or lookup issued once the earliest possibly-sent attempt is past the window |
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
@@ -1928,9 +1988,10 @@ Supersedes S1's "saga signals are v2".
 whether the request was sent (`NotSent` definite, `Sent` ambiguous; §7.4). D2: compensation of step `j`
 receives the snapshot `S_j` (§7.5). D3: code is retained until every bound instance is resolved
 (reconcile-only), with the per-reason resolution table and `Abandon` as last resort (§7.7, §7.9). D4: §7.9
-applies to workflows (§6; added #353 scope). D5 (bidirectional compatibility) is SUPERSEDED by D8:
-coexistence only with identical codec fingerprints, because the shipped codec is positional; any change
-needs a new keyspace or a migration (§7.9). D6: `operationId`/`compensationId` are 52-character base32 SHA-256
+applies to workflows (§6; added #353 scope). D5 (bidirectional compatibility) is SUPERSEDED by D8 as
+refined: private state needs no coexistence restriction because every decode dispatches on the binding;
+a drift guard refuses a rebuilt version id with changed types; callers must present the bound version's
+contract fingerprint (§7.9). D6: `operationId`/`compensationId` are 52-character base32 SHA-256
 digests of a length-prefixed, domain-tagged tuple, with the readable tuple kept alongside (§7.2). D7:
 `NotSent` failures retry inside a budget, so an endpoint gap shorter than the remaining backoff schedule never parks; ONE declared per-step retry
 budget, bounded by the key window as well; the pin is transitive and the retirement gate covers every
@@ -1938,8 +1999,8 @@ version in any live binding (§7.4, §7.9). Round 2 of the #1828 review is fully
 `attemptTimeout`; key-window origin = earliest possibly-sent attempt; retry episodes with cumulative
 attempts and defaults 20 / 10 min / 200 ms→30 s; a reply-classification mapping per step; failing
 deadline fires park `DeadlineTransitionFailed`; persisted attempt evidence; `SagaOutcome` and `delete`
-carry the incarnation. D8 (owner, on v1828 N1): fingerprint-only coexistence replaces D5's mechanism;
-A9 rewritten.
+carry the incarnation. D8 (owner, on v1828 N1, refined in round 4): per-binding decoding, drift guard,
+contract fingerprints; renames exempt from fingerprints; A9 rewritten.
 
 **S1 — signals scope for v1. RESOLVED (2026-07-04); saga half SUPERSEDED by S10 (2026-10-02)** — saga
 `WAIT_SIGNAL` is specified in rc4 (§7.8); the workflow half stands. Original text: **signal injection IS
@@ -2003,7 +2064,8 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 | §3 row no longer calls the stream-path fence a "remaining gap" | G3 |
 | v0.8.0 changelog-row typo | G4 |
 | CTO-confirmed: the 381 s arithmetic with upward-only jitter, the `StepRefusal` marker, `maxFireAttempts` = 5 | — |
-| Renames exempt from the codec fingerprint (CTO ruling): it hashes type identity, component types and positions, TAG and ENUM content — not component names; A9 gains a pure-rename accept case | — |
+| Renames exempt from the codec fingerprint (CTO ruling): it hashes type identity, component types and positions, TAG and ENUM content — not component names | — |
+| **D8 refined (owner):** private state coexists freely, every decode site dispatches on the binding (sites enumerated); drift guard `BoundVersionFingerprintMismatch`; inbound contract fingerprint carried in the envelope and checked before decode, `ContractFingerprintMismatch`; `VersionBinding` carries `stateFingerprint` + `contractFingerprint`; `IncompatibleDurableCodec` retired; A9 rewritten (different `S` coexists, drift refused, contract mismatch refused, pure rename accepted) | G1 |
 
 ---
 
