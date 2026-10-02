@@ -4,14 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
-import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.cluster.state.kvstore.KVStore;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.swim.SwimMember;
-
 import java.net.InetSocketAddress;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
@@ -23,6 +15,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
+
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.swim.SwimMember;
+
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -45,9 +46,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CommunityMembershipFilterPerEdgeCostTest {
     private static final int COMMUNITY_SIZE = 10;
     private static final String OBSERVED_COMMUNITY = "c-0";
+
     private static final int[] SIZES = {200, 1_000, 10_000};
 
-    private record WaveCost(long kvEntriesScanned, long aliveTested, long snapshotCalls, long millis, int lastResultSize) {
+    private record WaveCost(long kvEntriesScanned,
+                            long aliveTested,
+                            long snapshotCalls,
+                            long millis,
+                            int lastResultSize) {
         long totalOps() {
             return kvEntriesScanned + aliveTested;
         }
@@ -63,7 +69,12 @@ class CommunityMembershipFilterPerEdgeCostTest {
 
             costs.add(cost);
             System.out.printf("%d | %d | %d | %d | %d | %d%n",
-                              n, n, cost.kvEntriesScanned(), cost.aliveTested(), cost.totalOps(), cost.millis());
+                              n,
+                              n,
+                              cost.kvEntriesScanned(),
+                              cost.aliveTested(),
+                              cost.totalOps(),
+                              cost.millis());
         }
 
         for (int i = 0; i < SIZES.length; i++) {
@@ -71,14 +82,13 @@ class CommunityMembershipFilterPerEdgeCostTest {
             long triangular = n * (n + 1) / 2;
             var cost = costs.get(i);
 
-            assertThat(cost.snapshotCalls())
-                .as("one full KV snapshot per edge at N=%d", n)
-                .isEqualTo(n);
-            assertThat(cost.kvEntriesScanned())
-                .as("KV entries scanned over %d edges whose KV grows 1..%d: each edge scans the whole KV (sum_{i=1..N} i). "
-                    + "If this reddens the filter is no longer a per-edge rescan (#1840 incremental fix): "
-                    + "update this bound, do not loosen it.", n, n)
-                .isEqualTo(triangular);
+            assertThat(cost.snapshotCalls()).as("one full KV snapshot per edge at N=%d", n).isEqualTo(n);
+            assertThat(cost.kvEntriesScanned()).as("KV entries scanned over %d edges whose KV grows 1..%d: each edge scans the whole KV (sum_{i=1..N} i). "
+                                                  + "If this reddens the filter is no longer a per-edge rescan (#1840 incremental fix): "
+                                                  + "update this bound, do not loosen it.",
+                                                   n,
+                                                   n)
+                      .isEqualTo(triangular);
             assertThat(cost.aliveTested()).isEqualTo(triangular);
             assertThat(cost.lastResultSize()).isEqualTo(COMMUNITY_SIZE);
         }
@@ -89,7 +99,7 @@ class CommunityMembershipFilterPerEdgeCostTest {
 
             System.out.printf("N x%.0f -> ops x%.2f (E x KV predicts x%.0f)%n", nRatio, opsRatio, nRatio * nRatio);
             assertThat(opsRatio).as("growth ratio N=%d -> N=%d", SIZES[i - 1], SIZES[i])
-                                .isBetween(nRatio * nRatio * 0.95, nRatio * nRatio * 1.05);
+                      .isBetween(nRatio * nRatio * 0.95, nRatio * nRatio * 1.05);
         }
     }
 
@@ -107,14 +117,12 @@ class CommunityMembershipFilterPerEdgeCostTest {
             }
 
             var result = CommunityMembershipFilter.communityAliveMembers(alive, kv, OBSERVED_COMMUNITY);
-
             // The counter counts: exactly the N entries the filter streamed, and a known result size.
             assertThat(kv.entriesScanned.get()).isEqualTo(n);
             assertThat(kv.snapshotCalls.get()).isEqualTo(1);
             assertThat(result).hasSize(COMMUNITY_SIZE);
             scanned.add(kv.entriesScanned.get());
         }
-
         // Known-linear operation measures linear: x5 members -> x5 entries, x10 -> x10.
         assertThat(scanned.get(1)).isEqualTo(scanned.get(0) * 5);
         assertThat(scanned.get(2)).isEqualTo(scanned.get(1) * 10);
@@ -132,7 +140,10 @@ class CommunityMembershipFilterPerEdgeCostTest {
             kv.put(nodeId(i), "c-" + i / COMMUNITY_SIZE);
             members.add(alive(nodeId(i)));
             aliveTested += members.size();
-            lastSize = CommunityMembershipFilter.communityAliveMembers(List.copyOf(members), kv, OBSERVED_COMMUNITY).size();
+            lastSize = CommunityMembershipFilter.communityAliveMembers(List.copyOf(members),
+                                                                       kv,
+                                                                       OBSERVED_COMMUNITY)
+                                                .size();
         }
 
         long millis = (System.nanoTime() - start) / 1_000_000;
@@ -174,7 +185,8 @@ class CommunityMembershipFilterPerEdgeCostTest {
                     return new AbstractSet<>() {
                         @Override
                         public Iterator<Entry<AetherKey, AetherValue>> iterator() {
-                            return copy.entrySet().iterator();
+                            return copy.entrySet()
+                                       .iterator();
                         }
 
                         @Override
@@ -184,7 +196,9 @@ class CommunityMembershipFilterPerEdgeCostTest {
 
                         @Override
                         public Stream<Entry<AetherKey, AetherValue>> stream() {
-                            return copy.entrySet().stream().peek(_ -> entriesScanned.incrementAndGet());
+                            return copy.entrySet()
+                                       .stream()
+                                       .peek(_ -> entriesScanned.incrementAndGet());
                         }
                     };
                 }
