@@ -43,17 +43,24 @@ final class CatchUpState {
     /// A pending partition: the previous holders recorded for it and the catch-up rounds started so far.
     /// `sinceBoot` marks a partition pending since this node booted, whose previous holders are not known
     /// exactly and are read off the current ring instead (see [DHTNode#previousHolders]).
-    private record Pending(Set<NodeId> previousHolders, int rounds, boolean sinceBoot) {
+    /// `generation` identifies this pending spell: a partition lost and regained is a NEW spell, and a round
+    /// started for the old one must not complete it (#1777, v1820 r3).
+    private record Pending(Set<NodeId> previousHolders, int rounds, boolean sinceBoot, long generation) {
         Pending merge(Pending other) {
-            return new Pending(union(previousHolders, other.previousHolders), rounds, sinceBoot || other.sinceBoot);
+            return new Pending(union(previousHolders, other.previousHolders),
+                               rounds,
+                               sinceBoot || other.sinceBoot,
+                               generation);
         }
 
         Pending nextRound() {
-            return new Pending(previousHolders, rounds + 1, sinceBoot);
+            return new Pending(previousHolders, rounds + 1, sinceBoot, generation);
         }
     }
 
     private final ConcurrentHashMap<Integer, Pending> pending = new ConcurrentHashMap<>();
+
+    private final java.util.concurrent.atomic.AtomicLong generations = new java.util.concurrent.atomic.AtomicLong();
 
     private CatchUpState() {}
 
@@ -64,13 +71,17 @@ final class CatchUpState {
     /// Mark `partition` catching up, adding `previousHolders` to the sources already recorded for it.
     @Contract
     void markCatchingUp(Partition partition, Collection<NodeId> previousHolders) {
-        pending.merge(partition.value(), new Pending(Set.copyOf(previousHolders), 0, false), Pending::merge);
+        pending.merge(partition.value(),
+                      new Pending(Set.copyOf(previousHolders), 0, false, generations.incrementAndGet()),
+                      Pending::merge);
     }
 
     /// Mark `partition` catching up since boot: no previous holders are recorded, they are walked live.
     @Contract
     void markCatchingUpSinceBoot(Partition partition) {
-        pending.merge(partition.value(), new Pending(Set.of(), 0, true), Pending::merge);
+        pending.merge(partition.value(),
+                      new Pending(Set.of(), 0, true, generations.incrementAndGet()),
+                      Pending::merge);
     }
 
     boolean pendingSinceBoot(Partition partition) {
@@ -80,6 +91,13 @@ final class CatchUpState {
     }
 
     /// Mark `partition` serving: the node is authoritative for it from now on.
+    /// The pending spell of `partition`, or 0 when it is serving.
+    long generation(Partition partition) {
+        return Option.option(pending.get(partition.value()))
+                     .map(Pending::generation)
+                     .or(0L);
+    }
+
     @Contract
     void markServing(Partition partition) {
         pending.remove(partition.value());

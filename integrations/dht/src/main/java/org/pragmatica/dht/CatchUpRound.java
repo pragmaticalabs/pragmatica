@@ -41,6 +41,7 @@ final class CatchUpRound {
     private record Answer(Readiness readiness, boolean digestMatches) {}
 
     private final long id;
+    private final long generation;
     private final Partition partition;
     private final Set<NodeId> sources;
     /// The sources a serving answer from may authorize deciding without the silent ones: current co-replicas
@@ -55,16 +56,31 @@ final class CatchUpRound {
     private final AtomicLong decidedAtNanos = new AtomicLong();
     private final AtomicBoolean anchorless = new AtomicBoolean();
 
-    private CatchUpRound(long id, Partition partition, Set<NodeId> sources, Set<NodeId> anchors, long startedNanos) {
+    private CatchUpRound(long id,
+                         long generation,
+                         Partition partition,
+                         Set<NodeId> sources,
+                         Set<NodeId> anchors,
+                         long startedNanos) {
         this.id = id;
+        this.generation = generation;
         this.partition = partition;
         this.sources = Set.copyOf(sources);
         this.anchors = Set.copyOf(anchors);
         this.startedNanos = startedNanos;
     }
 
-    static CatchUpRound catchUpRound(long id, Partition partition, Set<NodeId> sources, Set<NodeId> anchors) {
-        return new CatchUpRound(id, partition, sources, anchors, System.nanoTime());
+    static CatchUpRound catchUpRound(long id,
+                                     long generation,
+                                     Partition partition,
+                                     Set<NodeId> sources,
+                                     Set<NodeId> anchors) {
+        return new CatchUpRound(id, generation, partition, sources, anchors, System.nanoTime());
+    }
+
+    /// The pending spell this round was started for.
+    long generation() {
+        return generation;
     }
 
     long id() {

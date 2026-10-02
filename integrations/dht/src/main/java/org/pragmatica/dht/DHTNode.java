@@ -182,6 +182,11 @@ public final class DHTNode {
     /// holders displaced by up to RF nodes that joined together are those nodes; walking the current ring
     /// (not the boot-time static one) finds them even when they are cores this node's configuration does
     /// not list.
+    /// The current pending spell of `partition` (0 when serving): a round completes only the spell it began in.
+    long catchUpGeneration(Partition partition) {
+        return catchUp.generation(partition);
+    }
+
     /// The previous holders a ring change recorded exactly — without the boot walk.
     Set<NodeId> recordedPreviousHolders(Partition partition) {
         return catchUp.previousHolders(partition);

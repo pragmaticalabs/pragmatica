@@ -238,7 +238,9 @@ public final class DHTAntiEntropy {
     }
 
     private void startCatchUpRound(Partition partition, List<NodeId> coReplicas) {
-        var inFlight = Option.option(rounds.get(partition.value()));
+        // A round begun for an earlier pending spell (the partition was lost and regained since) is not in
+        // flight for this one: it is replaced, and its late pulls complete nothing (see #isCurrent).
+        var inFlight = Option.option(rounds.get(partition.value())).filter(this::isCurrent);
 
         if (inFlight.filter(round -> !round.olderThan(catchUpRoundTimeout.nanos())).isPresent()) {
             return;
@@ -264,6 +266,7 @@ public final class DHTAntiEntropy {
         }
 
         var round = CatchUpRound.catchUpRound(roundIds.incrementAndGet(),
+                                              node.catchUpGeneration(partition),
                                               partition,
                                               sources,
                                               anchors(partition, coReplicas));
@@ -467,7 +470,7 @@ public final class DHTAntiEntropy {
     }
 
     private boolean isCurrent(CatchUpRound round) {
-        return rounds.get(round.partition().value()) == round;
+        return rounds.get(round.partition().value()) == round && round.generation() == node.catchUpGeneration(round.partition());
     }
 
     private void completeCatchUp(Partition partition, boolean anchorless) {
