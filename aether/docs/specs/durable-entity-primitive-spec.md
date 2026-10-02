@@ -494,8 +494,8 @@ locally by any node holding the partition's log and forwarded to the owner only 
 > exists in production Java. Everything in §6 is design intent. **Owner decision D4 (2026-10-02):** §7.9's
 > definition registration and version-binding rules apply to workflows too — registration through the
 > slice factory, pin at creation (definition + artifact + dependency versions), all bound work and
-> dependent calls routed by the binding, loud failure on missing bound code, bidirectional codec
-> compatibility (D5), drain-then-retire with reconcile-only retention (D3), rollback of new starts only.
+> dependent calls routed by the binding, loud failure on missing bound code, fingerprint-only codec
+> coexistence (D8, replacing D5), drain-then-retire with reconcile-only retention (D3), rollback of new starts only.
 > **This is added scope for #353**: the workflow façade carries the same rollout-side work as #354, and its
 > acceptance needs the A4–A9 rows of §7.11 restated for workflow instances.
 
@@ -1424,7 +1424,7 @@ the create record, a `VersionBinding`:
 public record VersionBinding(String definitionName, int definitionVersion,
                              String sliceArtifact,                    // groupId:artifactId:version
                              Map<String, String> dependencyVersions,  // artifactBase -> version: the FULL resolved closure (D7c)
-                             String codecFingerprint) {}              // identity of S/D/command codecs
+                             String codecFingerprint) {}              // SHA-256 of the TAG/ENUM/SHAPE lines (D8)
 ```
 
 **The pin is transitive (owner decision D7c, closes v1828 B4).** `dependencyVersions` records the full
@@ -1451,18 +1451,45 @@ exhausted budget parks it, in `NeedsReconciliation(BoundVersionUnavailable)`; be
 made, this is never an `OutcomeUnknown`. Under D3 and D7c a version with bound work is never unloaded, so
 the park signals lost capacity, not retirement, and is resolved by `Resume` or `Abandon` (§7.7).
 
-**Shared keyspace — bidirectional codec compatibility (owner decision D5).** v1 and v2 may host the same
-saga keyspace at once only if each can read the other's records: **v2 reads every v1 record and v1 reads
-every v2 record.** In practice that admits additive changes to `S`, the data root `D` and the saga's
-command records — new **optional** fields only; no removed, renamed or retyped field, and no new variant
-an older version would have to decode. One direction is not enough: a replica or owner still running v1
-meets v2 records in the shared log, and a record it cannot apply freezes the partition (#701, §7.11.1).
-The deploy pre-flight compares the two versions' codec schemas and refuses anything else with
-`IncompatibleDurableCodec`, through the same path that already refuses a deploy over a missing config
-section (#1067) — never at first read. **A change that cannot meet this is not an in-place rollout:** it
-needs a new keyspace or an explicit migration. *Requirement on the codec, not verified for the shipped
-one:* decoding must skip unknown optional fields, or v1 cannot read v2's additive records. This applies to keyspaces backing sagas and workflows; whether plain `DurableEntity` keyspaces take
-the same gate is a follow-up (§7.11.1 shows they have the same exposure).
+**Shared keyspace — fingerprint-only coexistence (owner decision D8, replacing D5's mechanism).** v1 and
+v2 may host the same durable keyspace at once **only if their codec fingerprints are identical.**
+
+*Why not evolution in place.* The shipped record codec is **positional**: a generated `readBody` reads
+exactly its own component list in declaration order, with no field count, no lengths and no field ids
+(`CodecClassGenerator.java:422-484`). A reader whose component list differs from the writer's does not
+skip what it does not know — it desynchronises: an older reader misreads whatever follows a record with an
+extra component, and a newer reader runs past the end of an older record. No "additive optional field"
+rule can be made to hold on that wire, in either direction. (v0.8.0's D5 text required exactly that; it is
+withdrawn.)
+
+**The fingerprint.** For a saga or workflow keyspace, the fingerprint covers every type whose bytes reach
+the keyspace's log: the state `S`, every record in the data root `D`'s sealed closure (step results and
+signal payloads), the saga's runtime command and ledger records, and every type reachable through their
+components. It is the SHA-256 of the sorted lines that describe those types in the wire baseline's own
+format — `TAG <type> <wire tag>`, `ENUM <type> <NAME=ordinal,…>`, and `SHAPE <type> (<name>:<type>,…)`,
+the components in declaration order, which for a positional codec **is** the layout
+(`aether/node/src/test/resources/wire-assignment-baseline.txt:1-14` defines the format;
+`WireAssignmentTripwireTest` derives it from the generator). Today that derivation covers the node's
+`@Codec` types; producing the same lines for a slice's generated codecs is #354 implementation work.
+A component rename at the same type and position is byte-neutral but still changes the line, so it
+changes the fingerprint — deliberately conservative.
+
+- **Identical fingerprint:** the rollout proceeds through the normal rolling/split/canary path, and v1 and v2
+  read each other's records because the bytes are the same layout.
+- **Any difference:** the rollout is **refused at deploy** with `IncompatibleDurableCodec`, through the same
+  pre-flight path that already refuses a deploy over a missing config section (#1067) — never at first read.
+  The change then needs **a new keyspace, or an explicit migration** that rewrites the old records before
+  the new version takes the keyspace.
+
+**The cost, stated:** every schema change to a durable saga's or workflow's state, results, payloads or
+commands is a migration or a new keyspace. Adding one field to `S` is not a rolling update.
+
+*Out of scope, not promised:* a framed envelope (a field count and per-field lengths around each record)
+would let a reader skip what it does not know, and could later relax this rule. It is a wire-format change
+of its own, and nothing in this spec depends on it.
+
+This applies to keyspaces backing sagas and workflows; whether plain `DurableEntity` keyspaces take the
+same gate is a follow-up (§7.11.1 shows they have the same exposure).
 
 #### Retirement — drain, then retire (R4b)
 
@@ -1613,7 +1640,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint), on a step with no earlier attempts and the default budget, (a) for 300 s, then restore it; (b) for 600 s | the call is never made against another version; (a) retried with backoff and succeeds, no park (300 s < 381 s); (b) parks `NeedsReconciliation(BoundVersionUnavailable)` when the 20th attempt fails, at 381–476 s (R4a, D7a, E4) | a dependent call served by a non-bound version; a park in (a); no park in (b) |
-| A9 | **Codec compatibility, both directions** (D5) | (a) deploy v2 adding an optional field to `S`; (b) deploy v2 removing or retyping a field, or adding a command variant | (a) accepted; v1 and v2 each read the other's records in the shared log. (b) refused at deploy with `IncompatibleDurableCodec` (R4a, D5) | a deploy accepted that either version cannot read; a refusal surfacing only at first read; a v1 replica freezing on a v2 record after an accepted deploy |
+| A9 | **Codec coexistence, fingerprint-only** (D8) | (a) deploy v2 whose saga types are unchanged (identical TAG/ENUM/SHAPE lines); (b) deploy v2 that adds, removes, reorders or retypes a component of any fingerprinted type, adds a variant to `D`, or renames a component | (a) accepted; v1 and v2 share the keyspace; (b) refused at deploy with `IncompatibleDurableCodec`, naming the differing lines — the change needs a new keyspace or a migration | a deploy accepted with any fingerprint difference; a refusal surfacing only at first read; a v1 or v2 reader freezing on the other's record after an accepted deploy |
 | A10 | **Recovery past the key window** (v1828 B1, N3) | for a `Replayable` and a `Lookup` step: a first attempt ends `Sent`, later re-invokes keep failing `Sent`, then resume once `now − origin ≥ keyRetention − clockSafetyMargin`, where origin is the FIRST attempt's `at`; repeat with the first attempt's evidence unrecorded (crash) | no re-invocation and no lookup after that point, although the LATEST attempt is still inside the window; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1, E3, E7) | an invocation or lookup issued once the earliest possibly-sent attempt is past the window |
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
@@ -1884,8 +1911,9 @@ Supersedes S1's "saga signals are v2".
 whether the request was sent (`NotSent` definite, `Sent` ambiguous; §7.4). D2: compensation of step `j`
 receives the snapshot `S_j` (§7.5). D3: code is retained until every bound instance is resolved
 (reconcile-only), with the per-reason resolution table and `Abandon` as last resort (§7.7, §7.9). D4: §7.9
-applies to workflows (§6; added #353 scope). D5: codec compatibility is bidirectional; anything else needs
-a new keyspace or a migration (§7.9). D6: `operationId`/`compensationId` are 52-character base32 SHA-256
+applies to workflows (§6; added #353 scope). D5 (bidirectional compatibility) is SUPERSEDED by D8:
+coexistence only with identical codec fingerprints, because the shipped codec is positional; any change
+needs a new keyspace or a migration (§7.9). D6: `operationId`/`compensationId` are 52-character base32 SHA-256
 digests of a length-prefixed, domain-tagged tuple, with the readable tuple kept alongside (§7.2). D7:
 `NotSent` failures retry inside a budget, so an endpoint gap shorter than the remaining backoff schedule never parks; ONE declared per-step retry
 budget, bounded by the key window as well; the pin is transitive and the retirement gate covers every
@@ -1893,8 +1921,8 @@ version in any live binding (§7.4, §7.9). Round 2 of the #1828 review is fully
 `attemptTimeout`; key-window origin = earliest possibly-sent attempt; retry episodes with cumulative
 attempts and defaults 20 / 10 min / 200 ms→30 s; a reply-classification mapping per step; failing
 deadline fires park `DeadlineTransitionFailed`; persisted attempt evidence; `SagaOutcome` and `delete`
-carry the incarnation. Codec framing (D5's feasibility, v1828 N1) is still an owner item; A9 and the D5
-text are unchanged pending it.
+carry the incarnation. D8 (owner, on v1828 N1): fingerprint-only coexistence replaces D5's mechanism;
+A9 rewritten.
 
 **S1 — signals scope for v1. RESOLVED (2026-07-04); saga half SUPERSEDED by S10 (2026-10-02)** — saga
 `WAIT_SIGNAL` is specified in rc4 (§7.8); the workflow half stands. Original text: **signal injection IS
@@ -1949,7 +1977,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 
 ## Changelog — v0.10.0 (2026-10-02)
 
-**#1828 review round 3 (v1828 r2), CTO rulings E2–E9.** D5's framing (N1) is an owner item and is untouched.
+**#1828 review round 3 (v1828 r2), CTO rulings E2–E9, and owner decision D8 (v1828 N1).**
 
 | What | v1828 | Ruling | Where |
 |---|---|---|---|
@@ -1962,6 +1990,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 | Stale "pending under B7" removed | N8 | E8 | §7.6 |
 | `SagaOutcome` carries `SagaInstanceId`; `delete(SagaInstanceId)`; where a sender gets the incarnation | N9 | E9 | §7.7 |
 | `MemoryStorageEngine.java:69-73`, `PartitionFencedDurableEntity.java:692-697` pinned; D7c capacity consequence stated | citations, attack 1 | — | §3, §7.8, §7.9 |
+| Fingerprint-only coexistence: identical TAG/ENUM/SHAPE fingerprint or refused at deploy; any change = new keyspace or migration; D5's bidirectional text and the unverified codec requirement removed; framed envelope noted out of scope | N1 | D8 (owner) | §6, §7.9, §7.11 A9 |
 
 ---
 
