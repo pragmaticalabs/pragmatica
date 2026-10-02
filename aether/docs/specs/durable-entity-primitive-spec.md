@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.10.3
+**Version:** 0.10.4
 **Status:** Draft. **§5 (`DurableEntity`) is reconciled with the shipped named-command API**
 (`DurableEntity<K, S, C extends Mutator<S>>`). **§6 (workflow) and §7 (saga) are PLANNED façades with no
 production code** (#353, #354; milestone v1.0.0-rc5). **§7 was reopened by #1827 and its five contract
@@ -1292,7 +1292,7 @@ waiting instance.
 `SignalRejected(reason)` (§7.8), `BoundVersionUnavailable(artifact)` (§7.9),
 `DefinitionNotRegistered(definitionId)` (§7.9), `BoundVersionFingerprintMismatch(binding, expected, found)`
 (§7.9), `ContractFingerprintMismatch(instance, expected, presented)` (§7.9),
-`ContractChangeRequiresNewDefinition(definition, differingTypes)` (§7.9, D10),
+`ContractChangeRequiresNewDefinition(definition, differingTypes)` (§7.9, D10), `DefinitionRetired(definition)` (§7.9, F1),
 `UnsupportedEnvelopeVersion(version)` (§7.9, S2),
 plus the entity's own `EntityError` cases passed through unchanged (fence, ownership, storage).
 
@@ -1347,7 +1347,12 @@ deadline is therefore built so that every interleaving of those two appends with
    enc(waitStepIndex)))` — the §7.2 construction under its own domain tag (one wait step = one token) — and the command
    `DeadlineFired(waitStep, token)`.
 2. **Then persist `Waiting(waitStep, deadlineAt, token)`.**
-3. **A fire is a guarded no-op unless it matches.** `DeadlineFired` is a pure transition: if the phase is
+3. **A fire is a guarded no-op unless it matches — decided at envelope level first (F2).** When a deadline
+   timer comes due, the runtime compares the timer's token with the instance's latest envelope. If
+   `phaseAfter` is not `Waiting` or `waitingToken` differs, the fire is **consumed as a no-op at envelope
+   level**: a runtime timer-consume frame is appended, no payload is decoded and no author code runs. A stray
+   timer can therefore never push a terminal instance into `NeedsReconciliation`, and needs no bound code to
+   be cleared (even after its version has retired). Only a matching fire is decoded: if the phase is
    `Waiting` on the same `waitStep` with the same token, it applies the author's `OnDeadline` —
    `ContinueWith(defaultFold)` folds the default into `S` and continues, `Compensate()` enters
    `Compensating` for every completed step. In any other phase, or for a different wait, it leaves the
@@ -1517,27 +1522,42 @@ bytes are decoded only through the registry entry that matches that binding (§7
 /** Runtime-owned, never slice-encoded. Written first in every saga-keyspace log record (S1, S2). */
 record LogEnvelope(byte formatVersion,          // S2: the log outlives a full-cluster upgrade
                    SagaInstanceId instance,
-                   String bindingRef,           // the instance's VersionBinding (by content hash)
+                   String bindingRef,           // content hash of the instance's VersionBinding (body: see below)
                    RecordKind kind,
                    PhaseKind phaseAfter,        // Running / Waiting / NeedsReconciliation / Compensating / terminal…
-                   boolean pendingTimer,        // a deadline timer is armed after this record
+                   Option<String> waitingToken, // the deadline token while phaseAfter is Waiting, else none (F2)
                    boolean pendingCompensation, // compensation work remains after this record
                    Instant appendedAt) {}       // the owner's clock at append
 ```
 
+**Where the binding body lives (v1828 r5, F3).** `bindingRef` is a content hash. The `VersionBinding` body
+itself is written, in runtime-owned bytes, in the instance's **create** record's envelope. The fold keeps it
+per instance next to the latest envelope and payload, and checkpoints write it with them, so the body is as
+durable as the instance and any holder of the partition — owner or not — can read and display it without
+decoding a payload.
+
+**Pending timers are counted from timer frames, not from the envelope (F2).** An earlier draft carried a
+`pendingTimer` flag. It is **dropped**: it is an append-time claim and can understate the truth — a crash
+between arming and persisting `Waiting` (§7.8 step 1→2), a lost cancel after a winning signal, or a lost
+cancel at force-retire all leave a timer pending under an envelope that says otherwise. The authoritative
+pending set is the fold's runtime-owned **timer frames** (`EntityLogRecord.TimerPayload`,
+`EntityLogRecord.java:205`), which every holder decodes without slice code.
+
 **Format version (v1828 S2).** Both envelopes — this log envelope and the request envelope of (3) — begin
 with a format-version byte. The log outlives a runtime upgrade (an Aether upgrade stops the whole cluster
 and restarts it on the new build), so a new runtime must read the envelopes an old one wrote; a reader
-accepts every format version it knows. A log envelope with an unknown format version is the one case that
+accepts every format version it knows. (The shipped entity log record already follows this rule for its
+own framing: `EntityLogRecord.java:50-53`.) A log envelope with an unknown format version is the one case that
 still holds the partition's watermark (#701): it means the runtime is older than the data, and refusing is
 the honest answer. A request envelope with an unknown version is refused with
 `SagaError.UnsupportedEnvelopeVersion`.
 
 **The fold carries payloads opaquely (v1828 S1a).** Only owners must host every bound version (§7.9
 takeover eligibility); replicas need not. So the saga-keyspace fold never decodes a payload while
-applying a record: every transition the owner commits appends the instance's full encoded state
-(state-as-truth, as the shipped entity log already stores post-update state), so folding is "keep the
-latest envelope and the latest payload bytes per instance", decoding only the envelope. A payload is decoded
+applying a record: every transition the owner commits appends the instance's full encoded state, so folding
+is "keep the latest envelope and the latest payload bytes per instance", decoding only the envelope. This is
+the shipped fold's behaviour, not new machinery: "Each key maps to the SAME bytes the log carries. Applying a
+replayed record costs no decode, and a checkpoint writes bytes already in hand" (`EntityFold.java:40-41`). A payload is decoded
 lazily, at a decode site below, through the instance's binding. **A record a node cannot decode never holds
 the partition watermark** — the #701 refusal (`EntityFold.java:253-272`) applies to the envelope alone,
 so a replica that does not host v2 keeps folding v1 and v2 records alike.
@@ -1559,7 +1579,7 @@ The decode sites, all of which must decode payloads through the binding and nowh
 | Step execution and compensation | `S`, `S_j`, `R_j` handed to forward, lookup and compensation |
 | Timer fires (`DeadlineFired`, `DeadlineFireFailed`) | the timer command and the waiting state it guards |
 | Signal consumption | a buffered `SignalRecord` payload, folded into `S` |
-| Retirement-gate counting | the latest **envelope** per instance only — `bindingRef`, `phaseAfter`, `pendingTimer`, `pendingCompensation` — never a payload (v1828 S1c) |
+| Retirement-gate counting | the latest **envelope** per instance (`bindingRef`, `phaseAfter`, `pendingCompensation`) plus the fold's runtime **timer frames** for pending timers — never a payload (v1828 S1c, F2) |
 | Terminal-state GC (the terminal-TTL of S2, when it is built) | the latest envelope only: a terminal `phaseAfter` and its `appendedAt` give the terminal time (v1828 S1d) |
 | Audit stream (§11 piece 7, planned) | envelopes always; payloads only on a node hosting the binding, otherwise the record is emitted envelope-only and marked so (v1828 S1d) |
 
@@ -1591,13 +1611,23 @@ the bound version's:
   registers a definition name whose contract differs from that name's registered or live-bound versions is
   **refused at deploy** with `SagaError.ContractChangeRequiresNewDefinition(definition, differingTypes)`,
   naming the differing TAG/ENUM/SHAPE lines (the same pre-flight path that refuses a missing config
-  section, #1067). The old definition stays deployed per R4b — draining: no new starts, still executing
-  its bound work — **together with the code paths that call it**, until its instances finish. In practice
-  the new slice version registers both definitions, the old one unchanged and the new one under its new
-  name; new starts go to the new name, and signals and resolutions for old instances keep using the old
-  definition's handle. Because the old definition's contract never changes, **nothing on the application path
-  can strand**: every old instance stays reachable by callers holding the old contract, which are still
-  deployed.
+  section, #1067). In practice the new slice version registers both definitions, the old one unchanged
+  and the new one under its new name. **The old definition keeps accepting starts** — `run`, signals and
+  resolutions alike — from every caller still holding its contract, so a caller that has not moved yet keeps
+  working; callers move to the new name in their own rollouts.
+- **Retiring a definition is a separate, explicit operator action (F1).** R4b drains **versions**; a
+  definition-level retirement is distinct. The trigger is **an operator's `retire definition` request**,
+  accepted only when **no deployed caller still holds the old contract** — every slice load registers the
+  `SagaContract` descriptors it was compiled against (below), so the cluster knows which deployed slices
+  hold which contract, and a retire request while any does is refused with the holders named. Once retired,
+  the old definition takes no new starts (`run` refused `SagaError.DefinitionRetired`); its instances keep
+  executing their bound work (steps, signals, deadlines, compensation), its versions drain per R4b, and it
+  is gone when its last instance finishes. Because the old contract never changes and its callers stay
+  deployed until that retirement, **nothing on the application path can strand**.
+- **The old contract's type closure is frozen (F4).** Every type reachable from the old definition's
+  `I`, `O` and `D` stays byte-for-byte as it was in the API artifact. Editing a type the old and new contracts
+  share (a `LineItem` used by both, say) changes the OLD fingerprint and is refused like any in-place
+  contract change (§7.11 A18) — so the new contract needs its own copy of any shared type it changes.
 - **Private-only changes stay ordinary rollouts.** A change to `S` alone, with `I`, `O` and `D` unchanged,
   keeps the definition name and rolls out normally (D9).
 - **How a caller obtains the fingerprint.** A caller that does not host the saga gets it **from the definition
@@ -1605,7 +1635,12 @@ the bound version's:
   and the slice processor generates into that artifact a `SagaContract` descriptor — definition name,
   `contractFingerprint`, contract named-shape hash. The caller's build depends on that artifact, so the
   fingerprint it presents is the one of the contract its code was compiled against. A hosting caller uses
-  its own registry entry, which is the same descriptor.
+  its own registry entry, which is the same descriptor. (Mechanism CTO-confirmed 2026-10-02.)
+- **What is caught at runtime only (F4).** A caller built against an API artifact that changed the contract
+  **in place under the old name** — the change A18 refuses for the defining slice — is not refused at the
+  caller's own deploy; it is caught when it calls, by the `ContractFingerprintMismatch` backstop below.
+  *Optional:* a caller-side deploy pre-flight that checks each `SagaContract` descriptor the caller registers
+  against the registered definitions of that name would move this refusal to deploy; #354 may add it.
 - **Detection (backstop).** Every binary-encoded inbound request carries, in a runtime-owned request
   envelope that begins with its own format-version byte (S2), the definition name, the caller's
   `contractFingerprint` and its named-shape hash; the owner compares them with the instance's binding —
@@ -1615,9 +1650,10 @@ the bound version's:
   presented)` — never a positional misdecode. The management API's JSON surface is not positional: it decodes
   operator input through the bound version's types (decode-site table) and needs no fingerprint.
 - **Cross-slice deploy order.** Because a contract change is a new definition, the defining slice and its
-  callers need no lock-step deploy: the defining slice ships first with both definitions registered;
-  callers move to the new name in their own rollout; old-name callers keep working until the old
-  instances finish. There is no window in which `run` is refused in both orders.
+  callers need no lock-step deploy: the defining slice ships first with both definitions registered and
+  both accepting starts; callers move to the new name in their own rollout; old-name callers keep working,
+  `run` included, until the operator retires the old definition — which is refused while any of them is
+  still deployed. There is no window in which `run` is refused in either order.
 - **Additive contract evolution is deferred** until a tolerant, framed codec exists (post-GA, not promised).
 - **`S` is not in the contract (owner decision D9).** `run` takes `I`, outcomes carry `O`, and `status`
   exposes no `S`, so a change to `S` alone — with `I`, `O`, `D` unchanged — is an ordinary rollout: new
@@ -1704,7 +1740,7 @@ enters **DRAINING** instead of being deallocated:
 - **No new starts** are bound to it; the rollout policy routes new starts elsewhere.
 - **Bound work still executes** — steps, lookups, compensations, signals, deadlines, recovery.
 - **A live count is reported**: instances bound to the version that are not terminal, plus pending
-  deadline timers and pending compensations, per keyspace. Each partition owner derives its share from
+  deadline timers (counted from the fold's timer frames, §7.9 F2) and pending compensations, per keyspace. Each partition owner derives its share from
   its fold and publishes it; the retirement gate sums them. Visible through the management triad
   (`GET /api/sagas/{type}/versions`, CLI, docs).
 - **Retired only at zero.** The deallocation paths of §7.11.1 (`removeNonTargetVersions` and the
@@ -1870,7 +1906,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A16 | **Reply classification** (E5) | fail a forward with (a) a 409 "idempotency key in use", (b) a 429, (c) a `StepRefusal` cause, (d) an unrecognised error decoded from a reply | (a) `Sent` → R1 path; (b) `NotSent` → retried in budget; (c) `Answered` → step failed, compensate, no retry; (d) `Sent` | a 409 or unrecognised reply treated as definite; compensation started while the original request may still apply |
 | A17 | **Replica without the bound version** (v1828 S1a, S1b, S2) | a partition replica hosts only v1 while the owner hosts v1 and v2 and commits v2-bound transitions; let the replica write a checkpoint; restart the cluster on a newer runtime build | the replica keeps folding v1 and v2 records (payloads opaque, envelopes decoded), its watermark advances past v2 records, and its checkpoint carries v2 payloads byte-identical; `status` on the replica shows v2 instances envelope-only; the newer runtime reads the old envelopes (known format version) | the replica's watermark held at a v2 record; a v2 payload decoded or re-encoded on the replica; an old-format envelope refused by the newer runtime |
 | A18 | **In-place contract change refused** (D10) | deploy a new version of `order-saga` whose `I`, `O` or a `D` signal/receipt type differs (including a same-typed swap) under the same definition name | refused at deploy with `ContractChangeRequiresNewDefinition`, naming the differing lines; the running versions are untouched | a deploy accepted with a contract change under an unchanged definition name |
-| A19 | **New definition with old instances live** (D10) | the new slice version registers `order-saga` (old contract, unchanged) and `order-saga-2` (new contract); old instances are mid-wait; callers move to `order-saga-2` in their own rollout; then send approvals to old instances from the application path | new starts go to `order-saga-2`; old instances stay reachable through `order-saga` by the deployed callers that hold its contract, and their signals are accepted; `order-saga` drains and retires once its instances finish | a signal to an old instance refused on the application path (stranded); a `run` refused in either deploy order |
+| A19 | **New definition with old instances live** (D10, F1) | the new slice version registers `order-saga` (old contract, unchanged) and `order-saga-2` (new contract); old instances are mid-wait; callers move to `order-saga-2` one by one in their own rollouts; meanwhile a not-yet-moved caller `run`s and signals on `order-saga`; then the operator requests `retire definition order-saga` before and after the last old-contract caller is gone | both definitions accept starts; a not-yet-moved caller's `run` and signals on `order-saga` succeed; the retire request is refused, naming the holders, while any deployed caller holds the old contract, and accepted after; once retired, `run` on `order-saga` is refused `DefinitionRetired` while its instances still receive signals and finish, and its versions drain and retire | a signal or `run` refused on the application path before the retirement (stranded); a retirement accepted while a deployed caller holds the old contract; a bound instance stopped by the retirement |
 | W1 | **Signal before the wait** | deliver the `approval` signal while the saga is still on step B | buffered and acknowledged; consumed on entering the wait, payload folded into `S`, no deadline scheduled (R5) | the signal lost; a deadline timer armed despite a buffered signal |
 | W2 | **Duplicate signal** | deliver the same `(waitName, signalId)` twice, once buffered and once after consumption; then a different `signalId` | both duplicates are no-ops answered with the original `SignalAccepted`; the different id is refused `WaitAlreadySignalled` (R5) | payload folded more than once |
 | W3 | **Deadline expiry** | let the wait's deadline pass with no signal, once per `OnDeadline`; then send a late signal | `ContinueWith`: default folded, saga continues; `Compensate`: compensation of completed steps in reverse; the late signal refused `WaitExpired` (R5) | both the deadline and a signal applied to one wait; a fire earlier than `deadlineAt` by the firing owner's clock |
@@ -1879,6 +1915,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | W6 | **Signal during compensation / after terminal** | signal an instance that is `Compensating`, one parked from `Compensating`, and one that is `Completed` — including an exact duplicate of a signal the `Completed` instance consumed | refused `SignalRejected(Compensating)` twice and `SignalRejected(Terminated(Completed))`, the duplicate included (incarnation check first, T4); compensation is not interrupted (R5) | a signal folded into a compensating or terminal instance; `SignalAccepted` returned for a terminal incarnation |
 | W7 | **Signal to a replaced incarnation** (v1828 B8) | `delete` a terminal instance, `run` the same `sagaId` again, then retry a signal addressed to the old incarnation | refused `SignalRejected(IncarnationReplaced)`; the new instance's state is unchanged (T4) | an old-incarnation signal folded into, or buffered on, the new instance |
 | W8 | **Crash between arming and `Waiting`; failing deadline** (v1828 B6, N6) | kill the owner after the deadline `scheduleTimer` lands and before `Waiting` commits; separately, make a `DeadlineFired` transition fail every time, with an owner change after the second failure | the stray fire is a no-op; recovery re-enters the wait with one live timer. The failing fire is re-fired, each failure recorded (`DeadlineFireFailed`), the count continuing across the handover; after `maxFireAttempts` the instance parks `NeedsReconciliation(DeadlineTransitionFailed)`, visible in the listing, with the timer cancelled; `Cancel` and `Abandon` both resolve it (T2, E6) | a wait with no live deadline timer; a failed deadline fire consumed; more than `maxFireAttempts` failed fires; a failing deadline absent from the listing |
+| W9 | **Stray deadline after the wait ended** (F2) | a deadline timer stays pending after its instance left the wait (a lost cancel after a winning signal; separately, a crash between arming and persisting `Waiting`); let the instance reach a terminal phase, retire its version, then let the timer come due | the fire is consumed as a no-op at envelope level: a timer-consume frame, no payload decode, no author code; the instance stays terminal; the retirement gate counted the pending timer frame until it was consumed | a stray fire moving a terminal instance to `NeedsReconciliation`; a stray fire needing unloaded code; a retirement gate reading zero while a timer frame is pending |
 | D1 | **Typed dataflow after recovery** | kill the owner between A's commit and B's invocation | B reads A's `ReservationId` from the recovered `S`; if B then definitely fails, A's compensation receives the same `ReservationId` (R3) | B invoked with no reservation in `S`; A's compensation invoked with a value differing from A's `StepRecord` |
 | I1 | **Identity stability** | force re-invocations across owner change and a redeploy of the same version; delete a terminal instance and `run` the same `sagaId` again; use a `sagaId` containing `/` | the same `operationId`/`compensationId` on every re-invocation of one instance; different values for the new incarnation; every id is 52 lower-case base32 characters and contains no business id; `attempt` changes and appears in no key (R2, D6) | two different `operationId`s for one step of one instance; one `operationId` shared by two incarnations or by two distinct tuples; a key that is not 52 characters |
 
@@ -2199,6 +2236,20 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.10.4 (2026-10-02)
+
+**#1828 last round (v1828 r5: MERGE WITH NITS), F1–F5.**
+
+| What | Item |
+|---|---|
+| The old definition keeps accepting starts; retiring a definition is a separate operator action, refused while a deployed caller holds its contract; `DefinitionRetired`; A19 rewritten | F1 |
+| A stray deadline fire is consumed at envelope level (no decode); `LogEnvelope.waitingToken` added, `pendingTimer` dropped; the retirement gate counts runtime timer frames (`EntityLogRecord.java:205`); matrix W9 | F2 |
+| Opaque fold cited to the shipped `EntityFold.java:40-41`; envelope versioning precedent `EntityLogRecord.java:50-53`; the `VersionBinding` body lives in the create record's runtime-owned envelope, kept by the fold and checkpoints | F3 |
+| The old contract's type closure is frozen; a caller with an in-place contract change under the old name is caught at runtime only; optional caller-side pre-flight; `SagaContract` descriptor CTO-confirmed | F4 |
+| Line-exact check of every added citation | F5 |
 
 ---
 
