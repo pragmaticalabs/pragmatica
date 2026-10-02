@@ -237,6 +237,9 @@ public final class DHTAntiEntropy {
         var round = CatchUpRound.catchUpRound(roundIds.incrementAndGet(), partition, sources);
 
         rounds.put(partition.value(), round);
+        // A local store that cannot be read sends no digest; the round never decides, expires after
+        // CATCH_UP_ROUND_TIMEOUT and is restarted by the next tick — FER: the catch-up is delayed, never
+        // completed on a read that did not happen.
         node.storage()
             .entriesForPartition(node.ring(),
                                  partition)
@@ -325,6 +328,7 @@ public final class DHTAntiEntropy {
 
     private void onCatchUpPull(PendingPull pull, CatchUpRound round, DHTMessage.MigrationDataResponse response) {
         applyMigrationEntries(response);
+        // As at round start: an unreadable store leaves the round undecided until it expires and restarts.
         node.storage()
             .entriesForPartition(node.ring(),
                                  round.partition())
