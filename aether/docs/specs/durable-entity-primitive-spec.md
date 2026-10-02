@@ -1428,7 +1428,9 @@ public record VersionBinding(String definitionName, int definitionVersion,
                              String sliceArtifact,                    // groupId:artifactId:version
                              Map<String, String> dependencyVersions,  // artifactBase -> version: the FULL resolved closure (D7c)
                              String stateFingerprint,                 // private types: S + runtime records (D8 refined)
-                             String contractFingerprint) {}           // boundary types: run input, P, receipts, outcome (D8 refined)
+                             String stateShapeHash,                   // named SHAPE lines behind it, for the swap guard
+                             String contractFingerprint,              // boundary types: run input, P, receipts, outcome (D8 refined)
+                             String contractShapeHash) {}             // named SHAPE lines behind it, for the swap guard
 ```
 
 **The pin is transitive (owner decision D7c, closes v1828 B4).** `dependencyVersions` records the full
@@ -1508,9 +1510,10 @@ These form the definition's **contract**, and its fingerprint is recorded in the
 the private-state fingerprint. A caller may address an instance only if its contract fingerprint **equals**
 the bound version's:
 
-- **Detection.** Every binary-encoded inbound request carries the caller's `contractFingerprint` in the
-  runtime envelope (the caller's own registry entry computes it); the owner compares it with the instance's
-  binding **before decoding the payload**. A mismatch is refused with `SagaError.ContractFingerprintMismatch(
+- **Detection.** Every binary-encoded inbound request carries the caller's `contractFingerprint` and
+  contract named-shape hash in the runtime envelope (the caller's own registry entry computes them); the
+  owner compares them with the instance's binding — fingerprint equality plus the swap guard below —
+  **before decoding the payload**. A mismatch is refused with `SagaError.ContractFingerprintMismatch(
   instance, expected, presented)` — never a positional misdecode. For `run`, which has no instance yet, the
   owner binds the new instance only to a version that the rollout policy permits **and** whose contract
   fingerprint equals the request's; if there is none the request is refused with the same error. The
@@ -1546,13 +1549,27 @@ force a migration for a change that alters nothing on disk, so the fingerprint o
 What it keeps — the type's identity, each component's type and position, the TAG and ENUM content — is
 exactly what changes the bytes or the meaning of the bytes.
 
-*Residual hazard, stated:* the exemption also passes a **same-typed name swap** — two components of the
-same type exchanging names (`String from, String to` → `String to, String from`). The bytes are unchanged,
-so neither version misreads them, but each now interprets the other's value under the other's meaning.
-This is a semantic change the codec cannot see; the baseline pins names precisely so such a swap shows up in
-its diff. Under (1) it is harmless for private types, which only their own version ever reads; it matters
-for **contract** types, where callers on one version and instances on another read the same bytes. The
-fingerprint does not catch it there; code review of a contract-type change has to.
+**Swap guard (CTO ruling, 2026-10-02).** The rename exemption alone would also pass a **same-typed name
+swap** — two components of the same type exchanging names (`String from, String to` → `String to,
+String from`): identical bytes, but each side reads the other's value under the other's meaning. So two
+type sets with equal fingerprints are compatible **only if no component name present in both appears at a
+different position within the same type**. A pure rename (a name that disappears, replaced at the same
+position by a new one) passes; a name that moves is refused. This is decidable from the two sets' NAMED
+SHAPE lines, which the hash deliberately omits, so the runtime keeps them:
+
+- every definition registration publishes its named SHAPE lines (state set and contract set) to a
+  cluster-wide, content-addressed **shape registry** in the KV store, keyed by the SHA-256 of the named
+  lines;
+- the `VersionBinding` records, for each fingerprint, the named-shape hash it was computed from, and every
+  inbound request's envelope carries the caller's contract fingerprint **and** its named-shape hash;
+- a comparison whose fingerprints are equal but whose named-shape hashes differ resolves both sets from the
+  registry and applies the rule (the verdict is cached per pair of hashes). A swap is refused with the same
+  typed error as a fingerprint mismatch — `BoundVersionFingerprintMismatch` for drift (2),
+  `ContractFingerprintMismatch` for the contract (3) — naming the moved components. Equal fingerprints
+  with equal named-shape hashes need no lookup.
+
+The fingerprint and swap guard apply to **(2) and (3) only**. They are not a coexistence gate on private
+state: (1) needs none.
 
 Today the TAG/ENUM/SHAPE derivation covers the node's `@Codec` types; producing the same lines for a
 slice's generated codecs is #354 implementation work.
@@ -1717,7 +1734,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint), on a step with no earlier attempts and the default budget, (a) for 300 s, then restore it; (b) for 600 s | the call is never made against another version; (a) retried with backoff and succeeds, no park (300 s < 381 s); (b) parks `NeedsReconciliation(BoundVersionUnavailable)` when the 20th attempt fails, at 381–476 s (R4a, D7a, E4) | a dependent call served by a non-bound version; a park in (a); no park in (b) |
-| A9 | **Coexistence by binding** (D8 refined; rename ruling) | (a) v1 and v2 with DIFFERENT `S` share a keyspace: create instances on both, then exercise every decode site (owner takeover, replica `status`, checkpoint restore, listing, `resolve`, a deadline fire, a signal); (b) rebuild v1's version id with a changed component type and deploy it while v1 instances are live; (c) a caller whose contract fingerprint differs signals, resolves and `run`s against v1 instances; (d) v2 differs from v1 only by a component rename | (a) both coexist; every decode uses the instance's binding; (b) registration fails loudly with `BoundVersionFingerprintMismatch`, and nothing is decoded with the drifted build; (c) each request refused with `ContractFingerprintMismatch` before its payload is decoded, `run` binding only to a version with the caller's contract; (d) identical fingerprints — accepted as the same contract and state layout | a payload decoded by a version other than the instance's binding; a decode with a drifted build; a request decoded despite a contract mismatch; a pure rename treated as a change |
+| A9 | **Coexistence by binding** (D8 refined; rename ruling; swap guard) | (a) v1 and v2 with DIFFERENT `S` share a keyspace: create instances on both, then exercise every decode site (owner takeover, replica `status`, checkpoint restore, listing, `resolve`, a deadline fire, a signal); (b) rebuild v1's version id with a changed component type and deploy it while v1 instances are live; (c) a caller whose contract fingerprint differs signals, resolves and `run`s against v1 instances; (d) a caller or rebuild differing only by a pure rename of a component; (e) a caller or rebuild differing only by a same-typed name swap | (a) both coexist; every decode uses the instance's binding; (b) registration fails loudly with `BoundVersionFingerprintMismatch`, nothing decoded with the drifted build; (c) each request refused with `ContractFingerprintMismatch` before its payload is decoded, `run` binding only to a version with the caller's contract; (d) accepted; (e) refused — `BoundVersionFingerprintMismatch` for the rebuild, `ContractFingerprintMismatch` for the caller — naming the moved components | a payload decoded by a version other than the instance's binding; a decode with a drifted build; a request decoded despite a contract mismatch; a pure rename refused; a same-typed swap accepted |
 | A10 | **Recovery past the key window** (v1828 B1, N3) | for a `Replayable` and a `Lookup` step: a first attempt ends `Sent`, later re-invokes keep failing `Sent`, then resume once `now − origin ≥ keyRetention − clockSafetyMargin`, where origin is the FIRST attempt's `at`; repeat with the first attempt's evidence unrecorded (crash) | no re-invocation and no lookup after that point, although the LATEST attempt is still inside the window; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1, E3, E7) | an invocation or lookup issued once the earliest possibly-sent attempt is past the window |
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
@@ -2065,6 +2082,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 | v0.8.0 changelog-row typo | G4 |
 | CTO-confirmed: the 381 s arithmetic with upward-only jitter, the `StepRefusal` marker, `maxFireAttempts` = 5 | — |
 | Renames exempt from the codec fingerprint (CTO ruling): it hashes type identity, component types and positions, TAG and ENUM content — not component names | — |
+| **Swap guard (CTO):** equal fingerprints are compatible only if no shared component name moves position within a type; named SHAPE lines kept in a content-addressed shape registry, binding and request envelope carry the named-shape hash; A9(e) | — |
 | **D8 refined (owner):** private state coexists freely, every decode site dispatches on the binding (sites enumerated); drift guard `BoundVersionFingerprintMismatch`; inbound contract fingerprint carried in the envelope and checked before decode, `ContractFingerprintMismatch`; `VersionBinding` carries `stateFingerprint` + `contractFingerprint`; `IncompatibleDurableCodec` retired; A9 rewritten (different `S` coexists, drift refused, contract mismatch refused, pure rename accepted) | G1 |
 
 ---
