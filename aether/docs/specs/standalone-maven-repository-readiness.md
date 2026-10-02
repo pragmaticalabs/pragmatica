@@ -158,7 +158,7 @@ Tracker state checked on 2026-10-02; issue bodies can describe older implementat
 
 ## Appendix: claim verification at `564d2d3df`
 
-Each code claim in this document and in the specification, checked against source at the read point. "Confirmed" means the source says what the text says; "partial" means the text was narrowed or extended; "refuted" means the earlier draft was wrong. Line numbers are at `564d2d3df`. The last column says what pending pull requests change.
+Each code claim in this document and in the specification, checked against source at the read point. "Confirmed" means the source says what the text says; "partial" means the text was narrowed or extended; "stale" means the statement was true of an earlier state of the tracker or source and no longer holds. Line numbers are at `564d2d3df`. The last column says what pending pull requests change.
 
 | # | Claim | Verdict | Evidence | Pending change |
 |---|---|---|---|---|
@@ -188,4 +188,4 @@ Each code claim in this document and in the specification, checked against sourc
 | 24 | Delete leaves chunks unreleased | Confirmed | `ArtifactStore.java:534-538` | #1821 archives; still no release |
 | 25 | Metrics come from process-local counters | Confirmed | `ArtifactStore.java:128-133, 339-340` | none |
 | 26 | Control-KV backup and AHSE snapshots are distinct facts | Confirmed | `KvBackupService.java`; `StorageFactory.java:1331-1332` | #1821 adds its KV keys to the backup codec |
-| 27 | The no-SNAPSHOT restriction is "separately planned" in #1778 | Refuted as stale | #1778 moved to rc4 (owner, 2026-10-02) and is implemented by #1821 | — |
+| 27 | The no-SNAPSHOT restriction is "separately planned" in #1778 | Stale | #1778 moved to rc4 ([owner ruling on #1778, 2026-10-02](https://github.com/pragmaticalabs/pragmatica/issues/1778#issuecomment-5944789887)) and is implemented by #1821 | — |

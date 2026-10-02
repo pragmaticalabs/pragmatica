@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Proposed, v0.2. Design only; not implemented. Target 1.0.0-rc5.** Tracking epic: not yet filed. |
+| Status | **Proposed, v0.2. Design only; not implemented. Planned for 1.0.0-rc5 (epic #1831); the target is pending owner confirmation.** |
 | Read point | `release-1.0.0-rc4` at `564d2d3df`, source inspection only. Statements about in-flight work cite the open pull request and say "pending merge". |
 | Companion | [Component readiness](standalone-maven-repository-readiness.md): the evidence, the claim-by-claim verification and the upstream dependencies. |
 | Depends on | #1570, #1569/#1581, #1777, #1778 (implemented by #1821, pending merge), #1133, #527, #1746, #249 |

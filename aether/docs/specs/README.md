@@ -21,5 +21,5 @@ Per-spec `Status:` headers are being standardized across this directory; until t
 - [Standalone Maven Repository on Aether and AHSE](standalone-maven-repository-spec.md)
   — a full Maven repository product (releases and SNAPSHOTs, hosted/proxy/group repositories,
   sealed operation, retention, backup/restore) built on Aether clustering and AHSE storage.
-  **Proposed; design only; not implemented. Target 1.0.0-rc5; tracking epic not yet filed.**
+  **Proposed; design only; not implemented. Planned for 1.0.0-rc5 (epic #1831); the target is pending owner confirmation.**
   Evidence and claim verification: [component readiness](standalone-maven-repository-readiness.md).
