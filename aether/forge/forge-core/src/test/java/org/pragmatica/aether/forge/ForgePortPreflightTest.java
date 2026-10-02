@@ -36,7 +36,7 @@ class ForgePortPreflightTest {
     /// base so concurrent modules in a parallel reactor do not converge on one range (#939).
     private static int freeBase() {
         for (var attempt = 0; attempt < 200; attempt++) {
-            var candidate = 20_000 + RANDOM.nextInt(40_000);
+            var candidate = 20_000 + RANDOM.nextInt(11_900); // below the Linux ephemeral floor (32768), above the fixed-port blocks
 
             if (rangeIsBindable(candidate)) {
                 return candidate;

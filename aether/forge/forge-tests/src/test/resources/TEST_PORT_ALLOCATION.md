@@ -48,8 +48,17 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | EmberInstanceTagRoundTripTest | 22350     | 22450          | 0          | 3 nodes (app-http 22550) — registered late |
 | MultiSourceCommunitySmokeTest | 22650     | 22750          | 0          | 5 core nodes initially (app-http 22850) — registered late |
 | EmberSameIdentityRelaunchTest (aether/ember) | 23000-23300 scan | base+40 | 5 | 3 nodes + relaunch, app-http base+80; scans 100-port blocks from 23000 to 23300 for a free one (#1528/#1558 — below the 32768 ephemeral floor). Moved off 22000-23800, which overlapped the four rows above and the next one |
-| EmberGenesisRecoveryTest (aether/ember) | 2000-2800 scan | base+40 | 0 | 6 nodes (3 cores + held-back relaunch slots; app-http base+80; probed through EmberTestPorts, 200-port step; moved off 44100-44900, which is inside the Linux ephemeral range 32768-60999) |
-| EmberWorkerDeadSeedTest (aether/ember) | 3000-4800 scan | base+40 | 0 | 6 nodes (3 cores + worker slots; app-http base+80; dead seed at base+30; probed through EmberTestPorts, 200-port step; moved off 40100-41900, which is inside the Linux ephemeral range 32768-60999) |
+| Ember shared probed pool (aether/ember: EmberAmnesiacRestartTest, EmberColdStartSingleDialerTest, EmberHeldPartitionPublishTest, EmberIncarnationWiringTest, EmberPartitionedCoreSelfFenceTest, EmberKvBackupRestoreTest, EmberGenesisRecoveryTest, EmberWorkerDeadSeedTest, EmberClusterForeignAdmissionTest, EmberClusterPartialStartFailureTest, EmberClusterSwimStartFailureTest, EmberClusterHeldBackSwimStartFailureTest, EmberPacedBurstTest, EmberTestPortsTest) | 1030-1830 scan | base+40 | 0 | 8 nodes (largest block is 8 slots; mgmt base+40, app-http base+80, dead seed base+30; `EmberTestPorts.POOL_*`, step 100: candidates are alternatives that never coexist and the probe binds every port, so overlapping candidates exclude each other; the module runs these tests one after another; replaces ranges between 33700 and 52900, all inside the Linux ephemeral range 32768-60999) |
+| AutoRollbackOnAllInstancesFailedTest (forge-tests) | 2000-2800 scan | base+40 | 0 | 6 nodes (app-http base+80; probed, step 100; moved off 42100-43900, which is inside the Linux ephemeral range 32768-60999) |
+| HierarchyAuthorityAcceptanceTest (forge-tests) | 3000 | 3100 | 0 | 12 nodes (3 core nodes plus worker slots; mgmt base+100, app-http 3200; moved off 35100, inside the Linux ephemeral range 32768-60999) |
+| HierarchicalDecisionReplayTest (forge-tests) | 3220 | 3320 | 0 | 12 nodes (3 core nodes plus worker slots; mgmt base+100, app-http 3420; moved off 35400, inside the Linux ephemeral range 32768-60999) |
+| HierarchicalLeaderObservationGraceTest (forge-tests) | 3440 | 3540 | 0 | 12 nodes (3 core nodes plus worker slots; mgmt base+100, app-http 3640; moved off 35400, shared with the row above, inside the Linux ephemeral range 32768-60999) |
+| HierarchicalWorkerRuntimeReplayTest (forge-tests) | 3660 | 3760 | 0 | 12 nodes (3 core nodes plus worker slots; mgmt base+100, app-http 3860; moved off 35700, inside the Linux ephemeral range 32768-60999) |
+| HierarchicalGovernorConcurrentNominationTest (forge-tests) | 3880 | 3980 | 0 | 12 nodes (3 core nodes plus worker slots; mgmt base+100, app-http 4080; moved off 36300, inside the Linux ephemeral range 32768-60999) |
+| HierarchicalWorkerReconnectTest (forge-tests) | 4100 | 4200 | 0 | 12 nodes (3 core nodes plus worker slots; mgmt base+100, app-http 4300; moved off 36600, inside the Linux ephemeral range 32768-60999) |
+| HierarchicalCapacityFallbackTest (forge-tests) | 4320 | 4420 | 0 | 12 nodes (3 core nodes plus worker slots; mgmt base+100, app-http 4520; moved off 36900, inside the Linux ephemeral range 32768-60999) |
+| StreamDefaultRfOwnerReplacementTest (forge-tests) | 4540 | 4640 | 0 | 7 nodes (app-http 4740; moved off 38400, inside the Linux ephemeral range 32768-60999) |
+| StreamAckedRecordsOwnerKillTest (forge-tests) | 4760 | 4860 | 0 | 7 nodes (app-http 4960; moved off 38700, inside the Linux ephemeral range 32768-60999) |
 | BlueprintSecurityOverrideClusterWideTest | 23500 | 23600    | 0          | 5 nodes (app-http 23700; 5 since #1495's floor, so three instances leave two non-hosting nodes for #1659) — registered late |
 | LeaderTermFailoverTest        | 24000     | 24100          | 0          | 5 nodes (single method, app-http 24200; #1527/#1559 leader term strictly increases across two leader kills, and the re-election pre-latch fires). Moved off 37400, which is inside the Linux ephemeral range 32768-60999 |
 | CommunityObservabilityForgeTest | 12800 | 12950 | 0 | 6 nodes (3 cores + 3 workers, single method, app-http 13300, SWIM UDP 12900-12905; #1652 community route and lifecycle events) |
@@ -106,7 +115,7 @@ more test classes bind fixed ports without a row here: in `forge-tests`, for exa
 `DurableEntityForgeTest` (19000, which it shares with `DurableTopicDeliveryForgeTest`),
 `PostRestartSlowRejoinDeficitFillProbeTest` (19500), `SurvivorLivenessAfterGracefulKillTest` (24500),
 `TerminatedWorkerGhostTest` (24800), `ScheduledSingleFireHostingTest` (25500), the `Hierarchical*` classes
-(28400-37100), `DurableProjectionRebuildForgeTest` (31600) and `ApiKeyFullRestartForgeTest` (31900). The
+(28400-32600 here; the ones above 32768 moved to the rows above), `DurableProjectionRebuildForgeTest` (31600) and `ApiKeyFullRestartForgeTest` (31900). The
 `aether/ember` tests also scan 25700-27500, 27700-29500 and 29700-31500. Before choosing a range, search
 every five-digit literal under `src/test` rather than trusting this table, and prefer bases below 32768,
 the start of the Linux ephemeral range.

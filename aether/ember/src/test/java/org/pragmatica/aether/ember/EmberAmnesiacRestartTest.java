@@ -48,10 +48,10 @@ class EmberAmnesiacRestartTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE + 2;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Disjoint from every other Ember/Forge test's port range (highest below is 37900, next above 45100).
-    private static final int FIRST_CANDIDATE_BASE = 40100;
-    private static final int LAST_CANDIDATE_BASE = 41900;
-    private static final int CANDIDATE_STEP = 200;
+    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
+    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
+    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
+    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
     private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
                                                                                 LAST_CANDIDATE_BASE,

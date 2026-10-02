@@ -65,9 +65,9 @@ class EmberKvBackupRestoreTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    private static final int FIRST_CANDIDATE_BASE = 33700;
-    private static final int LAST_CANDIDATE_BASE = 35500;
-    private static final int CANDIDATE_STEP = 200;
+    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
+    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
+    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan APPLY_BOUND = TimeSpan.timeSpan(15).seconds();

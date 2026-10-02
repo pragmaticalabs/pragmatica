@@ -43,6 +43,15 @@ final class EmberTestPorts {
     /// `port + CoreSwimHealthDetector.SWIM_PORT_OFFSET`), so the probe cannot drift from the bind (#1698's CI flake).
     static final int SWIM_PORT_OFFSET = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     static final int START_ATTEMPTS = 5;
+    /// The one probed pool every Ember test that scans for a free block draws from. Below the Linux ephemeral floor
+    /// (32768): a base inside 32768-60999 can be taken by any concurrent module's outbound connection between probe and
+    /// bind. Tests in this module run one after another, so they share it; a block still held or in TIME_WAIT from the
+    /// test before is skipped by the probe. The step is half a block: candidates are alternatives that never coexist, and
+    /// the probe binds every port of a candidate, so a running cluster's ports rule out the overlapping candidates.
+    /// Registered as one scan row in TEST_PORT_ALLOCATION.md.
+    static final int POOL_FIRST = 1030;
+    static final int POOL_LAST = 1830;
+    static final int POOL_STEP = 100;
 
     /// `reservedOffsets`: further ports (TCP and UDP) the test uses at `base + offset`, e.g. a dead seed's address.
     record Block(int first,

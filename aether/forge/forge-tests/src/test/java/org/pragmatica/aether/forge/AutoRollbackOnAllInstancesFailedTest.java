@@ -73,10 +73,12 @@ class AutoRollbackOnAllInstancesFailedTest {
     private static final int SLOTS = 2 * NODES;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_OFFSET = 80;
-    /// Disjoint from every other Ember/Forge range surveyed on 2026-09-28 (highest in use: 38400, 45100).
-    private static final int FIRST_CANDIDATE_BASE = 42100;
-    private static final int LAST_CANDIDATE_BASE = 43900;
-    private static final int CANDIDATE_STEP = 200;
+    /// Below the Linux ephemeral floor (32768), where a concurrent module's outbound connection cannot take a port
+    /// between the probe and the bind. Step 100: candidates are alternatives that never coexist. Registered in
+    /// TEST_PORT_ALLOCATION.md ("2000-2800 scan").
+    private static final int FIRST_CANDIDATE_BASE = 2000;
+    private static final int LAST_CANDIDATE_BASE = 2800;
+    private static final int CANDIDATE_STEP = 100;
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan REQUEST = TimeSpan.timeSpan(10).seconds();
     private static final int MAX_PROBE_ROUNDS = 120;

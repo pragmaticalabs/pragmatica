@@ -34,11 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// makes the failure REACH the node (reverting it: the release settles, but the node's management
 /// port is still bound).
 class EmberClusterHeldBackSwimStartFailureTest {
-    /// Above every computed candidate range in this module (the highest, `EmberClusterCurrentLeaderTest`,
-    /// ends at base 31500 + 102) and the 31700 block of `EmberClusterSwimStartFailureTest`.
+    /// The shared Ember pool (EmberTestPorts.POOL_*), below the Linux ephemeral floor.
     /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with
     /// another process would read as the behaviour under test. The port it occupies on purpose it binds itself.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(51100, 51900, 200, 3, 40, 80);
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
     private static final String NODE_PREFIX = "heldswim";
     private static final String HELD_BACK_ID = NODE_PREFIX + "-3";
     private static final int HELD_BACK_SLOT = 2;

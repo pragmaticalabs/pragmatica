@@ -39,11 +39,10 @@ class EmberIncarnationWiringTest {
     private static final int SLOTS = 2 * CORES;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_OFFSET = 80;
-    /// Disjoint from every other Ember/Forge range surveyed on 2026-09-28 (38100–39900, 40100–41900,
-    /// 42100–43900 and 44100–44900 are taken; 45100 is fixed).
-    private static final int FIRST_CANDIDATE_BASE = 46100;
-    private static final int LAST_CANDIDATE_BASE = 46900;
-    private static final int CANDIDATE_STEP = 200;
+    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
+    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
+    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
+    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long READY_BOUND_MS = 120_000L;

@@ -48,12 +48,10 @@ class EmberGenesisRecoveryTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Disjoint from every other Ember/Forge test's port range, and below the Linux ephemeral floor (32768): a base
-    /// inside 32768-60999 can be taken by any concurrent module's outbound connection between probe and bind.
-    /// Registered in TEST_PORT_ALLOCATION.md ("2000-2800 scan").
-    private static final int FIRST_CANDIDATE_BASE = 2000;
-    private static final int LAST_CANDIDATE_BASE = 2800;
-    private static final int CANDIDATE_STEP = 200;
+    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
+    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
+    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
+    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
     private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
                                                                                 LAST_CANDIDATE_BASE,

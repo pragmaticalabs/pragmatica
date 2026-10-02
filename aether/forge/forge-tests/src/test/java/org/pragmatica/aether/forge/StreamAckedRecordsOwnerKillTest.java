@@ -73,9 +73,9 @@ import org.pragmatica.aether.ember.EmberCluster;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class StreamAckedRecordsOwnerKillTest {
     private static final System.Logger LOG = System.getLogger(StreamAckedRecordsOwnerKillTest.class.getName());
-    private static final int BASE_PORT = 38700;
-    private static final int BASE_MGMT_PORT = 38800;
-    private static final int BASE_APP_HTTP_PORT = 38900;
+    private static final int BASE_PORT = 4760;
+    private static final int BASE_MGMT_PORT = 4860;
+    private static final int BASE_APP_HTTP_PORT = 4960;
     private static final int NODES = 5;
     private static final int INSTANCES = 5;
     private static final int N_EVENTS = 20;

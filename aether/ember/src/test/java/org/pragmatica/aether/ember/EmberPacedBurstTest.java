@@ -39,7 +39,7 @@ class EmberPacedBurstTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(52100, 52900, 200, SLOTS, MGMT_OFFSET, APP_HTTP_OFFSET);
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, SLOTS, MGMT_OFFSET, APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);

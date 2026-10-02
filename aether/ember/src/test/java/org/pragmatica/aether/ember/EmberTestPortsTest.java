@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// to a fresh block. The collision is made deterministic by taking a port of the probed block inside the factory,
 /// after the probe and before `start()`.
 class EmberTestPortsTest {
-    private static final EmberTestPorts.Block BLOCK = new EmberTestPorts.Block(46100, 46900, 200, 3, 40, 80);
+    private static final EmberTestPorts.Block BLOCK = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
 
@@ -130,9 +130,9 @@ class EmberTestPortsTest {
                                                                _ -> BIND_COLLISION.<Unit>promise(),
                                                                _ -> STOP_REFUSED.<Unit>promise(),
                                                                START_BOUND,
-                                                               attempted -> 46100 + 200 * attempted.size()))
+                                                               attempted -> BLOCK.first() + BLOCK.step() * attempted.size()))
             .hasMessageContaining("its cleanup failed too: " + STOP_REFUSED.message());
-        assertThat(built).as("no second cluster was started beside the unstopped one").containsExactly(46100);
+        assertThat(built).as("no second cluster was started beside the unstopped one").containsExactly(BLOCK.first());
     }
 
     /// Control for the test above: the same injected bind collision with a clean stop IS retried, every attempt.
@@ -147,7 +147,7 @@ class EmberTestPortsTest {
                                                                _ -> BIND_COLLISION.<Unit>promise(),
                                                                _ -> Promise.success(Unit.unit()),
                                                                START_BOUND,
-                                                               attempted -> 46100 + 200 * attempted.size()))
+                                                               attempted -> BLOCK.first() + BLOCK.step() * attempted.size()))
             .hasMessageContaining("every one of " + EmberTestPorts.START_ATTEMPTS);
         assertThat(built).hasSize(EmberTestPorts.START_ATTEMPTS);
     }

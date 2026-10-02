@@ -35,12 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// too, and that is exactly the hang. Reverting the join turns this red with the `START_BOUND`
 /// `Timeout` cause instead of `Address already in use`.
 class EmberClusterSwimStartFailureTest {
-    /// Above every computed candidate range in this module (`EmberClusterObservedNodeStateTest` 25700–27500,
-    /// `EmberBootstrapAdminKeyAuthTest` 27700–29500, `EmberClusterCurrentLeaderTest` 29700–31500, each
-    /// reaching base + 102) and every literal block, so a parallel fork's prober never lands on these.
+    /// The shared Ember pool (EmberTestPorts.POOL_*), below the Linux ephemeral floor.
     /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with
     /// another process would read as the behaviour under test. The port it occupies on purpose it binds itself.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(50100, 50900, 200, 3, 40, 80);
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
     private static final String NODE_PREFIX = "swimfail";
     /// Well above the measured green (node 1's stop plus the abort's bounded stops of the other two),
     /// well below the 90 s the reviewer's probe hung for: a `Timeout` here IS the hang.
