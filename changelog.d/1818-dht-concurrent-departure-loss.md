@@ -26,6 +26,21 @@
   - A wrong or stale entry in the set can only add targets, never remove a needed one.
   - If drains are staggered across pings, the later drainer relays what the earlier one handed it.
 
+  If the exclusion leaves fewer than RF nodes, a stale extra entry would remove the only newcomer. The push then falls
+  back to every remaining node.
   [verified: `DHTChurnSurvivalTest.concurrentDeparture_*` and `staggeredDeparture_*`, `DhtDeparturePushTest`,
-  `DrainCommandPlumbingTest$Receive`]
+  `DrainCommandPlumbingTest$Receive`, `DHTDepartureStaleDrainSetTest`]
   [unverified: no multi-node or cloud run.]
+- **Anti-entropy applied any migration batch it received.** It checked neither the sender, the correlation id, nor the
+  partition. A batch is now applied only when it is authentic:
+  - a pull answer must match an outstanding pull: the same correlation id, from the node asked, and only entries of the
+    partition asked for;
+  - a departure push must come from a node the leader's drain set names, or that membership saw enter DEPARTING; any
+    other push is nacked;
+  - a survivor-rebalance push must come from a co-replica of every entry's partition.
+
+  Everything else is dropped with a WARN and counted.
+  [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTMigrationResponseAuthenticityTest.java`,
+  `DhtDeparturePushTest.departingSenders_*`]
+  [unverified: a node that self-drains on quorum loss is in neither set, so its pushes are refused. It cannot reach a
+  quorum to push to anyway.]
