@@ -46,12 +46,14 @@
   sources hold, logged at WARN. Its absent answers are then best-effort.
   [unverified premise: phantom static cores. The boot ring is seeded from the static configured-core list. If that
   list names cores that left before this node booted, they sit in its ring as phantoms, counted in neither J nor the
-  removals, and they push the true holders later in the walk. v1820's sim: 1 phantom gives 0 misses. 2 phantoms (run
-  7's shape) miss every old holder in 848 of 15,521 partitions with no joins (about 5%), 436 with 1 join and 47 with
-  3 joins. Interim finding (i-phantom, in progress): nothing reconciles the ring with committed membership. SWIM
-  prunes a phantom only late, at least 75 s after boot and 3 min 40 s in run 7, and never if the node stays in
-  COLD_BOOT. A catch-up that completes inside that window can serve those partitions empty. The phantoms skew this
-  node's ownership as well, so this is a ring-truth issue that predates this change.]
+  removals, and they push the true holders later in the walk. v1820's sim: 1 phantom gives 0 misses; that is the
+  run-7 row, where one phantom appeared in 1 of 4 boots. 2 phantoms, beyond anything run 7 showed, miss every old
+  holder in 848 of 15,521 partitions with no joins (about 5%), 436 with 1 join and 47 with 3 joins. Interim finding
+  (i-phantom): nothing reconciles the ring with committed membership. SWIM prunes a phantom only late, at least 75 s
+  after boot and 3 min 40 s in run 7. A catch-up that completes inside that window can serve those partitions
+  empty. The phantoms skew this node's ownership as well, so this is a ring-truth issue that predates this change.
+  The fix is #1830.]
+  [unverified: code-only — a phantom is never pruned if the node stays in COLD_BOOT.]
   [unverified/known: a deleted key can resurrect from a copy a non-owner kept. Non-owners never drop copies, so a
   catching-up replica pulling from one, or the #428 fallback read probe (which already does this today), can bring
   back a key removed on its owners. This is durable-delete scope: #1777 track 3, rc5.]
