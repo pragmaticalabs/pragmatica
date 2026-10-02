@@ -129,8 +129,7 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                     long epochTerm,
                                                     long epochCounter,
                                                     AtomicBoolean removed) {
-        if (existing.version() != version || existing.epochIncarnation() != epochIncarnation
-            || existing.epochTerm() != epochTerm || existing.epochCounter() != epochCounter) {
+        if (existing.version() != version || existing.epochIncarnation() != epochIncarnation || existing.epochTerm() != epochTerm || existing.epochCounter() != epochCounter) {
             return existing;
         }
 

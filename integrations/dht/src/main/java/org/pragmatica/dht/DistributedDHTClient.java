@@ -182,7 +182,7 @@ public final class DistributedDHTClient implements DHTClient {
         var collector = QuorumCollector.<Unit> quorumCollector(quorum, targets.size(), promise);
         var localPut = targets.contains(node.nodeId())
                        ? Option.some(handleLocalPut(key, value, stamp, collector))
-                       : Option.<Promise<Boolean>>none();
+                       : Option.<Promise<Boolean>> none();
 
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
@@ -693,9 +693,17 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     /// The local slot of a put. Returned so a rollback can wait for it to settle (#1818).
-    private Promise<Boolean> handleLocalPut(byte[] key, byte[] value, WriteStamp stamp, QuorumCollector<Unit> collector) {
+    private Promise<Boolean> handleLocalPut(byte[] key,
+                                            byte[] value,
+                                            WriteStamp stamp,
+                                            QuorumCollector<Unit> collector) {
         return node.storage()
-                   .putVersioned(key, value, stamp.version(), stamp.epochIncarnation(), stamp.epochTerm(), stamp.epochCounter())
+                   .putVersioned(key,
+                                 value,
+                                 stamp.version(),
+                                 stamp.epochIncarnation(),
+                                 stamp.epochTerm(),
+                                 stamp.epochCounter())
                    .onSuccess(_ -> collector.onSuccess(unit()))
                    .onFailure(collector::onFailure);
     }
@@ -723,7 +731,11 @@ public final class DistributedDHTClient implements DHTClient {
                         collector);
     }
 
-    private void sendRemotePut(NodeId target, byte[] key, byte[] value, WriteStamp stamp, QuorumCollector<Unit> collector) {
+    private void sendRemotePut(NodeId target,
+                               byte[] key,
+                               byte[] value,
+                               WriteStamp stamp,
+                               QuorumCollector<Unit> collector) {
         var correlationId = IdGenerator.generate();
 
         pendingOps.put(correlationId, new PendingOperation<>(collector));

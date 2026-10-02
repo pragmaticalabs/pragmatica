@@ -94,8 +94,10 @@ public sealed interface DHTError extends Cause {
     record WriteIndeterminate(int required, int achieved, int fenced) implements DHTError, Cause.Transient {
         @Override
         public String message() {
-            return "Write outcome indeterminate: required " + required + " acks, got " + achieved + ", " + fenced
-                   + " refused by owner-epoch fences; it may have been applied";
+            return "Write outcome indeterminate: required " + required
+                 + " acks, got " + achieved
+                 + ", " + fenced
+                 + " refused by owner-epoch fences; it may have been applied";
         }
     }
 

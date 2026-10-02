@@ -103,6 +103,22 @@ class DHTMigrationResponseAuthenticityTest {
         assertThat(cluster.rejected()).isEqualTo(1);
     }
 
+    /// A node that drains ITSELF on quorum loss is in neither the leader's drain set nor this node's DEPARTING
+    /// set, and it halts with its in-memory store. Its push is accepted on authority instead: it is a current
+    /// replica, in this node's ring, of every entry's partition — so a copy it holds last is not lost.
+    @Test
+    void departurePush_fromASelfDrainingCurrentReplica_isStoredAndAcked() {
+        var cluster = new Cluster();
+        var shape = cluster.shape("self-drain");
+
+        cluster.receiver().antiEntropy()
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", shape.holder(), List.of(shape.entry()), true));
+
+        assertThat(cluster.receiverHolds(shape.key())).isTrue();
+        assertThat(cluster.ackFor("push")).isTrue();
+        assertThat(cluster.rejected()).isZero();
+    }
+
     @Test
     void departurePush_fromADepartingNode_isStoredAndAcked() {
         var cluster = new Cluster();

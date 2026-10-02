@@ -345,8 +345,16 @@ public final class DHTAntiEntropy {
         }
     }
 
+    /// A departure push is accepted from a node that is departing — named by the leader's drain set or seen
+    /// entering DEPARTING — or from a CURRENT replica, in this node's ring, of every entry's partition. The
+    /// second covers a node that drains itself on quorum loss: no signal reaches its peers in time, and it
+    /// halts with its in-memory store, so a copy it holds last would otherwise be lost. A current replica
+    /// already holds those partitions legitimately, so its push carries no authority it lacks.
     private void acceptDeparturePush(DHTMessage.MigrationDataResponse response) {
-        if (departingSenders.test(response.sender())) {
+        if (departingSenders.test(response.sender()) || response.entries()
+                                                                .stream()
+                                                                .allMatch(entry -> replicaOfEntry(response.sender(),
+                                                                                                  entry))) {
             applyAndAcknowledge(response);
 
             return;
@@ -366,10 +374,16 @@ public final class DHTAntiEntropy {
 
     /// Whether both `sender` and this node replicate the entry's partition in this node's ring.
     private boolean coReplicaOfEntry(NodeId sender, DHTMessage.KeyValue entry) {
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
-        var replicas = node.ring().nodesFor(entry.key(), replicationFactor);
+        return replicaOfEntry(sender, entry) && replicaOfEntry(node.nodeId(), entry);
+    }
 
-        return replicas.contains(sender) && replicas.contains(node.nodeId());
+    private boolean replicaOfEntry(NodeId candidate, DHTMessage.KeyValue entry) {
+        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+
+        return node.ring()
+                   .nodesFor(entry.key(),
+                             replicationFactor)
+                   .contains(candidate);
     }
 
     private boolean allInPartition(List<DHTMessage.KeyValue> entries, int partitionIndex) {
