@@ -234,6 +234,23 @@ class DHTCatchUpGateTest {
             .isEqualTo(Result.success(Option.<byte[]>none()));
     }
 
+    /// T14: a ring change marks every partition this node GAINED catching up, recording the partition's
+    /// previous replica set as catch-up sources — here a removal, applied straight to one survivor's ring.
+    @Test
+    void ringChange_marksGainedPartitionsCatchingUp_withThePreviousReplicaSetAsSources() {
+        var cluster = Cluster.of(5);
+        var removed = new NodeId("node-2");
+        var gained = cluster.keyGainedOnRemoval(removed, "t14");
+        var partition = cluster.partitionOf(gained.key());
+        var before = cluster.replicasOf(gained.key());
+        var newcomer = cluster.member(gained.newcomer()).node();
+
+        newcomer.changeRing(ring -> ring.removeNode(removed));
+
+        assertThat(newcomer.readiness(partition)).isEqualTo(Readiness.CATCHING_UP);
+        assertThat(newcomer.previousHolders(partition)).containsExactlyInAnyOrderElementsOf(before);
+    }
+
     /// T2b: when quorum becomes unreachable because replicas refused as catching up, the read fails with
     /// the transient [DHTError.NotCaughtUp] — never "absent", and distinguishable from an unreachable quorum.
     @Test
