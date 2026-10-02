@@ -203,6 +203,15 @@ public final class ConfigLoader {
                   .or(defaultValue);
     }
 
+    /// A present but unparseable retention is NOT defaulted: it becomes [SliceConfig#INVALID_ARTIFACT_ARCHIVE_RETENTION],
+    /// which `ConfigValidator` reports, so a typo cannot silently run the store under a period nobody chose.
+    private static TimeSpan parseRetentionOrInvalid(String value) {
+        return org.pragmatica.lang.parse.TimeSpan.timeSpan(value)
+                                                 .option()
+                                                 .map(ts -> TimeSpan.fromDuration(ts.duration()))
+                                                 .or(SliceConfig.INVALID_ARTIFACT_ARCHIVE_RETENTION);
+    }
+
     private static TimeSpan parseTimeSpan(TomlDocument doc, String section, String key, TimeSpan defaultValue) {
         return doc.getString(section, key)
                   .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
@@ -332,10 +341,9 @@ public final class ConfigLoader {
 
     @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"})
     private static void populateSliceConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var retention = parseTimeSpan(doc,
-                                      "slice",
-                                      "artifact_archive_retention",
-                                      SliceConfig.DEFAULT_ARTIFACT_ARCHIVE_RETENTION);
+        var retention = doc.getString("slice", "artifact_archive_retention")
+                           .map(ConfigLoader::parseRetentionOrInvalid)
+                           .or(SliceConfig.DEFAULT_ARTIFACT_ARCHIVE_RETENTION);
 
         builder.sliceConfig(doc.getStringList("slice", "repositories")
                                .map(repos -> SliceConfig.sliceConfigFromNames(repos))

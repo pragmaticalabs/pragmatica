@@ -101,7 +101,7 @@ SliceActionConfig.sliceActionConfig(frameworkJarsPath);
 | `unloadingTimeout` | 2 minutes | Max time for slice unloading |
 | `startStopTimeout` | 5 seconds | Max time for start/stop |
 | `repositories` | Local repository | Artifact repositories |
-| `artifact_archive_retention` | `7d` | Minimum time a version must have been stored in the built-in artifact store before it may be archived (`aether artifacts archive`) |
+| `artifact_archive_retention` | `7d` | Minimum time a version must have been stored in the built-in artifact store before it may be archived (`aether artifacts archive`). Must be a positive duration; an unparseable or non-positive value fails config validation |
 | `frameworkJarsPath` | none (`Option.empty()`) | Custom framework JARs path |
 
 ## Controller Configuration

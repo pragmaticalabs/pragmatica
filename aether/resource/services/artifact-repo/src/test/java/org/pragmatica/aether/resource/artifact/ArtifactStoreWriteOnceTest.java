@@ -204,6 +204,22 @@ class ArtifactStoreWriteOnceTest {
         }
 
         @Test
+        void archive_honoursANonDefaultRetention() {
+            var oneHour = new ArtifactStoreImpl(dht, storage, ArchivePolicy.archivePolicy(timeSpan(1).hours()), now::get);
+            oneHour.deploy(v1, CONTENT).await().onFailureRun(Assertions::fail);
+            now.addAndGet(60L * 60 * 1000 - 1);
+
+            assertThat(failureOf(oneHour.archive(v1))).as("one millisecond short of the configured hour")
+                                                      .isInstanceOf(ArtifactStoreError.RetentionNotElapsed.class);
+
+            now.addAndGet(1);
+
+            oneHour.archive(v1).await().onFailureRun(Assertions::fail);
+
+            assertThat(failureOf(oneHour.resolve(v1))).isInstanceOf(ArtifactStoreError.Archived.class);
+        }
+
+        @Test
         void archive_failsForAVersionNeverWritten() {
             assertThat(failureOf(store.archive(v1))).isInstanceOf(ArtifactStoreError.VersionNotFound.class);
             assertThat(dht.puts).isEmpty();

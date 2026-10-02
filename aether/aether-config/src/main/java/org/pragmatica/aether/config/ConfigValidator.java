@@ -74,6 +74,7 @@ public final class ConfigValidator {
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
         streamingErrors(config.streaming(), errors);
+        archiveRetentionErrors(config.slice(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
         }
@@ -121,6 +122,15 @@ public final class ConfigValidator {
     /// negative would stall every REPLICA materialization permanently — the exact starvation the bound
     /// exists to pace — so it is rejected here rather than silently floored, and joins the collected report
     /// with every other config problem.
+    /// `[slice] artifact_archive_retention` is the minimum age before a version may be archived (#1778). Zero or
+    /// negative would let a version be archived the moment it is stored, and an unparseable value is carried here
+    /// as a negative sentinel, so both are reported rather than defaulted.
+    private static void archiveRetentionErrors(SliceConfig slice, List<String> errors) {
+        if (slice.artifactArchiveRetention().millis() <= 0) {
+            errors.add("slice.artifact_archive_retention must be a positive duration such as \"7d\" or \"36h\"");
+        }
+    }
+
     private static void streamingErrors(StreamingConfig streaming, List<String> errors) {
         if (streaming.reshuffleConcurrency() < 1) {
             errors.add("streaming.reshuffle_concurrency must be >= 1 (0 would stall every replica backfill). Got: " + streaming.reshuffleConcurrency());

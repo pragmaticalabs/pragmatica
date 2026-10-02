@@ -621,6 +621,25 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void validate_rejectsAnUnparseableOrNonPositiveArtifactArchiveRetention() {
+        for (var value : new String[]{"soon", "0s"}) {
+            var toml = """
+                [cluster]
+                environment = "docker"
+                nodes = 3
+
+                [slice]
+                artifact_archive_retention = "%s"
+                """.formatted(value);
+
+            ConfigLoader.loadFromString(toml)
+                .flatMap(ConfigValidator::validate)
+                .onSuccessRun(Assertions::fail)
+                .onFailure(cause -> assertThat(cause.message()).as(value).contains("artifact_archive_retention"));
+        }
+    }
+
+    @Test
     void loadFromString_parsesCoreMaxFromToml() {
         var toml = """
             [cluster]

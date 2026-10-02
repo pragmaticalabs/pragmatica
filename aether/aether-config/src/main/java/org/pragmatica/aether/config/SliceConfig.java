@@ -23,6 +23,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
 public record SliceConfig(List<RepositoryType> repositories, TimeSpan artifactArchiveRetention) {
     public static final TimeSpan DEFAULT_ARTIFACT_ARCHIVE_RETENTION = timeSpan(7).days();
+    /// Stands for a configured retention that did not parse; never a valid period, rejected by `ConfigValidator`.
+    public static final TimeSpan INVALID_ARTIFACT_ARCHIVE_RETENTION = timeSpan(-1).millis();
     private static final SliceConfig DEFAULT = sliceConfig(List.of(new RepositoryType.Local())).unwrap();
 
     public static Result<SliceConfig> sliceConfig(List<RepositoryType> repositories) {
