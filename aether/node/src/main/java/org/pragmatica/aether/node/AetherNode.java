@@ -3088,12 +3088,12 @@ public interface AetherNode extends ManageableNode {
         clusterTopologyManager.setGenesisVoters(() -> clusterNode.genesisVoters()
                                                                  .map(VoterConfiguration::members)
                                                                  .or(List.of()));
-        clusterTopologyManager.setRetirementAllowed(node -> canRetireNode(clusterNode,
-                                                                          membershipFsmRef::get,
-                                                                          deploymentMap,
-                                                                          readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
-                                                                                              membershipFsmRef::get),
-                                                                          node));
+        clusterTopologyManager.setRetirementRefusal(node -> retirementRefusal(clusterNode,
+                                                                              membershipFsmRef::get,
+                                                                              deploymentMap,
+                                                                              readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                  membershipFsmRef::get),
+                                                                              node));
         // #1526: configured cores are bootstrap identities and keep core admission intent after a fresh
         // genesis that did not include them (a cold restart forms genesis from the cores present), so a
         // configured core that comes back late is admitted and voted in through a Rabia §4 add.
@@ -7706,23 +7706,74 @@ public interface AetherNode extends ManageableNode {
                && (history.contains(node) || ready.containsAll(installed));
     }
 
-    private static boolean canRetireNode(RabiaNode<KVCommand<AetherKey>> cluster,
-                                         Supplier<MembershipFsm> membership,
-                                         DeploymentMap deploymentMap,
-                                         Set<NodeId> ready,
-                                         NodeId node) {
-        return Option.option(membership.get())
-                     .flatMap(fsm -> fsm.memberDescriptor(node))
-                     .filter(descriptor -> descriptor.isCore()
-                                           ? cluster.retirementSafeVoters()
-                                                    .filter(voters -> retirementEligibleCore(node,
-                                                                                             Set.copyOf(voters.members()),
-                                                                                             cluster.verifiedVoterHistoryIds(),
-                                                                                             ready))
-                                                    .isPresent() && deploymentMap.byNode(node)
-                                                                                 .isEmpty()
-                                           : "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
-                     .isPresent();
+    /// #1804: `none()` when `node` may be retired now, else the reason it may not — the reaper logs that reason.
+    private static Option<String> retirementRefusal(RabiaNode<KVCommand<AetherKey>> cluster,
+                                                    Supplier<MembershipFsm> membership,
+                                                    DeploymentMap deploymentMap,
+                                                    Set<NodeId> ready,
+                                                    NodeId node) {
+        return Option.option(membership.get()).fold(() -> Option.some("membership view not available"),
+                                                    fsm -> retirementRefusal(fsm.memberDescriptor(node),
+                                                                             cluster.retirementSafeVoters()
+                                                                                    .map(voters -> Set.copyOf(voters.members())),
+                                                                             cluster.verifiedVoterHistoryIds(),
+                                                                             ready,
+                                                                             deploymentMap.byNode(node).isEmpty(),
+                                                                             node));
+    }
+
+    /// A tracked worker or spot is retirable. Everything else is judged by the core rule: a tracked core, and a node
+    /// the membership does not track at all — a dead boot a new leader never saw join, which its activation replay
+    /// selects precisely BECAUSE it is untracked, so requiring a descriptor made that sweep unable to terminate
+    /// anything it selected. An absent descriptor is not a refusal; being a current voter is.
+    static Option<String> retirementRefusal(Option<MemberDescriptor> descriptor,
+                                            Option<Set<NodeId>> installedVoters,
+                                            Set<NodeId> history,
+                                            Set<NodeId> ready,
+                                            boolean deploymentsEmpty,
+                                            NodeId node) {
+        return descriptor.filter(known -> !known.isCore())
+                         .fold(() -> coreRetirementRefusal(installedVoters, history, ready, deploymentsEmpty, node),
+                               known -> workerRetirementRefusal(known.role()));
+    }
+
+    private static Option<String> workerRetirementRefusal(String role) {
+        return "worker".equalsIgnoreCase(role) || "spot".equalsIgnoreCase(role)
+               ? Option.none()
+               : Option.some("role '" + role + "' is not retirable");
+    }
+
+    private static Option<String> coreRetirementRefusal(Option<Set<NodeId>> installedVoters,
+                                                        Set<NodeId> history,
+                                                        Set<NodeId> ready,
+                                                        boolean deploymentsEmpty,
+                                                        NodeId node) {
+        return installedVoters.fold(() -> Option.some("no certified voter electorate"),
+                                    installed -> coreRetirementRefusal(installed, history, ready, deploymentsEmpty, node));
+    }
+
+    private static Option<String> coreRetirementRefusal(Set<NodeId> installed,
+                                                        Set<NodeId> history,
+                                                        Set<NodeId> ready,
+                                                        boolean deploymentsEmpty,
+                                                        NodeId node) {
+        if (!retirementEligibleCore(node, installed, history, ready)) {
+            return Option.some(ineligibleCoreReason(installed, ready, node));
+        }
+
+        return deploymentsEmpty
+               ? Option.none()
+               : Option.some("still hosts deployments");
+    }
+
+    private static String ineligibleCoreReason(Set<NodeId> installed, Set<NodeId> ready, NodeId node) {
+        if (installed.isEmpty()) {
+            return "installed voter set is empty";
+        }
+
+        return installed.contains(node)
+               ? "still an installed voter"
+               : "never a verified voter and the installed voter roster is not fully ready";
     }
 
     private static Option<AetherValue.CommunityPlacementOperationValue> selfPlacementOperation(KVStore<AetherKey, AetherValue> store,
