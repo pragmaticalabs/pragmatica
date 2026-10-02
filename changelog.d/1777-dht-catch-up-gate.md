@@ -9,8 +9,10 @@
   - A read that cannot reach an authoritative quorum fails with the transient `DHTError.NotCaughtUp`, never with
     "absent". `exists` is gated the same way.
   - Anti-entropy fills a catching-up partition from its co-replicas **and its surviving previous holders**. At boot the
-    previous holders are not known exactly, so they are walked on the live ring (see the boot-walk note below). Completion is proven by reading back the pulled
-    entries, and a refused pull is explicit and counted.
+    previous holders are not known exactly, so they are walked on the live ring (see the boot-walk note below).
+    Completion is proven by reading back the pulled entries, under the store's own ordering (owner epoch, then HLC
+    version), so a copy superseded by a newer-epoch entry counts as stored. A refused pull is explicit and counted.
+    [verified: `DHTCatchUpEpochReadbackTest`]
   - When no live source is serving (genesis, a whole-cluster cold restart, every holder gone), the partition completes
     on the union of what the sources hold. That is logged at WARN, because its absent answers are then best-effort.
   - A 1 s catch-up tick retries pending partitions. Dead sources are skipped.
