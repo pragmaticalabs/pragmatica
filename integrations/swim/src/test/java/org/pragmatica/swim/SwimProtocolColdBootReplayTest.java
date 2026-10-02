@@ -111,6 +111,39 @@ class SwimProtocolColdBootReplayTest {
         }
     }
 
+    /// The replay runs BEFORE the residency sweep in the same tick. Here the gate closes and the residency
+    /// expires before the protocol ever ticks, so the first tick sees both. Replay first: the phantom departs.
+    /// Sweep first: it is removed and tombstoned (the gate is closed), its deferral is cleared with its death
+    /// memory, and the verdict is lost again — the #1830 trap.
+    @Test
+    void replayPrecedesSweep_whenGateClosesAndResidencyExpiresInTheSameTick() throws InterruptedException {
+        var booting = new AtomicBoolean(true);
+        var observations = new RecordingObservationSink();
+        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                 new RecordingTransport(),
+                                                 new RecordingListener(),
+                                                 SELF_ID,
+                                                 SELF_ADDR,
+                                                 booting::get)
+                                   .unwrap();
+
+        protocol.addObservationListener(observations);
+        // Not started: no tick runs. A gossiped FAULTY for the phantom is suppressed by cold boot and stamped.
+        protocol.onMessage(GOSSIPER_ADDR,
+                           new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(PHANTOM, MemberState.FAULTY, 0, PHANTOM_ADDR))));
+        assertThat(hasUnknown(observations, PHANTOM)).isTrue();
+        Thread.sleep(PAST_RESIDENCY.toMillis());
+        booting.set(false);
+
+        protocol.start();
+        try {
+            await().atMost(WITHIN_RESIDENCY)
+                   .until(() -> !departures(observations, PHANTOM).isEmpty());
+        } finally {
+            protocol.stop();
+        }
+    }
+
     @Test
     void genuineSlowPeer_comesUpBeforeGateCloses_isNeverDeparted() {
         var booting = new AtomicBoolean(true);
