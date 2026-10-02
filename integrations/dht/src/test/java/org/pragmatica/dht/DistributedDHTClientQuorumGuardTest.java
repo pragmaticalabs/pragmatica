@@ -117,7 +117,7 @@ class DistributedDHTClientQuorumGuardTest {
 
         // Reply success for every captured remote put so the remote replica counts toward quorum.
         twoLive.capturedPutRequestIds.forEach(id ->
-            healthyClient.onPutResponse(new DHTMessage.PutResponse(id.requestId(), id.target(), true, false)));
+            healthyClient.onPutResponse(new DHTMessage.PutResponse(id.requestId(), id.target(), true, false, false)));
 
         promise.await()
                .onFailure(cause -> fail("Expected success: " + cause.message()));

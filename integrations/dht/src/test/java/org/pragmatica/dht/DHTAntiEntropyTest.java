@@ -120,7 +120,7 @@ class DHTAntiEntropyTest {
             injectPendingDigest(requestId, PEER, 0, localDigest);
 
             // Respond with matching digest
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest, DHTMessage.Readiness.SERVING));
 
             // No migration data request should be sent
             var migrationRequests = network.captured.stream()
@@ -137,7 +137,7 @@ class DHTAntiEntropyTest {
             injectPendingDigest(requestId, PEER, 5, localDigest);
 
             // Respond with different digest
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, remoteDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, remoteDigest, DHTMessage.Readiness.SERVING));
 
             // Should send migration data request
             var migrationRequests = network.captured.stream()
@@ -155,7 +155,7 @@ class DHTAntiEntropyTest {
             var digest = DHTNode.computeDigest(List.of());
 
             // Respond with unknown request ID
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("unknown-id", PEER, digest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("unknown-id", PEER, digest, DHTMessage.Readiness.SERVING));
 
             // No migration request sent
             assertThat(network.captured).isEmpty();
@@ -169,7 +169,7 @@ class DHTAntiEntropyTest {
 
             assertThat(antiEntropy.pendingDigestCount()).isEqualTo(1);
 
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest, DHTMessage.Readiness.SERVING));
 
             assertThat(antiEntropy.pendingDigestCount()).isEqualTo(0);
         }
@@ -200,7 +200,7 @@ class DHTAntiEntropyTest {
 
             injectPendingDigest("test-req-stale-ring", PEER, partitionIndex, localDigest);
 
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("test-req-stale-ring", PEER, remoteDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("test-req-stale-ring", PEER, remoteDigest, DHTMessage.Readiness.SERVING));
 
             assertThat(network.captured.stream().filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest).toList())
                 .as("a partition this node no longer replicates is not pulled")
@@ -237,13 +237,18 @@ class DHTAntiEntropyTest {
     @Nested
     class MigrationDataResponseHandling {
         @Test
-        void onMigrationDataResponse_appliesEntries_toLocalStorage() {
+        /// A survivor-rebalance push from a co-replica of the entries' partitions is applied. (Before #1818
+        /// round 3 this fixture fed a batch from a node outside the ring and expected it stored — the
+        /// injection hole, specified as behaviour; `DHTMigrationResponseAuthenticityTest` pins the refusal.)
+        void onMigrationDataResponse_fromACoReplica_appliesEntries_toLocalStorage() {
             var storage = memoryStorageEngine();
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             ring.addNode(LOCAL);
-            var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
+            ring.addNode(PEER);
+            var config = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
+            var node = dhtNode(LOCAL, storage, ring, config);
             var network = new CapturingNetwork();
-            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+            var antiEntropy = dhtAntiEntropy(node, network, config);
 
             var entries = List.of(
                 new DHTMessage.KeyValue(key("repaired-k1"), value("repaired-v1"), 100L, 0L, 0L, 0L),
@@ -251,7 +256,7 @@ class DHTAntiEntropyTest {
             );
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("mig-1", PEER, entries, false));
+                new DHTMessage.MigrationDataResponse("mig-1", PEER, entries, false, List.of()));
 
             // Verify entries were applied to local storage
             node.getLocal(key("repaired-k1"))
@@ -272,25 +277,25 @@ class DHTAntiEntropyTest {
             var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("mig-2", PEER, List.of(), false));
+                new DHTMessage.MigrationDataResponse("mig-2", PEER, List.of(), false, List.of()));
 
             // No storage changes
             assertThat(node.localSize()).isEqualTo(0);
         }
 
         @Test
-        void onMigrationDataResponse_ackRequested_appliesEntriesAndSendsAck() {
+        void onMigrationDataResponse_ackRequested_fromADepartingNode_appliesEntriesAndSendsAck() {
             var storage = memoryStorageEngine();
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
             var network = new CapturingNetwork();
-            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE, PEER::equals);
 
             var entries = List.of(new DHTMessage.KeyValue(key("pushed-k1"), value("pushed-v1"), 100L, 0L, 0L, 0L));
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("push-1", PEER, entries, true));
+                new DHTMessage.MigrationDataResponse("push-1", PEER, entries, true, List.of()));
 
             node.getLocal(key("pushed-k1"))
                 .await()
@@ -311,14 +316,16 @@ class DHTAntiEntropyTest {
             var storage = memoryStorageEngine();
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             ring.addNode(LOCAL);
-            var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
+            ring.addNode(PEER);
+            var config = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
+            var node = dhtNode(LOCAL, storage, ring, config);
             var network = new CapturingNetwork();
-            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+            var antiEntropy = dhtAntiEntropy(node, network, config);
 
             var entries = List.of(new DHTMessage.KeyValue(key("pull-k1"), value("pull-v1"), 100L, 0L, 0L, 0L));
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("pull-1", PEER, entries, false));
+                new DHTMessage.MigrationDataResponse("pull-1", PEER, entries, false, List.of()));
 
             var acks = network.captured.stream()
                                        .filter(m -> m.message() instanceof DHTMessage.MigrationDataAck)

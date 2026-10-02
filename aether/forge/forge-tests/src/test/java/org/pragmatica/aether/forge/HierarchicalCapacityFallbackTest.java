@@ -41,7 +41,7 @@ class HierarchicalCapacityFallbackTest {
     private final java.util.concurrent.atomic.AtomicReference<org.pragmatica.consensus.NodeId> refusedNode = new java.util.concurrent.atomic.AtomicReference<>();
 
     @BeforeAll void start() {
-        cluster = EmberCluster.emberCluster(3, 36900, 37000, 37100, "fallback");
+        cluster = EmberCluster.emberCluster(3, 4320, 4420, 4520, "fallback");
         cluster.withComputeProviderDecorator(this::refusePreferred);
         LifecycleAwait.settled("start fallback cluster", cluster, cluster.start());
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> cluster.currentLeader()

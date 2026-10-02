@@ -29,6 +29,13 @@ public sealed interface DHTError extends Cause {
         return new QuorumNotReached(required, achieved);
     }
 
+    /// A read could not reach an authoritative quorum because replicas it needed are still catching up after
+    /// a ring change (#1777 track 2). Never "absent": the value may exist on replicas that have not yet been
+    /// filled or on the holders they are filling from. Transient — a retry after catch-up is answered.
+    static DHTError notCaughtUp(int required, int authoritative) {
+        return new NotCaughtUp(required, authoritative);
+    }
+
     /// Data-plane epoch-fence rejection (#345 piece 1c): a versioned put whose owner epoch is
     /// STRICTLY older than the replica's per-DHT-partition high-water — a deposed owner attempting
     /// to commit an OLD epoch over a newer one. Carries the presented epoch as its two primitive
@@ -69,10 +76,63 @@ public sealed interface DHTError extends Cause {
         }
     }
 
+    /// One replica's fence refused one write slot: the writer's owner epoch is older than that replica's
+    /// high-water (#1818, the owner's fence ruling).
+    static DHTError replicaFenced(NodeId replica) {
+        return new ReplicaFenced(replica);
+    }
+
+    record ReplicaFenced(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " refused the write: the writer's owner epoch is stale";
+        }
+    }
+
+    /// A write that did not reach its quorum because owner-epoch fences refused it (#1818, the owner's fence
+    /// ruling — the Dynamo stance). It is NOT a definite failure: replicas whose high-water lagged may have
+    /// applied it, and a copy of it can still take effect on keys the new owner never rewrites (until #1777
+    /// track 3). The coordinator rolls back its own accept; callers must treat the outcome as unknown and
+    /// retry — a retry is stamped with the owner epoch as it stands by then.
+    static DHTError writeIndeterminate(int required, int achieved, int fenced) {
+        return new WriteIndeterminate(required, achieved, fenced);
+    }
+
+    record WriteIndeterminate(int required, int achieved, int fenced) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Write outcome indeterminate: required " + required
+                 + " acks, got " + achieved
+                 + ", " + fenced
+                 + " refused by owner-epoch fences; it may have been applied";
+        }
+    }
+
     record QuorumNotReached(int required, int achieved) implements DHTError, Cause.Transient {
         @Override
         public String message() {
             return "Quorum not reached: required " + required + ", achieved " + achieved;
+        }
+    }
+
+    /// One replica's refusal of one read slot: it holds no value and is still catching up, so its "absent"
+    /// is not counted (#1777 track 2). The read as a whole fails [NotCaughtUp] if quorum becomes
+    /// unreachable because of it.
+    static DHTError replicaCatchingUp(NodeId replica) {
+        return new ReplicaCatchingUp(replica);
+    }
+
+    record ReplicaCatchingUp(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " is still catching up";
+        }
+    }
+
+    record NotCaughtUp(int required, int authoritative) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replicas not caught up: required " + required + " authoritative answers, got " + authoritative;
         }
     }
 

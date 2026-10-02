@@ -1529,9 +1529,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void onConnectFailed(NodeInfo peer, Cause cause) {
         // Wave-3 dialer-side identity verification: a rejected Hello identity mismatch flows
         // down this normal connect-failure path (so backoff/eviction engage as for any failed
-        // dial), but additionally feeds the PEER transition journal with the REJECTED record.
+        // dial), but additionally feeds the PEER transition journal with the REJECTED record and
+        // tells the peer-state listener the dialed identity was refuted (#1830).
         if (cause instanceof QuicTransportError.IdentityMismatch mismatch) {
             journalDialerHelloRejected(peer, mismatch);
+            peerStateListener.onPeerIdentityRefuted(mismatch.expected(), mismatch.actual());
         }
         // #1489: every failed dial is a dial failure; only a TLS handshake failure is a handshake failure.
         quicMetrics.onDialFailure();

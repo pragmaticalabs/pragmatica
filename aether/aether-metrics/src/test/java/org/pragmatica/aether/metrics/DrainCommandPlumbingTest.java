@@ -173,6 +173,33 @@ class DrainCommandPlumbingTest {
             collector.onClusterSyncPing(drainPing());
             assertThat(calls.get()).isEqualTo(2);
         }
+
+        /// Issue #1818: the departure push runs off the drain handler and reads the co-drainers from
+        /// `commandedDrainNodes`, so the ping's whole drain set must be visible when the handler runs.
+        @Test
+        void onClusterSyncPing_coDrainers_commandedDrainNodesHoldsTheWholeSetWhenTheHandlerRuns() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seenByHandler = new AtomicReference<Set<NodeId>>(Set.of());
+
+            collector.setDrainCommandHandler(() -> seenByHandler.set(collector.commandedDrainNodes()));
+            collector.onClusterSyncPing(coDrainPing(LEADER));
+            assertThat(seenByHandler.get()).containsExactlyInAnyOrder(SELF, PEER_A);
+        }
+
+        @Test
+        void onClusterSyncPing_nonAuthoritativeSender_doesNotRecordTheDrainSet() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            collector.onClusterSyncPing(coDrainPing(PEER_B));
+            assertThat(collector.commandedDrainNodes()).isEmpty();
+        }
     }
 
     private static ClusterSyncPing drainPing() {
@@ -188,6 +215,21 @@ class DrainCommandPlumbingTest {
                                    0L,
                                    Set.of(),
                                    Set.of(PEER_A),
+                                   Map.of(),
+                                   Set.of(),
+                                   true,
+                                   true);
+    }
+
+    private static ClusterSyncPing coDrainPing(NodeId sender) {
+        return new ClusterSyncPing(sender,
+                                   Map.of(),
+                                   0L,
+                                   0L,
+                                   0L,
+                                   0L,
+                                   Set.of(),
+                                   Set.of(SELF, PEER_A),
                                    Map.of(),
                                    Set.of(),
                                    true,

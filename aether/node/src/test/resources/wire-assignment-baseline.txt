@@ -43,6 +43,7 @@ ENUM org.pragmatica.cluster.metrics.ConnectivityState CONNECTED=0,DISCONNECTED=1
 ENUM org.pragmatica.cluster.metrics.HealthHintWire HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
 ENUM org.pragmatica.consensus.rabia.ResponderState LIVE=0,COLD=1,UNKNOWN=2
 ENUM org.pragmatica.consensus.rabia.StateValue V0=0,V1=1,VQUESTION=2,UNKNOWN=3
+ENUM org.pragmatica.dht.DHTMessage$Readiness SERVING=0,CATCHING_UP=1,UNKNOWN=2
 ENUM org.pragmatica.swim.SwimMember$MemberState ALIVE=0,SUSPECT=1,FAULTY=2,OBSERVED=3,UNKNOWN=4
 SHAPE org.pragmatica.aether.api.ClusterEvent$AccessDenied (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$AlertInjected (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -310,6 +311,8 @@ SHAPE org.pragmatica.consensus.net.NetworkMessage$HelloRefused (sender:org.pragm
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest (sender:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse (target:org.pragmatica.consensus.NodeId,snapshot:byte[])
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KeepAlive (sender:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteRequest (sender:org.pragmatica.consensus.NodeId,leader:org.pragmatica.consensus.NodeId,round:long)
+SHAPE org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteResponse (sender:org.pragmatica.consensus.NodeId,leader:org.pragmatica.consensus.NodeId,round:long,leaderHealthy:boolean)
 SHAPE org.pragmatica.consensus.net.NodeInfo (id:org.pragmatica.consensus.NodeId,address:org.pragmatica.net.tcp.NodeAddress,labels:java.util.Map<java.lang.String, java.lang.String>,resolvedAddress:org.pragmatica.net.tcp.NodeAddress)
 SHAPE org.pragmatica.consensus.rabia.ClusterConfig (members:java.util.List<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.consensus.rabia.CorrelationId (id:java.lang.String)
@@ -329,17 +332,17 @@ SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Synchronous$VoteRound2
 SHAPE org.pragmatica.consensus.rabia.ReconfigurationCommand (baseEpoch:long,target:org.pragmatica.consensus.rabia.ClusterConfig)
 SHAPE org.pragmatica.consensus.rabia.VoterConfiguration (epoch:long,roster:org.pragmatica.consensus.rabia.ClusterConfig)
 SHAPE org.pragmatica.dht.DHTMessage$DigestRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,partitionStart:int,partitionEnd:int)
-SHAPE org.pragmatica.dht.DHTMessage$DigestResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,digest:byte[])
+SHAPE org.pragmatica.dht.DHTMessage$DigestResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,digest:byte[],readiness:org.pragmatica.dht.DHTMessage$Readiness)
 SHAPE org.pragmatica.dht.DHTMessage$ExistsRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[])
-SHAPE org.pragmatica.dht.DHTMessage$ExistsResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,exists:boolean)
+SHAPE org.pragmatica.dht.DHTMessage$ExistsResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,exists:boolean,readiness:org.pragmatica.dht.DHTMessage$Readiness)
 SHAPE org.pragmatica.dht.DHTMessage$GetRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[])
-SHAPE org.pragmatica.dht.DHTMessage$GetResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,value:org.pragmatica.lang.Option<byte[]>)
+SHAPE org.pragmatica.dht.DHTMessage$GetResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,value:org.pragmatica.lang.Option<byte[]>,readiness:org.pragmatica.dht.DHTMessage$Readiness)
 SHAPE org.pragmatica.dht.DHTMessage$KeyValue (key:byte[],value:byte[],version:long,epochIncarnation:long,epochTerm:long,epochCounter:long)
-SHAPE org.pragmatica.dht.DHTMessage$MigrationDataAck (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.dht.DHTMessage$MigrationDataAck (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,applied:boolean)
 SHAPE org.pragmatica.dht.DHTMessage$MigrationDataRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,partitionStart:int,partitionEnd:int)
-SHAPE org.pragmatica.dht.DHTMessage$MigrationDataResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,entries:java.util.List<org.pragmatica.dht.DHTMessage$KeyValue>,ackRequested:boolean)
+SHAPE org.pragmatica.dht.DHTMessage$MigrationDataResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,entries:java.util.List<org.pragmatica.dht.DHTMessage$KeyValue>,ackRequested:boolean,refused:boolean,leaving:java.util.List<org.pragmatica.consensus.NodeId>,view:java.util.List<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.dht.DHTMessage$PutRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[],value:byte[],version:long,epochIncarnation:long,epochTerm:long,epochCounter:long)
-SHAPE org.pragmatica.dht.DHTMessage$PutResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,success:boolean,superseded:boolean)
+SHAPE org.pragmatica.dht.DHTMessage$PutResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,success:boolean,superseded:boolean,fenced:boolean)
 SHAPE org.pragmatica.dht.DHTMessage$RemoveRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[])
 SHAPE org.pragmatica.dht.DHTMessage$RemoveResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,found:boolean)
 SHAPE org.pragmatica.dht.Partition (value:int)
@@ -672,6 +675,8 @@ TAG  org.pragmatica.consensus.net.NetworkMessage$HelloRefused 1705
 TAG  org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest 40
 TAG  org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse 41
 TAG  org.pragmatica.consensus.net.NetworkMessage$KeepAlive 39
+TAG  org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteRequest 1721
+TAG  org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteResponse 1722
 TAG  org.pragmatica.consensus.net.NodeInfo 42
 TAG  org.pragmatica.consensus.rabia.ClusterConfig 24
 TAG  org.pragmatica.consensus.rabia.CorrelationId 25
@@ -704,6 +709,7 @@ TAG  org.pragmatica.dht.DHTMessage$MigrationDataRequest 62
 TAG  org.pragmatica.dht.DHTMessage$MigrationDataResponse 63
 TAG  org.pragmatica.dht.DHTMessage$PutRequest 64
 TAG  org.pragmatica.dht.DHTMessage$PutResponse 65
+TAG  org.pragmatica.dht.DHTMessage$Readiness 90
 TAG  org.pragmatica.dht.DHTMessage$RemoveRequest 66
 TAG  org.pragmatica.dht.DHTMessage$RemoveResponse 67
 TAG  org.pragmatica.dht.Partition 68

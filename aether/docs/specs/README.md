@@ -18,3 +18,9 @@ Per-spec `Status:` headers are being standardized across this directory; until t
   calendar-aware regional/market capacity planning. **Design only; not implemented. Target
   1.0.0-rc5 (#1251); starts once its listed prerequisites close.** Includes integration contracts,
   delivery phases, and acceptance tests.
+- [Aether Artifact Repository](artifact-repository-spec.md)
+  — a full Maven repository replacing the built-in artifact store: an optional part of every
+  cluster, with the internal slice namespace (write-once, no SNAPSHOT) beside hosted, proxy and
+  group repositories, sealed operation, retention and backup/restore. **Proposed; design only;
+  not implemented. AR1–AR3 planned for 1.0.0-rc5 (epic #1831), AR4–AR6 for the following rc
+  (epic #1836).** Evidence and claim verification: [component readiness](artifact-repository-readiness.md).

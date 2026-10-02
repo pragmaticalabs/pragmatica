@@ -78,7 +78,7 @@ class V1770ProbeTest {
 
     private void reply(Sent s, Option<byte[]> v) {
         var req = (DHTMessage.GetRequest) s.message();
-        client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), s.target(), v));
+        client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), s.target(), v, DHTMessage.Readiness.SERVING));
     }
 
     /// W=2 put reached A and C only (B missed it): the value is on 2 of the 3 R-set replicas, so any

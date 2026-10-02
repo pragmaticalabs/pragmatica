@@ -655,6 +655,13 @@ public interface AetherNode extends ManageableNode {
               .filter(peer -> "core".equalsIgnoreCase(peer.labels().getOrDefault(NodeInfo.LABEL_ROLE, "core")))
               .forEach(peer -> dhtRing.addNode(peer.id()));
         var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
+        // #1777 track 2: the store starts empty, so every partition this core owns starts catching up — it
+        // refuses rather than answers "absent" until anti-entropy has filled it from the nodes that may hold
+        // its data (the 1 s catch-up tick armed below with the node's other periodic work).
+        if (!configuredWorker(config)) {
+            dhtNode.beginCatchUp();
+        }
+
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(),
@@ -1933,7 +1940,14 @@ public interface AetherNode extends ManageableNode {
                                                // slice that deploys and then fails at load.
                                               );
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
-        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
+        // #1818 round 3: departure pushes are accepted only from departing senders. The predicate needs the
+        // ClusterSyncCollector, built further down, so it is resolved through this holder (strict until then).
+        var departingSendersRef = new AtomicReference<Predicate<NodeId>>(_ -> false);
+        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode,
+                                                           dhtNetwork,
+                                                           config.artifactRepo(),
+                                                           sender -> departingSendersRef.get()
+                                                                                        .test(sender));
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer, dhtAntiEntropy);
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
         var corePeerIds = config.topology()
@@ -2991,12 +3005,19 @@ public interface AetherNode extends ManageableNode {
         // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
         // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
         // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
+        // #1818: the push excludes every node the leader commanded to drain alongside this one (the
+        // ping's global drain set), so it never lands on, or counts as a survivor, a co-drainer.
         var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
         var movementDrain = new AtomicReference<Option<CommunityDrainCoordinator>>(Option.none());
-        Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(departurePushObserverRef.get())
-                                                                   .flatMap(_ -> movementDrain.get()
-                                                                                              .fold(Promise::unitPromise,
-                                                                                                    CommunityDrainCoordinator::onQuiesced));
+
+        departingSendersRef.set(DhtDeparturePush.departingSenders(metricsCollector, dhtTopologyListener));
+        var dhtDeparturePush = DhtDeparturePush.dhtDeparturePush(dhtRebalancer,
+                                                                 metricsCollector,
+                                                                 departurePushObserverRef::get);
+        Supplier<Promise<Unit>> departurePush = () -> dhtDeparturePush.get()
+                                                                      .flatMap(_ -> movementDrain.get()
+                                                                                                 .fold(Promise::unitPromise,
+                                                                                                       CommunityDrainCoordinator::onQuiesced));
         // #273 item 1: forward-declared hook resolved once the ScheduledTaskManager is built below. The
         // drain edge for scheduled tasks is THIS emitter, not a MembershipDecision — `NodeDraining` has
         // no producer since the membership-v2 finale removed the per-node lifecycle projection.
@@ -5272,6 +5293,10 @@ public interface AetherNode extends ManageableNode {
         // join-time round in DHTTopologyListener is the fast path, this cycle is its retry.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
                                                                       config.timeouts().dht().antiEntropyInterval()));
+        // #1777 track 2: fills the partitions this node is a replica of but not yet authoritative for —
+        // at boot, and after every ring change — within about a tick of their sources answering.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::catchUpNow,
+                                                                      DHTAntiEntropy.CATCH_UP_INTERVAL));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
         // last-sealed offset so the WAL does not grow unbounded. Records <= that offset are already in
         // cold segments whose refs are in the metadata snapshot on disk (served post-restart by the tiered
@@ -6938,7 +6963,8 @@ public interface AetherNode extends ManageableNode {
     /// Package-private so a test pins the observation each callback produces, not only the
     /// cause→origin mapping. A join or reconnect first starts a new ClusterSync missed-pong epoch
     /// for the peer (R-a: misses counted against the previous link are discarded) and then sends
-    /// `PeerReachable`; a departure sends a `PEER_LEFT` hint, which is `LINK_LOST`.
+    /// `PeerReachable`; a departure sends a `PEER_LEFT` hint, which is `LINK_LOST`; a dial answered by
+    /// another identity sends `IdentityRefuted` for the dialed identity only (#1830).
     static QuicPeerStateListener quicPeerStateListener(Consumer<TransportObservation> swimHints,
                                                        Consumer<NodeId> linkEstablished) {
         return new QuicPeerStateListener() {
@@ -6959,6 +6985,15 @@ public interface AetherNode extends ManageableNode {
             public void onPeerLeft(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
                 swimHints.accept(unreachableHint(QuicTransportCause.PEER_LEFT, nodeId));
+            }
+
+            @Override
+            @Contract
+            public void onPeerIdentityRefuted(NodeId dialed, NodeId claimant) {
+                LOG.debug("QuicPeerState: onPeerIdentityRefuted({}, answered by {}) — recordTransportHint(refuted)",
+                          dialed,
+                          claimant);
+                swimHints.accept(new TransportObservation.IdentityRefuted(dialed, claimant));
             }
         };
     }

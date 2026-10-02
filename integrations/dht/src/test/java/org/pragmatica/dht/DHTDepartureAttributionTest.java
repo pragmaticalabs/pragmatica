@@ -97,6 +97,6 @@ class DHTDepartureAttributionTest {
     private static void answer(DistributedDHTClient client, Sent request) {
         var req = (DHTMessage.GetRequest) request.message();
 
-        client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), request.target(), Option.none()));
+        client.onGetResponse(new DHTMessage.GetResponse(req.requestId(), request.target(), Option.none(), DHTMessage.Readiness.SERVING));
     }
 }

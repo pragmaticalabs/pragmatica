@@ -63,6 +63,18 @@ class SwimHintWiringTest {
     }
 
     @Test
+    void quicPeerStateListener_onPeerIdentityRefuted_refutesTheDialedIdentityOnly() {
+        var claimant = new NodeId("node-claimant");
+
+        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerIdentityRefuted(PEER, claimant);
+
+        assertThat(hints)
+            .as("#1830: the dialed identity is refuted; the node answering at its address is only named")
+            .containsExactly(new TransportObservation.IdentityRefuted(PEER, claimant));
+        assertThat(linkEpochs).as("A rejected dial starts no link epoch").isEmpty();
+    }
+
+    @Test
     void pingTimeoutReporter_sendsPeerUnresponsivePingTimeoutHint() {
         AetherNode.pingTimeoutReporter(hints::add).accept(PEER);
 

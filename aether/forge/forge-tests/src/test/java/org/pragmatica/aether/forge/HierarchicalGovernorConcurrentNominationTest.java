@@ -51,7 +51,7 @@ class HierarchicalGovernorConcurrentNominationTest {
     private static final String COMMUNITY = "concurrent-governors";
     private static final long REQUEST_BASE = 9_000_000;
 
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 36300, 36400, 36500, "governor-nomination");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3880, 3980, 4080, "governor-nomination");
 
     @AfterEach
     void stop() {

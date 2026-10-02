@@ -183,6 +183,12 @@ public interface SystemTags {
         // #1526: genesis agreement. Consensus-prefixed, so it must sit in the one-byte window; 89 was
         // the next free slot in it (blocks are advisory).
         pin(table, 89, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement");
+        // #1777: carried in every DHT read reply; DHT-prefixed, so it must sit in the one-byte window, and 90
+        // was a free slot in it (blocks are advisory). Tag 90 was
+        // `org.pragmatica.aether.worker.network.DHTRelayMessage`, removed by #1390 (09a2185fb) WITHOUT a retired
+        // pin. It had no handler or registration, so no peer of any shipped build sends it; reuse is a pre-GA
+        // exception to "never reuse", as 89 was (#1526).
+        pin(table, 90, "org.pragmatica.dht.DHTMessage.Readiness");
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
@@ -562,6 +568,9 @@ public interface SystemTags {
         pin(table, 1718, "org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey");
         pin(table, 1719, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue");
         pin(table, 1720, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome");
+        // leader pre-vote (#1748) — next free slots after 1720
+        pin(table, 1721, "org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest");
+        pin(table, 1722, "org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse");
         // community lifecycle cluster events (#1652) — claimed range from 1740
         pin(table, 1740, "org.pragmatica.aether.api.ClusterEvent.CommunityMinted");
         pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");

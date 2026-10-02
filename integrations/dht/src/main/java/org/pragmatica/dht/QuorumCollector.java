@@ -17,8 +17,6 @@ package org.pragmatica.dht;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 
 import org.pragmatica.lang.Cause;
@@ -38,32 +36,23 @@ public final class QuorumCollector<T> {
     private final Promise<T> promise;
     private final AtomicInteger successCount = new AtomicInteger(0);
     private final AtomicInteger failureCount = new AtomicInteger(0);
+    /// Slots refused by an owner-epoch fence (#1818, the owner's fence ruling).
+    private final AtomicInteger fenced = new AtomicInteger(0);
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
-    /// Grace mode (see [#graceCollector]): a decisive value completes the read at once; R non-decisive
-    /// answers do not, they only start the grace window. Always false in quorum-count mode.
-    private final boolean graceMode;
-    private final Predicate<T> decisive;
-    private final Function<QuorumCollector<T>, Unit> onQuorumNotDecisive;
+    /// Slots refused by a replica still catching up (#1777 track 2). When quorum becomes unreachable and
+    /// any slot was such a refusal, the read fails [DHTError.NotCaughtUp] — transient, never "absent".
+    private final AtomicInteger refusals = new AtomicInteger(0);
     private final long createdNanos = System.nanoTime();
     private final AtomicReference<String> valueSource = new AtomicReference<>();
     private final AtomicInteger departed = new AtomicInteger();
     private final Promise<Unit> allReplied = Promise.promise();
 
-    private QuorumCollector(int quorum,
-                            int total,
-                            Promise<T> promise,
-                            UnaryOperator<T> valueMerger,
-                            boolean graceMode,
-                            Predicate<T> decisive,
-                            Function<QuorumCollector<T>, Unit> onQuorumNotDecisive) {
+    private QuorumCollector(int quorum, int total, Promise<T> promise, UnaryOperator<T> valueMerger) {
         this.quorum = quorum;
         this.total = total;
         this.promise = promise;
         this.valueMerger = valueMerger;
-        this.graceMode = graceMode;
-        this.decisive = decisive;
-        this.onQuorumNotDecisive = onQuorumNotDecisive;
     }
 
     /// Create a quorum collector that keeps the first value received.
@@ -72,13 +61,7 @@ public final class QuorumCollector<T> {
     /// @param total   total responses expected
     /// @param promise promise to resolve when quorum reached or failed
     public static <T> QuorumCollector<T> quorumCollector(int quorum, int total, Promise<T> promise) {
-        return new QuorumCollector<>(quorum,
-                                     total,
-                                     promise,
-                                     UnaryOperator.identity(),
-                                     false,
-                                     _ -> false,
-                                     _ -> Unit.unit());
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity());
     }
 
     /// Create a quorum collector for Option values that prefers non-empty over empty.
@@ -88,45 +71,7 @@ public final class QuorumCollector<T> {
     /// @param total   total responses expected
     /// @param promise promise to resolve when quorum reached or failed
     public static <V> QuorumCollector<Option<V>> optionCollector(int quorum, int total, Promise<Option<V>> promise) {
-        return new QuorumCollector<>(quorum,
-                                     total,
-                                     promise,
-                                     UnaryOperator.identity(),
-                                     false,
-                                     _ -> false,
-                                     _ -> Unit.unit());
-    }
-
-    /// Create a collector for a read with an absent GRACE window. A present reply completes the read
-    /// at once (FOUND). Once `quorum` empty replies are in, the read is not resolved immediately:
-    /// `onQuorumEmpty` is invoked exactly once so the caller can bound the wait (it should arrange
-    /// [#resolveWithBest] after the grace) while the remaining replicas may still deliver a value.
-    /// If every slot answers or fails before the grace expires the read resolves absent at once.
-    /// With fewer than `quorum` empty replies in, nothing completes the read but a present value, the
-    /// fast-fail accrual, or the caller's deadline.
-    ///
-    /// @param quorum        empty replies needed before the grace window starts
-    /// @param total         number of slots (original R-set replicas) expected to answer
-    /// @param promise       promise to resolve
-    /// @param onQuorumEmpty invoked once when `quorum` empty replies are in and no value was found
-    public static <V> QuorumCollector<Option<V>> graceCollector(int quorum,
-                                                                int total,
-                                                                Promise<Option<V>> promise,
-                                                                Function<QuorumCollector<Option<V>>, Unit> onQuorumEmpty) {
-        return new QuorumCollector<>(quorum,
-                                     total,
-                                     promise,
-                                     UnaryOperator.identity(),
-                                     true,
-                                     Option::isPresent,
-                                     onQuorumEmpty);
-    }
-
-    /// Resolve with the best value collected so far. Used by the grace timer: by construction at
-    /// least `quorum` answers are in and none was present, so the best value is the empty Option.
-    @Contract
-    public void resolveWithBest() {
-        promise.succeed(bestValue.get());
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity());
     }
 
     /// Record a successful response. Resolves promise when quorum reached.
@@ -148,26 +93,11 @@ public final class QuorumCollector<T> {
 
         var answered = successCount.incrementAndGet();
 
-        if (graceMode) {
-            acceptInGraceMode(value, answered);
-        } else if (answered >= quorum) {
+        if (answered >= quorum) {
             promise.succeed(bestValue.get());
         }
 
         settleIfAllReplied(answered, failureCount.get());
-    }
-
-    private void acceptInGraceMode(T value, int answered) {
-        if (decisive.test(value) || allAnswered(answered, failureCount.get())) {
-            promise.succeed(bestValue.get());
-        } else if (answered == quorum) {
-            var _ = onQuorumNotDecisive.apply(this);
-        }
-    }
-
-    /// Every slot has answered or failed, and enough answered to stand as a quorum.
-    private boolean allAnswered(int answered, int failed) {
-        return answered + failed >= total && answered >= quorum;
     }
 
     /// Record a failed response. Fails promise when quorum becomes arithmetically impossible —
@@ -175,18 +105,38 @@ public final class QuorumCollector<T> {
     /// the required `quorum`. Equivalent to `failures > total - quorum`. This is the
     /// failure-accrual fast-fail: with `total` live targets and `quorum` required, the
     /// `(quorum)`-th failure (when `total == quorum`) or earlier (when `total > quorum`) aborts
-    /// immediately rather than letting the promise stall to the per-op timeout.
+    /// immediately rather than letting the promise stall to the per-op timeout. A slot refused by a
+    /// replica still catching up ([DHTError.ReplicaCatchingUp]) makes that failure [DHTError.NotCaughtUp].
     @Contract
     public void onFailure(Cause cause) {
+        if (cause instanceof DHTError.ReplicaCatchingUp) {
+            refusals.incrementAndGet();
+        }
+
+        if (cause instanceof DHTError.StaleEpochWrite || cause instanceof DHTError.ReplicaFenced) {
+            fenced.incrementAndGet();
+        }
+
         var failures = failureCount.incrementAndGet();
 
         if (total - failures < quorum) {
-            promise.fail(DHTError.quorumNotReached(quorum, successCount.get()));
-        } else if (graceMode && allAnswered(successCount.get(), failures)) {
-            promise.succeed(bestValue.get());
+            promise.fail(quorumFailure());
         }
 
         settleIfAllReplied(successCount.get(), failures);
+    }
+
+    /// A quorum lost to owner-epoch fences is indeterminate, not a definite failure (#1818, the owner's fence
+    /// ruling): a replica whose high-water lagged may have applied the write. That takes precedence over a
+    /// catching-up refusal (#1777), which only says some replica could not yet answer authoritatively.
+    private Cause quorumFailure() {
+        if (fenced.get() > 0) {
+            return DHTError.writeIndeterminate(quorum, successCount.get(), fenced.get());
+        }
+
+        return refusals.get() > 0
+               ? DHTError.notCaughtUp(quorum, successCount.get())
+               : DHTError.quorumNotReached(quorum, successCount.get());
     }
 
     private void settleIfAllReplied(int successes, int failures) {
@@ -226,6 +176,11 @@ public final class QuorumCollector<T> {
     /// Replies recorded so far, including those arriving after the quorum resolved the promise.
     public int successCount() {
         return successCount.get();
+    }
+
+    /// Owner-epoch fence refusals recorded so far, including those arriving after the promise settled.
+    public int fencedCount() {
+        return fenced.get();
     }
 
     private T selectBest(T existing, T incoming) {

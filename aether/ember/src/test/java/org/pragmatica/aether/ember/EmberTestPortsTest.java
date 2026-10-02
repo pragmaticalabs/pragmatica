@@ -29,8 +29,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// #1667 acceptance: a port taken between the probe and the cluster's bind does not fail the test; the start moves
 /// to a fresh block. The collision is made deterministic by taking a port of the probed block inside the factory,
 /// after the probe and before `start()`.
+@PortBudget
 class EmberTestPortsTest {
-    private static final EmberTestPorts.Block BLOCK = new EmberTestPorts.Block(46100, 46900, 200, 3, 40, 80);
+    private static final EmberTestPorts.Block BLOCK = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
 
@@ -130,9 +131,9 @@ class EmberTestPortsTest {
                                                                _ -> BIND_COLLISION.<Unit>promise(),
                                                                _ -> STOP_REFUSED.<Unit>promise(),
                                                                START_BOUND,
-                                                               attempted -> 46100 + 200 * attempted.size()))
+                                                               attempted -> BLOCK.first() + BLOCK.step() * attempted.size()))
             .hasMessageContaining("its cleanup failed too: " + STOP_REFUSED.message());
-        assertThat(built).as("no second cluster was started beside the unstopped one").containsExactly(46100);
+        assertThat(built).as("no second cluster was started beside the unstopped one").containsExactly(BLOCK.first());
     }
 
     /// Control for the test above: the same injected bind collision with a clean stop IS retried, every attempt.
@@ -147,7 +148,7 @@ class EmberTestPortsTest {
                                                                _ -> BIND_COLLISION.<Unit>promise(),
                                                                _ -> Promise.success(Unit.unit()),
                                                                START_BOUND,
-                                                               attempted -> 46100 + 200 * attempted.size()))
+                                                               attempted -> BLOCK.first() + BLOCK.step() * attempted.size()))
             .hasMessageContaining("every one of " + EmberTestPorts.START_ATTEMPTS);
         assertThat(built).hasSize(EmberTestPorts.START_ATTEMPTS);
     }
@@ -218,6 +219,107 @@ class EmberTestPortsTest {
                                                  + "bind(..) failed: Address already in use")).isTrue();
         assertThat(EmberTestPorts.isBindCollision("Transport failure: java.net.BindException: Address already in use")).isTrue();
         assertThat(EmberTestPorts.isBindCollision("Cluster startup failed: quorum not reached")).isFalse();
+    }
+
+    /// Every candidate busy is not a failure: the scan backs off and takes the base once a holder lets go (a base in TCP
+    /// TIME_WAIT frees itself within a minute).
+    @Test
+    @Timeout(60)
+    void freeBase_everyCandidateBusy_waitsAndReturnsTheBaseOnceItIsReleased() throws Exception {
+        var onlyBase = singleBaseBlock();
+        var holder = takeTcp(onlyBase.first() + onlyBase.mgmtOffset());
+
+        taken.add(holder);
+        var releaser = Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(3_000);
+                holder.close();
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        });
+        var startedAt = System.nanoTime();
+        var base = EmberTestPorts.freeBase(onlyBase);
+        var waitedMs = (System.nanoTime() - startedAt) / 1_000_000;
+
+        releaser.join();
+        assertThat(base).isEqualTo(onlyBase.first());
+        assertThat(waitedMs).as("it waited for the release instead of failing at once").isGreaterThanOrEqualTo(2_000);
+    }
+
+    /// Control for the test above: with the holder never letting go the scan does fail, after its bound.
+    @Test
+    @Timeout(60)
+    void freeBase_everyCandidateStaysBusy_failsOnlyAfterTheWaitBound() {
+        var onlyBase = singleBaseBlock();
+
+        taken.add(takeTcp(onlyBase.first() + onlyBase.mgmtOffset()));
+        var startedAt = System.nanoTime();
+
+        assertThatThrownBy(() -> EmberTestPorts.freeBase(onlyBase, Set.of(), 3_000)).hasMessageContaining("no free port block");
+        assertThat((System.nanoTime() - startedAt) / 1_000_000).isGreaterThanOrEqualTo(3_000);
+    }
+
+    /// The back-off is one budget per test: once it is spent, a further probe fails at once with the named message
+    /// instead of waiting again, so a test never waits past the budget in total.
+    @Test
+    @Timeout(60)
+    void freeBase_backoffIsOneBudgetPerTest_soASecondExhaustedProbeFailsAtOnce() {
+        var onlyBase = singleBaseBlock();
+
+        taken.add(takeTcp(onlyBase.first() + onlyBase.mgmtOffset()));
+        EmberTestPorts.resetBackoffBudget(2_500);
+        try {
+            var firstStartedAt = System.nanoTime();
+
+            assertThatThrownBy(() -> EmberTestPorts.freeBase(onlyBase)).hasMessageContaining("no free port block")
+                                                                      .hasMessageContaining("per-test budget");
+            assertThat((System.nanoTime() - firstStartedAt) / 1_000_000).as("the first probe spent the budget")
+                                                                         .isGreaterThanOrEqualTo(2_500);
+            var secondStartedAt = System.nanoTime();
+
+            assertThatThrownBy(() -> EmberTestPorts.freeBase(onlyBase)).hasMessageContaining("no free port block");
+            assertThat((System.nanoTime() - secondStartedAt) / 1_000_000).as("the second probe did not wait again")
+                                                                          .isLessThan(1_000);
+        } finally {
+            EmberTestPorts.resetBackoffBudget(EmberTestPorts.EXHAUSTION_WAIT_MS);
+        }
+    }
+
+    /// The guard: a probe that runs while the budget is not armed (a test class without @PortBudget) fails loudly.
+    @Test
+    void freeBase_whenTheBudgetIsNotArmed_failsLoudlyNamingTheAnnotation() {
+        EmberTestPorts.arm(false);
+        try {
+            assertThatThrownBy(() -> EmberTestPorts.freeBase(BLOCK)).hasMessageContaining("@PortBudget");
+        } finally {
+            EmberTestPorts.arm(true);
+        }
+        assertThat(EmberTestPorts.freeBase(BLOCK)).as("control: armed, the same probe succeeds").isGreaterThan(0);
+    }
+
+    @Test
+    void hold_bindsThePortsOnAFreeBlock_andReleasesThemOnClose() {
+        var tcp = EmberTestPorts.Hold.tcp(BLOCK.mgmtOffset());
+        var udp = EmberTestPorts.Hold.udp(EmberTestPorts.SWIM_PORT_OFFSET);
+        int base;
+
+        try (var held = EmberTestPorts.hold(BLOCK, new java.util.HashSet<>(), List.of(tcp, udp))) {
+            base = held.base();
+            assertThatThrownBy(() -> takeTcp(base + tcp.offset()).close()).as("the TCP port is held").isInstanceOf(AssertionError.class);
+            assertThatThrownBy(() -> takeUdp(base + udp.offset()).close()).as("the UDP port is held").isInstanceOf(AssertionError.class);
+        }
+        taken.add(takeTcp(base + tcp.offset()));
+        takeUdp(base + udp.offset()).close();
+    }
+
+    /// A one-candidate block on a base that is free RIGHT NOW. A fixed pool base would not do: the tests before this one
+    /// in the same JVM leave TCP TIME_WAIT on the pool's first bases for up to a minute, which would make the block busy
+    /// for a reason that is not this test's.
+    private static EmberTestPorts.Block singleBaseBlock() {
+        var base = EmberTestPorts.freeBase(BLOCK);
+
+        return new EmberTestPorts.Block(base, base, BLOCK.step(), BLOCK.slots(), BLOCK.mgmtOffset(), BLOCK.appOffset());
     }
 
     private static DatagramSocket takeUdp(int port) {

@@ -88,11 +88,13 @@ class ClusterEventOwnerFailoverTest {
 
         var landed = landedTags();
         var accepted = sum(producers, "accepted");
+        // held BEFORE delivered: an event settling between the two reads then counts in both (an overcount, safe for
+        // an upper bound), never in neither (an undercount that could go falsely red).
+        var held = sum(producers, "held");
         var delivered = sum(producers, "delivered");
         var dropped = producers.stream()
                                .mapToLong(id -> droppedOn(id))
                                .sum();
-        var held = sum(producers, "held");
 
         report(ownerId, "-", producers, phase.sent(), landed, dropped);
         log.info("FAILOVER-PROBE accepted={} delivered={} held={} deliveredButNotInLog={}",
@@ -105,15 +107,30 @@ class ClusterEventOwnerFailoverTest {
         assertThat(accepted).as("every raised event reached redelivery").isGreaterThanOrEqualTo(phase.sent().size());
         assertThat(dropped).as("nothing was given up on inside the horizon").isZero();
         assertThat(landed.values()).as("no tag landed twice as read").allMatch(count -> count == 1L);
-        // An event the owner ACKED and then lost before replicating it (EVENTUAL, min-sync 1) counts as delivered
-        // but is not in the log. That is the stream's acknowledgement contract, not a redelivery loss, so the log
-        // may hold fewer than were delivered, never more.
-        assertThat((long) landed.size()).as("the log holds no more than was delivered").isLessThanOrEqualTo(delivered);
+        // At this single read the log may hold fewer than were delivered (a settle still in flight, or the reader
+        // lagging: it is EVENTUAL, min-sync 1) and, because a held event's outcome is UNKNOWN and it may already have
+        // landed, up to `delivered + held`, never more (#1824: CI reds reconciled exactly to delivered + held =
+        // accepted, with every tag landed once). That every sent tag is in the log is asserted below, after the held
+        // events settle, not here.
+        assertThat((long) landed.size()).as("the log holds no more than delivered + held").isLessThanOrEqualTo(delivered + held);
         // #1653, the retry drivers. Since #1555 re-places the dead owner, a retry count above zero pins "held events
         // are re-sent, by AetherNode's 1 s tick OR the new owner's ownership-put drain", not the tick alone. The tick
         // and the drain are pinned separately in the assembly by ClusterEventRedeliveryWiringTest, and behaviourally
         // by the Ember mutation arms (NO-TICK, NO-DRAIN-ROUTE) on a head without #1555.
         assertThat(sum(producers, "retried")).as("held events were re-sent, by the 1 s tick or the new owner's drain").isPositive();
+        // The relaxed bound above must not hide a redelivery stall: held events are re-sent and SETTLE, and then every
+        // tag sent is in the log exactly once (#1824).
+        await().atMost(LANDING)
+               .pollInterval(Duration.ofSeconds(2))
+               .until(() -> sum(producers, "held") == 0L);
+        // The reader is EVENTUAL (min-sync 1): wait for the log to catch up rather than read it once.
+        await().atMost(LANDING)
+               .pollInterval(Duration.ofSeconds(2))
+               .until(() -> landedTags().keySet().containsAll(phase.sent()));
+        var settled = landedTags();
+
+        assertThat(settled.values()).as("after the held events settled, no tag landed twice as read").allMatch(count -> count == 1L);
+        assertThat(settled.keySet()).as("after the held events settled, every sent tag landed").containsAll(phase.sent());
     }
 
     /// The full #1640 property, now that #1555 re-places a dead owner: events raised across the owner's death and then

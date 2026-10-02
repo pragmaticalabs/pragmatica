@@ -35,6 +35,8 @@ import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.net.NetworkMessage.KeepAlive;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
@@ -565,6 +567,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // cannot depose a live leader it has not yet read. "Joined" means it adopted an already-formed electorate
         // (a genesis latecomer counts); a node that forms genesis itself or restarts from its own state does not.
         leaderManager.installKvSyncProgress(() -> consensus.joinedFormedElectorate() && consensus.isPendingCatchUp());
+        // #1748: a follower that loses its leader asks the electorate before electing; consensus mode only, since
+        // local election has no network to ask over.
+        if (useConsensusLeaderElection) {
+            leaderManager.enableLeaderPreVote();
+        }
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class).route(route(SetClusterSize.class,
                                                                                                  topologyManager::handleSetClusterSize));
@@ -594,7 +601,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                                                                    syncHoldRegistry,
                                                                                                                    syncHoldConfig)),
                                                                               route(KVSyncResponse.class,
-                                                                                    _ -> onSyncResponseReceived.run()));
+                                                                                    _ -> onSyncResponseReceived.run()),
+                                                                              route(LeaderPreVoteRequest.class,
+                                                                                    leaderManager::leaderPreVoteRequest),
+                                                                              route(LeaderPreVoteResponse.class,
+                                                                                    leaderManager::leaderPreVoteResponse));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class).route(route(ConnectedNodesList.class,
                                                                                                topologyManager::reconcile),
                                                                                          route(ConnectNode.class,
