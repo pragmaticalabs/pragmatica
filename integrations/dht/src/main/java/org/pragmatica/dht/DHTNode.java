@@ -19,6 +19,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 import java.util.zip.CRC32;
@@ -48,6 +49,9 @@ public final class DHTNode {
     private final DHTConfig config;
     private final HlcClock hlcClock;
     private final CatchUpState catchUp = CatchUpState.catchUpState();
+    /// The ring members when [#beginCatchUp] ran: the joins observed since boot are the current members
+    /// outside this set, and they bound the boot walk ([#previousHolders]).
+    private final AtomicReference<Set<NodeId>> bootMembers = new AtomicReference<>(Set.of());
 
     private DHTNode(NodeId nodeId,
                     StorageEngine storage,
@@ -155,6 +159,7 @@ public final class DHTNode {
 
         var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
 
+        bootMembers.set(Set.copyOf(ring.nodes()));
         IntStream.range(0, Partition.MAX_PARTITIONS)
                  .mapToObj(Partition::at)
                  .filter(partition -> ring.nodesFor(partition, replicationFactor)
@@ -176,12 +181,6 @@ public final class DHTNode {
         return catchUp.pendingPartitions();
     }
 
-    /// The catch-up sources beyond the current co-replicas: the previous replica set a ring change recorded
-    /// and, for a partition pending since boot, the next RF nodes after the replica set on the CURRENT ring.
-    /// A node inserted into the ring only pushes existing replicas later along a partition's walk, so the
-    /// holders displaced by up to RF nodes that joined together are those nodes; walking the current ring
-    /// (not the boot-time static one) finds them even when they are cores this node's configuration does
-    /// not list.
     /// The current pending spell of `partition` (0 when serving): a round completes only the spell it began in.
     long catchUpGeneration(Partition partition) {
         return catchUp.generation(partition);
@@ -192,6 +191,19 @@ public final class DHTNode {
         return catchUp.previousHolders(partition);
     }
 
+    /// The catch-up sources beyond the current co-replicas: the previous replica set a ring change recorded
+    /// and, for a partition pending since boot, the first RF + J nodes of the partition's walk on the CURRENT
+    /// ring, where J counts the members that joined since boot (#1777 M2). Each node inserted into the ring
+    /// displaces an existing holder by at most one walk position, and a removal only moves holders earlier,
+    /// so every surviving old holder lies within RF + J. A fixed 2·RF walk missed every old holder in
+    /// 0.3–3.2% of partitions at 5–8 joins (v1820's sim); RF + J missed none, removals included. Walking the
+    /// current ring (not the boot-time one) finds holders that are cores this node's configuration does not
+    /// list.
+    ///
+    /// The boot ring is the STATIC configured-core list, so a scale-up core that joined before this node
+    /// booted is counted as a join too. That overcounts J, which only lengthens the walk: safe for reach,
+    /// at the cost of asking a few more sources. Walk nodes are sources, never anchors: an empty non-owner on
+    /// the walk answers SERVING, so it may not authorize a timed-out decision (see [#recordedPreviousHolders]).
     Set<NodeId> previousHolders(Partition partition) {
         var recorded = catchUp.previousHolders(partition);
 
@@ -201,10 +213,19 @@ public final class DHTNode {
 
         var holders = new HashSet<>(recorded);
 
-        holders.addAll(ring.nodesFor(partition,
-                                     2 * config.effectiveReplicationFactor(ring.nodeCount())));
+        holders.addAll(ring.nodesFor(partition, bootWalkLength()));
 
         return Set.copyOf(holders);
+    }
+
+    private int bootWalkLength() {
+        var boot = bootMembers.get();
+        var joinedSinceBoot = (int) ring.nodes()
+                                        .stream()
+                                        .filter(member -> !boot.contains(member))
+                                        .count();
+
+        return config.effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot;
     }
 
     @Contract
