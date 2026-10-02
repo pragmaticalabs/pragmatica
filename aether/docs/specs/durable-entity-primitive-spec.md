@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.10.0
+**Version:** 0.10.1
 **Status:** Draft. **§5 (`DurableEntity`) is reconciled with the shipped named-command API**
 (`DurableEntity<K, S, C extends Mutator<S>>`). **§6 (workflow) and §7 (saga) are PLANNED façades with no
 production code** (#353, #354; milestone v1.0.0-rc5). **§7 was reopened by #1827 and its five contract
@@ -134,15 +134,15 @@ serves any durable-single-writer need; workflow and saga are convenience facades
 
 | Capability | State | Anchor |
 |---|---|---|
-| Custom-resource SPI (`@ResourceQualifier` + `ResourceFactory<T,C>` via `ServiceLoader`) | ✅ **mechanical** — a new entity resource is annotation + factory + services entry, no framework edits | `ResourceQualifier.java:13-18`; `SpiResourceProvider.java:45-47` |
-| `StateMachineDefinition<S,E,C>` (builder, `transition(S,E,S)`, `onEntry`/`onExit`, `finalState(S)`, `build() → Result<...>`) | ✅ exists, **unused at runtime, in-memory only** | `StateMachineDefinition.java:24,94,104-127`; `InMemoryStateMachine.java:17-19` |
-| Partitioned placement + per-partition owner (HRW) | ✅ exists (DHT ring, governor/owner) | `ReplicaPlacement.java:16-34`; `GovernorElection.java:40-46` |
-| **Per-key write fence (single-writer enforcement)** | ✅ **IMPLEMENTED** — `staleEpochWrite` + `EpochBearing<E>` in `KVStore` Rabia applier; rejects any `Put` whose incoming epoch is strictly older than the committed one; deterministic (pure function of replicated state); covers governor + DHT ownership writes. Stream-path epoch-CAS is #345 piece 1b (remaining gap). | `KVStore.java:87-127`; `EpochBearing.java:1-38`; `AetherValue.java: DhtPartitionOwnershipValue`, `StreamPartitionOwnershipValue`; `BootstrapModule.java:367-402` |
+| Custom-resource SPI (`@ResourceQualifier` + `ResourceFactory<T,C>` via `ServiceLoader`) | ✅ **mechanical** — a new entity resource is annotation + factory + services entry, no framework edits | `ResourceQualifier.java:13-18`; `SpiResourceProvider.java:33` (class), `:82` (`ServiceLoader` scan) |
+| `StateMachineDefinition<S,E,C>` (builder, `transition(S,E,S)`, `onEntry`/`onExit`, `finalState(S)`, `build() → Result<...>`) | ✅ exists, **unused at runtime, in-memory only** | `StateMachineDefinition.java:25` (record), `:32` (`builder`), `:96-100` (`finalState`), `:114-116` (`transition(S,E,S)`), `:120-124` (`onEntry`), `:128-132` (`onExit`), `:134` (`build`); `InMemoryStateMachine.java:16-20` |
+| Partitioned placement + per-partition owner (HRW) | ✅ exists (DHT ring, governor/owner) | `ReplicaPlacement.java:16-37`; `GovernorElection.java:36-45` |
+| **Per-key write fence (single-writer enforcement)** | ✅ **IMPLEMENTED** — `staleEpochWrite` + `EpochBearing<E>` in `KVStore` Rabia applier; rejects any `Put` whose incoming epoch is strictly older than the committed one; deterministic (pure function of replicated state); covers governor + DHT ownership writes. The stream-path epoch fence (#345 piece 1b) has since shipped too — row below and §11. | `KVStore.java:275-282` (applied in `staleWrite`), `:314-331` (fence contract), `:356-360` (`staleEpochWrite`); `EpochBearing.java:35-47`; `AetherValue.java: DhtPartitionOwnershipValue`, `StreamPartitionOwnershipValue`; `BootstrapModule.java:383-409` |
 | Per-key serialization queue (serialize same-key, parallel across keys) | ✅ **SHIPPED** (v0.6.0 status update) | `PerKeySerialExecutor.java` |
 | Durable per-instance timers (one-shot, fire-and-delete, survive handover) | ✅ **SHIPPED** (#351, #345 I4): a timer is a record in the entity's own fenced log | `EntityTimerDriver.java`; `DurableEntity.java:144-222`; CHANGELOG "#351 / #345 I4" |
-| Runtime→slice invocation (dispatch) | ✅ exists | `SliceInvoker.java:95-96` |
+| Runtime→slice invocation (dispatch) | ✅ exists | `SliceInvoker.java:80-87` |
 | Timer fire on the owner | ✅ **SHIPPED** (#351): applied in-process by the entity, not through `SliceInvoker` | `EntityTimerDriver.java:17-28` |
-| Durable KV store (replicated, quorum) | ✅ exists, **in-memory — not restart-durable** (→ #349). No longer the entity's state store: since #345 I3 entity state lives on a fenced, fsync-durable, replicated stream log (§4.4). | `DHTClient.java:39-76`; `MemoryStorageEngine.java:69-73` |
+| Durable KV store (replicated, quorum) | ✅ exists, **in-memory — not restart-durable** (→ #349). No longer the entity's state store: since #345 I3 entity state lives on a fenced, fsync-durable, replicated stream log (§4.4). | `DHTClient.java:39-75`; `MemoryStorageEngine.java:69-73` |
 | Stream-path epoch fence on the entity log append | ✅ **SHIPPED** (v0.6.0 status update): a deposed owner's append is refused `StaleEpochAppend` → `EntityLogError.StaleOwnerAppend` | `StreamEntityLogSubstrate.java:267-286` |
 
 **Reading (v0.2 snapshot, superseded):** at v0.2 the remaining net-new pieces were the stream-path epoch
@@ -939,8 +939,8 @@ public sealed interface DeliveryEvidence {
   ```
 
   The default is conservative by construction: only a cause that says it is a refusal becomes `Answered`;
-  an unrecognised reply is `Sent`. **[author choice: the `StepRefusal` marker as the recognition
-  mechanism; the HTTP-status rules apply only to failures that carry a status.]**
+  an unrecognised reply is `Sent`. The `StepRefusal` marker as the recognition mechanism is
+  **CTO-confirmed (2026-10-02)**; the HTTP-status rules apply only to failures that carry a status.
 - **Evidence is persisted (v1828 N7, CTO ruling E7).** Each `StepAttempt` records the evidence its
   attempt ended with (§7.6), so an owner that takes over can tell `NotSent`-only histories from ones that
   may have reached the downstream. **An attempt whose evidence was never recorded counts as `Sent`** — a
@@ -1003,7 +1003,8 @@ by everything the runtime does for the step without a fresh decision: retries of
   remaining attempts and by the key window, not by time it spent unowned.
 
 Backoff is exponential, capped, with upward-only jitter (each wait is the computed delay × a uniform factor
-in [1.0, 1.25]), so the computed schedule is a lower bound on the time attempts take.
+in [1.0, 1.25]), so the computed schedule is a lower bound on the time attempts take. **CTO-confirmed
+(2026-10-02):** the 381 s arithmetic below and the upward-only jitter.
 
 ```java
 public record RetryBudget(int maxAttempts, Duration maxElapsed, Duration attemptTimeout,
@@ -1333,7 +1334,7 @@ deadline is therefore built so that every interleaving of those two appends with
    ticks. Each failed fire is recorded by a separate `DeadlineFireFailed(waitStep, count)` append — a
    runtime transition that runs no author code, so it cannot fail the way the fold did — and logged at
    ERROR, so the count survives a handover. **After the wait step's bounded number of fires
-   (`maxFireAttempts`, default 5 [author choice: the value]) the instance moves to
+   (`maxFireAttempts`, default 5, CTO-confirmed 2026-10-02) the instance moves to
    `NeedsReconciliation(DeadlineTransitionFailed)`** (suspended phase `Waiting`), the timer is cancelled,
    and the instance appears in the `phase=NeedsReconciliation` listing (v1828 N6, CTO ruling E6). The
    operator resolves it with `Cancel` or `Abandon` (§7.7). There is no "deploy a fixed version" exit: the
@@ -1526,7 +1527,7 @@ Rollback **redirects new starts only**. Instances already started on the rejecte
 binding and run to completion on it; that version goes DRAINING, not deallocated, until its count is zero
 or an operator force-retires it. Rollback reverses no persisted state and no external effect. This changes
 today's rollback, which deallocates the new version in the same batch as the routing removal
-(`DeploymentManagerImpl.java:374-396`, §7.11.1).
+(`DeploymentManagerImpl.java:374-398`, §7.11.1).
 
 ### 7.10 Worked example — order saga (R1–R5)
 
@@ -1674,8 +1675,8 @@ Evidence that informed R4; it records today's code, which the R4 contract (§7.9
   `removeNonTargetVersions` drops every non-target version and issues unloads
   (`ClusterDeploymentState.java:1777-1804`); rollback restores the target to the old version and removes
   the routing key in one batch, so the new version is deallocated by the same path
-  (`DeploymentManagerImpl.java:374-396`). A slice-target change when no rolling update is active for
-  the base (`ClusterDeploymentState.java:1555-1570`, guarded by `!activeRoutings.contains`), slice-target
+  (`DeploymentManagerImpl.java:374-398`). A slice-target change when no rolling update is active for
+  the base (`ClusterDeploymentState.java:1553-1570`, guarded by `!activeRoutings.contains`), slice-target
   removal (`ClusterDeploymentState.java:396-401`) and blueprint removal
   (`ClusterDeploymentState.java:1047-1060`) deallocate the same way. None reads entity state or pending timers.
 - **Two versions on one node share a keyspace without isolation.** Resources are cached per slice scope
@@ -1683,12 +1684,12 @@ Evidence that informed R4; it records today's code, which the R4 contract (§7.9
   so each version provisions its own entity instance for the same keyspace, while the node registries are
   keyed by keyspace alone: timer and checkpoint drivers keep the FIRST registrant (`putIfAbsent`,
   `EntityTimerDriver.java:59-74`, `EntityCheckpointDriver.java:244`), the owner-forward registry keeps the
-  LAST (`EntityForwardService.java:94-103`), and either version's unload unregisters all of them by
-  keyspace (`DurableEntityFactory.java:268, 313-319`), including the surviving version's.
+  LAST (`EntityForwardService.java:94-104`), and either version's unload unregisters all of them by
+  keyspace (`DurableEntityFactory.java:268, 313-320`), including the surviving version's.
   `[unverified: read from source; no two-version run was performed]`
 - **Retirement leaves state and timers in the log for whichever version still hosts the keyspace.** A
   record that build cannot decode or apply holds the partition's applied watermark, and the partition then
-  refuses reads until a build that can apply it is deployed (#701, `EntityFold.java:253-271`;
+  refuses reads until a build that can apply it is deployed (#701, `EntityFold.java:253-272`;
   `guarantees.md` §6) — an availability event, not silent loss.
 
 ---
@@ -1831,10 +1832,10 @@ Per-slice cron stays on `ScheduledTaskManager` (independent). **Two foundations 
 
 | Capability | Current | Target | Tag | Anchor |
 |---|---|---|---|---|
-| KV-path per-key fence | `staleEpochWrite` + `EpochBearing` **live in Rabia applier** | extend entity write to carry `ownerEpoch` as `EpochBearing` value | **REUSE** | `KVStore.java:87-127`; `EpochBearing.java` |
+| KV-path per-key fence | `staleEpochWrite` + `EpochBearing` **live in Rabia applier** | extend entity write to carry `ownerEpoch` as `EpochBearing` value | **REUSE** | `KVStore.java:356-360`; `EpochBearing.java` |
 | Stream-path epoch fence | v0.2: no epoch-CAS on stream append | stream-path epoch check (#345 piece 1b) | **DONE** (v0.6.0) | `StreamEntityLogSubstrate.java:267-286` |
-| `StateMachineDefinition` | exists, unused, in-memory | consume in the workflow facade (C=Unit for pure FSMs) | **REUSE** | `StateMachineDefinition.java:24` |
-| Resource SPI | exists, mechanical | register `DurableEntity`/`PersistentWorkflow`/`Saga` types | **REUSE** | `SpiResourceProvider.java:45` |
+| `StateMachineDefinition` | exists, unused, in-memory | consume in the workflow facade (C=Unit for pure FSMs) | **REUSE** | `StateMachineDefinition.java:25` |
+| Resource SPI | exists, mechanical | register `DurableEntity`/`PersistentWorkflow`/`Saga` types | **REUSE** | `SpiResourceProvider.java:33` |
 | Per-key serialization | v0.2: none | owner-side per-key queue | **DONE** (v0.6.0) | `PerKeySerialExecutor.java` |
 | Per-instance timers | v0.2: per-slice cron only | durable one-shot per-entity timers | **DONE** (#351) | `EntityTimerDriver.java` |
 | Durable KV | LWW, HLC-versioned, eventually consistent (FULL/q=1: single-node ack, stale cross-node reads); KV-path fence adds single-writer write ordering | entity state uses fenced KV (HA) → fenced log (restart-durable) | **EXTEND** | `DHTClient.java:39` |
@@ -1975,6 +1976,20 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 
 ---
 
+## Changelog — v0.10.1 (2026-10-02)
+
+**#1828 review round 4 (v1828 r3), CTO items G1–G4.**
+
+| What | Item |
+|---|---|
+| Fingerprint-only coexistence (D8) — already in v0.10.0; confirmed against r3 | G1 |
+| Rotted base citations re-pinned: `KVStore` (`staleWrite` 275-282, fence contract 314-331, `staleEpochWrite` 356-360), `SpiResourceProvider` (class :33, `ServiceLoader` scan :82), `StateMachineDefinition` (record :25, `builder` :32, `finalState` 96-100, `transition` 114-116, `onEntry` 120-124, `onExit` 128-132, `build` :134); then EVERY citation in the live sections audited, base ones included — 62 ranges, ten more tightened (`GovernorElection`, `BootstrapModule`, `SliceInvoker:80-87`, `EpochBearing:35-47`, `DHTClient`, `EntityForwardService`, `EntityFold`, `DeploymentManagerImpl`, `InMemoryStateMachine`, `ReplicaPlacement`, `DurableEntityFactory`, `ClusterDeploymentState:1553-1570`) | G2 |
+| §3 row no longer calls the stream-path fence a "remaining gap" | G3 |
+| v0.8.0 changelog-row typo | G4 |
+| CTO-confirmed: the 381 s arithmetic with upward-only jitter, the `StepRefusal` marker, `maxFireAttempts` = 5 | — |
+
+---
+
 ## Changelog — v0.10.0 (2026-10-02)
 
 **#1828 review round 3 (v1828 r2), CTO rulings E2–E9, and owner decision D8 (v1828 N1).**
@@ -2013,7 +2028,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 
 | What | Decision | v1828 | Where |
 |---|---|---|---|
-| Failures tagged `NotSent` (definite) / `Sent` (ambiguous, R1 path); untagged = `Sent`; `Answered` refusal is definite (CTO-confirmed) refusal is definite | D1 | B2 | §7.4, §7.11 A11 |
+| Failures tagged `NotSent` (definite) / `Sent` (ambiguous, R1 path); untagged = `Sent`; `Answered` refusal is definite (CTO-confirmed) | D1 | B2 | §7.4, §7.11 A11 |
 | Compensation of step `j` receives the snapshot `S_j`; snapshots kept until terminal; storage bound stated | D2 | author-choice item 2 | §7.5, §7.6, §7.11 A12 |
 | Retain code until resolved: force-retire → reconcile-only; resolution table per reason incl. `Waiting` → `Cancel`, `Abandon` always on parked instances; `resolve` takes the incarnation | D3 | B5, B7 | §7.7, §7.8, §7.9, §7.11 A7, A13, W5 |
 | §7.9 binding rules apply to workflows; added #353 scope | D4 | author-choice item 4 | §6 |
