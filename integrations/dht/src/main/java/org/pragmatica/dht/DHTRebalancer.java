@@ -19,6 +19,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -116,13 +117,37 @@ public final class DHTRebalancer {
 
     /// Budget-explicit variant of [#pushOnDeparture(DeparturePushObserver)].
     public Promise<Unit> pushOnDeparture(TimeSpan budget, DeparturePushObserver observer) {
+        return pushOnDeparture(budget, Set.of(), observer);
+    }
+
+    /// Departure push for a node leaving TOGETHER with `coDeparting` (issue #1818): every node in
+    /// that set is still in the ring but is about to halt, so it is neither a push target nor a
+    /// surviving replica. Without this, a push can land on a co-drainer that halts with the copy, and
+    /// two holders leaving together each count the other as a survivor, leaving the slot the other
+    /// vacates unstocked. Self need not be in the set.
+    public Promise<Unit> pushOnDeparture(Set<NodeId> coDeparting, DeparturePushObserver observer) {
+        return pushOnDeparture(DEFAULT_DEPARTURE_PUSH_BUDGET, coDeparting, observer);
+    }
+
+    /// Budget-explicit variant of [#pushOnDeparture(Set, DeparturePushObserver)].
+    public Promise<Unit> pushOnDeparture(TimeSpan budget, Set<NodeId> coDeparting, DeparturePushObserver observer) {
         if (config.isFullReplication()) {
             return Promise.success(Unit.unit());
         }
 
+        var leaving = leavingSet(coDeparting);
+
         return node.storage()
                    .entries()
-                   .flatMap(entries -> dispatchDeparturePush(entries, budget, observer));
+                   .flatMap(entries -> dispatchDeparturePush(entries, leaving, budget, observer));
+    }
+
+    private Set<NodeId> leavingSet(Set<NodeId> coDeparting) {
+        var leaving = new HashSet<>(coDeparting);
+
+        leaving.add(node.nodeId());
+
+        return Set.copyOf(leaving);
     }
 
     /// Resolve the pending departure push matching an incoming ack's correlation id (issue #427, D2).
@@ -134,9 +159,10 @@ public final class DHTRebalancer {
     }
 
     private Promise<Unit> dispatchDeparturePush(List<DHTMessage.KeyValue> entries,
+                                                Set<NodeId> leaving,
                                                 TimeSpan budget,
                                                 DeparturePushObserver observer) {
-        var batches = groupByTarget(entries);
+        var batches = groupByTarget(entries, leaving);
 
         return batches.isEmpty()
                ? Promise.success(Unit.unit())
@@ -145,11 +171,12 @@ public final class DHTRebalancer {
 
     /// Group every locally-held entry under each node that newly becomes responsible for it, so a
     /// target receives one push carrying all of its owed chunks.
-    private Map<NodeId, List<DHTMessage.KeyValue>> groupByTarget(List<DHTMessage.KeyValue> entries) {
+    private Map<NodeId, List<DHTMessage.KeyValue>> groupByTarget(List<DHTMessage.KeyValue> entries,
+                                                                 Set<NodeId> leaving) {
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
 
         return entries.stream()
-                      .flatMap(entry -> targetPairs(entry, replicationFactor))
+                      .flatMap(entry -> targetPairs(entry, replicationFactor, leaving))
                       .collect(Collectors.groupingBy(TargetEntry::target,
                                                      Collectors.mapping(TargetEntry::entry,
                                                                         Collectors.toList())));
@@ -157,34 +184,37 @@ public final class DHTRebalancer {
 
     private record TargetEntry(NodeId target, DHTMessage.KeyValue entry) {}
 
-    private Stream<TargetEntry> targetPairs(DHTMessage.KeyValue entry, int replicationFactor) {
+    private Stream<TargetEntry> targetPairs(DHTMessage.KeyValue entry, int replicationFactor, Set<NodeId> leaving) {
         return departureTargets(entry.key(),
-                                replicationFactor).stream()
-                               .map(target -> new TargetEntry(target, entry));
+                                replicationFactor,
+                                leaving).stream()
+                                        .map(target -> new TargetEntry(target, entry));
     }
 
     /// Post-departure delta target set for one key (issue #427, D3). `newSet` is the responsible set
-    /// with self excluded (the filtered ring overload — robust whether or not self is still in the
-    /// ring). When self is still a ring member (the designed drain ordering), the nodes already
-    /// holding the key are the non-self members of the current responsible set, so only the genuine
-    /// newcomers (`newSet \ existing`) are targeted. When self has ALREADY been pruned (the ring can
-    /// no longer identify the newcomer), fall back to the whole `newSet`: the versioned puts are
-    /// idempotent, so re-sending to an existing replica is harmless, and this guarantees no loss
-    /// regardless of the prune-vs-drain ordering.
-    private List<NodeId> departureTargets(byte[] key, int replicationFactor) {
-        var self = node.nodeId();
-        var newSet = node.ring().nodesFor(key, replicationFactor, candidate -> !candidate.equals(self));
+    /// with every `leaving` node excluded — self and each co-departing node (issue #1818) — via the
+    /// filtered ring overload, robust whether or not they are still in the ring. When self is still a
+    /// ring member (the designed drain ordering), the nodes already holding the key are the members of
+    /// the current responsible set that are NOT leaving, so only the genuine newcomers
+    /// (`newSet \ existing`) are targeted. When self has ALREADY been pruned (the ring can no longer
+    /// identify the newcomer), fall back to the whole `newSet`: the versioned puts are idempotent, so
+    /// re-sending to an existing replica is harmless, and this guarantees no loss regardless of the
+    /// prune-vs-drain ordering.
+    private List<NodeId> departureTargets(byte[] key, int replicationFactor, Set<NodeId> leaving) {
+        var newSet = node.ring().nodesFor(key, replicationFactor, candidate -> !leaving.contains(candidate));
         var currentSet = node.ring().nodesFor(key, replicationFactor);
 
-        return currentSet.contains(self)
-               ? excludeExistingReplicas(newSet, currentSet, self)
+        return currentSet.contains(node.nodeId())
+               ? excludeExistingReplicas(newSet, currentSet, leaving)
                : newSet;
     }
 
-    private static List<NodeId> excludeExistingReplicas(List<NodeId> newSet, List<NodeId> currentSet, NodeId self) {
+    private static List<NodeId> excludeExistingReplicas(List<NodeId> newSet,
+                                                        List<NodeId> currentSet,
+                                                        Set<NodeId> leaving) {
         var existing = new HashSet<>(currentSet);
 
-        existing.remove(self);
+        existing.removeAll(leaving);
 
         return newSet.stream()
                      .filter(candidate -> !existing.contains(candidate))

@@ -2984,9 +2984,12 @@ public interface AetherNode extends ManageableNode {
         // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
         // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
         // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
+        // #1818: the push excludes every node the leader commanded to drain alongside this one (the
+        // ping's global drain set), so it never lands on, or counts as a survivor, a co-drainer.
         var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
         var movementDrain = new AtomicReference<Option<CommunityDrainCoordinator>>(Option.none());
-        Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(departurePushObserverRef.get())
+        Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(metricsCollector.commandedDrainNodes(),
+                                                                                    departurePushObserverRef.get())
                                                                    .flatMap(_ -> movementDrain.get()
                                                                                               .fold(Promise::unitPromise,
                                                                                                     CommunityDrainCoordinator::onQuiesced));
