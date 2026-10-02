@@ -6931,7 +6931,8 @@ public interface AetherNode extends ManageableNode {
     /// Package-private so a test pins the observation each callback produces, not only the
     /// cause→origin mapping. A join or reconnect first starts a new ClusterSync missed-pong epoch
     /// for the peer (R-a: misses counted against the previous link are discarded) and then sends
-    /// `PeerReachable`; a departure sends a `PEER_LEFT` hint, which is `LINK_LOST`.
+    /// `PeerReachable`; a departure sends a `PEER_LEFT` hint, which is `LINK_LOST`; a dial answered by
+    /// another identity sends `IdentityRefuted` for the dialed identity only (#1830).
     static QuicPeerStateListener quicPeerStateListener(Consumer<TransportObservation> swimHints,
                                                        Consumer<NodeId> linkEstablished) {
         return new QuicPeerStateListener() {
@@ -6952,6 +6953,15 @@ public interface AetherNode extends ManageableNode {
             public void onPeerLeft(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
                 swimHints.accept(unreachableHint(QuicTransportCause.PEER_LEFT, nodeId));
+            }
+
+            @Override
+            @Contract
+            public void onPeerIdentityRefuted(NodeId dialed, NodeId claimant) {
+                LOG.debug("QuicPeerState: onPeerIdentityRefuted({}, answered by {}) — recordTransportHint(refuted)",
+                          dialed,
+                          claimant);
+                swimHints.accept(new TransportObservation.IdentityRefuted(dialed, claimant));
             }
         };
     }
