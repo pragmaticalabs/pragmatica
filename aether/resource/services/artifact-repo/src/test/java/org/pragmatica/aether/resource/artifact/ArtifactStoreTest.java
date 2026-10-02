@@ -214,7 +214,7 @@ class ArtifactStoreTest {
                 "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4-sources.jar/meta",
                 "artifacts/org.example/keyed/1.0.0-rc4/files");
             assertThat(new String(dhtStorage.get("artifacts/org.example/keyed/1.0.0-rc4/files"), StandardCharsets.UTF_8))
-                .isEqualTo("keyed-1.0.0-rc4.jar,keyed-1.0.0-rc4.pom,keyed-1.0.0-rc4-sources.jar");
+                .isEqualTo("keyed-1.0.0-rc4-sources.jar,keyed-1.0.0-rc4.jar,keyed-1.0.0-rc4.pom");
         }
 
         @Test
