@@ -49,7 +49,7 @@ The repository catalog sits beside three existing planes. Each gives a different
 
 Keep `ArtifactStore`'s slice-facing operations (deploy, resolve, versions and, after #1821, archive in place of delete) and Aether's `Artifact`/`Version` usable by existing callers. Introduce a general repository API and adapt internal coordinates to an internal repository namespace. Do not widen the slice version grammar or switch its ordering semantics as a side effect of supporting Maven versions.
 
-Migration. Before GA no migration path is required: the owner's pre-GA ruling (2026-09-16) permits breaking format changes without one, and #1821 already drops compatibility with pre-#1778 internal stores. Once data must cross a format boundary after GA, migration MUST be explicit:
+Migration (owner-approved 2026-10-02, epic #1831). Before GA no migration path is required: the owner's pre-GA ruling (2026-09-16) permits breaking format changes without one, and #1821 already drops compatibility with pre-#1778 internal stores. Once data must cross a format boundary after GA, migration MUST be explicit:
 
 - Introduce a versioned catalog namespace/format.
 - Existing entries can be imported by a verified inventory of their exact files. If the old store cannot enumerate them, require a supplied coordinate manifest or republish from the build source.
@@ -180,7 +180,7 @@ Sealed import/export preserves paths, metadata, digests and provenance in a vers
 
 An enumerable durable catalog drives paginated browse/search and retention. Search projections expose their revision/lag or a documented bounded-staleness contract. An exact path lookup does not depend on the search index. Recovery can rebuild projections without losing publication facts.
 
-Provide read, publish and repository-administration permissions, optionally scoped to namespaces, and optional anonymous reads. A build publisher MUST NOT require cluster-operator privileges. Reuse security infrastructure but expose a convenient standard-client credential path, with local credentials available in sealed deployments. Audit publication conflicts, administrative changes, imports and retention actions. Unauthenticated publication is never a product posture: the internal store accepts it under `security_mode=NONE` or insecure dev mode, with a warning, and the standalone product must not inherit that.
+Provide read, publish and repository-administration permissions, optionally scoped to namespaces, and optional anonymous reads. A build publisher MUST NOT require cluster-operator privileges. Reuse security infrastructure but expose a convenient standard-client credential path, with local credentials available in sealed deployments. Audit publication conflicts, administrative changes, imports and retention actions. Unauthenticated publication is never a product posture: the internal store accepts it under `security_mode=NONE` or insecure dev mode, with a warning, and the standalone product must not inherit that (owner-approved 2026-10-02, epic #1831).
 
 The new UI and matching API/CLI cover repository/upstream configuration, browse/search/file inspection, credentials, capacity/health, sync progress, retention previews/results, backup/restore and existing desired-node-count scaling. Show logical, retained, temporary and physical storage separately where available; do not substitute process-local counters for cluster inventory.
 
@@ -192,7 +192,7 @@ A repository backup contains a catalog checkpoint (or checkpoint vector), all re
 
 Unless a stronger barrier is implemented, a partition-vector backup is a consistent collection of resource revisions and references, not a globally atomic multi-artifact release snapshot. State that distinction. Import/restore verifies hashes, restores catalog authority and required references, and rebuilds derived indexes before declaring readiness.
 
-Acceptance scenarios:
+Acceptance scenarios (the `1.0.0-rc.1` case in C1 and the signature/SHA-256/SHA-512 sidecar case in C3 are owner-approved 2026-10-02, epic #1831):
 
 | ID | Scenario and required outcome |
 |---|---|
