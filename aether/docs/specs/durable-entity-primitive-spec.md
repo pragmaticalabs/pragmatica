@@ -1619,7 +1619,10 @@ the bound version's:
   definition-level retirement is distinct. The trigger is **an operator's `retire definition` request**,
   accepted only when **no deployed caller still holds the old contract** — every slice load registers the
   `SagaContract` descriptors it was compiled against (below), so the cluster knows which deployed slices
-  hold which contract, and a retire request while any does is refused with the holders named. Once retired,
+  hold which contract, and a retire request while any does is refused with the holders named. **Only
+  callers count:** the descriptors registered by non-hosting slices, and the hosting slice's own call sites
+  that still address the old name. The defining slice's own hosting registration of the old definition does
+  not count — otherwise retirement would be refused for as long as that slice registers both names. Once retired,
   the old definition takes no new starts (`run` refused `SagaError.DefinitionRetired`); its instances keep
   executing their bound work (steps, signals, deadlines, compensation), its versions drain per R4b, and it
   is gone when its last instance finishes. Because the old contract never changes and its callers stay
