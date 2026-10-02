@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.DoubleSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -159,6 +160,21 @@ public final class LeaderElectionContext {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// The voters a pre-vote is counted over: the installed voter set, else the configured cluster, else the
+    /// transport view — always including this node.
+    public List<NodeId> electorate() {
+        var base = installedVoters.get().or(expectedCluster.isEmpty()
+                                            ? currentTopology()
+                                            : expectedCluster);
+
+        return base.contains(self)
+               ? base
+               : Stream.concat(base.stream(),
+                               Stream.of(self))
+                       .sorted()
+                       .toList();
+    }
+
     public boolean isEligible(NodeId node) {
         return installedVoters.get()
                               .map(voters -> voters.contains(node))
@@ -205,6 +221,9 @@ public final class LeaderElectionContext {
     /// that delivery instead of electing on the grace's wall clock. Installed by the consensus wiring
     /// ([`#installKvSyncPending`]); the default reports no pending sync, which keeps the plain grace.
     private final AtomicReference<Supplier<Boolean>> kvSyncPending = new AtomicReference<>(() -> false);
+    /// Leader pre-vote (#1748). Absent until [`#enablePreVote`]: without it a follower that loses the leader
+    /// re-elects immediately, which is what local-election mode and the stubs that never wire a network need.
+    private final AtomicReference<Option<LeaderPreVote>> preVote = new AtomicReference<>(Option.none());
     private final AtomicBoolean proposalInFlight = new AtomicBoolean(false);
     private final AtomicInteger electionRetryCount = new AtomicInteger(0);
     private final AtomicInteger stuckElectionCount = new AtomicInteger(0);
@@ -631,6 +650,26 @@ public final class LeaderElectionContext {
 
     /// `true` while the node's KV state still trails the committed frontier, so a committed leader may
     /// yet arrive through KV sync.
+    /// Turns the leader pre-vote on (#1748). Called by the consensus wiring, the only place a network exists
+    /// to ask over; idempotent.
+    @Contract
+    public void enablePreVote() {
+        enablePreVote(LeaderPreVote.DEFAULT_TIMEOUT);
+    }
+
+    /// As [`#enablePreVote()`] with an explicit round timeout — tests drive short rounds.
+    @Contract
+    public void enablePreVote(TimeSpan roundTimeout) {
+        if (preVote.get().isEmpty()) {
+            preVote.set(Option.some(LeaderPreVote.leaderPreVote(this, roundTimeout)));
+        }
+    }
+
+    /// The pre-vote coordinator, present once [`#enablePreVote`] ran.
+    public Option<LeaderPreVote> preVote() {
+        return preVote.get();
+    }
+
     public boolean isKvSyncPending() {
         return kvSyncPending.get()
                             .get();
