@@ -216,6 +216,25 @@ public final class MembershipFsm {
     /// drives. Reset to the no-op by passing `null` to [`#onNeverJoinedDeath`].
     private volatile Consumer<NodeId> onNeverJoinedDeath = ignored -> {};
 
+    /// Reachable-death listener (#1835) invoked ONCE per fresh edge into DEAD for a member whose
+    /// [`MemberTracking#everReachable`] latch was set AT THAT EDGE — this node's FSM saw reachability
+    /// evidence (QUIC handshake, SWIM ALIVE, governor / worker-admission health) before the death. SWIM ALIVE
+    /// includes gossip-relayed ALIVE (`SwimProtocol.notifyAlive` / `applyNewAliveMember`), so the evidence is
+    /// not necessarily first-hand. This is the only identity-established subject a "failed" verdict is
+    /// about, so it is the edge the user-facing NODE_FAILED event and CRITICAL alert ride.
+    /// ADDITIVE to [`#onConfirmedDeparture`], which still fires for every DEAD path.
+    /// The latch is read inside the per-member monitor at the edge
+    /// and carried into the emission, so a later retirement of the tracking cannot change the verdict.
+    /// Default no-op. Reset to the no-op by passing `null` to [`#onReachableDeath`].
+    private volatile Consumer<NodeId> onReachableDeath = ignored -> {};
+
+    /// Never-reachable-death listener (#1835): the complement of [`#onReachableDeath`] — a fresh edge into
+    /// DEAD for a member this node's FSM NEVER observed reachable. A configured core promoted by [`#seed`]
+    /// that was never reached (slow JVM boot, phantom seed) dies here, and "failed" would be a verdict about
+    /// a subject whose identity was never established. Exactly one of the two listeners fires per DEAD edge.
+    /// Default no-op. Reset to the no-op by passing `null` to [`#onNeverReachableDeath`].
+    private volatile Consumer<NodeId> onNeverReachableDeath = ignored -> {};
+
     /// Departing-edge listener (seed-500 part 2) invoked ONCE per fresh edge INTO `Departing` —
     /// at the SAME central dispatch chokepoint ([`MemberTracking#dispatch`]) that arms the H2
     /// DEPARTING timeout — for the THREE deliberate-departure ingresses that reach DEPARTING:
@@ -415,6 +434,25 @@ public final class MembershipFsm {
         this.onConfirmedDeparture = listener == null
                                     ? ignored -> {}
                                     : listener;
+    }
+
+    /// Register the reachable-death listener (#1835) — see [`#onReachableDeath`]. AetherNode wires this to
+    /// `NodeDepartureNotifier`, the one unit that owns the NODE_FAILED event and CRITICAL alert pair.
+    /// A `null` argument resets it to the no-op.
+    @Contract
+    public void onReachableDeath(Consumer<NodeId> listener) {
+        this.onReachableDeath = listener == null
+                                ? ignored -> {}
+                                : listener;
+    }
+
+    /// Register the never-reachable-death listener (#1835) — see [`#onNeverReachableDeath`]. AetherNode wires
+    /// this to a non-CRITICAL "never joined" operator warning. A `null` argument resets it to the no-op.
+    @Contract
+    public void onNeverReachableDeath(Consumer<NodeId> listener) {
+        this.onNeverReachableDeath = listener == null
+                                     ? ignored -> {}
+                                     : listener;
     }
 
     /// Register the join-grace-reap actuation listener invoked ONCE per never-healthy join-grace
@@ -1170,6 +1208,18 @@ public final class MembershipFsm {
         onConfirmedDeparture.accept(id);
     }
 
+    /// Reachability-split hooks invoked from [`MemberTracking#enteredDead`] with the latch value read AT
+    /// the edge (#1835); see [`#onReachableDeath`] / [`#onNeverReachableDeath`].
+    private void reachableDeathEdge(NodeId id) {
+        onReachableDeath.accept(id);
+    }
+
+    private void neverReachableDeathEdge(NodeId id) {
+        log.info("MembershipFsm member {} reached DEAD without ever being observed reachable — never joined, not failed",
+                 id);
+        onNeverReachableDeath.accept(id);
+    }
+
     /// Reap-edge actuation hook invoked from [`MemberTracking#enteredDead`] ONLY when the fresh edge
     /// into DEAD was driven by [`JoinGraceExpiredNeverHealthy`] (never-healthy join-grace reap; by
     /// the state table this edge fires only from OBSERVED). ADDITIVE to [`#onEnteredDead`], which
@@ -1269,6 +1319,8 @@ public final class MembershipFsm {
         var tracking = new MemberTracking(id,
                                           fsm,
                                           this::onEnteredDead,
+                                          this::reachableDeathEdge,
+                                          this::neverReachableDeathEdge,
                                           this::onJoinGraceReaped,
                                           this::neverJoinedDeathEdge,
                                           this::onDepartingEdge,
@@ -1313,6 +1365,10 @@ public final class MembershipFsm {
         private final NodeId id;
         private final Fsm<MembershipState, MembershipEvent> fsm;
         private final Consumer<NodeId> onEnteredDead;
+        /// Reachability-split sinks (#1835) — exactly one fires per fresh DEAD edge, chosen by
+        /// [`#everReachable`] as read inside [`#enteredDead`]. ADDITIVE to [`#onEnteredDead`].
+        private final Consumer<NodeId> onReachableDeath;
+        private final Consumer<NodeId> onNeverReachableDeath;
         /// Join-grace-reap actuation sink — invoked from [`#enteredDead`] ONLY when the fresh DEAD
         /// edge was driven by [`JoinGraceExpiredNeverHealthy`] (the never-healthy reap, OBSERVED→DEAD
         /// by the state table). ADDITIVE to [`#onEnteredDead`], which fires for every DEAD path.
@@ -1465,6 +1521,8 @@ public final class MembershipFsm {
         private MemberTracking(NodeId id,
                                Fsm<MembershipState, MembershipEvent> fsm,
                                Consumer<NodeId> onEnteredDead,
+                               Consumer<NodeId> onReachableDeath,
+                               Consumer<NodeId> onNeverReachableDeath,
                                Consumer<NodeId> onJoinGraceReaped,
                                Consumer<NodeId> onNeverJoinedDeath,
                                Consumer<NodeId> onEnteredDeparting,
@@ -1478,6 +1536,8 @@ public final class MembershipFsm {
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
+            this.onReachableDeath = onReachableDeath;
+            this.onNeverReachableDeath = onNeverReachableDeath;
             this.onJoinGraceReaped = onJoinGraceReaped;
             this.onNeverJoinedDeath = onNeverJoinedDeath;
             this.onEnteredDeparting = onEnteredDeparting;
@@ -1700,6 +1760,13 @@ public final class MembershipFsm {
             cancelEvictionBackstop();
             cancelJoinGrace();
             emissions.add(() -> onEnteredDead.accept(id));
+            // #1835: the latch is read HERE, under this monitor, and carried into the emission. The
+            // tracking entry is KEPT on DEAD (`trackingFor` re-arms it in place) and is removed only by
+            // `setTrackingEligibility`, which may retire it before the emission runs, so the verdict must
+            // not be re-queried afterwards.
+            emissions.add(everReachable
+                          ? () -> onReachableDeath.accept(id)
+                          : () -> onNeverReachableDeath.accept(id));
             if (triggeringEvent instanceof JoinGraceExpiredNeverHealthy) {
                 emissions.add(() -> onJoinGraceReaped.accept(id));
             }
