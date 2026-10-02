@@ -188,7 +188,7 @@ public final class DHTRebalancer {
         return departureTargets(entry.key(),
                                 replicationFactor,
                                 leaving).stream()
-                                        .map(target -> new TargetEntry(target, entry));
+                               .map(target -> new TargetEntry(target, entry));
     }
 
     /// Post-departure delta target set for one key (issue #427, D3). `newSet` is the responsible set

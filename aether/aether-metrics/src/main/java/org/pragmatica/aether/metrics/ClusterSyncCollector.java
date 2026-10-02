@@ -367,7 +367,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// Global drain set of the latest authoritative ping (issue #1818), recorded before the
     /// self-check so a drainer can see the nodes commanded to leave with it.
     private final AtomicReference<Set<NodeId>> commandedDrainNodes = new AtomicReference<>(Set.of());
-
     private final AtomicReference<Predicate<NodeId>> eligibleProducer = new AtomicReference<>(_ -> false);
     private final AtomicReference<Predicate<NodeId>> coreSender = new AtomicReference<>(_ -> false);
     private final AtomicReference<Predicate<NodeId>> authoritySender = new AtomicReference<>(_ -> false);
@@ -687,7 +686,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// global drain set; each receiver self-checks `drainNodes.contains(self)`.
     private void handleDrainCommand(ClusterSyncPing ping) {
         commandedDrainNodes.set(ping.drainNodes());
-
         if (!ping.drainNodes().contains(self)) {
             return;
         }

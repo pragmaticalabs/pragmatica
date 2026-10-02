@@ -316,11 +316,11 @@ public final class DHTNode {
     @Contract
     public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
         entries.forEach(kv -> storage.putReplica(kv.key(),
-                                                   kv.value(),
-                                                   kv.version(),
-                                                   kv.epochIncarnation(),
-                                                   kv.epochTerm(),
-                                                   kv.epochCounter()));
+                                                 kv.value(),
+                                                 kv.version(),
+                                                 kv.epochIncarnation(),
+                                                 kv.epochTerm(),
+                                                 kv.epochCounter()));
     }
 
     /// Compute a CRC32 digest over sorted key-value entries.
