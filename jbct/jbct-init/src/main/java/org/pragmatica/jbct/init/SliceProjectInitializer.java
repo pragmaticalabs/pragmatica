@@ -670,6 +670,11 @@ public final class SliceProjectInitializer {
         echo "If Forge is running, the slice is now available."
         """;
 
+    /// The cluster's artifact repository is write-once and takes no SNAPSHOT (#1778), so a test deploy stamps a
+    /// unique RELEASE version per push: `<base>-<short git sha>` from a clean git checkout (the version then names
+    /// the commit), else `<base>-<UTC timestamp>`. `DEPLOY_STAMP` overrides the stamp. The pom is stamped for the
+    /// build and restored on exit. Rebuilding one commit can produce different jar bytes, which the store refuses
+    /// under the same version: commit a change or set `DEPLOY_STAMP`.
     private static final String DEPLOY_TEST_TEMPLATE = """
         #!/bin/bash
         # Deploy this slice to a test Aether cluster.
@@ -677,9 +682,33 @@ public final class SliceProjectInitializer {
         # Requires the `aether` CLI on PATH, pointed at your test cluster with either
         #   -c <host:port>            (per invocation), or
         #   AETHER_ENDPOINT=<host:port>  (environment).
+        #
+        # The cluster's artifact repository is write-once and takes no SNAPSHOT, so every push is stamped with a
+        # unique release version: <base>-<short git sha> from a clean git checkout, otherwise <base>-<UTC timestamp>
+        # (override with DEPLOY_STAMP). The pom is restored afterwards. If you rebuild the same commit and the
+        # repository refuses it (409, different jar bytes under the same version), commit a change or set DEPLOY_STAMP.
         set -e
 
-        COORDS="{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT"
+        BASE_VERSION=$(mvn -q -N help:evaluate -Dexpression=project.version -DforceStdout)
+        BASE_VERSION="${BASE_VERSION%-SNAPSHOT}"
+
+        if [ -n "${DEPLOY_STAMP:-}" ]; then
+            STAMP="$DEPLOY_STAMP"
+        elif git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -z "$(git status --porcelain)" ]; then
+            STAMP=$(git rev-parse --short=8 HEAD)
+        else
+            STAMP=$(date -u +%Y%m%d%H%M%S)
+        fi
+
+        VERSION="${BASE_VERSION}-${STAMP}"
+        COORDS="{{groupId}}:{{artifactId}}:${VERSION}"
+
+        POM_BACKUP=$(mktemp)
+        cp pom.xml "$POM_BACKUP"
+        trap 'cp "$POM_BACKUP" pom.xml; rm -f "$POM_BACKUP"' EXIT
+
+        echo "Stamping release version $VERSION..."
+        mvn -q versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
 
         echo "Building and installing to local Maven repository..."
         mvn clean install -DskipTests
@@ -693,9 +722,11 @@ public final class SliceProjectInitializer {
         aether blueprints deploy "$COORDS" --wait
 
         echo ""
-        echo "Deployed to test cluster."
+        echo "Deployed $COORDS to test cluster."
         """;
 
+    /// A production deploy needs a real release version, chosen by a person: it refuses a SNAPSHOT before the
+    /// confirmation prompt and before any build (#1778).
     private static final String DEPLOY_PROD_TEMPLATE = """
         #!/bin/bash
         # Deploy this slice to a PRODUCTION Aether cluster.
@@ -707,11 +738,24 @@ public final class SliceProjectInitializer {
         #   2. The `aether` CLI on PATH, pointed at your cluster with either
         #        -c <host:port>              (per invocation), or
         #        AETHER_ENDPOINT=<host:port>    (environment).
+        #   3. A release version in the pom (not a SNAPSHOT).
         set -e
 
-        COORDS="{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT"
+        VERSION=$(mvn -q -N help:evaluate -Dexpression=project.version -DforceStdout)
 
-        echo "WARNING: Deploying to PRODUCTION"
+        case "$VERSION" in
+            *-SNAPSHOT)
+                echo "ERROR: the project version is $VERSION, a SNAPSHOT." >&2
+                echo "A production deploy needs a release version: the cluster's artifact repository is" >&2
+                echo "write-once and takes no SNAPSHOT. Set one, commit it, and run this script again:" >&2
+                echo "    mvn versions:set -DnewVersion=1.0.0" >&2
+                exit 1
+                ;;
+        esac
+
+        COORDS="{{groupId}}:{{artifactId}}:${VERSION}"
+
+        echo "WARNING: Deploying $COORDS to PRODUCTION"
         echo ""
         read -p "Are you sure? (yes/no): " confirm
 
