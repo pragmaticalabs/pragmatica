@@ -191,7 +191,8 @@ public final class DHTNode {
 
         var holders = new HashSet<>(recorded);
 
-        holders.addAll(ring.nodesFor(partition, 2 * config.effectiveReplicationFactor(ring.nodeCount())));
+        holders.addAll(ring.nodesFor(partition,
+                                     2 * config.effectiveReplicationFactor(ring.nodeCount())));
 
         return Set.copyOf(holders);
     }

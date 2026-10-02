@@ -100,7 +100,8 @@ final class CatchUpState {
 
     /// Count one more catch-up round started for `partition`; returns the count, or 0 when it is serving.
     int noteRound(Partition partition) {
-        return Option.option(pending.computeIfPresent(partition.value(), (_, entry) -> entry.nextRound()))
+        return Option.option(pending.computeIfPresent(partition.value(),
+                                                      (_, entry) -> entry.nextRound()))
                      .map(Pending::rounds)
                      .or(0);
     }

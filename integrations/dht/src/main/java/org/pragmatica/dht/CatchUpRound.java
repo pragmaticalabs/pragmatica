@@ -95,11 +95,12 @@ final class CatchUpRound {
     /// catching-up sources never decides on silence — it would be anchorless on a guess. Returns `true`
     /// exactly once, when this call claimed the decision.
     boolean decideOnAnswersInHand() {
-        var anyServing = answers.values()
-                                .stream()
-                                .anyMatch(answer -> answer.readiness().authoritative());
+        var anyServing = answers.values().stream().anyMatch(answer -> answer.readiness()
+                                                                            .authoritative());
 
-        return anyServing && !anyUnknown() && decided.compareAndSet(false, true);
+        return anyServing
+               && !anyUnknown()
+               && decided.compareAndSet(false, true);
     }
 
     int silentCount() {

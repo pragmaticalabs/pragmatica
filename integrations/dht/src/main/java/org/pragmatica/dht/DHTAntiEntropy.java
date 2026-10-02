@@ -298,9 +298,7 @@ public final class DHTAntiEntropy {
             log.warn("Partition {} is still catching up after {} rounds: no serving source among {} has answered",
                      partition.value(),
                      rounds,
-                     sources.stream()
-                            .map(NodeId::id)
-                            .toList());
+                     sources.stream().map(NodeId::id).toList());
         }
     }
 
