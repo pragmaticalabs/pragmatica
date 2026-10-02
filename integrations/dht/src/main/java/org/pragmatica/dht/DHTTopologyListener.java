@@ -90,7 +90,7 @@ public final class DHTTopologyListener {
 
         departing.remove(addedNodeId);
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
-        node.ring().addNode(addedNodeId);
+        node.changeRing(ring -> ring.addNode(addedNodeId));
         antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
     }
 
@@ -142,7 +142,7 @@ public final class DHTTopologyListener {
     public void onNodeRecovered(NodeId recoveredNodeId) {
         log.info("DHT: Node {} recovered from DEPARTING, re-adding to ring", recoveredNodeId.id());
         departing.remove(recoveredNodeId);
-        node.ring().addNode(recoveredNodeId);
+        node.changeRing(ring -> ring.addNode(recoveredNodeId));
         // Same shape as a join: the re-added node counts toward RF again; a round settles what it
         // missed while pruned (issue #420).
         antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
@@ -178,9 +178,13 @@ public final class DHTTopologyListener {
     /// transient QUIC flap. Genuinely-dead peers reach `NodeRemoved` via SWIM failure
     /// detection + reconciler decision within seconds; transient flaps reconnect and
     /// preserve ring locality.
+    ///
+    /// A removal can make this node a replica of partitions it never held (#1777 track 2): those become
+    /// catching up, and one anti-entropy round starts filling them at once rather than at the next tick.
     private void removeFromRing(NodeId removedNodeId) {
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
-        node.ring().removeNode(removedNodeId);
+        node.changeRing(ring -> ring.removeNode(removedNodeId));
         rebalancer.onPresent(r -> r.onNodeRemoved(removedNodeId));
+        antiEntropy.onPresent(DHTAntiEntropy::catchUpNow);
     }
 }

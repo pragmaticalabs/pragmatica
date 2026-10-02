@@ -106,6 +106,7 @@ import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.aether.api.routes.EntityCheckpointRoutes;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
+import org.pragmatica.dht.DHTNode;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
@@ -672,6 +673,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                  .consensusSnapshot()
                                                                  .counterMap());
         registerStreamMemoryMetrics();
+        registerDhtCatchUpMetrics();
         var transport = tls.isPresent()
                         ? "HTTPS"
                         : "HTTP";
@@ -686,6 +688,17 @@ class ManagementServerImpl implements ManagementServer {
 
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
+    }
+
+    /// #1777: DHT partitions still catching up after `DHTAntiEntropy.STUCK_AFTER_ROUNDS` rounds — non-zero means a
+    /// partition this node replicates cannot be filled (every source that may hold it is silent).
+    private void registerDhtCatchUpMetrics() {
+        Supplier<Number> stuck = () -> nodeSupplier.get()
+                                                   .dhtNode()
+                                                   .map(DHTNode::stuckCatchUpPartitions)
+                                                   .or(0);
+
+        observability.gauge("aether.dht.catchup.stuck.partitions", stuck);
     }
 
     private static double computeStreamMemoryRatio(StreamPartitionManager spm) {
