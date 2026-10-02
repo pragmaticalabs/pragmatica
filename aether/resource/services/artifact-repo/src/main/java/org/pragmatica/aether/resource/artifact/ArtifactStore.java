@@ -688,9 +688,11 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     /// `NotCaughtUp` (#1777 track 2) is a read that met replicas still filling after a ring change: retried like
-    /// an unreachable quorum, and never mistaken for an answer about the artifact.
+    /// an unreachable quorum, and never mistaken for an answer about the artifact. `WriteIndeterminate` (#1818,
+    /// the owner's fence ruling) is a put that lost its quorum to owner-epoch fences and may have been applied:
+    /// retried like an unreachable quorum, stamped with the owner epoch current by then.
     private static boolean isTransientDhtFailure(Cause cause) {
-        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached || cause instanceof DHTError.NotCaughtUp;
+        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached || cause instanceof DHTError.NotCaughtUp || cause instanceof DHTError.WriteIndeterminate;
     }
 
     /// Bounded retry for the DHT READ/resolve path. Mirrors `dhtPutWithRetry` but guards

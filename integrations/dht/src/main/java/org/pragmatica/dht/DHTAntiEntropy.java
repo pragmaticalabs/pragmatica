@@ -26,11 +26,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import java.util.function.Predicate;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.IdGenerator;
@@ -76,6 +78,9 @@ public final class DHTAntiEntropy {
     private final DHTConfig config;
     private final TimeSpan antiEntropyInterval;
     private final TimeSpan catchUpRoundTimeout;
+    /// Which senders may push a departure batch (`ackRequested`) here: the nodes the leader commanded to
+    /// drain, or that the membership has seen depart. Strict by default — no sender.
+    private final Predicate<NodeId> departingSenders;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
@@ -85,23 +90,29 @@ public final class DHTAntiEntropy {
     /// Pending digest comparisons indexed by correlation ID.
     private final ConcurrentHashMap<String, PendingDigest> pendingDigests = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CatchUpDigest> catchUpDigests = new ConcurrentHashMap<>();
+    /// Pulls in flight, by correlation id: an answer is attributed to its partition — and, for a catch-up
+    /// pull, to its round — only when it comes from the node asked (#1818 round 3, #1777 track 2).
     private final ConcurrentHashMap<String, PendingPull> pendingPulls = new ConcurrentHashMap<>();
     /// The live catch-up round per pending partition index.
     private final ConcurrentHashMap<Integer, CatchUpRound> rounds = new ConcurrentHashMap<>();
     private final AtomicLong roundIds = new AtomicLong();
     /// Pulls a holder refused (ring disagreement or an unreadable store) — counted, never silent (#1777).
     private final AtomicLong refusedPulls = new AtomicLong();
+    /// Migration batches dropped as unauthentic — counted, never silent.
+    private final AtomicLong rejectedResponses = new AtomicLong();
 
     private DHTAntiEntropy(DHTNode node,
                            DHTNetwork network,
                            DHTConfig config,
                            TimeSpan antiEntropyInterval,
-                           TimeSpan catchUpRoundTimeout) {
+                           TimeSpan catchUpRoundTimeout,
+                           Predicate<NodeId> departingSenders) {
         this.node = node;
         this.network = network;
         this.config = config;
         this.antiEntropyInterval = antiEntropyInterval;
         this.catchUpRoundTimeout = catchUpRoundTimeout;
+        this.departingSenders = departingSenders;
         node.ring().onNodeRemoved(this::dropRoundsAsking);
     }
 
@@ -111,7 +122,30 @@ public final class DHTAntiEntropy {
     /// @param network cluster network for sending digest requests
     /// @param config  DHT configuration
     public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DHTAntiEntropy(node, network, config, DEFAULT_ANTI_ENTROPY_INTERVAL, CATCH_UP_ROUND_TIMEOUT);
+        return new DHTAntiEntropy(node,
+                                  network,
+                                  config,
+                                  DEFAULT_ANTI_ENTROPY_INTERVAL,
+                                  CATCH_UP_ROUND_TIMEOUT,
+                                  _ -> false);
+    }
+
+    /// Create an anti-entropy process that accepts departure pushes from `departingSenders`.
+    ///
+    /// @param node             local DHT node with storage and ring
+    /// @param network          cluster network for sending digest requests
+    /// @param config           DHT configuration
+    /// @param departingSenders the nodes a departure push (`ackRequested`) is accepted from
+    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node,
+                                                DHTNetwork network,
+                                                DHTConfig config,
+                                                Predicate<NodeId> departingSenders) {
+        return new DHTAntiEntropy(node,
+                                  network,
+                                  config,
+                                  DEFAULT_ANTI_ENTROPY_INTERVAL,
+                                  CATCH_UP_ROUND_TIMEOUT,
+                                  departingSenders);
     }
 
     /// Create an anti-entropy process for the given node with configurable interval.
@@ -124,7 +158,7 @@ public final class DHTAntiEntropy {
                                                 DHTNetwork network,
                                                 DHTConfig config,
                                                 TimeSpan antiEntropyInterval) {
-        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT);
+        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT, _ -> false);
     }
 
     /// Test seam: an anti-entropy process whose catch-up rounds time out after `catchUpRoundTimeout`.
@@ -133,7 +167,7 @@ public final class DHTAntiEntropy {
                                          DHTConfig config,
                                          TimeSpan antiEntropyInterval,
                                          TimeSpan catchUpRoundTimeout) {
-        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, catchUpRoundTimeout);
+        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, catchUpRoundTimeout, _ -> false);
     }
 
     /// Start the periodic anti-entropy process.
@@ -420,15 +454,15 @@ public final class DHTAntiEntropy {
     }
 
     private void onCatchUpPull(PendingPull pull, CatchUpRound round, DHTMessage.MigrationDataResponse response) {
-        applyMigrationEntries(response);
-        // As at round start: an unreadable store leaves the round undecided until it expires and restarts.
-        node.storage()
-            .entriesForPartition(node.ring(),
-                                 round.partition())
-            .onSuccess(local -> verifyCatchUpPull(pull.peer(),
-                                                  round,
-                                                  response.entries(),
-                                                  local));
+        // Readback runs once the apply settled. As at round start, a failed apply or an unreadable store leaves
+        // the round undecided until it expires and restarts.
+        applyMigrationEntries(response).flatMap(_ -> node.storage()
+                                                         .entriesForPartition(node.ring(),
+                                                                              round.partition()))
+                             .onSuccess(local -> verifyCatchUpPull(pull.peer(),
+                                                                   round,
+                                                                   response.entries(),
+                                                                   local));
     }
 
     /// Completion is proven by READBACK, not by the apply call: every pulled entry must now be stored
@@ -640,20 +674,49 @@ public final class DHTAntiEntropy {
 
     /// Handle migration data response: merge received entries into local storage, then acknowledge
     /// when the sender requested it (issue #427). The ack is sent only for `ackRequested` responses —
-    /// the departing-node push — so the fire-and-forget anti-entropy pull path is unchanged.
+    /// the departing-node push — so the fire-and-forget anti-entropy pull path is unchanged. The ack is
+    /// honest (issue #1818): it carries whether every entry was applied, so a batch the receiver failed
+    /// to store is nacked and the departing sender counts it as not delivered.
     ///
-    /// A response to a pull this node sent is attributed to its partition first: a refusal is counted,
-    /// and a catch-up pull's entries complete its round once stored (#1777 track 2).
+    /// Only an AUTHENTIC batch is applied (#1818 round 3); anything else is dropped with a WARN and counted:
+    ///   - a pull answer must match a pull this node sent — its correlation id, from the node asked, with
+    ///     every entry in the partition asked for;
+    ///   - an unsolicited departure push (`ackRequested`) must come from a departing node, and is nacked
+    ///     otherwise so the pusher keeps the batch at risk;
+    ///   - an unsolicited survivor-rebalance push must come from a co-replica, in this node's ring, of
+    ///     every entry's partition — the authority `DHTRebalancer` pushes under.
+    ///
+    /// An authentic pull answer is then attributed to its partition: a refusal is counted, and a catch-up
+    /// pull's entries complete its round once stored (#1777 track 2).
     @Contract
     public void onMigrationDataResponse(DHTMessage.MigrationDataResponse response) {
-        Option.option(pendingPulls.remove(response.requestId()))
-              .onPresent(pull -> onPullAnswered(pull, response))
-              .onEmpty(() -> applyAndAcknowledge(response));
+        Option.option(pendingPulls.get(response.requestId()))
+              .onPresent(pull -> onPullAnswer(pull, response))
+              .onEmpty(() -> onUnsolicited(response));
     }
 
-    private void onPullAnswered(PendingPull pull, DHTMessage.MigrationDataResponse response) {
+    /// Batches dropped as unauthentic since start (#1818 round 3).
+    long rejectedResponseCount() {
+        return rejectedResponses.get();
+    }
+
+    private void onPullAnswer(PendingPull pull, DHTMessage.MigrationDataResponse response) {
+        if (!pull.peer().equals(response.sender())) {
+            reject(response,
+                   "answer to a pull sent to " + pull.peer().id());
+
+            return;
+        }
+
+        pendingPulls.remove(response.requestId());
         if (response.refused()) {
             onRefusedPull(pull);
+
+            return;
+        }
+
+        if (!allInPartition(response.entries(), pull.partitionIndex())) {
+            reject(response, "entries outside the requested partition " + pull.partitionIndex());
 
             return;
         }
@@ -661,26 +724,167 @@ public final class DHTAntiEntropy {
         pull.round()
             .filter(this::isCurrent)
             .onPresent(round -> onCatchUpPull(pull, round, response))
-            .onEmpty(() -> applyMigrationEntries(response));
+            .onEmpty(() -> applyAndAcknowledge(response));
     }
 
-    private void applyAndAcknowledge(DHTMessage.MigrationDataResponse response) {
-        applyMigrationEntries(response);
+    private void onUnsolicited(DHTMessage.MigrationDataResponse response) {
         if (response.ackRequested()) {
-            network.send(response.sender(),
-                         new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId()));
+            acceptDeparturePush(response);
+        } else {
+            acceptRebalancePush(response);
         }
     }
 
-    private void applyMigrationEntries(DHTMessage.MigrationDataResponse response) {
-        if (response.entries().isEmpty()) {
+    /// A departure push is accepted from a node that is departing — named by the leader's drain set or seen
+    /// entering DEPARTING — or from a CURRENT replica, in this node's ring, of every entry's partition. The
+    /// second covers a node that drains itself on quorum loss: no signal reaches its peers in time, and it
+    /// halts with its in-memory store, so a copy it holds last would otherwise be lost. A current replica
+    /// already holds those partitions legitimately, so its push carries no authority it lacks.
+    private void acceptDeparturePush(DHTMessage.MigrationDataResponse response) {
+        if (departingSenders.test(response.sender()) || response.entries()
+                                                                .stream()
+                                                                .allMatch(entry -> replicaOfEntry(response.sender(),
+                                                                                                  entry))) {
+            applyPlaced(response);
+
             return;
+        }
+
+        reject(response, "departure push from a node that is not departing");
+        acknowledge(response, false);
+    }
+
+    /// An accepted departure push is applied only for partitions this node replicates — in the ring as it is
+    /// (pre-departure) or in the post-departure view: without the pusher's leaving set and every node this node
+    /// knows to be departing — #1818 J2, L1.
+    /// A copy anywhere else is a stray the #428 fallback read can later serve, so those entries are dropped,
+    /// counted, and the batch is nacked: the pusher keeps them at risk rather than believing them delivered.
+    private void applyPlaced(DHTMessage.MigrationDataResponse response) {
+        var placed = response.entries().stream().filter(entry -> replicaHereAroundDeparture(response, entry)).toList();
+
+        if (placed.size() == response.entries().size()) {
+            applyAndAcknowledge(response);
+
+            return;
+        }
+
+        reject(response,
+               (response.entries().size() - placed.size()) + " entries for partitions this node does not replicate");
+        applyMigrationEntries(withEntries(response, placed)).onSuccess(_ -> acknowledge(response, false));
+    }
+
+    /// The post-departure view keeps only the nodes the pusher's ring held (its carried `view`) and excludes
+    /// the pusher, the pusher's carried leaving set, and this node's own departing set (#1818 L1, N1).
+    /// Why that is sound: the pusher chose this node as within RF of ITS ring without ITS leaving set. This
+    /// node's view is a subset of that ring: it drops every joiner the pusher had not heard of, and it
+    /// excludes a superset of the leaving set. Removing nodes from a ring only moves the remaining nodes
+    /// EARLIER in each walk, so this node can only move earlier, and it stays within RF. Its own knowledge can
+    /// therefore never turn a legitimate newcomer into a stray. Two shapes did exactly that before: a co-drainer
+    /// this node had not yet heard of (v1820 r4), and a joiner known here but not to the pusher, i.e. joins
+    /// concurrent with drains as in a fleet replacement (v1820 r5). Nothing retries the nack, so each lost the copy.
+    /// A member the pusher knows and this node does not is simply absent here, which is another removal.
+    private boolean replicaHereAroundDeparture(DHTMessage.MigrationDataResponse response, DHTMessage.KeyValue entry) {
+        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var pusherLeaving = Set.copyOf(response.leaving());
+        var pusherView = Set.copyOf(response.view());
+
+        return replicaOfEntry(node.nodeId(), entry) || node.ring()
+                                                           .nodesFor(entry.key(),
+                                                                     replicationFactor,
+                                                                     candidate -> inPusherView(candidate, pusherView) && !leftInDepartureView(candidate,
+                                                                                                                                              response.sender(),
+                                                                                                                                              pusherLeaving))
+                                                           .contains(node.nodeId());
+    }
+
+    /// A node the pusher's ring did not hold — a joiner it had not yet heard of — is outside the view it chose
+    /// this receiver in, and is dropped from it the same way a leaving node is (v1820 r5): removing nodes only
+    /// moves this receiver earlier, so the pusher's choice stays within RF. An empty view is the receiver's ring.
+    private static boolean inPusherView(NodeId candidate, Set<NodeId> pusherView) {
+        return pusherView.isEmpty() || pusherView.contains(candidate);
+    }
+
+    private boolean leftInDepartureView(NodeId candidate, NodeId pusher, Set<NodeId> pusherLeaving) {
+        return candidate.equals(pusher) || pusherLeaving.contains(candidate) || departingSenders.test(candidate);
+    }
+
+    private static DHTMessage.MigrationDataResponse withEntries(DHTMessage.MigrationDataResponse response,
+                                                                List<DHTMessage.KeyValue> entries) {
+        return new DHTMessage.MigrationDataResponse(response.requestId(),
+                                                    response.sender(),
+                                                    entries,
+                                                    response.ackRequested(),
+                                                    response.leaving(),
+                                                    response.view());
+    }
+
+    private void acceptRebalancePush(DHTMessage.MigrationDataResponse response) {
+        if (response.entries().stream().allMatch(entry -> coReplicaOfEntry(response.sender(), entry))) {
+            applyAndAcknowledge(response);
+        } else {
+            reject(response, "unsolicited batch from a node that is not a co-replica of its partitions");
+        }
+    }
+
+    /// Whether both `sender` and this node replicate the entry's partition in this node's ring.
+    private boolean coReplicaOfEntry(NodeId sender, DHTMessage.KeyValue entry) {
+        return replicaOfEntry(sender, entry) && replicaOfEntry(node.nodeId(), entry);
+    }
+
+    private boolean replicaOfEntry(NodeId candidate, DHTMessage.KeyValue entry) {
+        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+
+        return node.ring()
+                   .nodesFor(entry.key(),
+                             replicationFactor)
+                   .contains(candidate);
+    }
+
+    private boolean allInPartition(List<DHTMessage.KeyValue> entries, int partitionIndex) {
+        return entries.stream()
+                      .allMatch(entry -> node.ring()
+                                             .partitionFor(entry.key())
+                                             .value() == partitionIndex);
+    }
+
+    private void applyAndAcknowledge(DHTMessage.MigrationDataResponse response) {
+        applyMigrationEntries(response).onSuccess(applied -> acknowledge(response, applied));
+    }
+
+    private void reject(DHTMessage.MigrationDataResponse response, String reason) {
+        rejectedResponses.incrementAndGet();
+        log.warn("Rejected {} migrated entries from {} (request {}): {}",
+                 response.entries().size(),
+                 response.sender().id(),
+                 response.requestId(),
+                 reason);
+    }
+
+    private Promise<Boolean> applyMigrationEntries(DHTMessage.MigrationDataResponse response) {
+        if (response.entries().isEmpty()) {
+            return Promise.success(true);
         }
 
         log.info("Received {} entries from {} for repair",
                  response.entries().size(),
                  response.sender().id());
-        node.applyMigrationData(response.entries());
+
+        return node.applyMigrationData(response.entries());
+    }
+
+    private void acknowledge(DHTMessage.MigrationDataResponse response, boolean applied) {
+        if (!response.ackRequested()) {
+            return;
+        }
+
+        if (!applied) {
+            log.warn("Nacking {} migrated entries from {}: not every entry could be stored",
+                     response.entries().size(),
+                     response.sender().id());
+        }
+
+        network.send(response.sender(),
+                     new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied));
     }
 
     /// Get the count of pending digest comparisons (for testing).

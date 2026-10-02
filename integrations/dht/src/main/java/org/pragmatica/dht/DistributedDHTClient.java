@@ -33,12 +33,16 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Unit.unit;
 
 
 /// Distributed DHT client with quorum-based reads and writes.
 /// Routes operations to responsible nodes via consistent hashing and DHTNetwork.
 public final class DistributedDHTClient implements DHTClient {
+    private static final Logger log = LoggerFactory.getLogger(DistributedDHTClient.class);
     /// Upper bound on the resolve-time fallback ring probe (issue #428, C2): after an R-set quorum
     /// MISS, at most this many ring members OUTSIDE the R-set are probed for a stranded copy. Keeps
     /// the mitigation a bounded, best-effort cache-warmth pass rather than an unbounded ring scan.
@@ -164,22 +168,71 @@ public final class DistributedDHTClient implements DHTClient {
                            .promise();
         }
 
-        var version = node.hlcClock().now().packed();
-        var epochIncarnation = ownerEpochSource.currentEpochIncarnation();
-        var epochTerm = ownerEpochSource.currentEpochTerm();
-        var epochCounter = ownerEpochSource.currentEpochCounter();
+        var stamp = new WriteStamp(node.hlcClock().now().packed(),
+                                   ownerEpochSource.currentEpochIncarnation(),
+                                   ownerEpochSource.currentEpochTerm(),
+                                   ownerEpochSource.currentEpochCounter());
         Promise<Unit> promise = Promise.promise();
         var collector = QuorumCollector.<Unit> quorumCollector(quorum, targets.size(), promise);
+        var localPut = targets.contains(node.nodeId())
+                       ? Option.some(handleLocalPut(key, value, stamp, collector))
+                       : Option.<Promise<Boolean>> none();
 
-        for (var target : targets) {
-            if (target.equals(node.nodeId())) {
-                handleLocalPut(key, value, version, epochIncarnation, epochTerm, epochCounter, collector);
-            } else {
-                sendRemotePut(target, key, value, version, epochIncarnation, epochTerm, epochCounter, collector);
-            }
-        }
+        targets.stream()
+               .filter(target -> !target.equals(node.nodeId()))
+               .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
 
-        return promise.timeout(config.operationTimeout());
+        return promise.timeout(config.operationTimeout())
+                      .fold(result -> result.fold(cause -> afterFailedPut(key,
+                                                                          stamp,
+                                                                          localPut,
+                                                                          indeterminateIfFenced(cause, quorum, collector)),
+                                                  Promise::success));
+    }
+
+    /// The version and owner epoch one put is stamped with — what a rollback must match exactly.
+    private record WriteStamp(long version, long epochIncarnation, long epochTerm, long epochCounter) {}
+
+    /// A put that lost its quorum to owner-epoch fences is INDETERMINATE (#1818, the owner's fence ruling):
+    /// this node's own store may have accepted it because its high-water lags, and anti-entropy copies bypass
+    /// the high-water, so that accept would spread to the replicas that refused it. The coordinator
+    /// therefore compare-and-deletes its own accept — only while the stored entry is still exactly the one
+    /// it wrote — once its local put has settled. The caller always gets the original cause; a rollback
+    /// that fails changes nothing about what the caller must assume (BER: the inverse of the local accept,
+    /// best effort, and the residual — another lagging replica that also accepted — is #1777 track 3).
+    /// A put that times out after a fence refused it is just as indeterminate as one the collector failed on
+    /// fences: a slow or lost reply must not skip the rollback and leave the refused accept to spread.
+    private static Cause indeterminateIfFenced(Cause cause, int quorum, QuorumCollector<Unit> collector) {
+        return collector.fencedCount() > 0 && !(cause instanceof DHTError.WriteIndeterminate)
+               ? DHTError.writeIndeterminate(quorum, collector.successCount(), collector.fencedCount())
+               : cause;
+    }
+
+    private Promise<Unit> afterFailedPut(byte[] key, WriteStamp stamp, Option<Promise<Boolean>> localPut, Cause cause) {
+        return cause instanceof DHTError.WriteIndeterminate
+               ? localPut.map(local -> rollBackLocalAccept(key, stamp, local))
+                         .or(Promise.success(false))
+                         .fold(_ -> cause.promise())
+               : cause.promise();
+    }
+
+    private Promise<Boolean> rollBackLocalAccept(byte[] key, WriteStamp stamp, Promise<Boolean> localPut) {
+        return localPut.fold(_ -> node.storage()
+                                      .removeIfExactly(key,
+                                                       stamp.version(),
+                                                       stamp.epochIncarnation(),
+                                                       stamp.epochTerm(),
+                                                       stamp.epochCounter()))
+                       .onSuccess(removed -> logRollback(key, removed));
+    }
+
+    @Contract
+    private void logRollback(byte[] key, boolean removed) {
+        log.info("Put of {} lost its quorum to owner-epoch fences; local accept {}",
+                 hex(key),
+                 removed
+                 ? "rolled back"
+                 : "not present or already superseded");
     }
 
     @Override
@@ -268,16 +321,24 @@ public final class DistributedDHTClient implements DHTClient {
                                                                       response.sender()));
     }
 
-    /// Handle a put response from a remote node.
+    /// Handle a put response from a remote node. A refusal by the replica's owner-epoch fence is reported as
+    /// such, so a quorum lost to fences is indeterminate rather than a definite failure.
     @Contract
     public void onPutResponse(DHTMessage.PutResponse response) {
-        removePending(response.requestId()).onPresent(op -> {
-            if (response.success()) {
-                castCollector(op, Unit.class).onSuccess(unit());
-            } else {
-                failCollector(castCollector(op, Unit.class), DHTError.OPERATION_TIMEOUT);
-            }
-        });
+        removePending(response.requestId()).onPresent(op -> recordPut(castCollector(op, Unit.class), response));
+    }
+
+    /// Same `@Contract` void-mutator suppression as [#failCollector].
+    @SuppressWarnings("JBCT-RET-07")
+    private static void recordPut(QuorumCollector<Unit> collector, DHTMessage.PutResponse response) {
+        if (response.success()) {
+            collector.onSuccess(unit());
+        } else {
+            failCollector(collector,
+                          response.fenced()
+                          ? DHTError.replicaFenced(response.sender())
+                          : DHTError.OPERATION_TIMEOUT);
+        }
     }
 
     /// Handle a remove response from a remote node.
@@ -651,17 +712,20 @@ public final class DistributedDHTClient implements DHTClient {
                     .onFailure(collector::onFailure);
     }
 
-    private void handleLocalPut(byte[] key,
-                                byte[] value,
-                                long version,
-                                long epochIncarnation,
-                                long epochTerm,
-                                long epochCounter,
-                                QuorumCollector<Unit> collector) {
-        var _ = node.storage()
-                    .putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter)
-                    .onSuccess(_ -> collector.onSuccess(unit()))
-                    .onFailure(collector::onFailure);
+    /// The local slot of a put. Returned so a rollback can wait for it to settle (#1818).
+    private Promise<Boolean> handleLocalPut(byte[] key,
+                                            byte[] value,
+                                            WriteStamp stamp,
+                                            QuorumCollector<Unit> collector) {
+        return node.storage()
+                   .putVersioned(key,
+                                 value,
+                                 stamp.version(),
+                                 stamp.epochIncarnation(),
+                                 stamp.epochTerm(),
+                                 stamp.epochCounter())
+                   .onSuccess(_ -> collector.onSuccess(unit()))
+                   .onFailure(collector::onFailure);
     }
 
     private void handleLocalRemove(byte[] key, QuorumCollector<Boolean> collector) {
@@ -696,10 +760,7 @@ public final class DistributedDHTClient implements DHTClient {
     private void sendRemotePut(NodeId target,
                                byte[] key,
                                byte[] value,
-                               long version,
-                               long epochIncarnation,
-                               long epochTerm,
-                               long epochCounter,
+                               WriteStamp stamp,
                                QuorumCollector<Unit> collector) {
         var correlationId = IdGenerator.generate();
 
@@ -709,10 +770,10 @@ public final class DistributedDHTClient implements DHTClient {
                                                   node.nodeId(),
                                                   key,
                                                   value,
-                                                  version,
-                                                  epochIncarnation,
-                                                  epochTerm,
-                                                  epochCounter),
+                                                  stamp.version(),
+                                                  stamp.epochIncarnation(),
+                                                  stamp.epochTerm(),
+                                                  stamp.epochCounter()),
                         correlationId,
                         collector);
     }

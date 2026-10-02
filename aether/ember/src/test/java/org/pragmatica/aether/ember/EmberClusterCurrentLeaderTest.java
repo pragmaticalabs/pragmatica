@@ -46,6 +46,7 @@ import static org.assertj.core.api.Assertions.fail;
 /// reaches the defect; the second control is time-sensitive (a join faster than the assertions would trip
 /// it), and it can only fail in the red direction. Reverting `currentLeader()` to `findFirst()` +
 /// [AetherNode#leader] turns the pin red.
+@PortBudget
 class EmberClusterCurrentLeaderTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`; the newborn takes the fourth slot.

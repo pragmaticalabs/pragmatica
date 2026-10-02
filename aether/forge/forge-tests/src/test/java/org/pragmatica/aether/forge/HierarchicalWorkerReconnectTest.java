@@ -37,7 +37,7 @@ import static org.awaitility.Awaitility.await;
 @Execution(ExecutionMode.SAME_THREAD)
 class HierarchicalWorkerReconnectTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 36600, 36700, 36800, "reconnect");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 4100, 4200, 4300, "reconnect");
 
     @AfterEach void stop() {
         LifecycleAwait.bestEffort("stop reconnect fixture", cluster, cluster.stop());

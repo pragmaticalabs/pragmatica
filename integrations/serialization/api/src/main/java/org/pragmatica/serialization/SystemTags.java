@@ -568,6 +568,9 @@ public interface SystemTags {
         pin(table, 1718, "org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey");
         pin(table, 1719, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue");
         pin(table, 1720, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome");
+        // leader pre-vote (#1748) — next free slots after 1720
+        pin(table, 1721, "org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest");
+        pin(table, 1722, "org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse");
         // community lifecycle cluster events (#1652) — claimed range from 1740
         pin(table, 1740, "org.pragmatica.aether.api.ClusterEvent.CommunityMinted");
         pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");

@@ -79,9 +79,9 @@ import org.pragmatica.aether.ember.EmberCluster;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class StreamDefaultRfOwnerReplacementTest {
     private static final System.Logger LOG = System.getLogger(StreamDefaultRfOwnerReplacementTest.class.getName());
-    private static final int BASE_PORT = 38400;
-    private static final int BASE_MGMT_PORT = 38500;
-    private static final int BASE_APP_HTTP_PORT = 38600;
+    private static final int BASE_PORT = 4540;
+    private static final int BASE_MGMT_PORT = 4640;
+    private static final int BASE_APP_HTTP_PORT = 4740;
     private static final int NODES = 5;
     private static final int INSTANCES = 5;
     private static final int N_EVENTS = 20;

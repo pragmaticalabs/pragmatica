@@ -48,7 +48,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 class HierarchyAuthorityAcceptanceTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan REQUEST = TimeSpan.timeSpan(10).seconds();
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 35100, 35200, 35300, "authority");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3000, 3100, 3200, "authority");
 
     @AfterEach void stop() {
         cluster.allNodes().forEach(node -> node.setInboundFaultFilter((_, _) -> true));

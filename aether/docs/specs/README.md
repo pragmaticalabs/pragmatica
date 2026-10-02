@@ -18,3 +18,8 @@ Per-spec `Status:` headers are being standardized across this directory; until t
   calendar-aware regional/market capacity planning. **Design only; not implemented. Target
   1.0.0-rc5 (#1251); starts once its listed prerequisites close.** Includes integration contracts,
   delivery phases, and acceptance tests.
+- [Standalone Maven Repository on Aether and AHSE](standalone-maven-repository-spec.md)
+  — a full Maven repository product (releases and SNAPSHOTs, hosted/proxy/group repositories,
+  sealed operation, retention, backup/restore) built on Aether clustering and AHSE storage.
+  **Proposed; design only; not implemented. Planned for 1.0.0-rc5 (epic #1831); the target is pending owner confirmation.**
+  Evidence and claim verification: [component readiness](standalone-maven-repository-readiness.md).

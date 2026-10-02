@@ -36,6 +36,8 @@ public final class QuorumCollector<T> {
     private final Promise<T> promise;
     private final AtomicInteger successCount = new AtomicInteger(0);
     private final AtomicInteger failureCount = new AtomicInteger(0);
+    /// Slots refused by an owner-epoch fence (#1818, the owner's fence ruling).
+    private final AtomicInteger fenced = new AtomicInteger(0);
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
     /// Slots refused by a replica still catching up (#1777 track 2). When quorum becomes unreachable and
@@ -111,6 +113,10 @@ public final class QuorumCollector<T> {
             refusals.incrementAndGet();
         }
 
+        if (cause instanceof DHTError.StaleEpochWrite || cause instanceof DHTError.ReplicaFenced) {
+            fenced.incrementAndGet();
+        }
+
         var failures = failureCount.incrementAndGet();
 
         if (total - failures < quorum) {
@@ -120,7 +126,14 @@ public final class QuorumCollector<T> {
         settleIfAllReplied(successCount.get(), failures);
     }
 
+    /// A quorum lost to owner-epoch fences is indeterminate, not a definite failure (#1818, the owner's fence
+    /// ruling): a replica whose high-water lagged may have applied the write. That takes precedence over a
+    /// catching-up refusal (#1777), which only says some replica could not yet answer authoritatively.
     private Cause quorumFailure() {
+        if (fenced.get() > 0) {
+            return DHTError.writeIndeterminate(quorum, successCount.get(), fenced.get());
+        }
+
         return refusals.get() > 0
                ? DHTError.notCaughtUp(quorum, successCount.get())
                : DHTError.quorumNotReached(quorum, successCount.get());
@@ -163,6 +176,11 @@ public final class QuorumCollector<T> {
     /// Replies recorded so far, including those arriving after the quorum resolved the promise.
     public int successCount() {
         return successCount.get();
+    }
+
+    /// Owner-epoch fence refusals recorded so far, including those arriving after the promise settled.
+    public int fencedCount() {
+        return fenced.get();
     }
 
     private T selectBest(T existing, T incoming) {

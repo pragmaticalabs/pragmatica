@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 import java.util.zip.CRC32;
@@ -32,6 +33,7 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
@@ -56,6 +58,7 @@ public final class DHTNode {
     /// Ring members this node has heard from over the DHT since it booted: a digest request or answer from
     /// them. The rest are unconfirmed and lengthen the boot walk ([#previousHolders]).
     private final Set<NodeId> heardFrom = ConcurrentHashMap.newKeySet();
+    private final AtomicLong belowHighWaterCopies = new AtomicLong();
 
     private DHTNode(NodeId nodeId,
                     StorageEngine storage,
@@ -401,11 +404,13 @@ public final class DHTNode {
                .onSuccess(written -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                                                        nodeId,
                                                                                        true,
-                                                                                       !written)))
-               .onFailure(_ -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
-                                                                                 nodeId,
-                                                                                 false,
-                                                                                 false)));
+                                                                                       !written,
+                                                                                       false)))
+               .onFailure(cause -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                                                     nodeId,
+                                                                                     false,
+                                                                                     false,
+                                                                                     cause instanceof DHTError.StaleEpochWrite)));
     }
 
     /// Handle a remove request (for message routing integration).
@@ -519,16 +524,49 @@ public final class DHTNode {
                    .contains(candidate);
     }
 
-    /// Apply migration data by merging received entries into local storage using versioned puts,
-    /// preserving each entry's owner epoch (#345 piece 1c) so the fencing token survives transfer.
+    /// Apply migration data by merging received entries into local storage as replica copies,
+    /// preserving each entry's owner epoch (#345 piece 1c) so the fencing token survives transfer. A
+    /// copy bypasses the owner-epoch high-water but keeps the per-key ordering (issue #1818, see
+    /// [StorageEngine#putReplica]).
+    ///
+    /// @return `true` when every entry was stored or was already superseded by a newer stored entry;
+    ///         `false` when any entry failed to store — the outcome an honest ack reports (issue #1818).
+    public Promise<Boolean> applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
+        return Promise.allOf(entries.stream().map(this::applyReplica).toList()).map(outcomes -> outcomes.stream()
+                                                                                                        .allMatch(Result::isSuccess));
+    }
+
+    private Promise<Boolean> applyReplica(DHTMessage.KeyValue kv) {
+        var belowHighWater = storage.belowHighWater(kv.key(), kv.epochIncarnation(), kv.epochTerm(), kv.epochCounter());
+
+        return storage.putReplica(kv.key(),
+                                  kv.value(),
+                                  kv.version(),
+                                  kv.epochIncarnation(),
+                                  kv.epochTerm(),
+                                  kv.epochCounter())
+                      .onSuccess(written -> noteBelowHighWater(kv, written && belowHighWater));
+    }
+
+    /// Copies applied below this node's owner-epoch high-water since start (#1818, the owner's fence ruling):
+    /// each is a write the fence would have refused as fresh. Most are pre-rewrite data being re-replicated,
+    /// which is what the bypass exists for; a deposed owner's write spreading would also land here.
+    public long belowHighWaterCopyCount() {
+        return belowHighWaterCopies.get();
+    }
+
     @Contract
-    public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
-        entries.forEach(kv -> storage.putVersioned(kv.key(),
-                                                   kv.value(),
-                                                   kv.version(),
-                                                   kv.epochIncarnation(),
-                                                   kv.epochTerm(),
-                                                   kv.epochCounter()));
+    private void noteBelowHighWater(DHTMessage.KeyValue kv, boolean appliedBelowHighWater) {
+        if (!appliedBelowHighWater) {
+            return;
+        }
+
+        belowHighWaterCopies.incrementAndGet();
+        log.info("Applied a copy below this node's owner-epoch high-water: partition {}, epoch {}:{}:{}",
+                 ring.partitionFor(kv.key()).value(),
+                 kv.epochIncarnation(),
+                 kv.epochTerm(),
+                 kv.epochCounter());
     }
 
     /// Compute a CRC32 digest over sorted key-value entries.

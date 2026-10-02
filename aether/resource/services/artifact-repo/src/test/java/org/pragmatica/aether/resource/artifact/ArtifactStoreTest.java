@@ -456,6 +456,57 @@ class ArtifactStoreTest {
         }
     }
 
+    /// #1818, the owner's fence ruling: a DHT put that lost its quorum to owner-epoch fences is INDETERMINATE —
+    /// it may have been applied. ArtifactStore treats it as retryable, like an unreachable quorum: the retry is
+    /// stamped with the owner epoch as it stands by then.
+    @Nested
+    class WriteIndeterminateTests {
+        @Test
+        void deploy_metadataPutIndeterminateOnce_isRetriedAndSucceeds() {
+            var delegate = testDht();
+            var indeterminateLeft = new AtomicInteger(1);
+            DHTClient fencedOnce = new DHTClient() {
+                @Override
+                public Promise<Option<byte[]>> get(byte[] key) {
+                    return delegate.get(key);
+                }
+
+                @Override
+                public Promise<Unit> put(byte[] key, byte[] value) {
+                    return indeterminateLeft.getAndDecrement() > 0
+                           ? DHTError.writeIndeterminate(2, 1, 1).promise()
+                           : delegate.put(key, value);
+                }
+
+                @Override
+                public Promise<Boolean> remove(byte[] key) {
+                    return delegate.remove(key);
+                }
+
+                @Override
+                public Promise<Boolean> exists(byte[] key) {
+                    return delegate.exists(key);
+                }
+
+                @Override
+                public Partition partitionFor(byte[] key) {
+                    return delegate.partitionFor(key);
+                }
+            };
+            var storageInstance = StorageInstance.storageInstance("indeterminate-artifacts",
+                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
+            var retryStore = ArtifactStore.artifactStore(fencedOnce,
+                                                         storageInstance,
+                                                         new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())));
+            var artifact = Artifact.artifact("org.example:indeterminate:1.0.0").unwrap();
+
+            retryStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8))
+                      .await()
+                      .onFailure(cause -> Assertions.fail(cause.message()));
+            assertThat(indeterminateLeft.get()).as("control: the indeterminate put was injected").isNegative();
+        }
+    }
+
     @Nested
     class ChunkRetryTests {
         /// Regression: 1MB+ artifact pushes returned HTTP 500 because the chunk fan-out

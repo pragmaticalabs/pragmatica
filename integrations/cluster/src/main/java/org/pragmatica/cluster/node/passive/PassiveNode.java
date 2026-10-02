@@ -16,6 +16,8 @@ import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.net.NetworkMessage.KeepAlive;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
@@ -126,7 +128,13 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                                                                     _ -> {}),
                                                                               route(KVSyncResponse.class,
                                                                                     response -> handleKVSyncResponse(kvStore,
-                                                                                                                     response)));
+                                                                                                                     response)),
+
+        // Pre-vote is a voters' protocol (#1748): a passive node neither asks nor answers.
+        route(LeaderPreVoteRequest.class,
+              _ -> {}),
+                                                                              route(LeaderPreVoteResponse.class,
+                                                                                    _ -> {}));
         var snapshotRequested = new AtomicBoolean(false);
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class).route(route(ConnectedNodesList.class,
                                                                                                topologyManager::reconcile),

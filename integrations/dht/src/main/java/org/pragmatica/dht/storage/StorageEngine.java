@@ -87,6 +87,48 @@ public interface StorageEngine {
         return put(key, value).map(_ -> true);
     }
 
+    /// Store a COPY of an entry another replica already accepted — anti-entropy repair, migration and
+    /// the departure push (issue #1818). Identical to [#putVersioned(byte[], byte[], long, long, long, long)]
+    /// except that the owner-epoch high-water is NOT consulted: the fence rejects a deposed owner's NEW
+    /// write, and a copy is not a new write. Applying it here would refuse every key written before the
+    /// latest ownership-epoch advance to any node that does not yet hold it, so such keys could never be
+    /// re-replicated and die with their last holder. The per-key ordering still applies, so a copy
+    /// never overwrites a stored entry of a newer epoch or a newer version. A copy never advances the
+    /// high-water either: its authority is committed ownership state, which reaches every node on its
+    /// own, and a copy's epoch is evidence of nothing the node has not been told directly.
+    ///
+    /// @return `true` if written, `false` if the stored entry is newer, or a failed promise if the
+    ///         engine could not store it.
+    default Promise<Boolean> putReplica(byte[] key,
+                                        byte[] value,
+                                        long version,
+                                        long epochIncarnation,
+                                        long epochTerm,
+                                        long epochCounter) {
+        return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter);
+    }
+
+    /// Remove `key` only while its stored entry is exactly the given version and owner epoch — a writer rolling
+    /// back its OWN accept after the put lost its quorum to owner-epoch fences (#1818, the owner's fence
+    /// ruling). An entry since superseded, or never stored, is left alone. An engine without the capability
+    /// removes nothing, which leaves the accept in place (the residual #1777 track 3 closes).
+    ///
+    /// @return `true` if the exact entry was removed.
+    default Promise<Boolean> removeIfExactly(byte[] key,
+                                             long version,
+                                             long epochIncarnation,
+                                             long epochTerm,
+                                             long epochCounter) {
+        return Promise.success(false);
+    }
+
+    /// Whether an entry stamped with this owner epoch is older than this store's high-water — a copy applied
+    /// with it is one the fence would have refused as a fresh write (#1818, visibility). An engine without a
+    /// fence has no high-water: `false`.
+    default boolean belowHighWater(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        return false;
+    }
+
     /// Get approximate number of entries.
     long size();
     /// Clear all entries.
