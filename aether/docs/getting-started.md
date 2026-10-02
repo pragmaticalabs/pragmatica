@@ -413,25 +413,24 @@ export AETHER_ENDPOINT=<a-node-ip>:8080
 ./deploy-prod.sh
 ```
 
-Under the hood that's two CLI calls, confirmed from the generated script,
-which you can also run by hand:
+Under the hood that's two CLI calls. The cluster's artifact repository is **write-once and takes no
+SNAPSHOT**, so the scaffold's `1.0.0-SNAPSHOT` is never pushed as it is: `deploy-prod.sh` reads the project
+version from the pom, **refuses a SNAPSHOT** with a message before it asks for confirmation or builds anything,
+and pushes the release version you set (for example `mvn versions:set -DnewVersion=1.0.0`, committed). The
+generated `deploy-test.sh` stamps a unique release version for every push instead, `<base>-<short git sha>` from
+a clean git checkout and `<base>-<UTC timestamp>` otherwise (`DEPLOY_STAMP` overrides it), and restores the pom
+afterwards. Rebuilding one commit can change the jar bytes, which the repository refuses under the same version
+(`409`): commit a change or set `DEPLOY_STAMP`. By hand, with a release version:
 
 ```bash
-aether -c <a-node-ip>:8080 artifacts push org.example:hello:1.0.0-SNAPSHOT
-aether -c <a-node-ip>:8080 blueprints deploy org.example:hello:1.0.0-SNAPSHOT --wait
+aether -c <a-node-ip>:8080 artifacts push org.example:hello:1.0.0
+aether -c <a-node-ip>:8080 blueprints deploy org.example:hello:1.0.0 --wait
 ```
-
-> **The cluster's artifact repository takes release versions only.** It writes every coordinate once, so it refuses
-> a `-SNAPSHOT` version (`400`) and a re-push of different content under an existing version (`409`); Forge and
-> local development are unaffected because they resolve from your local Maven repository. The scaffold's
-> `1.0.0-SNAPSHOT` therefore has to become a release version before a cluster deploy: set the project version
-> (for example `mvn versions:set -DnewVersion=1.0.0`), rebuild with `mvn clean install`, and use the same version in
-> the two commands above. Archived versions are described in
-> [Artifact Repository](operators/artifact-repository.md).
 
 `artifacts push` reads the blueprint jar from your local `~/.m2/repository`,
 discovers every slice artifact it references, and pushes all of them to the
-cluster's artifact repository in one shot.
+cluster's artifact repository in one shot. Forge and local development are unaffected: they resolve from your
+local Maven repository, where SNAPSHOTs stay. See [Artifact Repository](operators/artifact-repository.md).
 
 Then call it, exactly like you did against Forge — only the address changes:
 
