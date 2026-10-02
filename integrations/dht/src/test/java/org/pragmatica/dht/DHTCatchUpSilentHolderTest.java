@@ -83,6 +83,41 @@ class DHTCatchUpSilentHolderTest {
                         .isNotEqualTo(Result.success(Option.<byte[]>none()));
     }
 
+    /// v1820 (#1823 r4): with a join since boot the walk is RF + 1 long and reaches a serving NON-owner holding
+    /// nothing. It must never anchor a timed-out decision while the only holder is silent.
+    @Test
+    void s1b_walkNodeServingEmpty_neverAnchors_afterAJoinSinceBoot() throws InterruptedException {
+        var cluster = Cluster.of(6, timeSpan(1).millis());
+        var key = bytes("s1b-only-on-silent-holder");
+        var replicas = cluster.replicasOf(key);
+
+        cluster.seedOnReplicas(key);
+        cluster.restart(replicas.get(0));
+        cluster.restart(replicas.get(1));
+
+        NodeId joiner = null;
+        for (int i = 0; i < 20_000 && joiner == null; i++) {
+            var candidate = new NodeId("s1b-join-" + i);
+            var probe = ConsistentHashRing.<NodeId>consistentHashRing();
+            cluster.member(replicas.get(0)).node().ring().nodes().forEach(probe::addNode);
+            probe.addNode(candidate);
+            if (!probe.nodesFor(key, 4).contains(candidate)) joiner = candidate;
+        }
+        cluster.joinWithoutCatchUp(joiner);
+        assertThat(cluster.member(replicas.get(0)).node().previousHolders(cluster.partitionOf(key)))
+            .as("control: the walk reaches a serving non-owner").anyMatch(id -> !replicas.contains(id));
+
+        cluster.silence(replicas.get(2));
+        for (int round = 0; round < 3; round++) {
+            cluster.member(replicas.get(0)).antiEntropy().catchUpNow();
+            cluster.member(replicas.get(1)).antiEntropy().catchUpNow();
+            Thread.sleep(5);
+        }
+        var read = cluster.member(cluster.readerOutside(replicas)).client().get(key).await();
+        assertThat(read).as("never an authoritative absent while the only holder is silent")
+                        .isNotEqualTo(Result.success(Option.<byte[]>none()));
+    }
+
     private record Member(NodeId id,
                           DHTNode node,
                           DHTAntiEntropy antiEntropy,
