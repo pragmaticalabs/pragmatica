@@ -15,7 +15,7 @@ This specification replaces the internals of Aether's built-in artifact reposito
 These requirements are owner decisions (2026-10-02, recorded on [#1831](https://github.com/pragmaticalabs/pragmatica/issues/1831)). They are settled and are not reopened as prerequisites of any slice.
 
 1. **Placement.** The repository is a full-featured replacement of the existing built-in artifact repository: an optional part of every Aether cluster, not a separate product. Its repository mode and upstream mode are cluster configuration (§1.2).
-2. **Namespaces.** The internal slice store becomes one namespace of the repository and keeps its write-once, no-SNAPSHOT policy (#1778). Hosted and proxy repositories have full Maven behaviour, including releases and timestamped SNAPSHOTs, hosted publication, upstream retrieval and configurable synchronization.
+2. **Namespaces.** The internal slice store becomes one namespace of the repository and keeps #1778's policy: write-once content, no SNAPSHOT versions and a cap on present versions per artifact (`[slice] artifact_max_versions`, default 10,000). Hosted and proxy repositories have full Maven behaviour, including releases and timestamped SNAPSHOTs, hosted publication, upstream retrieval and configurable synchronization.
 3. **Sealed mode.** Upstream artifact access can be disabled entirely (§1.2). A fully sealed cluster MUST publish and resolve locally without external services or remote UI assets.
 4. **Storage.** Keep AHSE as the storage module. Extend it; do not introduce a competing artifact-specific block engine.
 5. **Clustering.** The repository runs inside the cluster and scales with it, through the existing desired-node-count provisioning, joining and rebalancing operations.
@@ -25,7 +25,7 @@ These requirements are owner decisions (2026-10-02, recorded on [#1831](https://
 9. **Durability default.** §4, P1.
 10. **Default policies.** §5–§8, each configurable per repository.
 
-Product surface: named hosted and proxy repositories plus grouped read endpoints, the internal slice namespace, local credentials/access policies, browsing/search, retention, import/export and backup/restore. Whole-release approval/staging, other package formats and vulnerability scanning are separate extensions. Artifact signatures are retained as resources; mandatory trust verification is a separate configurable policy.
+Repository surface: named hosted and proxy repositories plus grouped read endpoints, the internal slice namespace, local credentials/access policies, browsing/search, retention, import/export and backup/restore. Whole-release approval/staging, other package formats and vulnerability scanning are separate extensions. Artifact signatures are retained as resources; mandatory trust verification is a separate configurable policy.
 
 ### 1.1 Relation to the existing data planes
 
@@ -114,12 +114,13 @@ Partition assignment MUST be deterministic and persisted/versioned. All mutation
 
 **P1 — successful publication.** A successful PUT means the complete content, its retained reference and its authoritative resource record meet the durable acknowledgement policy. In-memory replication alone does not satisfy it; a DHT quorum acknowledgement is in-memory replication (§1.1), so it cannot be the acknowledgement for any of the three.
 
-Default policy (owner decision 3, #1831): a publication succeeds only when the content and the catalog entry are on persistent disk, by forced writes, on CF=2 of RF=3 replicas, inheriting the cluster's `[replication]` settings. Per operation:
+Default policy (owner decision 3, #1831): a publication succeeds only when the content and the catalog entry are on persistent disk, by forced writes, on CF=2 of RF=3 replicas, inheriting the cluster's `[replication]` settings. Every row below assumes that disks and filesystems honour forced writes: a forced write is on stable storage when it returns. Storage that acknowledges writes from a volatile cache voids every row. Per operation:
 
 | Event | Guarantee | Mechanism |
 |---|---|---|
-| Loss of any one node or volume | Every acknowledged publication survives, and is readable again once its catalog partition has failed over (reads during the failover may get a retryable refusal, never a false absence) | Two forced-write copies of content and catalog entry at acknowledgement; re-replication restores RF from the survivor |
+| Loss of any one node or volume | Every acknowledged publication survives, and is readable again once its catalog partition has failed over. Reads during the failover may get a retryable refusal, never a false absence (CTO-confirmed 2026-10-02) | Two forced-write copies of content and catalog entry at acknowledgement; re-replication (an AR2 deliverable) restores RF from the survivor; during failover a replica that cannot answer authoritatively answers "not caught up" (P2) |
 | Whole-cluster restart, volumes intact | Every acknowledged publication is recovered (P5) | Forced writes; the catalog log and AHSE recover from disk under the #1569 adoption rules |
+| Whole-cluster restart with one volume lost | Every acknowledged publication is recovered from its surviving copy; each catalog partition comes back writable and complete, or flagged and untouched pending an operator (#1569's cold-restart rule, which covers at most CF − 1 = 1 lost replica volume) | Forced writes on the surviving copy; #1569 adoption and divergence detection |
 | A second loss before re-replication restores the copy count | Not guaranteed for publications whose only two copies were on the lost nodes or volumes | — (bounded by the repair time) |
 | Loss of every volume | Not guaranteed; recovery is backup/restore (§10) | — |
 
@@ -154,7 +155,7 @@ The catalog owner MUST recheck the publication guard at commit even if it checke
 
 Crash after retaining content but before commit leaves a recoverable intent, not a timer-authorized deletion. Reconciliation determines the intent's terminal outcome from authoritative state: the catalog can always be asked whether the intent committed, so an unknown outcome is resolved by lookup, never assumed. A missing reply can mean the commit succeeded; a retry must discover and return the actual outcome. A new transfer may use a new intent, but only the losing intent's reference can be released.
 
-Default release-conflict policy (owner decision 4): an identical re-put succeeds; different bytes are refused with `409`. The internal slice namespace applies the same rule and additionally refuses SNAPSHOT versions (#1778).
+Default release-conflict policy (owner decision 4): an identical re-put succeeds; different bytes are refused with `409`. The internal slice namespace applies the same rule and additionally refuses SNAPSHOT versions and a new version past its per-artifact cap (#1778).
 
 ### 5.2 Mutable resources
 
@@ -253,7 +254,7 @@ Acceptance scenarios (the `1.0.0-rc.1` case in C1 and the signature/SHA-256/SHA-
 | C2 | Two timestamped builds under one SNAPSHOT base coexist in a hosted repository; metadata resolves correctly by extension/classifier |
 | C3 | Concurrent version/classifier/plugin publications lose no unrelated metadata; checksums describe served revisions; signed and SHA-256/SHA-512 sidecars of every file round-trip |
 | C4 | Identical release retry succeeds; conflicting retry/concurrent writer gets `409` and cannot overwrite the winner |
-| C5 | The internal slice namespace, served from the catalog, refuses a SNAPSHOT and a different-bytes re-put, while slice deployment resolves its artifacts unchanged |
+| C5 | The internal slice namespace, served from the catalog, refuses a SNAPSHOT, a different-bytes re-put and a new version past its per-artifact cap, while slice deployment resolves its artifacts unchanged |
 | D1 | Kill publisher before catalog commit and after commit/before response; recovery preserves invariants and retry resolves outcome |
 | D2 | Kill/reassign owners and restart all nodes with volumes intact; acknowledged paths and bytes recover |
 | D3 | Disk full/fsync failure/replica shortfall (fewer than CF=2 forced copies) cannot produce a false successful publication |
@@ -263,6 +264,7 @@ Acceptance scenarios (the `1.0.0-rc.1` case in C1 and the signature/SHA-256/SHA-
 | N1 | Upstream unavailable versus absent versus denied produce distinct results; only absence is cached, for the configured negative-cache period |
 | N2 | Parallel misses coalesce; metadata is revalidated after the configured freshness period; cached releases are never refetched |
 | N3 | Switch to upstream mode 1 with pending sync/retry work; observe zero subsequent artifact-origin requests, including from the slice loader; local publish/read still work. In upstream mode 2, proxy/sync requests stop while the slice loader still reaches its configured remote |
+| N5 | Slice loader only, with no proxy repositories configured: upstream mode 1 refuses every remote except the external repository of repository mode 2; upstream mode 2 lets it reach its configured remote |
 | N4 | Export/import a selected build bundle; fresh-cache Maven/Gradle build succeeds in an isolated environment; an import conflict is refused and reported |
 | O1 | Add/remove nodes through the existing desired-count operation while publishing/downloading; no acknowledged content disappears |
 | O2 | Restore backup to fresh eligible infrastructure; inventory, downloads and authorization match the backup contract |
@@ -277,10 +279,10 @@ Use actual Maven and Gradle publishing/resolution, not only mocked route tests. 
 | Slice | Target | Deliverable | Exit gate |
 |---|---|---|---|
 | AR1 — contracts/compatibility | rc5, #1831 | Resource grammar, metadata merge tables, shard/read/commit design, AHSE durability/ref protocol, cluster configuration keys (repository mode, upstream mode, external repository, dev mode) | Review against P1–P7; every §12 open item decided or explicitly deferred; no unresolved decision may silently become a guarantee |
-| AR2 — durable hosted path | rc5, #1831 | Existing AHSE upgrades plus catalog publication/read, basic credentials, bounded transfer and inventory; the internal slice namespace served from the catalog, retiring #1821's KV binding | C4, C5, D1–D3, D6, L1 on a real cluster |
-| AR3 — Maven completeness | rc5, #1831 | General identities, all metadata/SNAPSHOT/sidecar paths, HTTP behavior | C1–C3 with real clients and concurrent publication |
+| AR2 — durable hosted path | rc5, #1831 | Existing AHSE upgrades plus catalog publication/read, basic credentials, bounded transfer and inventory; re-replication restoring RF after a node or volume loss; the internal slice namespace served from the catalog, retiring #1821's KV binding (placement in AR2 CTO-confirmed 2026-10-02) | C4, C5, D1–D3, D6, L1 on a real cluster |
+| AR3 — Maven completeness | rc5, #1831 | General identities, all metadata/SNAPSHOT/sidecar paths, HTTP behavior; the repository and upstream modes (§1.2) take effect | C1–C3 with real clients and concurrent publication; O3 and N5 for every mode, since rc5 ships the mode keys (the dashboard part of O3 is re-run at AR5) |
 | AR4 — proxy/sealed | next rc, #1836 | Generic proxy, groups, refresh, sync, import/export and the cluster-wide upstream gate | N1–N4, A1 |
-| AR5 — operational completion | next rc, #1836 | Shared retention/GC, backup/restore, the dashboard section and CLI | D4–D5, O1–O3; no mandatory upstream service |
+| AR5 — operational completion | next rc, #1836 | Shared retention/GC, backup/restore, the dashboard section and CLI | D4–D5, O1–O2, O3's dashboard part; no mandatory upstream service |
 | AR6 — scale/recovery qualification | next rc, #1836 | Workload-specific performance and failure campaign | Published limits and repeatable evidence for durability, bounded memory and scaling |
 
 Each slice builds on an end-to-end working predecessor. rc5's AR1–AR3 replace the built-in store's internals: at the end of AR3, every cluster's slice store is the internal namespace of the catalog, and hosted repositories with full Maven behaviour are available. Remote object storage can be an additional deployment profile once wired and validated; it is not an excuse to weaken the local/replicated-disk default.
@@ -289,7 +291,7 @@ Coordinate existing #1570/#1569/#1581/#1777/#1778/#1133/#527/#1746/#249 work ins
 
 ## 12. Decisions
 
-Decided by the owner on 2026-10-02 ([#1831](https://github.com/pragmaticalabs/pragmatica/issues/1831)): catalog authority (§1.8, §3), placement and namespaces (§1, items 1–2), the repository and upstream modes (§1.2), durability (§4 P1), default policies and the SNAPSHOT retention semantics (§5.1, §5.3, §8), targets (§11) and the UI (§1.6, §9).
+Decided by the owner on 2026-10-02 ([#1831](https://github.com/pragmaticalabs/pragmatica/issues/1831)): catalog authority (§1.8, §3), placement and namespaces (§1, items 1–2), the repository and upstream modes (§1.2), durability (§4 P1), default policies and the SNAPSHOT retention semantics (§5.1, §5.3, §8), targets (§11) and the UI (§1.6, §9). Confirmed by the CTO on 2026-10-02: moving the internal slice namespace onto the catalog, and retiring the KV binding, in AR2 (§11); reads during a catalog failover are refused as retryable, never answered absent (§4 P1).
 
 Still open, as AR1 inputs:
 

@@ -20,7 +20,7 @@ Working interpretation of full Maven functionality: hosted repositories, on-dema
 |---|---|---|
 | Aether infrastructure lifecycle | Existing desired-count operation, provisioning, membership and rebalancing | Cluster configuration (repository and upstream modes, persistent volumes) and workload validation; close applicable data-loss issues rather than build another scaling system |
 | AHSE | Content-addressed blocks, local forced writes, tiering, chunked content abstraction, lifecycle/GC machinery, append-log seam (`openLog`/`seal`) | Durable references/metadata, authoritative shared-reference handling, bounded streaming APIs and an explicit acknowledged durability contract |
-| Artifact publication/catalog | Existing per-file storage and integrity checks as implementation material; #1821's write-once binding and grow-only version set as precedents | Repository namespaces, exact Maven paths, durable concurrent publication and enumeration; internal slice-store policy cannot define this product |
+| Artifact publication/catalog | Existing per-file storage and integrity checks as implementation material; #1821's write-once binding and grow-only version set as precedents | Repository namespaces, exact Maven paths, durable concurrent publication and enumeration; internal slice-store policy cannot define the hosted and proxy repositories |
 | Maven HTTP | Handler and route framework | General version/path identity, complete metadata/SNAPSHOT handling, sidecars, HEAD and consistent failure responses |
 | Upstream retrieval | HTTP client, credentials/checksum machinery and artifact-cache experience | Server-side generic resource fetching, mutable metadata refresh, request coalescing, negative-cache rules, configured sync and sealed policy |
 | Access control | Existing security contexts, TLS, API-key and JWT machinery | Build-client-friendly credentials, repository/path-scoped permissions, publisher role independent of cluster operator |
@@ -54,7 +54,7 @@ The minimum publication operation should have this contract:
 
 The catalog should be durable application data: path-to-manifest mappings, checksums/length, publication revision, origin and retention state. The owner decided (#1831) that this is the partitioned, fenced catalog on the durable-entity log substrate; a full saga/workflow engine is not required. AHSE owns block/reference persistence. Define their handoff so a block cannot be reclaimed between durable staging and durable publication. Avoid two independent authoritative catalogs or competing GC implementations.
 
-File visibility and artifact-set visibility are different. Standard Maven deployment uploads multiple resources separately. Each accepted PUT needs its own guarantee; atomic staging/promotion of a whole release is a separate optional product operation.
+File visibility and artifact-set visibility are different. Standard Maven deployment uploads multiple resources separately. Each accepted PUT needs its own guarantee; atomic staging/promotion of a whole release is a separate optional repository operation.
 
 Concrete gaps at the read point, and what the in-flight work changes:
 
@@ -107,7 +107,7 @@ Keep credentials bound to their configured origin and enforce the same authoriza
 
 Listing is a data capability, not a UI-only task. #527 tracks the absent cluster-wide artifact index; the repository-wide listing route answers `501`, and `ArtifactStore` only lists versions of a known coordinate. A durable, enumerable publication catalog can supply both exact lookup and a rebuildable browse/search projection. Choose pagination and consistency deliberately; a UI should not scan every DHT node for every page. Search can lag if disclosed, while acknowledged publication/read guarantees remain explicit.
 
-Deletion at the read point leaves content chunks unreleased because they can be shared across artifacts/nodes; #1821 replaces deletion with archiving and still releases no chunks. Local refcounts are not authoritative for shared DHT storage. #1133 calls for a cluster-wide reference index; integrate that with AHSE reference lifetime rather than adding product-local block deletion. Durable reference IDs and retry-safe mutations must protect shared files, imports, in-flight publications and backups. Retention first removes eligible logical references; physical reclamation follows only when the shared authority proves safety.
+Deletion at the read point leaves content chunks unreleased because they can be shared across artifacts/nodes; #1821 replaces deletion with archiving and still releases no chunks. Local refcounts are not authoritative for shared DHT storage. #1133 calls for a cluster-wide reference index; integrate that with AHSE reference lifetime rather than adding repository-local block deletion. Durable reference IDs and retry-safe mutations must protect shared files, imports, in-flight publications and backups. Retention first removes eligible logical references; physical reclamation follows only when the shared authority proves safety.
 
 Repository policy (per repository; defaults on #1831) must cover snapshot build history, hosted releases, proxy eviction, archive visibility and quotas separately. Cache eviction must not remove hosted content merely because both deduplicate to the same bytes. A metadata update must not advertise a snapshot build already reclaimed by retention.
 
@@ -148,7 +148,7 @@ Tracker state checked on 2026-10-02; issue bodies can describe older implementat
 | Storage identity / cold restart | [#1569](https://github.com/pragmaticalabs/pragmatica/issues/1569), [#1581](https://github.com/pragmaticalabs/pragmatica/issues/1581) | Repository-specific catalog/content recovery proof |
 | DHT survival / admission | [#420](https://github.com/pragmaticalabs/pragmatica/issues/420), [#1818](https://github.com/pragmaticalabs/pragmatica/issues/1818), [#1777](https://github.com/pragmaticalabs/pragmatica/issues/1777), [#1775](https://github.com/pragmaticalabs/pragmatica/issues/1775) | Required to the extent repository authoritative data continues to use these paths. #1820 merged; #1823 pending merge; #1777 tracks 1 and 3 remain rc5 |
 | Internal artifact correctness | [#1778](https://github.com/pragmaticalabs/pragmatica/issues/1778) (#1821 pending merge) | Reuse its atomicity/monotonicity mechanisms; its no-SNAPSHOT, archive and version-cap policies stay internal |
-| Enumeration / reclamation | [#527](https://github.com/pragmaticalabs/pragmatica/issues/527), [#1133](https://github.com/pragmaticalabs/pragmatica/issues/1133) | Real catalog and shared reference lifetime; both product-critical |
+| Enumeration / reclamation | [#527](https://github.com/pragmaticalabs/pragmatica/issues/527), [#1133](https://github.com/pragmaticalabs/pragmatica/issues/1133) | Real catalog and shared reference lifetime; both required by the repository |
 | Cache / management endpoints | [#1746](https://github.com/pragmaticalabs/pragmatica/issues/1746), [#1102](https://github.com/pragmaticalabs/pragmatica/issues/1102) | Useful upstream repairs; neither replaces full proxy or repository API work |
 
 ## Source entry points
