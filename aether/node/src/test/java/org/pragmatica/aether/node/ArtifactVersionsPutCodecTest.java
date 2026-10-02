@@ -33,7 +33,8 @@ class ArtifactVersionsPutCodecTest {
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
         var key = ArtifactVersionsKey.artifactVersionsKey(ArtifactBase.artifactBase("org.example:lib").unwrap());
         var value = new ArtifactVersionsValue(java.util.List.of(new ArtifactVersionEntry("1.0.0", true),
-                                                                new ArtifactVersionEntry("2.0.0", false)));
+                                                                new ArtifactVersionEntry("2.0.0", false)),
+                                           ArtifactVersionsValue.DEFAULT_MAX_LIVE);
         var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
         var buf = Unpooled.buffer();
 

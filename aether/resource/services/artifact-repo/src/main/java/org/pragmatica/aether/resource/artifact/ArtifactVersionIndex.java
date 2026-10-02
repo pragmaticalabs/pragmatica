@@ -34,6 +34,10 @@ public interface ArtifactVersionIndex {
     Promise<ArtifactContentValue> bindContent(ArtifactFile file, ArtifactContentValue digest);
     /// The versions that are present and not archived.
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
+    /// Fails with [ArtifactStore.ArtifactStoreError.VersionLimitReached] when the artifact's version is NEW and the
+    /// artifact already holds its maximum of present (not archived) versions; succeeds otherwise. An advisory check
+    /// made before anything is uploaded; [#publish] enforces the bound itself and fails the same way.
+    Promise<Unit> requireCapacity(Artifact artifact);
     /// Whether the artifact's version is flagged archived. In a cluster this is the consensus-committed flag, the
     /// authority a resolve obeys even when the DHT archive marker cannot be read from the replicas that answer.
     Promise<Boolean> isArchived(Artifact artifact);
@@ -41,6 +45,11 @@ public interface ArtifactVersionIndex {
     /// A process-local index with the cluster index's merge semantics. For single-process use and tests; a
     /// cluster node wires the consensus-backed one.
     static ArtifactVersionIndex inMemory() {
+        return inMemory(ArtifactVersionsValue.DEFAULT_MAX_LIVE);
+    }
+
+    /// As [#inMemory()] with a bound on the present versions of one artifact.
+    static ArtifactVersionIndex inMemory(int maxLive) {
         var sets = new ConcurrentHashMap<ArtifactBase, ArtifactVersionsValue>();
         var bindings = new ConcurrentHashMap<String, ArtifactContentValue>();
 
@@ -49,7 +58,19 @@ public interface ArtifactVersionIndex {
             public Promise<Unit> publish(Artifact artifact) {
                 return write(sets,
                              artifact,
-                             ArtifactVersionsValue.added(artifact.version().withQualifier()));
+                             ArtifactVersionsValue.added(artifact.version().withQualifier(),
+                                                         maxLive)).flatMap(_ -> requireRegistered(sets,
+                                                                                                  artifact,
+                                                                                                  maxLive));
+            }
+
+            @Override
+            public Promise<Unit> requireCapacity(Artifact artifact) {
+                var committed = sets.getOrDefault(ArtifactBase.artifactBase(artifact), ArtifactVersionsValue.empty());
+
+                return committed.contains(artifact.version().withQualifier()) || committed.hasRoom(maxLive)
+                       ? Promise.unitPromise()
+                       : new ArtifactStore.ArtifactStoreError.VersionLimitReached(artifact, maxLive).promise();
             }
 
             @Override
@@ -87,6 +108,15 @@ public interface ArtifactVersionIndex {
         sets.merge(ArtifactBase.artifactBase(artifact), incoming, (committed, added) -> added.mergeInto(committed));
 
         return Promise.unitPromise();
+    }
+
+    private static Promise<Unit> requireRegistered(ConcurrentHashMap<ArtifactBase, ArtifactVersionsValue> sets,
+                                                   Artifact artifact,
+                                                   int maxLive) {
+        return sets.get(ArtifactBase.artifactBase(artifact))
+                   .contains(artifact.version().withQualifier())
+               ? Promise.unitPromise()
+               : new ArtifactStore.ArtifactStoreError.VersionLimitReached(artifact, maxLive).promise();
     }
 
     /// Version strings that no longer parse are skipped, as they always were.

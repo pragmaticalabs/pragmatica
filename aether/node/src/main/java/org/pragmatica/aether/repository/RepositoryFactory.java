@@ -49,7 +49,9 @@ public interface RepositoryFactory {
         return ArtifactStore.artifactStore(dht,
                                            storage,
                                            archivePolicy(config),
-                                           KvArtifactVersionIndex.kvArtifactVersionIndex(cluster, kvStore));
+                                           KvArtifactVersionIndex.kvArtifactVersionIndex(cluster,
+                                                                                         kvStore,
+                                                                                         config.artifactMaxVersions()));
     }
 
     static RepositoryFactory repositoryFactory(ArtifactStore artifactStore) {

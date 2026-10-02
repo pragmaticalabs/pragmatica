@@ -152,6 +152,57 @@ class ArtifactVersionsConsensusTest {
         }
     }
 
+    @Test
+    void publishesPastTheBound_areRefusedWithAClearError_andNothingPresentIsLost() {
+        var bounded = new ArrayList<KvArtifactVersionIndex>();
+
+        for (var i = 0; i < 3; i++) {
+            bounded.add(log.join(2));
+        }
+
+        var a = bounded.get(0).publish(v1);
+        var b = bounded.get(1).publish(v2);
+        var c = bounded.get(2).publish(v3);
+
+        log.flush();
+
+        var outcomes = List.of(a.await(timeSpan(5).seconds()), b.await(timeSpan(5).seconds()), c.await(timeSpan(5).seconds()));
+
+        assertThat(outcomes.stream().filter(outcome -> outcome.isSuccess()).count()).as("two slots, so exactly two win").isEqualTo(2);
+        outcomes.stream()
+                .filter(outcome -> !outcome.isSuccess())
+                .forEach(outcome -> outcome.onSuccessRun(Assertions::fail)
+                                           .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStore.ArtifactStoreError.VersionLimitReached.class)));
+
+        for (var node : bounded) {
+            assertThat(versionsOf(node)).as("every replica holds the same two present versions").hasSize(2);
+        }
+    }
+
+    @Test
+    void archiving_freesRoomUnderTheBound_andAStaleAddStillCannotResurrect() {
+        var bounded = log.join(1);
+
+        var first = bounded.publish(v1);
+
+        log.flush();
+        await(first);
+
+        var refused = bounded.publish(v2);
+
+        log.flush();
+        refused.await(timeSpan(5).seconds()).onSuccessRun(Assertions::fail);
+
+        var archive = bounded.archive(v1);
+        var again = bounded.publish(v2);
+        var stale = bounded.publish(v1);
+
+        log.flush();
+        await(archive, again, stale);
+
+        assertThat(versionsOf(bounded)).containsExactly("2.0.0");
+    }
+
     private List<String> versionsOf(ArtifactVersionIndex index) {
         return index.versions(v1.groupId(), v1.artifactId())
                     .await()
@@ -193,15 +244,19 @@ class ArtifactVersionsConsensusTest {
 
         private record Held(List<KVCommand<AetherKey>> commands, Promise<List<Object>> done) {}
 
-        @SuppressWarnings({"unchecked", "rawtypes"})
         KvArtifactVersionIndex join() {
+            return join(org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionsValue.DEFAULT_MAX_LIVE);
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        KvArtifactVersionIndex join(int maxLive) {
             var replica = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), noopSerializer(), noopDeserializer());
             var cluster = (ClusterNode<KVCommand<AetherKey>>) mock(ClusterNode.class);
 
             replicas.add(replica);
             when(cluster.apply(anyList())).thenAnswer(invocation -> hold((List<KVCommand<AetherKey>>) invocation.getArgument(0)));
 
-            return KvArtifactVersionIndex.kvArtifactVersionIndex(cluster, replica);
+            return KvArtifactVersionIndex.kvArtifactVersionIndex(cluster, replica, maxLive);
         }
 
         private synchronized Promise<List<Object>> hold(List<KVCommand<AetherKey>> commands) {

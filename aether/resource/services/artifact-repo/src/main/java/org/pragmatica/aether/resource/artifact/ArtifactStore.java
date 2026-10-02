@@ -282,6 +282,23 @@ public interface ArtifactStore {
             }
         }
 
+        /// The artifact already holds its maximum number of present (not archived) versions, so a NEW version is
+        /// refused (#1778). Existing versions are untouched; archiving old ones (allowed after the retention period)
+        /// frees room, or the bound `[slice] artifact_max_versions` can be raised.
+        record VersionLimitReached(Artifact artifact, int limit) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "Cannot publish " + artifact.asString()
+                     + ": " + artifact.groupId()
+                                      .id()
+                     + ":" + artifact.artifactId()
+                                     .id()
+                     + " already has " + limit
+                     + " present versions (the limit); archive old versions"
+                     + " (allowed once they are past the retention period) or raise [slice] artifact_max_versions";
+            }
+        }
+
         /// The version is younger than the archive policy's minimum retention.
         record RetentionNotElapsed(Artifact artifact, long ageMillis, long retentionMillis) implements ArtifactStoreError {
             @Override
@@ -687,7 +704,11 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                ArtifactContentValue offered,
                                                ArtifactContentValue bound) {
         return bound.equals(offered)
-               ? writeNew(file, content, offered.md5(), offered.sha1())
+               ? versionIndex.requireCapacity(file.artifact())
+                             .flatMap(_ -> writeNew(file,
+                                                    content,
+                                                    offered.md5(),
+                                                    offered.sha1()))
                : new ArtifactStoreError.ContentConflict(file, bound.sha1(), offered.sha1()).promise();
     }
 

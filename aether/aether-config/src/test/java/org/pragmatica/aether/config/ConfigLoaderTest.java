@@ -621,6 +621,28 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadFromString_artifactMaxVersions_defaultsTo10000_readsTheConfiguredBound_andValidates() {
+        var base = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            """;
+
+        ConfigLoader.loadFromString(base)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.slice().artifactMaxVersions()).isEqualTo(10_000));
+        ConfigLoader.loadFromString(base + "artifact_max_versions = 250\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.slice().artifactMaxVersions()).isEqualTo(250));
+        ConfigLoader.loadFromString(base + "artifact_max_versions = 0\n")
+            .flatMap(ConfigValidator::validate)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message()).contains("artifact_max_versions"));
+    }
+
+    @Test
     void validate_rejectsAnUnparseableOrNonPositiveArtifactArchiveRetention() {
         for (var value : new String[]{"soon", "0s"}) {
             var toml = """

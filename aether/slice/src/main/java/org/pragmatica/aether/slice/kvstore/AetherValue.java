@@ -63,35 +63,74 @@ public sealed interface AetherValue {
     /// ([GrowOnlyMergeable]), the merge is a union that takes the higher state per version
     /// (`present < archived`), so concurrent publishes are folded in consensus order and no writer can lose
     /// another's version or un-archive one. A writer sends only what it adds: [#added] or [#archived].
-    record ArtifactVersionsValue(List<ArtifactVersionEntry> entries) implements AetherValue, GrowOnlyMergeable<ArtifactVersionsValue> {
+    record ArtifactVersionsValue(List<ArtifactVersionEntry> entries, int maxLive) implements AetherValue, GrowOnlyMergeable<ArtifactVersionsValue> {
+        /// The default bound on the PRESENT (not archived) versions of one artifact; `[slice] artifact_max_versions`.
+        public static final int DEFAULT_MAX_LIVE = 10_000;
+
         public ArtifactVersionsValue {
             entries = entries.stream().sorted(Comparator.comparing(ArtifactVersionEntry::version)).toList();
         }
 
         public static ArtifactVersionsValue added(String version) {
-            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, false)));
+            return added(version, DEFAULT_MAX_LIVE);
+        }
+
+        /// `maxLive` is the writer's bound; the applier enforces it on THIS command, so every replica decides alike.
+        public static ArtifactVersionsValue added(String version, int maxLive) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, false)), maxLive);
         }
 
         public static ArtifactVersionsValue archived(String version) {
-            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, true)));
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, true)), DEFAULT_MAX_LIVE);
         }
 
         public static ArtifactVersionsValue empty() {
-            return new ArtifactVersionsValue(List.of());
+            return new ArtifactVersionsValue(List.of(), DEFAULT_MAX_LIVE);
         }
 
+        /// Monotone merge. A version already in the set only moves up (`present < archived`); an ARCHIVED entry is
+        /// always accepted (it never adds a present version); a NEW present version is accepted only while the
+        /// committed set holds fewer than `maxLive` present versions, otherwise it is NOT added. A present version is
+        /// never dropped and an archived one never un-archived, so the bound only ever refuses growth, loudly: the
+        /// writer re-reads the committed set and reports the refusal.
         @Override
         public ArtifactVersionsValue mergeInto(ArtifactVersionsValue committed) {
             var merged = new TreeMap<String, Boolean>();
 
-            committed.entries().forEach(entry -> merged.merge(entry.version(), entry.archived(), Boolean::logicalOr));
-            entries.forEach(entry -> merged.merge(entry.version(), entry.archived(), Boolean::logicalOr));
+            committed.entries().forEach(entry -> merged.put(entry.version(), entry.archived()));
+            entries.forEach(entry -> mergeEntry(merged, entry));
 
             return new ArtifactVersionsValue(merged.entrySet()
                                                    .stream()
                                                    .map(entry -> new ArtifactVersionEntry(entry.getKey(),
                                                                                           entry.getValue()))
-                                                   .toList());
+                                                   .toList(),
+                                             maxLive);
+        }
+
+        private void mergeEntry(TreeMap<String, Boolean> merged, ArtifactVersionEntry entry) {
+            if (merged.containsKey(entry.version()) || entry.archived() || liveIn(merged) < maxLive) {
+                merged.merge(entry.version(), entry.archived(), Boolean::logicalOr);
+            }
+        }
+
+        private static long liveIn(TreeMap<String, Boolean> merged) {
+            return merged.values()
+                         .stream()
+                         .filter(archived -> !archived)
+                         .count();
+        }
+
+        /// Whether `version` is in the set, archived or not.
+        public boolean contains(String version) {
+            return entries.stream()
+                          .anyMatch(entry -> entry.version()
+                                                  .equals(version));
+        }
+
+        /// Whether a NEW present version could be added under `maxLive`.
+        public boolean hasRoom(int maxLive) {
+            return live().size() < maxLive;
         }
 
         /// Whether `version` is in the set and flagged archived.

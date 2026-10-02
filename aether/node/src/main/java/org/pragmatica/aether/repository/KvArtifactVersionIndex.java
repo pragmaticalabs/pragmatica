@@ -12,6 +12,7 @@ import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.resource.artifact.ArtifactFile;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.ArtifactVersionIndex;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey;
@@ -35,21 +36,45 @@ import org.pragmatica.lang.Unit;
 public final class KvArtifactVersionIndex implements ArtifactVersionIndex {
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> store;
+    private final int maxLive;
 
-    private KvArtifactVersionIndex(ClusterNode<KVCommand<AetherKey>> cluster, KVStore<AetherKey, AetherValue> store) {
+    private KvArtifactVersionIndex(ClusterNode<KVCommand<AetherKey>> cluster,
+                                   KVStore<AetherKey, AetherValue> store,
+                                   int maxLive) {
         this.cluster = cluster;
         this.store = store;
+        this.maxLive = maxLive;
     }
 
+    /// `maxLive` bounds the present (not archived) versions of one artifact; the applier enforces it on every publish.
     public static KvArtifactVersionIndex kvArtifactVersionIndex(ClusterNode<KVCommand<AetherKey>> cluster,
-                                                                KVStore<AetherKey, AetherValue> store) {
-        return new KvArtifactVersionIndex(cluster, store);
+                                                                KVStore<AetherKey, AetherValue> store,
+                                                                int maxLive) {
+        return new KvArtifactVersionIndex(cluster, store, maxLive);
     }
 
     @Override
     public Promise<Unit> publish(Artifact artifact) {
         return submit(artifact,
-                      ArtifactVersionsValue.added(artifact.version().withQualifier()));
+                      ArtifactVersionsValue.added(artifact.version().withQualifier(),
+                                                  maxLive)).flatMap(_ -> requireRegistered(artifact));
+    }
+
+    /// The applier REFUSES a new version past the bound without failing the command, so the writer re-reads the
+    /// committed set: a version that is not in it was refused, and that is reported, never swallowed.
+    private Promise<Unit> requireRegistered(Artifact artifact) {
+        return committed(ArtifactBase.artifactBase(artifact)).contains(artifact.version().withQualifier())
+               ? Promise.unitPromise()
+               : new ArtifactStore.ArtifactStoreError.VersionLimitReached(artifact, maxLive).promise();
+    }
+
+    @Override
+    public Promise<Unit> requireCapacity(Artifact artifact) {
+        var committed = committed(ArtifactBase.artifactBase(artifact));
+
+        return committed.contains(artifact.version().withQualifier()) || committed.hasRoom(maxLive)
+               ? Promise.unitPromise()
+               : new ArtifactStore.ArtifactStoreError.VersionLimitReached(artifact, maxLive).promise();
     }
 
     @Override

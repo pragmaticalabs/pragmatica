@@ -70,6 +70,15 @@ class RepositoryFactoryArtifactStoreTest {
     }
 
     @Test
+    void artifactStore_passesTheConfiguredVersionBound_toTheIndex() {
+        var store = storeWith(SliceConfig.sliceConfig().withArtifactMaxVersions(1));
+
+        store.deploy(artifact, CONTENT).await().onFailureRun(Assertions::fail);
+
+        store.deploy(Artifact.artifact("org.example:lib:2.0.0").unwrap(), CONTENT).await().onSuccessRun(Assertions::fail);
+    }
+
+    @Test
     void artifactStore_withTheDefaultRetention_refusesToArchiveAFreshVersion() {
         var store = storeWith(SliceConfig.sliceConfig());
 
@@ -80,14 +89,6 @@ class RepositoryFactoryArtifactStoreTest {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private org.pragmatica.aether.resource.artifact.ArtifactStore storeWith(SliceConfig config) {
-        var cluster = (ClusterNode<KVCommand<AetherKey>>) mock(ClusterNode.class);
-
-        when(cluster.apply(anyList())).thenAnswer(invocation -> {
-            submitted.addAll((List<KVCommand<AetherKey>>) invocation.getArgument(0));
-
-            return Promise.success(new ArrayList<>());
-        });
-
         var kv = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), new Serializer() {
             @Override
             public <T> void write(ByteBuf byteBuf, T object) {}
@@ -97,6 +98,17 @@ class RepositoryFactoryArtifactStoreTest {
                 return null;
             }
         });
+        var cluster = (ClusterNode<KVCommand<AetherKey>>) mock(ClusterNode.class);
+
+        when(cluster.apply(anyList())).thenAnswer(invocation -> {
+            var commands = (List<KVCommand<AetherKey>>) invocation.getArgument(0);
+
+            submitted.addAll(commands);
+            kv.process(kv.createBatch((List) commands));
+
+            return Promise.success(new ArrayList<>());
+        });
+
         var storage = StorageInstance.storageInstance("wiring-artifacts", List.of(MemoryTier.memoryTier(16 * 1024 * 1024)));
 
         return RepositoryFactory.artifactStore(new MapDht(), storage, config, cluster, kv);

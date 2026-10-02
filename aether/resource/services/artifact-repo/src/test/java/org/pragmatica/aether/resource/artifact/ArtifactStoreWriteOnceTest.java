@@ -89,6 +89,11 @@ class ArtifactStoreWriteOnceTest {
         }
 
         @Override
+        public Promise<org.pragmatica.lang.Unit> requireCapacity(Artifact artifact) {
+            return delegate.requireCapacity(artifact);
+        }
+
+        @Override
         public Promise<Boolean> isArchived(Artifact artifact) {
             return delegate.isArchived(artifact);
         }
@@ -429,6 +434,55 @@ class ArtifactStoreWriteOnceTest {
 
     /// The versions list moved to the consensus KV plane (#1778); its concurrency is pinned where the applier lives,
     /// in `aether/node` (`ArtifactVersionsConsensusTest`). What stays here is the per-version FILE list in the DHT.
+    /// A1/A3 (#1778): the index bounds the PRESENT versions of one artifact. A new version past the bound is refused
+    /// before anything is uploaded; nothing present is dropped and nothing archived is resurrected.
+    @Nested
+    class VersionBound {
+        private ArtifactStore bounded(int maxLive) {
+            return new ArtifactStoreImpl(dht, storage, SEVEN_DAYS, now::get, ArtifactVersionIndex.inMemory(maxLive));
+        }
+
+        @Test
+        void deploy_refusesANewVersionPastTheBound_uploadsNothing_andKeepsTheExistingOnes() {
+            var small = bounded(1);
+
+            small.deploy(v1, CONTENT).await().onFailureRun(Assertions::fail);
+            var putsBefore = dht.puts.size();
+
+            var cause = failureOf(small.deploy(v2, CONTENT));
+
+            assertThat(cause).isInstanceOf(ArtifactStoreError.VersionLimitReached.class);
+            assertThat(cause.message()).contains("org.example:lib").contains("1 present versions").contains("artifact_max_versions");
+            assertThat(dht.puts.size()).as("a refused version uploads nothing and writes no metadata").isEqualTo(putsBefore);
+            assertThat(small.versions(v1.groupId(), v1.artifactId()).await().unwrap()).extracting(v -> v.withQualifier()).containsExactly("1.0.0");
+            assertThat(small.resolve(v1).await().isSuccess()).isTrue();
+        }
+
+        @Test
+        void deploy_stillAcceptsAFileOfAnExistingVersion_atTheBound() {
+            var small = bounded(1);
+
+            small.deploy(v1, CONTENT).await().onFailureRun(Assertions::fail);
+
+            small.deploy(ArtifactFile.artifactFile(v1, "", "pom"), OTHER).await().onFailureRun(Assertions::fail);
+        }
+
+        @Test
+        void archivingAVersion_freesRoom_butAnArchivedVersionStaysArchived() {
+            var small = bounded(1);
+
+            small.deploy(v1, CONTENT).await().onFailureRun(Assertions::fail);
+            now.addAndGet(7 * DAY);
+            small.archive(v1).await().onFailureRun(Assertions::fail);
+
+            small.deploy(v2, CONTENT).await().onFailureRun(Assertions::fail);
+
+            assertThat(failureOf(small.deploy(v1, CONTENT))).as("room was freed, the archived version was not brought back")
+                                                            .isInstanceOf(ArtifactStoreError.Archived.class);
+            assertThat(small.versions(v1.groupId(), v1.artifactId()).await().unwrap()).extracting(v -> v.withQualifier()).containsExactly("2.0.0");
+        }
+    }
+
     @Nested
     class GrowOnlyFiles {
         @Test

@@ -125,6 +125,10 @@ public final class ConfigValidator {
         if (slice.artifactArchiveRetention().millis() <= 0) {
             errors.add("slice.artifact_archive_retention must be a positive duration such as \"7d\" or \"36h\"");
         }
+
+        if (slice.artifactMaxVersions() < 1) {
+            errors.add("slice.artifact_max_versions must be at least 1. Got: " + slice.artifactMaxVersions());
+        }
     }
 
     /// `reshuffle_concurrency` bounds how many partitions one node materializes+backfills at once. Zero or

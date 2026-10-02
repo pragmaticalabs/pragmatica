@@ -107,6 +107,23 @@ class MavenProtocolHandlerWriteOnceTest {
     }
 
     @Test
+    void put_answers409WithTheLimitMessage_whenANewVersionExceedsTheBound() {
+        var storage = StorageInstance.storageInstance("bound-artifacts", List.of(MemoryTier.memoryTier(16 * 1024 * 1024)));
+        var small = MavenProtocolHandler.mavenProtocolHandler(new ArtifactStoreImpl(dht,
+                                                                                    storage,
+                                                                                    ArchivePolicy.archivePolicy(timeSpan(7).days()),
+                                                                                    now::get,
+                                                                                    ArtifactVersionIndex.inMemory(1)));
+
+        assertThat(small.handlePut(JAR_PATH, CONTENT).await().unwrap().statusCode()).isEqualTo(200);
+
+        var refused = small.handlePut("/repository/org/example/lib/2.0.0/lib-2.0.0.jar", CONTENT).await().unwrap();
+
+        assertThat(refused.statusCode()).isEqualTo(409);
+        assertThat(body(refused)).contains("artifact_max_versions");
+    }
+
+    @Test
     void checksumOfAnArchivedFile_answers410_whileALiveOneAnswers200() {
         put(JAR_PATH, CONTENT);
 

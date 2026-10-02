@@ -317,6 +317,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                                                                                       MavenResponse.conflict(conflict.message()));
             case ArtifactStore.ArtifactStoreError.Archived archived -> refusal(file,
                                                                                MavenResponse.conflict(archived.message()));
+            case ArtifactStore.ArtifactStoreError.VersionLimitReached full -> refusal(file,
+                                                                                      MavenResponse.conflict(full.message()));
             case ArtifactStore.ArtifactStoreError.SnapshotRefused refused -> refusal(file,
                                                                                      MavenResponse.badRequest(refused.message()));
             default -> failureResponse("PUT", file.asString(), cause);

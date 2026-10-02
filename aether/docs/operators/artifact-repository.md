@@ -140,6 +140,7 @@ so a stale replica can never make an artifact read wrong, and a removed artifact
 | `PUT` a coordinate that is not stored | `200`, `"status":"uploaded"` |
 | `PUT` the same content again | `200`, `"status":"already-present"`; nothing is uploaded or rewritten, and an interrupted first deploy is completed (the file and version registrations are re-asserted) |
 | `PUT` different content to a stored coordinate | `409`, naming the stored and the offered SHA-1; the stored content is kept. Publish the change under a new version |
+| `PUT` a NEW version when the artifact already holds `artifact_max_versions` present versions | `409`, nothing uploaded; archive old versions or raise the cap |
 | `PUT` a `-SNAPSHOT` version (any file, including Maven's timestamped names) | `400`; nothing is written. SNAPSHOTs stay available through the Local repository (development, Forge) |
 | `PUT` to an archived version (identical content or not, any file) | `409`; an archived coordinate is never reused |
 | `GET` an archived file (or its `.sha1`/`.md5` sidecar) | `410 Gone`. `404` still means "never written" |
@@ -168,6 +169,12 @@ digest committed. An uploader whose digest lost gets `409` naming both digests a
 ever writes a file's metadata and a reader can never resolve a loser's bytes. A winner that died after binding and
 before writing leaves a bound coordinate without metadata; an identical re-put completes it, a different one is refused. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
 DHT's read rule), so a replica that missed the archive write cannot make an archived version resolve. The versions
+set is bounded: `[slice] artifact_max_versions` (default 10,000) caps the PRESENT versions of one artifact, because
+a dev loop that pushes a fresh version per push (the scaffold's `deploy-test.sh`) would otherwise grow one KV value
+without limit. The applier refuses a NEW version past the cap and the writer reports it (`409` naming the cap, before
+anything is uploaded); it never drops a present version, never un-archives one, and an archive is always accepted and
+frees room. Archived entries are kept, one per version ever archived, so a long-lived dev cluster still accumulates
+them until an owner decision on compacting them. The versions
 index is part of the cluster state that a KV backup carries, because the DHT keys it indexes survive a restart.
 
 Known limits, stated so they are not mistaken for guarantees:

@@ -349,7 +349,9 @@ public final class ConfigLoader {
                                .map(repos -> SliceConfig.sliceConfigFromNames(repos))
                                .flatMap(Result::option)
                                .or(SliceConfig.sliceConfig())
-                               .withArtifactArchiveRetention(retention));
+                               .withArtifactArchiveRetention(retention)
+                               .withArtifactMaxVersions(doc.getInt("slice", "artifact_max_versions")
+                                                           .or(SliceConfig.DEFAULT_ARTIFACT_MAX_VERSIONS)));
     }
 
     @SuppressWarnings("JBCT-STY-05")
