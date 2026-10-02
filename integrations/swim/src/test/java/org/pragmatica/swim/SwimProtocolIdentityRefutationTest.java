@@ -153,6 +153,32 @@ class SwimProtocolIdentityRefutationTest {
         }
     }
 
+    /// The case where misattribution would do harm: the claimant is itself a seed this booting node has not
+    /// yet seen HEALTHY (it booted moments ago on the recycled IP). It must keep its cold-boot protection.
+    @Test
+    void refutation_neverLiftsTheClaimantsColdBootProtection() {
+        var observations = new RecordingObservationSink();
+        var protocol = bootingProtocol(observations, new AtomicBoolean(false));
+
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.addSeedMember(CLAIMANT, CLAIMANT_ADDR);
+        protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
+        protocol.start();
+        try {
+            await().atMost(Duration.ofSeconds(3))
+                   .until(() -> !departures(observations, PHANTOM).isEmpty() && !unknowns(observations, CLAIMANT).isEmpty());
+            await().pollDelay(PAST_RESIDENCY)
+                   .atMost(PAST_RESIDENCY.plusSeconds(1))
+                   .until(() -> true);
+
+            assertThat(departures(observations, CLAIMANT)).as("the not-yet-HEALTHY claimant stays cold-boot suppressed")
+                                                          .isEmpty();
+            assertThat(faulties(observations, CLAIMANT)).isEmpty();
+        } finally {
+            protocol.stop();
+        }
+    }
+
     @Test
     void refutedSeedWithLiveLinkUnderItsIdentity_isHeldByTransportVeto() {
         var observations = new RecordingObservationSink();
