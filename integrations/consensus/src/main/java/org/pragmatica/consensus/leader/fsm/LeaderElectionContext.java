@@ -64,6 +64,8 @@ public final class LeaderElectionContext {
     /// Production callers can override via the full-arity factory; the default is intentionally
     /// conservative so a misconfiguration doesn't introduce a deadlock-shaped bug.
     public static final TimeSpan DEFAULT_KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(3).seconds();
+    /// How many grace windows a pending sync may stretch the `AwaitingKvSync` wait to (#1803).
+    static final long KV_SYNC_MAX_WAIT_GRACES = 10L;
     /// Cadence for the independent peer-observation timer scheduled in
     /// [`LeaderElectionState.Electing`] / [`LeaderElectionState.ReElecting`]. Names a real
     /// architectural smell: `Electing.handle` previously conflated "drive my own proposal" with
@@ -198,6 +200,11 @@ public final class LeaderElectionContext {
 
     private final AtomicReference<List<NodeId>> currentTopology = new AtomicReference<>(List.of());
     private final AtomicBoolean hasEverHadLeader = new AtomicBoolean(false);
+    /// Whether this node's KV state still trails the cluster's committed frontier (#1803). Consulted by
+    /// [`LeaderElectionState.AwaitingKvSync`] so a joiner whose state is still being delivered waits for
+    /// that delivery instead of electing on the grace's wall clock. Installed by the consensus wiring
+    /// ([`#installKvSyncPending`]); the default reports no pending sync, which keeps the plain grace.
+    private final AtomicReference<Supplier<Boolean>> kvSyncPending = new AtomicReference<>(() -> false);
     private final AtomicBoolean proposalInFlight = new AtomicBoolean(false);
     private final AtomicInteger electionRetryCount = new AtomicInteger(0);
     private final AtomicInteger stuckElectionCount = new AtomicInteger(0);
@@ -606,6 +613,27 @@ public final class LeaderElectionContext {
     /// fall-through deterministically.
     public TimeSpan kvSyncGraceDelay() {
         return kvSyncGraceDelay;
+    }
+
+    /// Longest an [`LeaderElectionState.AwaitingKvSync`] wait may be stretched while sync is still pending
+    /// ([`#isKvSyncPending`]): ten grace windows. A sync signal that never settles can delay an election by
+    /// this much, never forbid it.
+    public TimeSpan kvSyncMaxWait() {
+        return TimeSpan.timeSpan(kvSyncGraceDelay.millis() * KV_SYNC_MAX_WAIT_GRACES).millis();
+    }
+
+    /// Wires the signal that this node's KV state is still catching up with the committed frontier
+    /// (production: the consensus engine's pending-catch-up flag). Replaces the no-sync-pending default.
+    @Contract
+    public void installKvSyncPending(Supplier<Boolean> pending) {
+        kvSyncPending.set(pending);
+    }
+
+    /// `true` while the node's KV state still trails the committed frontier, so a committed leader may
+    /// yet arrive through KV sync.
+    public boolean isKvSyncPending() {
+        return kvSyncPending.get()
+                            .get();
     }
 
     /// Observation cadence for the independent peer-observation timer scheduled in

@@ -85,6 +85,41 @@ class SwimJoinSyncTest {
         });
     }
 
+    /// #1803: the join ack is merged through the joiner's membership scope, so a member the scope did not yet
+    /// cover is dropped, and nothing re-offers it once the scope grows (the node learned the committed
+    /// electorate after it joined). `requestMembershipView` is the re-ask. The scope growing alone must not
+    /// bring the member in — the sync is the only path in this topology.
+    @Test
+    void requestMembershipView_afterTheScopeGrew_recoversTheMemberTheJoinAckDropped() {
+        var seed = node("seed", 29101, false);
+        var joiner = node("joiner-b", 29102, false);
+        var self = selfInfo("joiner-b", 29102);
+
+        seed.putMemberForTest(X, X_ADDR, MemberState.ALIVE);
+        joiner.setMembershipEligibility(peer -> peer.equals(SEED));
+        joiner.requestMembershipView(self, "c", List.of(SEED_ADDR));
+
+        await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> assertThat(seed.members()).as("the seed received the ANNOUNCE")
+                                                                                          .containsKey(new NodeId("joiner-b")));
+        joiner.setMembershipEligibility(_ -> true);
+        sleepQuietly(500);
+
+        assertThat(joiner.members()).as("a scope that grew, with no re-ask, recovers nothing").doesNotContainKey(X);
+
+        joiner.requestMembershipView(self, "c", List.of(SEED_ADDR));
+
+        await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> assertThat(joiner.members()).as("the re-ask returns the member")
+                                                                                              .containsKey(X));
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Test
     void announceReply_carriesLiveMembers_notAnnouncerNorFaulty() {
         var transport = new RecordingTransport();

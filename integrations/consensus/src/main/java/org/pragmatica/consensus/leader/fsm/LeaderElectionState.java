@@ -193,6 +193,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///     - `KvSyncGraceTimeout` (no peer has committed a leader within the grace window;
     ///       cluster is genuinely fresh — fall through to `Electing`/`ReElecting`).
     ///
+    /// The timeout is not a wall-clock licence to elect (#1803). A node that joined a running cluster must
+    /// not depose a live leader it has simply not read yet, so at the timeout it first follows any committed
+    /// leader it can see (the KV record; on entry also the leader it observed while passive, before it was
+    /// admitted as a voter), and while its KV state is still catching up ([`LeaderElectionContext#isKvSyncPending`]) it
+    /// waits another grace window, up to [`LeaderElectionContext#kvSyncMaxWait`]. Only a cluster that shows
+    /// no leader and no sync in flight — or a sync that never settles — reaches `Electing`.
+    ///
     /// On entry the state ALSO consults [`LeaderElectionContext#currentLeaderFromKvSupplier`]
     /// (pull-side) and dispatches a synthetic `LeaderCommitted` if the local KV already records
     /// a leader. This handles the auto-heal path: a single replacement node joining a live
@@ -200,9 +207,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// pull-side check fires immediately and the state passes through in a single dispatch tick
     /// without paying any grace latency.
     @Contract
-    record AwaitingKvSync(LeaderElectionContext ctx, AtomicReference<ScheduledFuture<?>> graceTimeoutFuture) implements LeaderElectionState {
+    record AwaitingKvSync(LeaderElectionContext ctx,
+                          AtomicReference<ScheduledFuture<?>> graceTimeoutFuture,
+                          long enteredAtNanos) implements LeaderElectionState {
         public static AwaitingKvSync fresh(LeaderElectionContext ctx) {
-            return new AwaitingKvSync(ctx, new AtomicReference<>());
+            return new AwaitingKvSync(ctx, new AtomicReference<>(), System.nanoTime());
         }
 
         @Override
@@ -212,6 +221,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // synthesize LeaderCommitted now. Synchronous dispatch — re-entry into `handle`
             // happens before this method returns and transitions to `Led(leader)`.
             adoptLeaderFromKvIfPresent(ctx);
+            // #1803: a leader this node already observed (while passive, before it was admitted as a
+            // voter) is a committed leader too. The KV pull above skips a leader equal to the one
+            // already known, so without this a joiner never left the wait on the strength of it.
+            if (ctx.fsm().current() instanceof AwaitingKvSync) {
+                adoptKnownLeader(ctx);
+            }
             // If the synchronous dispatch already advanced us out of AwaitingKvSync, skip
             // scheduling the grace timer — this record's CAS reservation is gone, but the new
             // state owns its own timers.
@@ -245,7 +260,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
-                case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx);
+                case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx, this);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
@@ -255,14 +270,63 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
     }
 
+    /// The wait's verdict at a grace timeout (#1803). A committed leader in the KV record is adopted even if its
+    /// push notification never reached this node — a joiner never elects against a live leader. With none
+    /// visible and KV state still catching up, the wait is stretched by another grace window (bounded by
+    /// [`LeaderElectionContext#kvSyncMaxWait`]) so the leader can still arrive through KV sync. Only a
+    /// cluster that shows no leader and no sync in flight is genuinely leaderless and lets this node elect.
     private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
-                                                TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+                                                TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
+                                                AwaitingKvSync waiting) {
+        ctx.currentLeaderFromKvSupplier()
+           .get()
+           .onPresent(leader -> adoptVisibleLeader(ctx, leader, tx))
+           .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
+    }
+
+    private static void adoptVisibleLeader(LeaderElectionContext ctx,
+                                           NodeId leader,
+                                           TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        log.info("AwaitingKvSync grace window elapsed with committed leader {} visible — following it, not electing",
+                 leader);
+        adoptLeaderUnconditionally(ctx, new LeaderCommitted(leader), tx);
+    }
+
+    private static void electOrKeepWaiting(LeaderElectionContext ctx,
+                                           TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
+                                           AwaitingKvSync waiting) {
+        if (ctx.isKvSyncPending() && waitedLessThanMax(ctx, waiting)) {
+            tx.handle(() -> rearmGrace(ctx, waiting));
+
+            return;
+        }
+
         log.info("AwaitingKvSync grace window elapsed without observing a committed leader — proceeding to election");
         if (ctx.hasEverHadLeader()) {
             tx.transitionTo(ctx.reElecting());
         } else {
             tx.transitionTo(ctx.electing());
         }
+    }
+
+    private static boolean waitedLessThanMax(LeaderElectionContext ctx, AwaitingKvSync waiting) {
+        return System.nanoTime() - waiting.enteredAtNanos() < ctx.kvSyncMaxWait()
+                                                                 .nanos();
+    }
+
+    private static void rearmGrace(LeaderElectionContext ctx, AwaitingKvSync waiting) {
+        log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
+                 ctx.kvSyncGraceDelay().millis());
+        waiting.graceTimeoutFuture()
+               .set(SharedScheduler.schedule(() -> dispatchSelf(ctx,
+                                                                new KvSyncGraceTimeout()),
+                                             ctx.kvSyncGraceDelay()));
+    }
+
+    /// Adopts the leader this node already knows. Synchronous dispatch, like the KV pull: the `LeaderCommitted`
+    /// handler moves the FSM to `Led` before this returns.
+    private static void adoptKnownLeader(LeaderElectionContext ctx) {
+        ctx.currentLeader().onPresent(leader -> dispatchSelf(ctx, new LeaderCommitted(leader)));
     }
 
     /// Periodic re-check of (a) consensus readiness AND (b) KV-committed leader. R6: pulls

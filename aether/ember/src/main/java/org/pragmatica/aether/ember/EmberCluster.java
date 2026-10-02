@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
@@ -1058,6 +1059,24 @@ public final class EmberCluster {
         return addConfiguredNode(nodeId(nodeIdStr).unwrap(), configuredNodeLabels(Map.of()));
     }
 
+    /// TEST SEAM (#1803) — add a core whose configured peer list is exactly `mintTimePeers` plus itself, the
+    /// shape production gives a replacement: the peers that existed when it was MINTED, frozen into its boot
+    /// config. Every other harness path hands a new node the full current node list, which hides any defect that
+    /// depends on a joiner not having been told about a later node (a newer leader, a sibling replacement).
+    /// Harness-scoped.
+    public Promise<NodeId> addCoreNode(String nodeIdStr, Set<String> mintTimePeers) {
+        var nodeId = nodeId(nodeIdStr).unwrap();
+        var labels = configuredNodeLabels(Map.of());
+
+        localCoreAdmissions.add(nodeId.id());
+        instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, labels));
+
+        return addProvisionedNode(nodeId,
+                                  labels,
+                                  Option.none(),
+                                  Option.some(Set.copyOf(mintTimePeers)));
+    }
+
     private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
         return addConfiguredNode(nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap(),
                                  labels);
@@ -1110,6 +1129,15 @@ public final class EmberCluster {
     }
 
     private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels, Option<Integer> chosenSlot) {
+        return addProvisionedNode(nodeId, labels, chosenSlot, Option.none());
+    }
+
+    /// `mintTimePeers` empty means the full current node list (the default for every harness path); present
+    /// means only those peers plus the node itself (see [#addCoreNode(String, Set)]).
+    private Promise<NodeId> addProvisionedNode(NodeId nodeId,
+                                               Map<String, String> labels,
+                                               Option<Integer> chosenSlot,
+                                               Option<Set<String>> mintTimePeers) {
         if (nodes.containsKey(nodeId.id())) {
             return EnvironmentError.operationNotSupported("Node identity already exists: " + nodeId.id()).promise();
         }
@@ -1134,7 +1162,7 @@ public final class EmberCluster {
         slotsByNodeId.put(nodeId.id(), slot);
         lastSlotByNodeId.put(nodeId.id(), slot);
         nodeInfos.put(nodeId.id(), info);
-        var allNodes = new ArrayList<>(nodeInfos.values());
+        var allNodes = configuredPeerList(nodeId, mintTimePeers);
         var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, false);
 
         nodes.put(nodeId.id(), node);
@@ -1143,6 +1171,17 @@ public final class EmberCluster {
                    .map(_ -> nodeId)
                    .onSuccess(_ -> log.info("Node {} joined the cluster",
                                             nodeId.id()));
+    }
+
+    /// The core list a new node is configured with: the full current list, or only `mintTimePeers` plus the node
+    /// itself (see [#addCoreNode(String, Set)]).
+    private List<NodeInfo> configuredPeerList(NodeId self, Option<Set<String>> mintTimePeers) {
+        return nodeInfos.values()
+                        .stream()
+                        .filter(peer -> mintTimePeers.map(ids -> ids.contains(peer.id().id()) || peer.id()
+                                                                                                     .equals(self))
+                                                     .or(true))
+                        .collect(Collectors.toCollection(ArrayList::new));
     }
 
     public Promise<Unit> killNode(String nodeIdStr) {
