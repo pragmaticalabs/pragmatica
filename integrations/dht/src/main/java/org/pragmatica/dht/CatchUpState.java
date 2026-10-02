@@ -67,8 +67,7 @@ final class CatchUpState {
 
     /// The previous holders recorded for a pending partition; empty when it is serving.
     Set<NodeId> previousHolders(Partition partition) {
-        return Option.option(pending.get(partition.value()))
-                     .or(Set.of());
+        return Option.option(pending.get(partition.value())).or(Set.of());
     }
 
     List<Partition> pendingPartitions() {

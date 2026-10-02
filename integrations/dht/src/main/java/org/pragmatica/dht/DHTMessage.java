@@ -48,7 +48,6 @@ public sealed interface DHTMessage extends ProtocolMessage {
         SERVING,
         CATCHING_UP,
         UNKNOWN;
-
         /// Whether an absent answer from a replica in this state counts as evidence of absence.
         public boolean authoritative() {
             return this == SERVING;

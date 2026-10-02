@@ -187,14 +187,17 @@ public final class DHTNode {
         var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
 
         return IntStream.range(0, Partition.MAX_PARTITIONS)
-                        .mapToObj(index -> ring.nodesFor(Partition.at(index), replicationFactor))
+                        .mapToObj(index -> ring.nodesFor(Partition.at(index),
+                                                         replicationFactor))
                         .toList();
     }
 
     private void markGained(List<List<NodeId>> before, List<List<NodeId>> after) {
         IntStream.range(0, Partition.MAX_PARTITIONS)
-                 .filter(index -> gained(before.get(index), after.get(index)))
-                 .forEach(index -> catchUp.markCatchingUp(Partition.at(index), before.get(index)));
+                 .filter(index -> gained(before.get(index),
+                                         after.get(index)))
+                 .forEach(index -> catchUp.markCatchingUp(Partition.at(index),
+                                                          before.get(index)));
     }
 
     private boolean gained(List<NodeId> before, List<NodeId> after) {

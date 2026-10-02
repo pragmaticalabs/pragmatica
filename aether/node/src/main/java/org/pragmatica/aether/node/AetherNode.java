@@ -654,13 +654,13 @@ public interface AetherNode extends ManageableNode {
               .filter(peer -> "core".equalsIgnoreCase(peer.labels().getOrDefault(NodeInfo.LABEL_ROLE, "core")))
               .forEach(peer -> dhtRing.addNode(peer.id()));
         var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
-
         // #1777 track 2: the store starts empty, so every partition this core owns starts catching up — it
         // refuses rather than answers "absent" until anti-entropy has filled it from the nodes that may hold
         // its data (the 1 s catch-up tick armed below with the node's other periodic work).
         if (!configuredWorker(config)) {
             dhtNode.beginCatchUp();
         }
+
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(),

@@ -690,8 +690,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// `NotCaughtUp` (#1777 track 2) is a read that met replicas still filling after a ring change: retried like
     /// an unreachable quorum, and never mistaken for an answer about the artifact.
     private static boolean isTransientDhtFailure(Cause cause) {
-        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached
-               || cause instanceof DHTError.NotCaughtUp;
+        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached || cause instanceof DHTError.NotCaughtUp;
     }
 
     /// Bounded retry for the DHT READ/resolve path. Mirrors `dhtPutWithRetry` but guards
@@ -714,10 +713,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         return result;
     }
 
-    private void handleGetFailure(byte[] key,
-                                  int attempt,
-                                  Cause cause,
-                                  Promise<Option<byte[]>> result) {
+    private void handleGetFailure(byte[] key, int attempt, Cause cause, Promise<Option<byte[]>> result) {
         var nextAttempt = attempt + 1;
 
         if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {

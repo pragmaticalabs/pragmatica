@@ -74,6 +74,7 @@ public final class DHTAntiEntropy {
     private final TimeSpan antiEntropyInterval;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
+
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledCatchUp = new AtomicReference<>(Option.none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -161,8 +162,7 @@ public final class DHTAntiEntropy {
 
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
 
-        node.pendingPartitions()
-            .forEach(partition -> catchUpIfOwned(partition, replicationFactor));
+        node.pendingPartitions().forEach(partition -> catchUpIfOwned(partition, replicationFactor));
     }
 
     /// Pulls a holder refused since start — ring disagreement or an unreadable store (#1777).
@@ -240,7 +240,8 @@ public final class DHTAntiEntropy {
         node.storage()
             .entriesForPartition(node.ring(),
                                  partition)
-            .onSuccess(entries -> sendCatchUpDigests(round, computeDigest(entries)));
+            .onSuccess(entries -> sendCatchUpDigests(round,
+                                                     computeDigest(entries)));
     }
 
     /// The current co-replicas plus every recorded previous holder still in the ring — the nodes that may
@@ -251,10 +252,7 @@ public final class DHTAntiEntropy {
         var members = node.ring().nodes();
         var sources = new HashSet<>(coReplicas);
 
-        node.previousHolders(partition)
-            .stream()
-            .filter(members::contains)
-            .forEach(sources::add);
+        node.previousHolders(partition).stream().filter(members::contains).forEach(sources::add);
         sources.remove(node.nodeId());
         retainLive(sources);
 
@@ -271,8 +269,7 @@ public final class DHTAntiEntropy {
     }
 
     private void sendCatchUpDigests(CatchUpRound round, byte[] localDigest) {
-        round.sources()
-             .forEach(source -> sendCatchUpDigest(round, source, localDigest));
+        round.sources().forEach(source -> sendCatchUpDigest(round, source, localDigest));
     }
 
     private void sendCatchUpDigest(CatchUpRound round, NodeId source, byte[] localDigest) {
@@ -300,7 +297,8 @@ public final class DHTAntiEntropy {
         if (round.anyUnknown()) {
             log.info("Catch-up of partition {} abandoned: a source could not report its state; retrying",
                      round.partition().value());
-            rounds.remove(round.partition().value(), round);
+            rounds.remove(round.partition().value(),
+                          round);
 
             return;
         }
@@ -309,7 +307,8 @@ public final class DHTAntiEntropy {
 
         if (targets.isEmpty()) {
             completeCatchUp(round.partition(), round.anchorless());
-            rounds.remove(round.partition().value(), round);
+            rounds.remove(round.partition().value(),
+                          round);
 
             return;
         }
@@ -318,7 +317,10 @@ public final class DHTAntiEntropy {
     }
 
     private void requestCatchUpPull(CatchUpRound round, NodeId source) {
-        sendPull(source, round.partition().value(), Option.some(round), "catch-up pull");
+        sendPull(source,
+                 round.partition().value(),
+                 Option.some(round),
+                 "catch-up pull");
     }
 
     private void onCatchUpPull(PendingPull pull, CatchUpRound round, DHTMessage.MigrationDataResponse response) {
@@ -326,7 +328,10 @@ public final class DHTAntiEntropy {
         node.storage()
             .entriesForPartition(node.ring(),
                                  round.partition())
-            .onSuccess(local -> verifyCatchUpPull(pull.peer(), round, response.entries(), local));
+            .onSuccess(local -> verifyCatchUpPull(pull.peer(),
+                                                  round,
+                                                  response.entries(),
+                                                  local));
     }
 
     /// Completion is proven by READBACK, not by the apply call: every pulled entry must now be stored
@@ -339,36 +344,39 @@ public final class DHTAntiEntropy {
             log.warn("Catch-up of partition {}: entries pulled from {} were not stored; retrying",
                      round.partition().value(),
                      peer.id());
-            rounds.remove(round.partition().value(), round);
+            rounds.remove(round.partition().value(),
+                          round);
 
             return;
         }
 
         if (isCurrent(round) && round.pullStored(peer)) {
             completeCatchUp(round.partition(), round.anchorless());
-            rounds.remove(round.partition().value(), round);
+            rounds.remove(round.partition().value(),
+                          round);
         }
     }
 
     private static boolean allStored(List<DHTMessage.KeyValue> pulled, List<DHTMessage.KeyValue> local) {
         Map<String, Long> stored = new HashMap<>();
 
-        local.forEach(entry -> stored.put(Arrays.toString(entry.key()), entry.version()));
+        local.forEach(entry -> stored.put(Arrays.toString(entry.key()),
+                                          entry.version()));
 
         return pulled.stream()
-                     .allMatch(entry -> stored.getOrDefault(Arrays.toString(entry.key()), Long.MIN_VALUE) >= entry.version());
+                     .allMatch(entry -> stored.getOrDefault(Arrays.toString(entry.key()),
+                                                            Long.MIN_VALUE) >= entry.version());
     }
 
     private boolean isCurrent(CatchUpRound round) {
         return rounds.get(round.partition().value()) == round;
     }
 
-
     private void completeCatchUp(Partition partition, boolean anchorless) {
         node.markServing(partition);
         if (anchorless) {
             log.warn("Partition {} is now served without an authoritative source: every live co-replica and "
-                     + "previous holder was itself catching up, so its absent answers are best-effort",
+                    + "previous holder was itself catching up, so its absent answers are best-effort",
                      partition.value());
         } else {
             log.debug("Partition {} caught up", partition.value());
@@ -383,8 +391,8 @@ public final class DHTAntiEntropy {
         log.info("Migration pull of partition {} refused by {}: not a replica in its ring, or its store was unreadable",
                  pull.partitionIndex(),
                  pull.peer().id());
-        pull.round()
-            .onPresent(round -> rounds.remove(round.partition().value(), round));
+        pull.round().onPresent(round -> rounds.remove(round.partition().value(),
+                                                      round));
     }
 
     private void sendPull(NodeId peer, int partitionIndex, Option<CatchUpRound> round, String what) {

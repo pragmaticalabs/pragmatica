@@ -101,18 +101,18 @@ final class CatchUpRound {
     List<NodeId> pullTargets() {
         var serving = answers.entrySet()
                              .stream()
-                             .filter(entry -> entry.getValue().readiness().authoritative())
+                             .filter(entry -> entry.getValue()
+                                                   .readiness()
+                                                   .authoritative())
                              .map(Map.Entry::getKey)
                              .toList();
 
         anchorless.set(serving.isEmpty());
-
         var candidates = serving.isEmpty()
                          ? List.copyOf(answers.keySet())
                          : serving;
-        var targets = candidates.stream()
-                                .filter(source -> !answers.get(source).digestMatches())
-                                .toList();
+        var targets = candidates.stream().filter(source -> !answers.get(source)
+                                                                   .digestMatches()).toList();
 
         outstandingPulls.addAll(targets);
 
