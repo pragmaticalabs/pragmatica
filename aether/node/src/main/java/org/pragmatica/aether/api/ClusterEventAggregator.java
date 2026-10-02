@@ -1094,7 +1094,8 @@ public final class ClusterEventAggregator {
     }
 
     /// FSM DEAD-edge failure hook (#210): NODE_FAILED is sourced from the SAME ungated confirmed-death
-    /// edge that drives auto-heal ({@code MembershipFsm.onConfirmedDeparture}), NOT the quorum-gated
+    /// edge that drives auto-heal ({@code MembershipFsm.onConfirmedDeparture}; since #1835 its reachable
+    /// half, {@code MembershipFsm.onReachableDeath}), NOT the quorum-gated
     /// {@link MembershipDecision.NodeRemoved}. On a multi-node cluster a non-leader kill heals (the DEAD
     /// edge fires on every node's FSM) but the `NodeRemoved` decision is dropped by the projector's
     /// `inQuorum` gate / drainer-confined `announced` baseline during the post-kill re-election window,
@@ -1118,7 +1119,9 @@ public final class ClusterEventAggregator {
     /// reason: it makes the leadership view — the least trustworthy input in this incident — the guard
     /// on the failure path, so a stale `currentLeader()` naming a dead node silences every survivor.
     ///
-    /// GUARANTEE: **at-least-once per observing core member, per confirmed departure**, into that
+    /// GUARANTEE: **at-least-once per observing core member, per confirmed departure of a member that
+    /// observer's FSM had ever seen reachable** (#1835: `MembershipFsm.onReachableDeath`; a death with no
+    /// such evidence raises the `node-never-joined` operator warning instead), into that
     /// member's LOCAL partition-0 ring. Deliberately NOT exactly-once and NOT deduplicated. Duplicates
     /// are bounded, not unbounded — `MembershipFsm.enteredDead` is a fresh-edge fan-out firing once per
     /// DEAD transition per member FSM — so the ceiling is one event per member confirming the death.

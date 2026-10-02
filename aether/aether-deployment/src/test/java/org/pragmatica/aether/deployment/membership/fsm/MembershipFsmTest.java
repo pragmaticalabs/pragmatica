@@ -1130,6 +1130,111 @@ class MembershipFsmTest {
         }
     }
 
+    /// #1835 — the user-facing "failed" verdict (NODE_FAILED + CRITICAL alert) is about a subject whose
+    /// identity was established. The DEAD edge splits on the `everReachable` latch as read AT the edge:
+    /// exactly one of [`MembershipFsm#onReachableDeath`] / [`MembershipFsm#onNeverReachableDeath`] fires,
+    /// and the unconditional [`MembershipFsm#onConfirmedDeparture`] (auto-heal, link drop, quorum nudge)
+    /// fires for both.
+    @Nested
+    class ReachabilitySplit {
+        /// A seeded configured core is MEMBER with no packet received; it dies co-confirmed. It never
+        /// joined — the phantom/slow-booting seed of #1835.
+        @Test
+        void seededCoreNeverReached_dies_isNeverReachable_notReachable() {
+            var manager = activeManager();
+            var reachable = new ArrayList<NodeId>();
+            var never = new ArrayList<NodeId>();
+
+            manager.onReachableDeath(reachable::add);
+            manager.onNeverReachableDeath(never::add);
+            manager.onMemberDescriptor(coreNodeInfo(A));
+            manager.seed(java.util.Set.of(A));
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+            awaitDead(manager, A);
+            assertThat(never).as("a seed no evidence ever reached gets the never-joined signal").containsExactly(A);
+            assertThat(reachable).as("and no failed verdict").isEmpty();
+        }
+
+        /// OBSERVED→DEAD on join-grace expiry, a joiner that never became reachable.
+        @Test
+        void joinGraceExpiryOnNeverReachable_isNeverReachable() {
+            var manager = activeManager();
+            var reachable = new ArrayList<NodeId>();
+            var never = new ArrayList<NodeId>();
+
+            manager.onReachableDeath(reachable::add);
+            manager.onNeverReachableDeath(never::add);
+            manager.onPeerDisconnected(A);
+            manager.onJoinGraceExpired(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(never).containsExactly(A);
+            assertThat(reachable).isEmpty();
+        }
+
+        /// A member that was once observed reachable (SWIM ALIVE) and then dies is a real failure.
+        @Test
+        void onceReachableMember_dies_isReachable_notNeverReachable() {
+            var manager = activeManager();
+            var reachable = new ArrayList<NodeId>();
+            var never = new ArrayList<NodeId>();
+
+            manager.onReachableDeath(reachable::add);
+            manager.onNeverReachableDeath(never::add);
+            driveToDead(manager, A, 4L);
+            assertThat(reachable).containsExactly(A);
+            assertThat(never).isEmpty();
+        }
+
+        /// A QUIC handshake alone latches the evidence; the later join-grace death is a failure.
+        @Test
+        void peerConnectedThenJoinGraceDeath_isReachable() {
+            var manager = activeManager();
+            var reachable = new ArrayList<NodeId>();
+            var never = new ArrayList<NodeId>();
+
+            manager.onReachableDeath(reachable::add);
+            manager.onNeverReachableDeath(never::add);
+            manager.onPeerConnected(A);
+            manager.onPeerDisconnected(A);
+            manager.onJoinGraceExpired(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(reachable).containsExactly(A);
+            assertThat(never).isEmpty();
+        }
+
+        /// The link-drop / auto-heal / quorum-nudge edge must NOT be gated: it fires for a never-reachable
+        /// death exactly as it did before #1835.
+        @Test
+        void confirmedDeparture_stillFiresForNeverReachableDeath() {
+            var manager = activeManager();
+            var departed = new ArrayList<NodeId>();
+
+            manager.onConfirmedDeparture(departed::add);
+            manager.onPeerDisconnected(A);
+            manager.onJoinGraceExpired(A);
+            assertThat(departed).containsExactly(A);
+        }
+
+        @Test
+        void nullResetsBothListenersToNoop() {
+            var manager = activeManager();
+            var reachable = new ArrayList<NodeId>();
+            var never = new ArrayList<NodeId>();
+
+            manager.onReachableDeath(reachable::add);
+            manager.onNeverReachableDeath(never::add);
+            manager.onReachableDeath(null);
+            manager.onNeverReachableDeath(null);
+            driveToDead(manager, A, 4L);
+            manager.onPeerDisconnected(B);
+            manager.onJoinGraceExpired(B);
+            assertThat(reachable).isEmpty();
+            assertThat(never).isEmpty();
+        }
+    }
+
     @Nested
     class Rejoin {
         @Test

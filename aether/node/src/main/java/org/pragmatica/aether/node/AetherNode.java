@@ -4588,7 +4588,10 @@ public interface AetherNode extends ManageableNode {
         // this same death edge — behaviour parity, sampler out of the loop. Without it the nudge
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
-        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator, alertManager, config.self());
+        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator,
+                                                                            alertManager,
+                                                                            config.self(),
+                                                                            operatorWarningSink);
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed,
@@ -4598,20 +4601,26 @@ public interface AetherNode extends ManageableNode {
                               leaderReconcilerRef,
                               config.self(),
                               installedVoterIds(clusterNode));
-            // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
-            // death signal that drives auto-heal above — instead of the quorum-gated
-            // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
-            // post-kill re-election window so the event never reached /api/events on cloud.
-            // #926: NO LONGER leader-gated inside the aggregator. It was, and a cluster that cannot
-            // elect a leader therefore could not emit the events saying it was broken — measured at
-            // 8 SWIM-confirmed deaths and 0 NodeFailed events over ten days. Now emitted on every
-            // node that confirms the death (see ClusterEventAggregator.onConfirmedDeparture for the
-            // at-least-once-per-observer contract and why a dedup token is the wrong fix).
-            // #926 round 2: both surfaces go through ONE named unit. Written as two statements here,
-            // a probe deleted the alert call and all 1217 tests stayed green — the call site was
-            // deletable with no signal. NodeDepartureNotifier makes the pair testable as a pair.
-            departureNotifier.onConfirmedDeparture(departed);
         });
+        // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
+        // death signal that drives auto-heal above — instead of the quorum-gated
+        // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
+        // post-kill re-election window so the event never reached /api/events on cloud.
+        // #926: NO LONGER leader-gated inside the aggregator. It was, and a cluster that cannot
+        // elect a leader therefore could not emit the events saying it was broken — measured at
+        // 8 SWIM-confirmed deaths and 0 NodeFailed events over ten days. Now emitted on every
+        // node that confirms the death (see ClusterEventAggregator.onConfirmedDeparture for the
+        // at-least-once-per-observer contract and why a dedup token is the wrong fix).
+        // #926 round 2: both surfaces go through ONE named unit. Written as two statements here,
+        // a probe deleted the alert call and all 1217 tests stayed green — the call site was
+        // deletable with no signal. NodeDepartureNotifier makes the pair testable as a pair.
+        // #1835: the pair rides ONLY the reachable-death edge — the FSM's `everReachable` latch, read at
+        // the DEAD edge. A configured core this node never observed reachable (slow-booting JVM seed,
+        // phantom seed) never joined, so it did not fail: it gets the WARNING-level `node-never-joined`
+        // operator warning instead. `onMembershipDeath` above stays UNCONDITIONAL (auto-heal, link drop,
+        // quorum nudge) — only the user-facing verdict is identity-gated.
+        membershipFsm.onReachableDeath(departureNotifier::onConfirmedDeparture);
+        membershipFsm.onNeverReachableDeath(departureNotifier::onNeverJoined);
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
         // nothing terminated its container/JVM — it ran on as a non-member zombie (Docker count
