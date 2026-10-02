@@ -243,7 +243,6 @@ public final class DHTAntiEntropy {
         if (inFlight.filter(round -> !round.olderThan(catchUpRoundTimeout.nanos())).isPresent()) {
             return;
         }
-
         // A round that has decided keeps its pulls for one more round timeout (#1777, K5): a decision taken on
         // the answers in hand happens AFTER the round timed out, and replacing it on the next tick would drop
         // a pull slower than a tick — exactly the backpressured lane the early decision exists for.
