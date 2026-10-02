@@ -162,19 +162,23 @@ written once and never rewritten or removed; and the **versions of each artifact
 adds, and the Rabia applier MERGES it into the committed set (a union that takes the higher state per version). The
 consensus log orders the writers, so two nodes publishing different versions of one artifact at the same instant
 both land, and a stale add can never un-archive a version. The artifact bytes and the per-version metadata stay in
-the DHT. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
+the DHT. The binding of a coordinate to its content is decided in consensus too: before anything is uploaded, an
+uploader proposes `(coordinate file -> size, MD5, SHA-1)` under `artifact-content/...`, and the applier keeps the FIRST
+digest committed. An uploader whose digest lost gets `409` naming both digests and uploads nothing, so only the winner
+ever writes a file's metadata and a reader can never resolve a loser's bytes. A winner that died after binding and
+before writing leaves a bound coordinate without metadata; an identical re-put completes it, a different one is refused. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
 DHT's read rule), so a replica that missed the archive write cannot make an archived version resolve. The versions
 index is part of the cluster state that a KV backup carries, because the DHT keys it indexes survive a restart.
 
 Known limits, stated so they are not mistaken for guarantees:
 
-- **Concurrent first writes of different content to one coordinate.** The conflict check is a read followed by a
-  write, not an atomic step (the DHT has no conditional put). Two first writes racing from different clients can both
-  pass the check, and the later metadata write wins. Retried or sequential pushes are always checked.
 - **The per-version file list** (in the DHT) can lose an entry when two nodes add files to one version at once. It
   only dates the version for the retention check, and a missing entry makes that check stricter, never looser.
-- **Mixed versions.** The merge is a change to the consensus applier; like the other applier fences it is not version
-  gated, and rc releases do not support mixed-version operation.
+- **Mixed versions (known, [unverified]).** The merges are changes to the consensus applier; like the other applier
+  fences they are not version gated. Before GA there is no mixed-version operation; the GA rolling-upgrade contract has
+  to gate them together with the other applier changes.
+- **Coordinates stored before this change** have no consensus binding. Re-putting such a coordinate is still checked
+  against its stored metadata; pre-GA nothing migrates them.
 - **Digest strength.** Content is compared by size, MD5 and SHA-1, the hashes the store already records.
 
 ## Configuration

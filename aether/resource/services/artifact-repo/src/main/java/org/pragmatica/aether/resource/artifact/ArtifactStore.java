@@ -665,10 +665,14 @@ class ArtifactStoreImpl implements ArtifactStore {
     private Promise<DeployResult> bindThenWrite(ArtifactFile file, byte[] content, String md5, String sha1) {
         var offered = new ArtifactContentValue(content.length, md5, sha1);
 
-        return versionIndex.bindContent(file, offered).flatMap(bound -> writeIfBound(file, content, offered, bound));
+        return versionIndex.bindContent(file, offered)
+                           .flatMap(bound -> writeIfBound(file, content, offered, bound));
     }
 
-    private Promise<DeployResult> writeIfBound(ArtifactFile file, byte[] content, ArtifactContentValue offered, ArtifactContentValue bound) {
+    private Promise<DeployResult> writeIfBound(ArtifactFile file,
+                                               byte[] content,
+                                               ArtifactContentValue offered,
+                                               ArtifactContentValue bound) {
         return bound.equals(offered)
                ? writeNew(file, content, offered.md5(), offered.sha1())
                : new ArtifactStoreError.ContentConflict(file, bound.sha1(), offered.sha1()).promise();

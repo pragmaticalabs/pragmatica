@@ -32,7 +32,6 @@ public interface ArtifactVersionIndex {
     /// the FIRST one proposed, decided once for every node. Never rewritten or removed. A caller whose digest is not
     /// the answer lost the race for this coordinate and must not write its content.
     Promise<ArtifactContentValue> bindContent(ArtifactFile file, ArtifactContentValue digest);
-
     /// The versions that are present and not archived.
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
 
