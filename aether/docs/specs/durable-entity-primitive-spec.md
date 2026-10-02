@@ -140,7 +140,8 @@ serves any durable-single-writer need; workflow and saga are convenience facades
 | **Per-key write fence (single-writer enforcement)** | ✅ **IMPLEMENTED** — `staleEpochWrite` + `EpochBearing<E>` in `KVStore` Rabia applier; rejects any `Put` whose incoming epoch is strictly older than the committed one; deterministic (pure function of replicated state); covers governor + DHT ownership writes. Stream-path epoch-CAS is #345 piece 1b (remaining gap). | `KVStore.java:87-127`; `EpochBearing.java:1-38`; `AetherValue.java: DhtPartitionOwnershipValue`, `StreamPartitionOwnershipValue`; `BootstrapModule.java:367-402` |
 | Per-key serialization queue (serialize same-key, parallel across keys) | ✅ **SHIPPED** (v0.6.0 status update) | `PerKeySerialExecutor.java` |
 | Durable per-instance timers (one-shot, fire-and-delete, survive handover) | ✅ **SHIPPED** (#351, #345 I4): a timer is a record in the entity's own fenced log | `EntityTimerDriver.java`; `DurableEntity.java:143-221`; CHANGELOG "#351 / #345 I4" |
-| Runtime→slice invocation (timer fire, dispatch) | ✅ exists | `SliceInvoker.java:95-96` |
+| Runtime→slice invocation (dispatch) | ✅ exists | `SliceInvoker.java:95-96` |
+| Timer fire on the owner | ✅ **SHIPPED** (#351): applied in-process by the entity, not through `SliceInvoker` | `EntityTimerDriver.java:17-28` |
 | Durable KV store (replicated, quorum) | ✅ exists, **in-memory — not restart-durable** (→ #349). No longer the entity's state store: since #345 I3 entity state lives on a fenced, fsync-durable, replicated stream log (§4.4). | `DHTClient.java:39-76`; `MemoryStorageEngine.java:71-75` |
 | Stream-path epoch fence on the entity log append | ✅ **SHIPPED** (v0.6.0 status update): a deposed owner's append is refused `StaleEpochAppend` → `EntityLogError.StaleOwnerAppend` | `StreamEntityLogSubstrate.java:268-288` |
 
@@ -218,10 +219,18 @@ owner cannot commit after handover.
 
 ### 4.5 Timers
 
-Each owner keeps an in-memory timer wheel for its entities; entries are **persisted (fenced) under a
-parallel key prefix** so they survive handover (the new owner rebuilds the wheel by scanning its
-arc). On expiry the owner applies the scheduled operation via the same path as an external update.
-One-shot, fire-and-delete; auto-cancelled on terminal state. (Distinct from per-slice cron — §11.)
+*Rewritten v0.7.0 to the shipped mechanism (#351, #345 I4); the v0.2 design here — an in-memory wheel
+per owner over a parallel key prefix, auto-cancelled on terminal state — was not what shipped.*
+
+A schedule is a record appended to the entity's **own fenced log**, admitted and epoch-fenced like an
+update; the pending set is folded from that log, so it survives handover and restart by the same
+mechanism state does, and there is **no timer wheel** — a second, process-local copy could disagree with
+the log after a handover. `EntityTimerDriver` ticks once per second and asks each registered keyspace's
+entity what is due on partitions it owns; a due timer's `onFire` command is applied on the owner through
+the same per-key path as an external update (`EntityTimerDriver.java:17-28`). One-shot; leaves the pending
+set when it fires. `delete` auto-cancels the key's pending timers; there is no terminal-state predicate
+(§5.1). A fire that cannot be applied is consumed and logged, not retried (`TimerFireFailed`, §5.3).
+(Distinct from per-slice cron — §11.)
 
 ### 4.6 Hot-entity bottleneck (acknowledged)
 
@@ -270,7 +279,7 @@ public interface DurableEntity<K, S, C extends Mutator<S>> {
     /** One-shot durable timer; the owner mints the token. Delegates to the token-carrying entry. */
     default Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire) { ... }
 
-    /** Retry-safe entry: a re-send carrying the same caller-minted token is the SAME schedule. */
+    /** Retry-safe entry: a re-send carrying a token ALREADY PENDING for this key is that same schedule. */
     Promise<TimerToken>  scheduleTimer(K key, Duration delay, C onFire, TimerToken token);
 
     /** Idempotent: an unknown, fired, cancelled or never-landed token succeeds with nothing appended. */
@@ -313,7 +322,8 @@ public sealed interface OrderCommand extends Mutator<OrderState> {
 ```
 
 The shipped reference slice is `aether/tests/blueprints/test-entity` (`EntitySlice.OrderCommand`,
-`EntitySlice.java:132-148`).
+`EntitySlice.java:132-148`), which follows the same pattern with its own variants (`SetAmount`,
+`Expire`); `Cancel` above is illustrative.
 
 **What `delete` does NOT do (shipped):** there is no terminal-state predicate; `delete` removes any present
 key. The predicate an earlier revision described here is unbuilt (see §5.3, `EntityTerminated` /
@@ -1278,8 +1288,10 @@ Evidence that informed R4; it records today's code, which the R4 contract (§7.9
   `removeNonTargetVersions` drops every non-target version and issues unloads
   (`ClusterDeploymentState.java:1777-1804`); rollback restores the target to the old version and removes
   the routing key in one batch, so the new version is deallocated by the same path
-  (`DeploymentManagerImpl.java:374-396`). Target change (:1555-1570), target removal (:395-400) and
-  blueprint removal (:1047-1061) deallocate the same way. None reads entity state or pending timers.
+  (`DeploymentManagerImpl.java:374-396`). A slice-target change when no rolling update is active for
+  the base (`ClusterDeploymentState.java:1555-1570`, guarded by `!activeRoutings.contains`), slice-target
+  removal (`ClusterDeploymentState.java:395-400`) and blueprint removal
+  (`ClusterDeploymentState.java:1047-1061`) deallocate the same way. None reads entity state or pending timers.
 - **Two versions on one node share a keyspace without isolation.** Resources are cached per slice scope
   `groupId:artifactId:version` (`SpiResourceProvider.java:184-186, 502`; `SliceLoadingContext.java:439-441`),
   so each version provisions its own entity instance for the same keyspace, while the node registries are

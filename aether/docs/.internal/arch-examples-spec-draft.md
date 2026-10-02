@@ -268,8 +268,9 @@ Risk-first, matching the repo's stabilize-foundation-first invariant:
 2. **Wave A (post-streaming-debt):** EDA (evolve url-shortener, lowest risk) → EventSrc → CQRS
    (consumes #429/#430) → HotStream (k6 flagship) → Outbox (gap-probe, cheap, batch freely).
 3. **Wave B — with the #345 facade phase (spec §13 Ph0→Ph4):** Workflow (§3.5, Ph3) then Saga
-   (§3.4, Ph4), written **example-first** so their assertions are the facade acceptance gate. These
-   need stream-path fence (piece 1b) + per-key serialization first; full restart-durable variants
+   (§3.4, Ph4), written **example-first** so their assertions are the facade acceptance gate. Both
+   prerequisites named here earlier — stream-path fence (piece 1b) and per-key serialization — have
+   shipped (spec §11, v0.6.0); these now wait on the facades (#353, #354). Full restart-durable variants
    wait on #349.
 4. Validation gate between waves: in-JVM Forge/Ember proof first, then the remote-docker 15-suite
    gate, cloud sweep last (never the primary debug surface).
