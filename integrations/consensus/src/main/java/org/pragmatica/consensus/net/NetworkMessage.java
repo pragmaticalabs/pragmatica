@@ -86,4 +86,15 @@ public sealed interface NetworkMessage extends Message.Wired {
             return StreamType.KV;
         }
     }
+
+    /// Leader pre-vote question (#1748): "do you still see `leader` healthy?". Sent by a follower that
+    /// lost its own view of the committed leader, BEFORE it elects, so one follower's broken link cannot
+    /// depose a leader the rest of the electorate still reaches. `round` pairs the answer with the
+    /// asking round.
+    record LeaderPreVoteRequest(NodeId sender, NodeId leader, long round) implements NetworkMessage {}
+
+    /// Answer to a [LeaderPreVoteRequest]. `leaderHealthy` is the responder's own view: it follows `leader`
+    /// and still sees it reachable and fresh. A responder with no view of the leadership at all (booting,
+    /// quorum lost, passive) does not answer.
+    record LeaderPreVoteResponse(NodeId sender, NodeId leader, long round, boolean leaderHealthy) implements NetworkMessage {}
 }

@@ -19,6 +19,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderDoubtConfirmed;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderSilent;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
 import org.pragmatica.lang.Contract;
@@ -434,6 +435,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `NodeGone` for a SWIM-alive leader). A LEADER tenure (`leader == self`) schedules NO timer:
     /// the leader is the one stamping pings, so it cannot observe itself silent. The future is
     /// cancelled in `onExit` / `onCasLost` so a stale lease tick from a prior tenure cannot fire.
+    ///
+    /// A follower that loses the leader (`NodeGone(leader)`, or the lease expiring) does not go to
+    /// `ReElecting` on that private view when the leader pre-vote is enabled (#1748): it stays in
+    /// `Led(leader)` and asks the electorate through [`LeaderPreVote`]; only [`LeaderDoubtConfirmed`] — a majority
+    /// affirmatively doubting the leader — takes it to `ReElecting`. Without the pre-vote (local mode, stubs)
+    /// the edge is immediate, as before.
     @Contract
     record Led(LeaderElectionContext ctx,
                NodeId leader,
@@ -476,6 +483,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void onExit() {
             cancelFuture(leaseFuture);
+            ctx.preVote().onPresent(preVote -> preVote.cancel(leader));
         }
 
         @Override
@@ -483,20 +491,24 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             cancelFuture(leaseFuture);
         }
 
+        /// Whether this follower has lost the leader on its own evidence: the leader is gone from its transport
+        /// view, or its leader ping has been silent for the full lease threshold. Read by the pre-vote both to
+        /// keep retrying while it holds and to answer other followers' questions about this leader.
+        public boolean isLeaderSuspected() {
+            return ! ctx.currentTopology()
+                        .contains(leader) || consecutiveSilentChecks.get() >= LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS;
+        }
+
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
-                case ClusterFsmEvent.NodeGone ng -> {
-                    ctx.setCurrentTopology(ng.topology());
-                    if (ng.node().equals(leader)) {
-                        tx.transitionTo(ctx.reElecting());
-                    }
-                }
+                case ClusterFsmEvent.NodeGone ng -> handleNodeGoneInLed(ctx, this, ng, tx);
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
-                case LeaderSilent ls -> handleLeaderSilentInLed(ctx, leader, ls, tx);
+                case LeaderSilent ls -> handleLeaderSilentInLed(ctx, this, ls, tx);
+                case LeaderDoubtConfirmed dc -> handleLeaderDoubtConfirmedInLed(ctx, this, dc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // External LeaderChange is informational — canonical leader lives in our Led
@@ -553,9 +565,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// (which snapshots the committed-viewSequence baseline, so a stale pre-silence commit cannot
     /// regress the fresh election).
     private static void handleLeaderSilentInLed(LeaderElectionContext ctx,
-                                                NodeId currentLeader,
+                                                Led led,
                                                 LeaderSilent event,
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        var currentLeader = led.leader();
+
         if (!event.silentLeader().equals(currentLeader)) {
             log.warn("Discarding STALE LeaderSilent({}) in Led({}) — leader already swapped",
                      event.silentLeader(),
@@ -564,7 +578,52 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        log.warn("Led({}): leader-acting lease expired — transitioning to ReElecting", currentLeader);
+        log.warn("Led({}): leader-acting lease expired — leader lost", currentLeader);
+        loseLeader(ctx, led, tx);
+    }
+
+    private static void handleNodeGoneInLed(LeaderElectionContext ctx,
+                                            Led led,
+                                            ClusterFsmEvent.NodeGone event,
+                                            TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        ctx.setCurrentTopology(event.topology());
+        if (event.node().equals(led.leader())) {
+            loseLeader(ctx, led, tx);
+        }
+    }
+
+    /// This follower lost its leader on its own evidence. With the pre-vote enabled it asks the electorate
+    /// first and stays in `Led` (#1748); the pre-vote does not apply to a leader that is this node itself or
+    /// no longer eligible (voted out — nothing for the electorate to vouch for), or when this node is the whole electorate (nobody to ask; the verdict would dispatch re-entrantly from inside this handler), and is absent in local mode.
+    private static void loseLeader(LeaderElectionContext ctx,
+                                   Led led,
+                                   TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        ctx.preVote()
+           .filter(_ -> !led.leader()
+                            .equals(ctx.self())
+                        && ctx.isEligible(led.leader())
+                        && ctx.electorate()
+                              .size() > 1)
+           .onPresent(preVote -> tx.handle(() -> preVote.suspect(led.leader())))
+           .onEmpty(() -> tx.transitionTo(ctx.reElecting()));
+    }
+
+    /// A majority of the electorate doubts the leader. Honoured only for the tenure it was asked about and
+    /// only while the follower still suspects that leader on its own evidence (the leader may have come back
+    /// while the round ran).
+    private static void handleLeaderDoubtConfirmedInLed(LeaderElectionContext ctx,
+                                                        Led led,
+                                                        LeaderDoubtConfirmed event,
+                                                        TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        if (!event.leader().equals(led.leader()) || !led.isLeaderSuspected()) {
+            log.info("Led({}): discarding leader-doubt verdict for {} — tenure changed or the leader is back",
+                     led.leader(),
+                     event.leader());
+
+            return;
+        }
+
+        log.warn("Led({}): a majority of the electorate doubts the leader — transitioning to ReElecting", led.leader());
         tx.transitionTo(ctx.reElecting());
     }
 
