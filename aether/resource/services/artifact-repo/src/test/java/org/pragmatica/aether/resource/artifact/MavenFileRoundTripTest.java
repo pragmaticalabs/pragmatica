@@ -84,50 +84,34 @@ class MavenFileRoundTripTest {
         assertThat(get(BASE + "-javadoc.jar").statusCode()).isEqualTo(404);
     }
 
-    // verify-1132 B1: Maven 3 deploys every SNAPSHOT under a timestamped unique name; each file of
-    // that deploy is its own entry under the SNAPSHOT version, and the plain SNAPSHOT name reads it.
+    // verify-1132 B1 parsed Maven 3's timestamped SNAPSHOT names file by file; #1778 refuses SNAPSHOT versions in
+    // the built-in store, so each of those PUTs is now a 400 that names the SNAPSHOT policy and stores nothing.
     @Test
-    void timestampedSnapshotDeploy_keysEveryFileSeparately() {
+    void timestampedSnapshotDeploy_isRefusedForEveryFile_andStoresNothing() {
         var dir = "/repository/org/example/lib/1.0.0-SNAPSHOT/lib-1.0.0-20260914.010203-1";
 
-        assertThat(body(put(dir + ".jar", JAR))).contains("\"status\":\"uploaded\"");
-        assertThat(body(put(dir + ".pom", POM))).contains("\"status\":\"uploaded\"");
-        assertThat(body(put(dir + "-sources.jar", SOURCES))).as("a timestamped -sources.jar is not the jar")
-                                                            .contains("\"status\":\"uploaded\"");
-        assertThat(body(put(dir + "-javadoc.jar", JAVADOC))).contains("\"status\":\"uploaded\"");
+        for (var suffix : List.of(".jar", ".pom", "-sources.jar", "-javadoc.jar")) {
+            var refused = put(dir + suffix, JAR);
 
-        assertThat(get(dir + "-sources.jar").content()).isEqualTo(SOURCES);
-        assertThat(get(dir + "-javadoc.jar").content()).isEqualTo(JAVADOC);
-        assertThat(get(dir + ".jar").content()).isEqualTo(JAR);
-        assertThat(get(dir + ".pom").content()).isEqualTo(POM);
-        assertThat(get("/repository/org/example/lib/1.0.0-SNAPSHOT/lib-1.0.0-SNAPSHOT-sources.jar").content())
-            .as("the plain SNAPSHOT name addresses the same file").isEqualTo(SOURCES);
+            assertThat(refused.statusCode()).as(suffix).isEqualTo(400);
+            assertThat(body(refused)).contains("SNAPSHOT");
+        }
 
-        assertThat(dht.keySet()).containsExactlyInAnyOrder(
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/jar/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/pom/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/sources.jar/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/javadoc.jar/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/files",
-            "artifacts/org.example/lib/versions");
-
-        var xml = body(get("/repository/org/example/lib/maven-metadata.xml"));
-
-        assertThat(xml.split("<version>1.0.0-SNAPSHOT</version>", -1)).as("listed once").hasSize(2);
+        assertThat(dht).as("nothing was written for a refused SNAPSHOT").isEmpty();
+        assertThat(get("/repository/org/example/lib/maven-metadata.xml").statusCode()).isEqualTo(404);
     }
 
     @Test
     void mavenMetadata_latestAndReleaseFollowVersionOrder_notDeployOrder() {
-        put("/repository/org/example/lib/2.0.0-SNAPSHOT/lib-2.0.0-SNAPSHOT.jar", JAR);
+        put("/repository/org/example/lib/2.0.0-rc1/lib-2.0.0-rc1.jar", JAR);
         put("/repository/org/example/lib/1.0.0/lib-1.0.0.jar", JAR);
         put("/repository/org/example/lib/1.0.0-rc4/lib-1.0.0-rc4.jar", JAR);
 
         var xml = body(get("/repository/org/example/lib/maven-metadata.xml"));
 
-        assertThat(xml).contains("<latest>2.0.0-SNAPSHOT</latest>");
-        assertThat(xml).contains("<release>1.0.0</release>");
+        assertThat(xml).contains("<latest>2.0.0-rc1</latest>");
         assertThat(xml.indexOf("<version>1.0.0-rc4</version>")).isLessThan(xml.indexOf("<version>1.0.0</version>"));
-        assertThat(xml.indexOf("<version>1.0.0</version>")).isLessThan(xml.indexOf("<version>2.0.0-SNAPSHOT</version>"));
+        assertThat(xml.indexOf("<version>1.0.0</version>")).isLessThan(xml.indexOf("<version>2.0.0-rc1</version>"));
     }
 
     private MavenResponse put(String path, byte[] content) {

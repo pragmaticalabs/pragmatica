@@ -565,6 +565,62 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadFromString_artifactArchiveRetention_defaultsToSevenDays_whenAbsent() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            repositories = ["builtin"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.slice().artifactArchiveRetention().millis())
+                .isEqualTo(7L * 24 * 60 * 60 * 1000));
+    }
+
+    @Test
+    void loadFromString_artifactArchiveRetention_readsTheConfiguredPeriod_andKeepsTheRepositories() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            repositories = ["local", "builtin"]
+            artifact_archive_retention = "30d"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.slice().artifactArchiveRetention().millis()).isEqualTo(30L * 24 * 60 * 60 * 1000);
+                assertThat(config.slice().repositories()).hasSize(2);
+            });
+    }
+
+    @Test
+    void loadFromString_artifactArchiveRetention_applies_withoutARepositoriesKey() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            artifact_archive_retention = "12h"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.slice().artifactArchiveRetention().millis()).isEqualTo(12L * 60 * 60 * 1000);
+                assertThat(config.slice().repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
+            });
+    }
+
+    @Test
     void loadFromString_parsesCoreMaxFromToml() {
         var toml = """
             [cluster]

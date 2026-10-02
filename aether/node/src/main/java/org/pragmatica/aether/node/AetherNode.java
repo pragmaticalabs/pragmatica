@@ -1892,7 +1892,10 @@ public interface AetherNode extends ManageableNode {
         var contentStorage = Objects.requireNonNull(storageSetups.get("content"),
                                                     "storageSetups missing \"content\" after createAll succeeded -- invariant violated")
                                     .instance();
-        var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
+        var artifactStore = ArtifactStore.artifactStore(dhtClient,
+                                                        artifactStorage,
+                                                        ArtifactStore.ArchivePolicy.archivePolicy(config.sliceConfig()
+                                                                                                        .artifactArchiveRetention()));
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);

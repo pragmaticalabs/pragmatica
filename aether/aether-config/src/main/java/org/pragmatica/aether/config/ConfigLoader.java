@@ -332,10 +332,16 @@ public final class ConfigLoader {
 
     @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"})
     private static void populateSliceConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        doc.getStringList("slice", "repositories")
-           .map(repos -> SliceConfig.sliceConfigFromNames(repos))
-           .flatMap(Result::option)
-           .onPresent(builder::sliceConfig);
+        var retention = parseTimeSpan(doc,
+                                      "slice",
+                                      "artifact_archive_retention",
+                                      SliceConfig.DEFAULT_ARTIFACT_ARCHIVE_RETENTION);
+
+        builder.sliceConfig(doc.getStringList("slice", "repositories")
+                               .map(repos -> SliceConfig.sliceConfigFromNames(repos))
+                               .flatMap(Result::option)
+                               .or(SliceConfig.sliceConfig())
+                               .withArtifactArchiveRetention(retention));
     }
 
     @SuppressWarnings("JBCT-STY-05")

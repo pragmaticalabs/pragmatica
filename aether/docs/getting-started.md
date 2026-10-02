@@ -421,6 +421,14 @@ aether -c <a-node-ip>:8080 artifacts push org.example:hello:1.0.0-SNAPSHOT
 aether -c <a-node-ip>:8080 blueprints deploy org.example:hello:1.0.0-SNAPSHOT --wait
 ```
 
+> **The cluster's artifact repository takes release versions only.** It writes every coordinate once, so it refuses
+> a `-SNAPSHOT` version (`400`) and a re-push of different content under an existing version (`409`); Forge and
+> local development are unaffected because they resolve from your local Maven repository. The scaffold's
+> `1.0.0-SNAPSHOT` therefore has to become a release version before a cluster deploy: set the project version
+> (for example `mvn versions:set -DnewVersion=1.0.0`), rebuild with `mvn clean install`, and use the same version in
+> the two commands above. Archived versions are described in
+> [Artifact Repository](operators/artifact-repository.md).
+
 `artifacts push` reads the blueprint jar from your local `~/.m2/repository`,
 discovers every slice artifact it references, and pushes all of them to the
 cluster's artifact repository in one shot.

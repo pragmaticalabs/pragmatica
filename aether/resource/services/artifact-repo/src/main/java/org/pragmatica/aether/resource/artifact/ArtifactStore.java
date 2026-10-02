@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -66,7 +68,11 @@ public interface ArtifactStore {
     Promise<byte[]> resolve(ArtifactFile file);
     Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file);
     Promise<Boolean> exists(ArtifactFile file);
-    Promise<Unit> delete(ArtifactFile file);
+    /// Archives the whole version `artifact` belongs to (#1778): its files stop resolving and the version
+    /// leaves the versions list, but every key is KEPT, so "absent" still means "never written" and no
+    /// replica can resurrect the version. Allowed once the version has been stored for at least the
+    /// retention period; archiving an archived version is a no-op.
+    Promise<Unit> archive(Artifact artifact);
 
     default Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
         return deploy(ArtifactFile.primary(artifact), content);
@@ -86,10 +92,6 @@ public interface ArtifactStore {
 
     default Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
         return metadata(ArtifactFile.primary(artifact));
-    }
-
-    default Promise<Unit> delete(Artifact artifact) {
-        return delete(ArtifactFile.primary(artifact));
     }
 
     record ResolvedArtifact(byte[] content, ArtifactMetadata metadata) {
@@ -117,10 +119,8 @@ public interface ArtifactStore {
 
     /// Fetch persisted metadata for an artifact WITHOUT reading or integrity-verifying
     /// the underlying block contents. Returns `Option.none()` when no metadata key is
-    /// present in the DHT (artifact absent). Used by the idempotent PUT path where the
-    /// caller only needs size/hashes for the response body — paying the full
-    /// `resolveWithMetadata` cost (block fan-out + SHA1 verification) would defeat the
-    /// purpose of returning early on a duplicate upload.
+    /// present in the DHT (artifact absent). It does NOT consult the archive marker: an archived
+    /// file's metadata is still returned, because archiving keeps the key.
     Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file);
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
     Metrics metrics();
@@ -137,7 +137,25 @@ public interface ArtifactStore {
         }
     }
 
-    record DeployResult(Artifact artifact, long size, String md5, String sha1) {}
+    /// `alreadyPresent` is true when the coordinate already held identical content (an idempotent re-put):
+    /// nothing was uploaded.
+    record DeployResult(Artifact artifact, long size, String md5, String sha1, boolean alreadyPresent) {
+        public DeployResult(Artifact artifact, long size, String md5, String sha1) {
+            this(artifact, size, md5, sha1, false);
+        }
+    }
+
+    /// Minimum time a version must have been stored before it may be archived. A MARKED GUESS (#1778): the
+    /// ticket leaves the period "a policy to define", and seven days is long enough to outlive a weekend
+    /// rollback window without keeping a retired version indefinitely. Nothing frees the archived bytes
+    /// yet, so a longer period costs nothing today.
+    record ArchivePolicy(TimeSpan minimumRetention) {
+        public static final ArchivePolicy DEFAULT = new ArchivePolicy(timeSpan(7).days());
+
+        public static ArchivePolicy archivePolicy(TimeSpan minimumRetention) {
+            return new ArchivePolicy(minimumRetention);
+        }
+    }
 
     record ArtifactMetadata(long size,
                             int chunkCount,
@@ -224,6 +242,56 @@ public interface ArtifactStore {
                 return "Corrupted artifact: " + file.asString();
             }
         }
+
+        /// A coordinate is written once (#1778): the stored content and the offered content differ. Names
+        /// both SHA-1 digests so the operator can tell which of the two is the one they meant.
+        record ContentConflict(ArtifactFile file, String storedSha1, String offeredSha1) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "Artifact " + file.asString()
+                     + " is already stored with different content (stored sha1=" + storedSha1
+                     + ", offered sha1=" + offeredSha1
+                     + "); a coordinate is written once, publish the new content under a new version";
+            }
+        }
+
+        /// SNAPSHOT versions are mutable by definition, so the built-in store, whose every coordinate is
+        /// immutable, does not take them (#1778). The Local repository still serves them in development.
+        record SnapshotRefused(ArtifactFile file) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "SNAPSHOT versions are not accepted by the built-in artifact store: " + file.asString()
+                     + "; publish a release version (SNAPSHOTs stay available through the Local repository)";
+            }
+        }
+
+        /// The version was archived: it neither resolves nor takes new files, and its coordinates are never
+        /// reused (#1778).
+        record Archived(ArtifactFile file) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "Artifact " + file.asString() + " is archived and unavailable";
+            }
+        }
+
+        /// Nothing was ever stored for this version, so there is nothing to archive.
+        record VersionNotFound(Artifact artifact) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "No stored files for " + artifact.asString() + "; nothing to archive";
+            }
+        }
+
+        /// The version is younger than the archive policy's minimum retention.
+        record RetentionNotElapsed(Artifact artifact, long ageMillis, long retentionMillis) implements ArtifactStoreError {
+            @Override
+            public String message() {
+                return "Cannot archive " + artifact.asString()
+                     + " yet: stored for " + ageMillis
+                     + " ms, minimum retention is " + retentionMillis
+                     + " ms";
+            }
+        }
     }
 
     static ArtifactStore artifactStore(DHTClient dht, StorageInstance storage) {
@@ -246,6 +314,11 @@ public interface ArtifactStore {
                                        TimeSpan resolvePerChunk,
                                        TimeSpan resolveCeiling) {
         return new ArtifactStoreImpl(dht, storage, resolveBase, resolvePerChunk, resolveCeiling);
+    }
+
+    /// Variant that overrides the archive policy (default [ArchivePolicy#DEFAULT]).
+    static ArtifactStore artifactStore(DHTClient dht, StorageInstance storage, ArchivePolicy archivePolicy) {
+        return new ArtifactStoreImpl(dht, storage, archivePolicy, System::currentTimeMillis);
     }
 
     /// Variant that overrides the metadata-read absent grace (default one second). Used by tests that
@@ -306,6 +379,9 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// acceptable here because artifacts are write-once. The one exposure is artifact DELETION followed
     /// by a re-resolve inside the window, which can briefly resolve the deleted artifact's metadata.
     static final TimeSpan DEFAULT_METADATA_ABSENT_GRACE = timeSpan(1).seconds();
+    /// Deploy time reported for a file that is absent or unreadable: larger than any real time, so it never
+    /// wins the minimum and a version with only such files reads as "nothing stored".
+    private static final long NOT_STORED = Long.MAX_VALUE;
 
     /// Bounded retry for transient DHT-resilience failures inside `deploy` AND `resolve`.
     /// The DHT-resilience layer (`dht-resilience-spec.md`) converts a transient QUIC
@@ -336,8 +412,25 @@ class ArtifactStoreImpl implements ArtifactStore {
     private final TimeSpan resolveCeiling;
     private final TimeSpan metadataAbsentGrace;
     private final Consumer<String> readFailureSink;
+    private final ArchivePolicy archivePolicy;
+    private final LongSupplier clock;
+    /// Serializes this node's read-merge-write rewrites of the grow-only sets (versions list, file list).
+    private final KeyedSequencer sequencer = new KeyedSequencer();
     private final AtomicInteger artifactCount = new AtomicInteger(0);
     private final AtomicInteger chunkCount = new AtomicInteger(0);
+
+    ArtifactStoreImpl(DHTClient dht, StorageInstance storage, ArchivePolicy archivePolicy, LongSupplier clock) {
+        this(dht,
+             storage,
+             dht.config().retryPolicy(),
+             DEFAULT_RESOLVE_BASE,
+             DEFAULT_RESOLVE_PER_CHUNK,
+             DEFAULT_RESOLVE_CEILING,
+             log::warn,
+             DEFAULT_METADATA_ABSENT_GRACE,
+             archivePolicy,
+             clock);
+    }
 
     ArtifactStoreImpl(DHTClient dht, StorageInstance storage) {
         this(dht,
@@ -407,6 +500,30 @@ class ArtifactStoreImpl implements ArtifactStore {
                       TimeSpan resolveCeiling,
                       Consumer<String> readFailureSink,
                       TimeSpan metadataAbsentGrace) {
+        this(dht,
+             storage,
+             retryPolicy,
+             resolveBase,
+             resolvePerChunk,
+             resolveCeiling,
+             readFailureSink,
+             metadataAbsentGrace,
+             ArchivePolicy.DEFAULT,
+             System::currentTimeMillis);
+    }
+
+    ArtifactStoreImpl(DHTClient dht,
+                      StorageInstance storage,
+                      DhtRetryPolicy retryPolicy,
+                      TimeSpan resolveBase,
+                      TimeSpan resolvePerChunk,
+                      TimeSpan resolveCeiling,
+                      Consumer<String> readFailureSink,
+                      TimeSpan metadataAbsentGrace,
+                      ArchivePolicy archivePolicy,
+                      LongSupplier clock) {
+        this.archivePolicy = archivePolicy;
+        this.clock = clock;
         this.readFailureSink = readFailureSink;
         this.dht = dht;
         this.storage = storage;
@@ -422,20 +539,103 @@ class ArtifactStoreImpl implements ArtifactStore {
         return Metrics.metrics(artifactCount.get(), chunkCount.get());
     }
 
+    /// Write-once (#1778). The refusals run before any write: a SNAPSHOT version, an archived version, and a
+    /// coordinate whose stored content differs from `content` (compared by size, MD5 and SHA-1). An identical
+    /// re-put uploads nothing and answers `alreadyPresent`; it re-asserts the file and version registrations,
+    /// so a first deploy that died between the metadata write and the list writes converges on retry.
+    ///
+    /// The existence check is a read, and a read that FAILS is not "absent": it fails the deploy, so DHT churn
+    /// can never turn into an overwrite (#1795). The check is not atomic with the metadata write below — the
+    /// DHT has no conditional put — so two concurrent FIRST writes of different content to one coordinate can
+    /// both pass it and the later metadata write wins; closing that needs a DHT conditional put.
     @Override
     public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
         log.info("Deploying artifact: {} ({} bytes)", file.asString(), content.length);
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
+        // Aggregate timeout on the FULL deploy pipeline (checks + chunk fan-out + metadata + list writes —
+        // each issues its own DHT operations). A single failing-to-quorum DHT write (e.g. when a peer's QUIC
+        // channel is unwritable due to backpressure and `writeIfWritable` silently drops) blocks the chain
+        // indefinitely; the 30s bound at the outer level guarantees the HTTP handler resolves with success or
+        // failure before the test harness's curl times out.
+        return rejectSnapshot(file).async()
+                             .flatMap(_ -> rejectIfArchived(file))
+                             .flatMap(_ -> readStoredMetadata(file))
+                             .flatMap(stored -> stored.map(bytes -> acceptIdentical(file,
+                                                                                    bytes,
+                                                                                    content.length,
+                                                                                    md5,
+                                                                                    sha1))
+                                                      .or(() -> writeNew(file, content, md5, sha1)))
+                             .timeout(DEPLOY_TIMEOUT);
+    }
+
+    private Result<ArtifactFile> rejectSnapshot(ArtifactFile file) {
+        return VersionOrder.isSnapshot(file.artifact().version())
+               ? new ArtifactStoreError.SnapshotRefused(file).result()
+               : Result.success(file);
+    }
+
+    private Promise<Unit> rejectIfArchived(ArtifactFile file) {
+        return isArchived(file.artifact()).flatMap(archived -> failIfArchived(file, archived));
+    }
+
+    private static Promise<Unit> failIfArchived(ArtifactFile file, boolean archived) {
+        return archived
+               ? new ArtifactStoreError.Archived(file).promise()
+               : Promise.unitPromise();
+    }
+
+    private Promise<Boolean> isArchived(Artifact artifact) {
+        return dhtGetWithRetry(archivedKey(artifact), ReadOptions.DEFAULT).map(Option::isPresent);
+    }
+
+    private Promise<Option<byte[]>> readStoredMetadata(ArtifactFile file) {
+        return dhtGetWithRetry(metaKey(file), ReadOptions.DEFAULT);
+    }
+
+    /// Identical content is idempotent; different content is [ArtifactStoreError.ContentConflict]. Bytes that
+    /// are present but do not parse are corruption and are never overwritten.
+    private Promise<DeployResult> acceptIdentical(ArtifactFile file,
+                                                  byte[] storedBytes,
+                                                  int size,
+                                                  String md5,
+                                                  String sha1) {
+        return ArtifactMetadata.fromBytes(storedBytes)
+                               .async(new ArtifactStoreError.MetadataUnparseable(file,
+                                                                                 keyHex(file)))
+                               .flatMap(stored -> acceptIfSame(file, stored, size, md5, sha1));
+    }
+
+    private Promise<DeployResult> acceptIfSame(ArtifactFile file,
+                                               ArtifactMetadata stored,
+                                               int size,
+                                               String md5,
+                                               String sha1) {
+        return sameContent(stored, size, md5, sha1)
+               ? reassertRegistration(file, stored)
+               : new ArtifactStoreError.ContentConflict(file, stored.sha1(), sha1).promise();
+    }
+
+    private static boolean sameContent(ArtifactMetadata stored, int size, String md5, String sha1) {
+        return stored.size() == size
+               && stored.md5()
+                        .equals(md5)
+               && stored.sha1()
+                        .equals(sha1);
+    }
+
+    private Promise<DeployResult> reassertRegistration(ArtifactFile file, ArtifactMetadata stored) {
+        return registerFile(file).flatMap(_ -> publishVersion(file.artifact()))
+                           .map(_ -> new DeployResult(file.artifact(),
+                                                      stored.size(),
+                                                      stored.md5(),
+                                                      stored.sha1(),
+                                                      true));
+    }
+
+    private Promise<DeployResult> writeNew(ArtifactFile file, byte[] content, String md5, String sha1) {
         var chunks = splitIntoChunks(content);
-        // Aggregate timeout on the FULL deploy pipeline (chunk fan-out + metadata + versions
-        // list writes — the latter two each issue their own DHT puts). The previous timeout
-        // placement only bound the local `storage::put` fan-out, which is fast and never
-        // stalls; the actual DHT operations happen inside `storeMetadataAndVersions`. A
-        // single failing-to-quorum DHT write (e.g. when a peer's QUIC channel is unwritable
-        // due to backpressure and `writeIfWritable` silently drops) blocks the chain
-        // indefinitely. The 30s bound at the outer level guarantees the HTTP handler
-        // resolves with success or failure before the test harness's curl times out.
         // CORRECTNESS: boundedFanOut preserves chunk order — blockIds are recorded into
         // metadata in chunk order and reassembled in that order on resolve; reordering
         // corrupts the artifact.
@@ -444,8 +644,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                                                                                                     chunks.size(),
                                                                                                                                     md5,
                                                                                                                                     sha1,
-                                                                                                                                    content.length))
-                            .timeout(DEPLOY_TIMEOUT);
+                                                                                                                                    content.length));
     }
 
     @Override
@@ -453,9 +652,15 @@ class ArtifactStoreImpl implements ArtifactStore {
         return resolveWithMetadata(file).map(ResolvedArtifact::content);
     }
 
+    /// The archive marker is authoritative: a version carrying it never resolves, whatever the metadata key
+    /// says. The marker is a key of its own, written once and never rewritten or removed, so any replica that
+    /// holds it wins the read ("present beats absent") and no stale `meta` copy can resurrect an archived
+    /// artifact. Its read starts together with the metadata read, so a live artifact pays no extra round trip,
+    /// and it is consulted before any chunk is fetched.
     @Override
     public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
         log.debug("Resolving artifact: {}", file.asString());
+        var archived = isArchived(file.artifact()).timeout(resolveBase);
         // Aggregate timeout on the metadata-read leg (chunk count not yet known here, so the
         // resolveBase floor applies). The block fan-out leg is bounded separately in
         // resolveChunksFromStorage with a chunk-count-scaled budget. Placed early per
@@ -469,7 +674,13 @@ class ArtifactStoreImpl implements ArtifactStore {
                               .flatMap(metaOpt -> metadataOf(file,
                                                              metaOpt,
                                                              elapsedMillisSince(startNanos)))
-                              .flatMap(meta -> resolveChunksFromStorage(file, meta));
+                              .flatMap(meta -> archived.flatMap(retired -> resolveIfLive(file, meta, retired)));
+    }
+
+    private Promise<ResolvedArtifact> resolveIfLive(ArtifactFile file, ArtifactMetadata meta, boolean archived) {
+        return archived
+               ? new ArtifactStoreError.Archived(file).promise()
+               : resolveChunksFromStorage(file, meta);
     }
 
     /// Runs as a dependent step (`withResult`), so the line is in the sink before the resolve chain settles: an
@@ -513,7 +724,13 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     @Override
     public Promise<Boolean> exists(ArtifactFile file) {
-        return dht.exists(metaKey(file));
+        return Promise.all(dht.exists(metaKey(file)),
+                           isArchived(file.artifact()))
+                      .map(ArtifactStoreImpl::storedAndLive);
+    }
+
+    private static boolean storedAndLive(boolean stored, boolean archived) {
+        return stored && !archived;
     }
 
     @Override
@@ -522,28 +739,93 @@ class ArtifactStoreImpl implements ArtifactStore {
                   .map(opt -> opt.flatMap(ArtifactMetadata::fromBytes));
     }
 
+    /// The versions that are stored and not archived.
     @Override
     public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
-        var versionsKey = versionsKey(groupId, artifactId);
-
-        return dht.get(versionsKey)
-                  .map(opt -> opt.map(this::parseVersionsList)
-                                 .or(List.of()));
+        return dht.get(versionsKey(groupId, artifactId))
+                  .map(ArtifactStoreImpl::fileNames)
+                  .map(this::parseVersions);
     }
 
-    /// Removes the file's metadata key and its entry in the version's file list; deleting the LAST
-    /// remaining file of a version removes the version from the versions list (CTO ruling, #281
-    /// round 2 — a pom-only version is delisted with its pom). The content chunks are NOT released: they are
-    /// content-addressed and shared across artifacts and across the cluster-shared DHT tier, so
-    /// releasing one artifact's chunks needs a cluster-wide reference index (#281 follow-up).
+    /// Archive is a one-way, version-wide state change (#1778). Order matters: the retention check reads the
+    /// stored files; the MARKER is written first because it is what reads obey; the versions-list flag is
+    /// written second because it only drives listing — a failure between the two leaves a version that does
+    /// not resolve but is still listed, and re-running the archive (idempotent) completes it.
     @Override
-    public Promise<Unit> delete(ArtifactFile file) {
-        log.info("Deleting artifact: {}", file.asString());
+    public Promise<Unit> archive(Artifact artifact) {
+        log.info("Archiving artifact: {}", artifact.asString());
 
-        return dht.get(metaKey(file))
-                  .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                             .map(meta -> deleteMetadata(file, meta))
-                                             .or(Promise.unitPromise()));
+        return oldestDeployTime(artifact).flatMap(oldest -> checkRetention(artifact, oldest))
+                               .flatMap(_ -> writeArchiveMarker(artifact))
+                               .flatMap(_ -> flagArchived(artifact));
+    }
+
+    private Promise<Long> oldestDeployTime(Artifact artifact) {
+        return dhtGetWithRetry(filesKey(artifact),
+                               ReadOptions.DEFAULT).map(ArtifactStoreImpl::fileNames)
+                              .flatMap(names -> deployTimes(artifact, names))
+                              .map(ArtifactStoreImpl::oldest);
+    }
+
+    private static List<String> fileNames(Option<byte[]> stored) {
+        return setOf(stored).live();
+    }
+
+    private static GrowOnlySet setOf(Option<byte[]> stored) {
+        return stored.map(GrowOnlySet::growOnlySet)
+                     .or(GrowOnlySet.empty());
+    }
+
+    private Promise<List<Long>> deployTimes(Artifact artifact, List<String> fileNames) {
+        return boundedFanOut(fileNames, MAX_CONCURRENT_CHUNKS, name -> deployTimeOf(artifact, name));
+    }
+
+    /// An absent or unparseable metadata key contributes nothing to the oldest time.
+    private Promise<Long> deployTimeOf(Artifact artifact, String fileName) {
+        return dhtGetWithRetry(metaKey(artifact, fileName), ReadOptions.DEFAULT).map(ArtifactStoreImpl::deployedAt);
+    }
+
+    private static long deployedAt(Option<byte[]> stored) {
+        return stored.flatMap(ArtifactMetadata::fromBytes)
+                     .map(ArtifactMetadata::deployedAt)
+                     .or(NOT_STORED);
+    }
+
+    private static long oldest(List<Long> deployTimes) {
+        return deployTimes.stream()
+                          .mapToLong(Long::longValue)
+                          .min()
+                          .orElse(NOT_STORED);
+    }
+
+    private Promise<Unit> checkRetention(Artifact artifact, long oldestDeployTime) {
+        if (oldestDeployTime == NOT_STORED) {
+            return new ArtifactStoreError.VersionNotFound(artifact).promise();
+        }
+
+        var age = clock.getAsLong() - oldestDeployTime;
+        var retention = archivePolicy.minimumRetention().millis();
+
+        return age >= retention
+               ? Promise.unitPromise()
+               : new ArtifactStoreError.RetentionNotElapsed(artifact, age, retention).promise();
+    }
+
+    /// Written once and never rewritten: an existing marker is left exactly as it is.
+    private Promise<Unit> writeArchiveMarker(Artifact artifact) {
+        return isArchived(artifact).flatMap(archived -> putMarkerUnlessArchived(artifact, archived));
+    }
+
+    private Promise<Unit> putMarkerUnlessArchived(Artifact artifact, boolean archived) {
+        return archived
+               ? Promise.unitPromise()
+               : dhtPutWithRetry(archivedKey(artifact),
+                                 Long.toString(clock.getAsLong()).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private Promise<Unit> flagArchived(Artifact artifact) {
+        return rewriteSet(versionsKey(artifact.groupId(), artifact.artifactId()),
+                          versions -> versions.archive(artifact.version().withQualifier()));
     }
 
     private Promise<DeployResult> storeMetadataAndVersions(ArtifactFile file,
@@ -553,10 +835,10 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                            String sha1,
                                                            int contentLength) {
         var hexIds = blockIds.stream().map(BlockId::hexString).toList();
-        var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1, System.currentTimeMillis(), hexIds);
+        var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1, clock.getAsLong(), hexIds);
 
         return dhtPutWithRetry(metaKey(file),
-                               metadata.toBytes()).flatMap(_ -> updateVersionsList(file.artifact()))
+                               metadata.toBytes()).flatMap(_ -> publishVersion(file.artifact()))
                               .flatMap(_ -> registerFile(file))
                               .map(_ -> recordDeployMetrics(file, contentLength, chunkCount, md5, sha1));
     }
@@ -658,51 +940,30 @@ class ArtifactStoreImpl implements ArtifactStore {
         return Promise.success(new ResolvedArtifact(content, meta));
     }
 
-    private Promise<Unit> deleteMetadata(ArtifactFile file, ArtifactMetadata meta) {
-        return dht.remove(metaKey(file))
-                  .flatMap(_ -> unregisterFile(file))
-                  .map(_ -> recordDeleteMetrics(meta));
-    }
-
-    private Promise<Unit> updateVersionsList(Artifact artifact) {
-        return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
-                           versions -> addIfAbsent(versions,
-                                                   artifact.version().withQualifier())).map(Unit::unit);
-    }
-
-    private Promise<Unit> removeFromVersionsList(Artifact artifact) {
-        return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
-                           versions -> without(versions,
-                                               artifact.version().withQualifier())).map(Unit::unit);
+    private Promise<Unit> publishVersion(Artifact artifact) {
+        return rewriteSet(versionsKey(artifact.groupId(), artifact.artifactId()),
+                          versions -> versions.add(artifact.version().withQualifier()));
     }
 
     private Promise<Unit> registerFile(ArtifactFile file) {
-        return rewriteList(filesKey(file.artifact()), files -> addIfAbsent(files, file.fileName())).map(Unit::unit);
+        return rewriteSet(filesKey(file.artifact()),
+                          files -> files.add(file.fileName()));
     }
 
-    /// Drops the file from the version's file list; an emptied list delists the version.
-    private Promise<Unit> unregisterFile(ArtifactFile file) {
-        return rewriteList(filesKey(file.artifact()), files -> without(files, file.fileName())).flatMap(remaining -> delistIfNoFilesLeft(file.artifact(),
-                                                                                                                                         remaining));
+    /// Read-merge-write on a grow-only set key: `change` can only add an entry or raise its flag, and the
+    /// result is merged with whatever was read, so the write never removes an entry or clears a flag. Rewrites
+    /// of one key on THIS node run one at a time ([KeyedSequencer]), so concurrent publishes through one node
+    /// never lose each other. Across nodes the DHT has no conditional put: two nodes rewriting one key at once
+    /// can still overwrite each other, and the later write wins (known limit, see #1778).
+    private Promise<Unit> rewriteSet(byte[] key, UnaryOperator<GrowOnlySet> change) {
+        return sequencer.sequence(new String(key, StandardCharsets.UTF_8), () -> mergeAndWrite(key, change));
     }
 
-    private Promise<Unit> delistIfNoFilesLeft(Artifact artifact, List<String> remainingFiles) {
-        return remainingFiles.isEmpty()
-               ? removeFromVersionsList(artifact)
-               : Promise.unitPromise();
-    }
-
-    /// Get-then-put on a comma-separated list key, yielding the list as written; an emptied list
-    /// removes the key. Two concurrent rewrites can lose one another's change (pre-existing, #281
-    /// item 4 — the same race now covers the file list).
-    private Promise<List<String>> rewriteList(byte[] key, Function<List<String>, List<String>> change) {
-        return dht.get(key)
-                  .map(opt -> change.apply(opt.map(ArtifactStoreImpl::parseList).or(List.of())))
-                  .flatMap(items -> items.isEmpty()
-                                    ? dht.remove(key)
-                                         .map(_ -> items)
-                                    : dhtPutWithRetry(key,
-                                                      serializeList(items)).map(_ -> items));
+    private Promise<Unit> mergeAndWrite(byte[] key, UnaryOperator<GrowOnlySet> change) {
+        return dhtGetWithRetry(key, ReadOptions.DEFAULT).map(ArtifactStoreImpl::setOf)
+                              .map(change::apply)
+                              .flatMap(set -> dhtPutWithRetry(key,
+                                                              set.toBytes()));
     }
 
     private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value) {
@@ -862,45 +1123,16 @@ class ArtifactStoreImpl implements ArtifactStore {
         SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve), backoff);
     }
 
-    private static List<String> addIfAbsent(List<String> existing, String item) {
-        if (existing.contains(item)) {
-            return existing;
-        }
-
-        var items = new ArrayList<>(existing);
-
-        items.add(item);
-
-        return items;
-    }
-
-    private static List<String> without(List<String> existing, String item) {
-        return existing.stream()
-                       .filter(i -> !i.equals(item))
-                       .toList();
-    }
-
-    private static List<String> parseList(byte[] data) {
-        var str = new String(data, StandardCharsets.UTF_8);
-
-        return str.isEmpty()
-               ? List.of()
-               : List.of(str.split(","));
-    }
-
+    /// Version strings that no longer parse are skipped, as they always were.
     @Contract
-    private List<Version> parseVersionsList(byte[] data) {
+    private List<Version> parseVersions(List<String> names) {
         var versions = new ArrayList<Version>();
 
-        for (var v : parseList(data)) {
-            Version.version(v).onSuccess(versions::add);
+        for (var name : names) {
+            Version.version(name).onSuccess(versions::add);
         }
 
         return versions;
-    }
-
-    private static byte[] serializeList(List<String> items) {
-        return String.join(",", items).getBytes(StandardCharsets.UTF_8);
     }
 
     private DeployResult recordDeployMetrics(ArtifactFile file,
@@ -915,29 +1147,37 @@ class ArtifactStoreImpl implements ArtifactStore {
         return new DeployResult(file.artifact(), contentLength, md5, sha1);
     }
 
-    private Unit recordDeleteMetrics(ArtifactMetadata meta) {
-        artifactCount.decrementAndGet();
-        chunkCount.addAndGet(-meta.chunkCount());
-
-        return unit();
-    }
-
     /// Storage format, pinned by `ArtifactStoreTest.KeyShapeTests`: one metadata key per FILE —
     /// `artifacts/<group>/<artifact>/<version>/<[classifier.]extension>/meta`, the primary jar
     /// included (`.../jar/meta`). The pre-#281 GAV-only key (`.../<version>/meta`) is NOT read:
     /// artifact-store contents are cluster DHT state with no pre-GA compatibility promise.
     private byte[] metaKey(ArtifactFile file) {
-        var artifact = file.artifact();
+        return metaKey(file.artifact(), file.fileName());
+    }
+
+    private byte[] metaKey(Artifact artifact, String fileName) {
         var key = KEY_PREFIX + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()
                 + "/" + artifact.version().withQualifier()
-                + "/" + file.fileName() + METADATA_KEY_SUFFIX;
+                + "/" + fileName + METADATA_KEY_SUFFIX;
 
         return key.getBytes(StandardCharsets.UTF_8);
     }
 
-    /// The files deployed for one version — `artifacts/<group>/<artifact>/<version>/files` — so a
-    /// delete can tell whether it removed the version's last file.
+    /// The version's archive marker — `artifacts/<group>/<artifact>/<version>/archived`. Its mere presence
+    /// is the state `archived`; the value is the archive time in epoch millis. It is not a metadata key
+    /// (no `/meta` suffix), so its routine absence is not reported as a missing artifact.
+    private byte[] archivedKey(Artifact artifact) {
+        var key = KEY_PREFIX + artifact.groupId().id()
+                + "/" + artifact.artifactId().id()
+                + "/" + artifact.version().withQualifier()
+                + "/archived";
+
+        return key.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /// The files deployed for one version — `artifacts/<group>/<artifact>/<version>/files` — a grow-only
+    /// set, so an archive can find every file of the version to date its retention.
     private byte[] filesKey(Artifact artifact) {
         var key = KEY_PREFIX + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()

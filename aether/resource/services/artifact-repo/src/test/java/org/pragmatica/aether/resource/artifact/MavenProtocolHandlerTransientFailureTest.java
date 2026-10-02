@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.artifact;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
@@ -17,63 +18,31 @@ import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// A DHT read that FAILS during membership churn (a replacement's "absent" must not vote) is not an
-/// answer about the artifact. PUT's existence check is also the write-once guard (#1778): `deploy`
-/// overwrites unconditionally, so deploying past a failed check could replace stored content. A
-/// transient failure answers 503 (retry) and `deploy` is NOT called; a non-transient one answers 500.
+/// A DHT failure during membership churn is not an answer about the artifact: the handler maps a TRANSIENT
+/// store failure to 503 + retry and any other to 500, never to "absent". The write-once guard itself (a failed
+/// existence check never deploys, #1795) lives in `ArtifactStore.deploy` and is pinned by
+/// `ArtifactStoreWriteOnceTest#deploy_failsWithoutWriting_whenTheExistenceCheckFailsTransiently`.
 class MavenProtocolHandlerTransientFailureTest {
     private static final String PATH = "/repository/org/example/test/1.0.0/test-1.0.0.jar";
     private static final byte[] CONTENT = "payload".getBytes(StandardCharsets.UTF_8);
 
     @Test
-    void handlePut_answers503WithoutDeploying_whenExistenceCheckFailsTransiently() {
-        var deployCalls = new AtomicInteger();
-        var store = store(DHTError.quorumNotReached(2, 1).promise(), deploySucceeds(), notFound(), deployCalls);
-
-        MavenProtocolHandler.mavenProtocolHandler(store)
-                            .handlePut(PATH, CONTENT)
-                            .await()
-                            .onFailureRun(Assertions::fail)
-                            .onSuccess(response -> assertThat(response.statusCode()).isEqualTo(503));
-        assertThat(deployCalls).as("a failed existence check must not overwrite stored content").hasValue(0);
-    }
-
-    @Test
-    void handlePut_answers500WithoutDeploying_whenExistenceCheckFailsNonTransiently() {
-        var deployCalls = new AtomicInteger();
-        var store = store(new ArtifactStore.ArtifactStoreError.CorruptedArtifact(file()).promise(),
-                          deploySucceeds(),
-                          notFound(),
-                          deployCalls);
-
-        MavenProtocolHandler.mavenProtocolHandler(store)
-                            .handlePut(PATH, CONTENT)
-                            .await()
-                            .onFailureRun(Assertions::fail)
-                            .onSuccess(response -> assertThat(response.statusCode()).isEqualTo(500));
-        assertThat(deployCalls).hasValue(0);
-    }
-
-    @Test
-    void handlePut_deploys_whenExistenceCheckSaysAbsent() {
-        var deployCalls = new AtomicInteger();
-        var store = store(Promise.success(Option.none()), deploySucceeds(), notFound(), deployCalls);
+    void handlePut_answers200Uploaded_whenDeploySucceeds() {
+        var store = store(deploySucceeds(), notFound());
 
         MavenProtocolHandler.mavenProtocolHandler(store)
                             .handlePut(PATH, CONTENT)
                             .await()
                             .onFailureRun(Assertions::fail)
                             .onSuccess(response -> assertUploaded(response));
-        assertThat(deployCalls).hasValue(1);
     }
 
     @Test
     void handlePut_answers503_whenDeployFailsTransiently() {
-        var store = store(Promise.success(Option.none()), DHTError.OPERATION_TIMEOUT.promise(), notFound());
+        var store = store(DHTError.OPERATION_TIMEOUT.promise(), notFound());
 
         MavenProtocolHandler.mavenProtocolHandler(store)
                             .handlePut(PATH, CONTENT)
@@ -85,7 +54,7 @@ class MavenProtocolHandlerTransientFailureTest {
     @Test
     void handlePut_answers500_whenDeployFailsWithNonTransientCause() {
         var deployFailed = new ArtifactStore.ArtifactStoreError.CorruptedArtifact(file()).<ArtifactStore.DeployResult>promise();
-        var store = store(Promise.success(Option.none()), deployFailed, notFound());
+        var store = store(deployFailed, notFound());
 
         MavenProtocolHandler.mavenProtocolHandler(store)
                             .handlePut(PATH, CONTENT)
@@ -96,7 +65,7 @@ class MavenProtocolHandlerTransientFailureTest {
 
     @Test
     void handleGet_answers503_whenResolveFailsTransiently() {
-        var store = store(Promise.success(Option.none()), deploySucceeds(), DHTError.quorumNotReached(2, 1).promise());
+        var store = store(deploySucceeds(), DHTError.quorumNotReached(2, 1).promise());
 
         MavenProtocolHandler.mavenProtocolHandler(store)
                             .handleGet(PATH)
@@ -107,7 +76,7 @@ class MavenProtocolHandlerTransientFailureTest {
 
     @Test
     void handleGet_answers404_whenResolveReportsNotFound() {
-        var store = store(Promise.success(Option.none()), deploySucceeds(), notFound());
+        var store = store(deploySucceeds(), notFound());
 
         MavenProtocolHandler.mavenProtocolHandler(store)
                             .handleGet(PATH)
@@ -122,10 +91,7 @@ class MavenProtocolHandlerTransientFailureTest {
     }
 
     private static ArtifactFile file() {
-        return ArtifactFile.artifactFile(org.pragmatica.aether.artifact.Artifact.artifact("org.example:test:1.0.0")
-                                                                                .unwrap(),
-                                         "",
-                                         "jar");
+        return ArtifactFile.artifactFile(Artifact.artifact("org.example:test:1.0.0").unwrap(), "", "jar");
     }
 
     private static Promise<ArtifactStore.DeployResult> deploySucceeds() {
@@ -136,21 +102,10 @@ class MavenProtocolHandlerTransientFailureTest {
         return new ArtifactStore.ArtifactStoreError.NotFound(file(), "test-key", 0L).promise();
     }
 
-    private static ArtifactStore store(Promise<Option<ArtifactStore.ArtifactMetadata>> metadata,
-                                       Promise<ArtifactStore.DeployResult> deploy,
-                                       Promise<byte[]> resolve) {
-        return store(metadata, deploy, resolve, new AtomicInteger());
-    }
-
-    private static ArtifactStore store(Promise<Option<ArtifactStore.ArtifactMetadata>> metadata,
-                                       Promise<ArtifactStore.DeployResult> deploy,
-                                       Promise<byte[]> resolve,
-                                       AtomicInteger deployCalls) {
+    private static ArtifactStore store(Promise<ArtifactStore.DeployResult> deploy, Promise<byte[]> resolve) {
         return new ArtifactStore() {
             @Override
             public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
-                deployCalls.incrementAndGet();
-
                 return deploy;
             }
 
@@ -171,7 +126,7 @@ class MavenProtocolHandlerTransientFailureTest {
 
             @Override
             public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
-                return metadata;
+                return Promise.success(Option.none());
             }
 
             @Override
@@ -180,7 +135,7 @@ class MavenProtocolHandlerTransientFailureTest {
             }
 
             @Override
-            public Promise<Unit> delete(ArtifactFile file) {
+            public Promise<Unit> archive(Artifact artifact) {
                 return Promise.success(Unit.unit());
             }
 

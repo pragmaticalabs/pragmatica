@@ -195,33 +195,6 @@ class ArtifactStoreTest {
         }
     }
 
-    @Nested
-    class DeleteTests {
-        @Test
-        void delete_deployedArtifact_removesMetadata() {
-            var artifact = Artifact.artifact("org.example:delete-test:1.0.0").unwrap();
-            var content = "content to deploy and delete".getBytes(StandardCharsets.UTF_8);
-
-            store.deploy(artifact, content)
-                 .await()
-                 .onFailureRun(Assertions::fail);
-
-            store.delete(artifact)
-                 .await()
-                 .onFailureRun(Assertions::fail);
-
-            store.exists(artifact)
-                 .await()
-                 .onFailureRun(Assertions::fail)
-                 .onSuccess(exists -> assertThat(exists).isFalse());
-
-            store.resolve(artifact)
-                 .await()
-                 .onSuccessRun(Assertions::fail)
-                 .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class));
-        }
-    }
-
     /// #281 — the metadata key is a STORAGE FORMAT: one key per file, the primary jar included, and
     /// the pre-#281 GAV-only key is never written or read. A renamed segment must redden this.
     @Nested
@@ -259,101 +232,6 @@ class ArtifactStoreTest {
                  .await()
                  .onFailureRun(Assertions::fail)
                  .onSuccess(exists -> assertThat(exists).as("no legacy read fallback").isFalse());
-        }
-    }
-
-    /// #281 round 2 (CTO ruling): a version is listed while ANY of its files exists; deleting the
-    /// last remaining file — primary or not — delists it.
-    @Nested
-    class FileDeleteTests {
-        private final Artifact artifact = Artifact.artifact("org.example:files:1.0.0").unwrap();
-        private final ArtifactFile pom = ArtifactFile.artifactFile(artifact, "", "pom");
-        private final byte[] content = "file content".getBytes(StandardCharsets.UTF_8);
-
-        private void deploy(ArtifactFile file) {
-            store.deploy(file, content).await().onFailureRun(Assertions::fail);
-        }
-
-        private void delete(ArtifactFile file) {
-            store.delete(file).await().onFailureRun(Assertions::fail);
-        }
-
-        private boolean exists(ArtifactFile file) {
-            return store.exists(file).await().onFailureRun(Assertions::fail).unwrap();
-        }
-
-        private List<Version> versions() {
-            return store.versions(artifact.groupId(), artifact.artifactId()).await().onFailureRun(Assertions::fail).unwrap();
-        }
-
-        @Test
-        void deletePrimaryWhileSidecarRemains_keepsTheVersionListed() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(ArtifactFile.primary(artifact));
-
-            assertThat(exists(ArtifactFile.primary(artifact))).isFalse();
-            assertThat(exists(pom)).as("the pom is its own entry").isTrue();
-            assertThat(versions()).as("a file of the version still exists").containsExactly(artifact.version());
-        }
-
-        @Test
-        void deleteSidecarWhilePrimaryRemains_keepsTheVersionListed() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(pom);
-
-            assertThat(exists(pom)).isFalse();
-            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
-            assertThat(versions()).containsExactly(artifact.version());
-        }
-
-        @Test
-        void deleteLastRemainingFile_delistsTheVersion_whateverTheFile() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(ArtifactFile.primary(artifact));
-            delete(pom);
-
-            assertThat(versions()).as("no file of the version is left").isEmpty();
-            assertThat(dhtStorage.keySet()).as("the version's file list is gone with its last file")
-                                           .doesNotContain("artifacts/org.example/files/1.0.0/files");
-        }
-
-        @Test
-        void pomOnlyVersion_isDelistedWithItsPom() {
-            deploy(pom);
-
-            assertThat(versions()).containsExactly(artifact.version());
-
-            delete(pom);
-
-            assertThat(versions()).isEmpty();
-        }
-
-        @Test
-        void deleteOneVersion_leavesTheOthersListed() {
-            var other = Artifact.artifact("org.example:files:2.0.0").unwrap();
-
-            deploy(ArtifactFile.primary(artifact));
-            deploy(ArtifactFile.primary(other));
-
-            delete(ArtifactFile.primary(artifact));
-
-            assertThat(versions()).containsExactly(other.version());
-        }
-
-        @Test
-        void deleteOfANeverDeployedFile_isANoOp() {
-            deploy(ArtifactFile.primary(artifact));
-
-            delete(pom);
-
-            assertThat(versions()).containsExactly(artifact.version());
-            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
         }
     }
 
@@ -573,9 +451,9 @@ class ArtifactStoreTest {
                       .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class));
 
             // Option.empty() is a legitimate not-found: each get is a single quorum read,
-            // NEVER retried. With one resolve get against a missing key, exactly one get
-            // is issued (no retry burst).
-            assertThat(flakyGetDht.getsAfterArm()).isEqualTo(1);
+            // NEVER retried. A resolve of a missing key issues exactly two gets, the metadata read and
+            // the archive-marker read that runs beside it (#1778) — no retry burst.
+            assertThat(flakyGetDht.getsAfterArm()).isEqualTo(2);
         }
     }
 
@@ -642,7 +520,7 @@ class ArtifactStoreTest {
 
                 @Override
                 public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
-                    return failFirstGrace.getAndIncrement() == 0
+                    return options.hasAbsentGrace() && failFirstGrace.getAndIncrement() == 0
                            ? DHTError.quorumNotReached(2, 1).promise()
                            : inner.get(key, options);
                 }
@@ -677,10 +555,10 @@ class ArtifactStoreTest {
 
             retryStore.resolveWithMetadata(artifact).await().onFailureRun(Assertions::fail);
 
-            // attempt 1 failed before reaching the delegate; the RETRY is the one recorded, and it keeps the grace
+            // attempt 1 failed before reaching the delegate; the RETRY is the one recorded, and it keeps the grace.
+            // The archive-marker read beside it (#1778) is a plain read and never carries one.
             assertThat(failFirstGrace.get()).isEqualTo(2);
-            assertThat(seen).hasSize(1);
-            assertThat(seen.getFirst().hasAbsentGrace()).isTrue();
+            assertThat(seen.stream().filter(ReadOptions::hasAbsentGrace).toList()).hasSize(1);
         }
 
         @Test
@@ -698,9 +576,12 @@ class ArtifactStoreTest {
             graceStore.metadata(artifact).await();
             graceStore.versions(artifact.groupId(), artifact.artifactId()).await();
 
-            // the metadata resolve read is the only one carrying the grace; metadata() and versions() use the plain get
-            assertThat(seen).hasSize(1);
-            assertThat(seen.getFirst().absentGrace()).isEqualTo(timeSpan(250).millis());
+            // the metadata resolve read is the only one carrying the grace (the archive-marker read beside it,
+            // #1778, is a plain one); metadata() and versions() use the plain get
+            var graceReads = seen.stream().filter(ReadOptions::hasAbsentGrace).toList();
+
+            assertThat(graceReads).hasSize(1);
+            assertThat(graceReads.getFirst().absentGrace()).isEqualTo(timeSpan(250).millis());
             assertThat(plainGets.get()).isEqualTo(2);
         }
     }

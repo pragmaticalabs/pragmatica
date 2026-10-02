@@ -323,6 +323,11 @@ class MavenProtocolRoutesAuthTest {
             }
 
             @Override
+            public Promise<MavenResponse> handleDelete(String path) {
+                return Promise.success(MavenResponse.ok(new byte[0], "text/plain"));
+            }
+
+            @Override
             public Promise<MavenResponse> handlePut(String path, byte[] content) {
                 return Promise.success(ok);
             }

@@ -364,7 +364,7 @@ class SchemaOrchestratorLockClaimRaceTest {
             }
 
             @Override
-            public Promise<Unit> delete(ArtifactFile file) {
+            public Promise<Unit> archive(Artifact artifact) {
                 return Promise.unitPromise();
             }
 

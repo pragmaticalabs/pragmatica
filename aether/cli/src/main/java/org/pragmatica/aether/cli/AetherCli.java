@@ -1414,7 +1414,7 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "deploy", description = "Deploy a JAR file to the artifact repository")
+        @Command(name = "deploy", description = "Deploy a JAR file to the artifact repository. A coordinate is written once: re-deploying identical content is a no-op, different content is refused (409), and SNAPSHOT versions are refused (400)")
         static class DeployArtifactCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1472,7 +1472,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "push", description = "Push blueprint and its slices from local Maven repository to cluster")
+        @Command(name = "push", description = "Push blueprint and its slices from local Maven repository to cluster. Coordinates are written once: identical content is a no-op, different content is refused (409), and SNAPSHOT versions are refused (400)")
         static class PushArtifactCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1958,7 +1958,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "delete", description = "Delete an artifact from the repository")
+        @Command(name = "archive", aliases = "delete", description = "Archive an artifact version: it stops resolving and is delisted, its keys are kept. Allowed once the version has been stored for the minimum retention period (default 7 days, [slice] artifact_archive_retention)")
         static class DeleteCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1981,7 +1981,7 @@ public class AetherCli implements Runnable {
                                                             List.of(parts[0].replace('.', '/'), parts[1], parts[2]));
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    artifactParent.parent.outputOptions(),
-                                                                   "Failed to delete");
+                                                                   "Failed to archive");
 
                 if (errorCode >= 0) {
                     return errorCode;
@@ -1989,7 +1989,7 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    artifactParent.parent.outputOptions(),
-                                                   "Deleted " + coordinates);
+                                                   "Archived " + coordinates);
             }
         }
 

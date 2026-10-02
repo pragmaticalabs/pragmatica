@@ -533,8 +533,9 @@ aether artifacts info <group:artifact:version>
 # Download an artifact file (writes to stdout or --out)
 aether artifacts get <group:artifact:version> [--out=<file>] [--file=<filename>]
 
-# Delete an artifact
-aether artifacts delete <group:artifact:version>
+# Archive an artifact version (stops resolving, is delisted, keys are kept; `delete` is an alias).
+# Allowed once the version has been stored for the minimum retention period (default 7 days).
+aether artifacts archive <group:artifact:version>
 
 # Show artifact storage metrics
 aether artifacts metrics
@@ -572,9 +573,15 @@ aether artifacts get com.example:my-slice:1.0.0 > my-slice.jar
 # Download a specific file from the artifact (e.g. sources jar)
 aether artifacts get com.example:my-slice:1.0.0 --file=my-slice-1.0.0-sources.jar --out=src.jar
 
-# Remove an artifact
-aether artifacts delete com.example:my-slice:1.0.0
+# Archive an artifact version that is no longer needed
+aether artifacts archive com.example:my-slice:1.0.0
 ```
+
+The built-in store writes each coordinate once. `deploy` and `push` of identical content again are a no-op
+(`already-present`); different content for a stored coordinate is refused (`409`, naming both SHA-1 digests) and a
+`-SNAPSHOT` version is refused (`400`), so publish release versions. Archiving a version younger than the retention
+period is refused (`409`); archived artifacts answer `410` on download. See
+[Artifact Repository](../operators/artifact-repository.md).
 
 #### blueprint
 

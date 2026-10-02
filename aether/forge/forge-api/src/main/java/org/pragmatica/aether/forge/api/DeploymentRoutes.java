@@ -5,6 +5,7 @@
 package org.pragmatica.aether.forge.api;
 
 import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.function.Consumer;
@@ -13,6 +14,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.RepositoryPutResponse;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
@@ -140,7 +142,19 @@ public sealed interface DeploymentRoutes {
         return node.mavenProtocolHandler()
                    .handlePut(path,
                               request.content())
-                   .map(_ -> createRepositoryResponse(eventLogger, request, path));
+                   .flatMap(response -> acceptedOrRejected(response, request, path, eventLogger));
+    }
+
+    /// The handler REFUSES with a status (#1778: SNAPSHOT 400, conflicting re-put 409), it does not fail
+    /// the promise, so a non-2xx answer must not be reported as "Deployed". Public only because an interface
+    /// member cannot be package-private; `DeploymentRoutesRepositoryPutTest` calls it directly.
+    static Promise<RepositoryPutResponse> acceptedOrRejected(MavenResponse response,
+                                                             RepositoryPutRequest request,
+                                                             String path,
+                                                             Consumer<EventLogEntry> eventLogger) {
+        return response.statusCode() < 300
+               ? Promise.success(createRepositoryResponse(eventLogger, request, path))
+               : new RepositoryPutRejected(response.statusCode(), new String(response.content(), StandardCharsets.UTF_8)).promise();
     }
 
     private static RepositoryPutResponse createRepositoryResponse(Consumer<EventLogEntry> eventLogger,
@@ -193,6 +207,13 @@ public sealed interface DeploymentRoutes {
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
                                             .async());
+    }
+
+    record RepositoryPutRejected(int status, String detail) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "Artifact repository answered " + status + ": " + detail;
+        }
     }
 
     enum LeaderNotAvailable implements org.pragmatica.lang.Cause {
