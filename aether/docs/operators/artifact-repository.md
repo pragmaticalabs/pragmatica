@@ -142,7 +142,7 @@ so a stale replica can never make an artifact read wrong, and a removed artifact
 | `PUT` different content to a stored coordinate | `409`, naming the stored and the offered SHA-1; the stored content is kept. Publish the change under a new version |
 | `PUT` a `-SNAPSHOT` version (any file, including Maven's timestamped names) | `400`; nothing is written. SNAPSHOTs stay available through the Local repository (development, Forge) |
 | `PUT` to an archived version (identical content or not, any file) | `409`; an archived coordinate is never reused |
-| `GET` an archived file | `410 Gone`. `404` still means "never written" |
+| `GET` an archived file (or its `.sha1`/`.md5` sidecar) | `410 Gone`. `404` still means "never written" |
 | `GET maven-metadata.xml` | lists the versions that are stored and not archived |
 | `DELETE /repository/{groupPath}/{artifactId}/{version}` (`aether artifacts archive`) | `200`, `"status":"archived"`; `409` when the version has been stored for less than the retention period; `404` when nothing was ever stored; requires OPERATOR or ADMIN |
 
@@ -167,7 +167,8 @@ Known limits, stated so they are not mistaken for guarantees:
 - **Concurrent publishes through different nodes.** Publishes through one node never lose a version (rewrites of
   a list key are serialized per node). Two nodes rewriting the same versions list at the same instant can overwrite
   each other, because the DHT has no conditional put; the later write wins and a version can be missing from the
-  list until it is re-pushed (an identical re-push re-registers it). The artifact's own keys are not affected.
+  list until it is re-pushed (an identical re-push re-registers it). Anti-entropy resolves a diverged list key by
+  the later write, so it has the same effect. The artifact's own keys are not affected.
 - **Concurrent first writes of different content to one coordinate.** The conflict check is a read followed by a
   write, not an atomic step. Two first writes racing from different clients can both pass the check, and the later
   metadata write wins. Retried or sequential pushes are always checked.

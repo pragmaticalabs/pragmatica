@@ -239,10 +239,18 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                                  return MavenResponse.ok(checksum.getBytes(StandardCharsets.UTF_8),
                                                          "text/plain");
                              })
-                        .recover(cause -> MavenResponse.notFound("Artifact not found"));
+                        .recover(MavenProtocolHandlerImpl::checksumFailureResponse);
         }
 
         return Promise.success(MavenResponse.badRequest("Invalid checksum path"));
+    }
+
+    /// A sidecar of an archived file is as gone as the file (410, #1778); every other failure keeps answering 404,
+    /// as it always has.
+    private static MavenResponse checksumFailureResponse(Cause cause) {
+        return cause instanceof ArtifactStore.ArtifactStoreError.Archived archived
+               ? MavenResponse.gone(archived.message())
+               : MavenResponse.notFound("Artifact not found");
     }
 
     @Override

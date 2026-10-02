@@ -107,6 +107,21 @@ class MavenProtocolHandlerWriteOnceTest {
     }
 
     @Test
+    void checksumOfAnArchivedFile_answers410_whileALiveOneAnswers200() {
+        put(JAR_PATH, CONTENT);
+
+        assertThat(get(JAR_PATH + ".sha1").statusCode()).isEqualTo(200);
+
+        now.addAndGet(7 * DAY);
+        delete(VERSION_PATH);
+
+        assertThat(get(JAR_PATH + ".sha1").statusCode()).as("the sidecar of an archived file is gone too")
+                                                        .isEqualTo(410);
+        assertThat(get("/repository/org/example/lib/9.9.9/lib-9.9.9.jar.sha1").statusCode()).as("never written stays 404")
+                                                                                              .isEqualTo(404);
+    }
+
+    @Test
     void delete_answers400_forAPathThatIsNotAVersion() {
         assertThat(delete("/repository/org/lib").statusCode()).isEqualTo(400);
         assertThat(delete("/elsewhere/org/example/lib/1.0.0").statusCode()).isEqualTo(400);
