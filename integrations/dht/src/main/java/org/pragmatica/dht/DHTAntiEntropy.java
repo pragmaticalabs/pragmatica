@@ -17,6 +17,7 @@ package org.pragmatica.dht;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -365,15 +366,14 @@ public final class DHTAntiEntropy {
     }
 
     /// An accepted departure push is applied only for partitions this node replicates — in the ring as it is
-    /// (pre-departure) or without the pusher and every node this node knows to be departing (post-departure;
-    /// removing nodes displaces no other) — #1818 J2.
+    /// (pre-departure) or in the post-departure view: without the pusher's leaving set and every node this node
+    /// knows to be departing — #1818 J2, L1.
     /// A copy anywhere else is a stray the #428 fallback read can later serve, so those entries are dropped,
     /// counted, and the batch is nacked: the pusher keeps them at risk rather than believing them delivered.
     private void applyPlaced(DHTMessage.MigrationDataResponse response) {
         var placed = response.entries()
                              .stream()
-                             .filter(entry -> replicaHereAroundDeparture(response.sender(),
-                                                                         entry))
+                             .filter(entry -> replicaHereAroundDeparture(response, entry))
                              .toList();
 
         if (placed.size() == response.entries().size()) {
@@ -387,14 +387,29 @@ public final class DHTAntiEntropy {
         applyMigrationEntries(withEntries(response, placed)).onSuccess(_ -> acknowledge(response, false));
     }
 
-    private boolean replicaHereAroundDeparture(NodeId pusher, DHTMessage.KeyValue entry) {
+    /// The post-departure view excludes the pusher, the pusher's carried leaving set, and this node's own
+    /// departing set (#1818 L1). Why the union is sound: the pusher chose this node as within RF of the ring
+    /// without ITS set. Removing nodes from a ring only moves the remaining nodes EARLIER in each walk, so
+    /// excluding a superset of that set can only move this node earlier, and it stays within RF. Its own
+    /// knowledge can therefore never turn a legitimate newcomer into a stray, which is what lost copies when
+    /// this node had not yet heard of a co-drainer the pusher excluded (v1820 r4: nothing retries the nack).
+    /// The argument assumes both rings hold the same members; a joiner known here but not to the pusher can
+    /// still push this node past RF; that case is outside this argument and is refused as before.
+    private boolean replicaHereAroundDeparture(DHTMessage.MigrationDataResponse response, DHTMessage.KeyValue entry) {
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var pusherLeaving = Set.copyOf(response.leaving());
 
         return replicaOfEntry(node.nodeId(), entry) || node.ring()
                                                            .nodesFor(entry.key(),
                                                                      replicationFactor,
-                                                                     candidate -> !candidate.equals(pusher) && !departingSenders.test(candidate))
+                                                                     candidate -> !leftInDepartureView(candidate,
+                                                                                                       response.sender(),
+                                                                                                       pusherLeaving))
                                                            .contains(node.nodeId());
+    }
+
+    private boolean leftInDepartureView(NodeId candidate, NodeId pusher, Set<NodeId> pusherLeaving) {
+        return candidate.equals(pusher) || pusherLeaving.contains(candidate) || departingSenders.test(candidate);
     }
 
     private static DHTMessage.MigrationDataResponse withEntries(DHTMessage.MigrationDataResponse response,
@@ -402,7 +417,8 @@ public final class DHTAntiEntropy {
         return new DHTMessage.MigrationDataResponse(response.requestId(),
                                                     response.sender(),
                                                     entries,
-                                                    response.ackRequested());
+                                                    response.ackRequested(),
+                                                    response.leaving());
     }
 
     private void acceptRebalancePush(DHTMessage.MigrationDataResponse response) {

@@ -105,7 +105,16 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// its held chunks reached a surviving replica before it halts. The two fire-and-forget senders
     /// (survivor-side rebalance and anti-entropy pull) leave it `false` — the receiver stays silent
     /// then, exactly as before; only the graceful-departure push sets it `true`.
-    record MigrationDataResponse(String requestId, NodeId sender, List<KeyValue> entries, boolean ackRequested) implements DHTMessage {}
+    ///
+    /// `leaving` is the set the departure push excluded when it chose this receiver: the pusher and every
+    /// co-departing node it knew of (issue #1818 L1). The receiver checks placement against the ring without
+    /// that set, so a co-drainer it has not yet heard of cannot make a legitimate newcomer look like a stray.
+    /// Empty on every other sender.
+    record MigrationDataResponse(String requestId,
+                                 NodeId sender,
+                                 List<KeyValue> entries,
+                                 boolean ackRequested,
+                                 List<NodeId> leaving) implements DHTMessage {}
 
     /// Acknowledgement of a [MigrationDataResponse] carrying `ackRequested=true` (issue #427, D2).
     /// `requestId` echoes the response's correlation id so the departing sender resolves the matching

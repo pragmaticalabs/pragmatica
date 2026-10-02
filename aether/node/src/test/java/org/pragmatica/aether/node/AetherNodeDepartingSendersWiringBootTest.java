@@ -115,7 +115,7 @@ class AetherNodeDepartingSendersWiringBootTest {
         return new DHTMessage.MigrationDataResponse(requestId,
                                                     PUSHER,
                                                     List.of(new DHTMessage.KeyValue(key, key, 1L, 0L, 0L, 0L)),
-                                                    true);
+                                                    true, List.of());
     }
 
     private boolean holds(byte[] key) {

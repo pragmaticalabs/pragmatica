@@ -226,10 +226,10 @@ class DHTMigrationEpochFenceTest {
 
         cluster.member("failing")
                .antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push-f", sender, List.of(entry), true));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push-f", sender, List.of(entry), true, List.of()));
         cluster.member("healthy")
                .antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push-h", sender, List.of(entry), true));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push-h", sender, List.of(entry), true, List.of()));
 
         assertThat(cluster.ackFor("push-h")).as("control: a stored batch is acked").isTrue();
         assertThat(cluster.ackFor("push-f")).as("a batch that failed to store is nacked").isFalse();

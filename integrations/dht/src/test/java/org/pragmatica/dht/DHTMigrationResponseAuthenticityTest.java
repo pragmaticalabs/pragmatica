@@ -50,7 +50,7 @@ class DHTMigrationResponseAuthenticityTest {
         var shape = cluster.shape("stranger");
 
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("unsolicited", shape.stranger(), List.of(shape.entry()), false));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("unsolicited", shape.stranger(), List.of(shape.entry()), false, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).as("a non-co-replica's unsolicited batch is dropped").isFalse();
         assertThat(cluster.rejected()).isEqualTo(1);
@@ -63,13 +63,13 @@ class DHTMigrationResponseAuthenticityTest {
         var requestId = cluster.pullFromHolder(shape);
 
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.stranger(), List.of(shape.entry()), false));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.stranger(), List.of(shape.entry()), false, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).as("an answer whose sender was not asked is dropped").isFalse();
         assertThat(cluster.rejected()).isEqualTo(1);
 
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.holder(), List.of(shape.entry()), false));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.holder(), List.of(shape.entry()), false, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).as("the forged answer did not consume the real one's slot").isTrue();
     }
@@ -85,7 +85,7 @@ class DHTMigrationResponseAuthenticityTest {
                .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId,
                                                                              shape.holder(),
                                                                              List.of(shape.entry(), smuggled),
-                                                                             false));
+                                                                             false, List.of()));
 
         assertThat(cluster.receiverHolds(smuggled.key())).as("an entry outside the requested partition is dropped").isFalse();
         assertThat(cluster.rejected()).isEqualTo(1);
@@ -97,7 +97,7 @@ class DHTMigrationResponseAuthenticityTest {
         var shape = cluster.shape("not-departing");
 
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", shape.stranger(), List.of(shape.entry()), true));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", shape.stranger(), List.of(shape.entry()), true, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).isFalse();
         assertThat(cluster.ackFor("push")).as("the pusher is told the batch was not taken").isFalse();
@@ -113,7 +113,7 @@ class DHTMigrationResponseAuthenticityTest {
         var shape = cluster.shape("self-drain");
 
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", shape.holder(), List.of(shape.entry()), true));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", shape.holder(), List.of(shape.entry()), true, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).isTrue();
         assertThat(cluster.ackFor("push")).isTrue();
@@ -133,11 +133,31 @@ class DHTMigrationResponseAuthenticityTest {
 
         cluster.departing(pusher);
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", pusher, List.of(placed, stray), true));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", pusher, List.of(placed, stray), true, List.of(pusher)));
 
         assertThat(cluster.receiverHolds(stray.key())).as("the mis-addressed entry is not placed here").isFalse();
         assertThat(cluster.receiverHolds(placed.key())).as("control: the entry this node newly owns is placed").isTrue();
         assertThat(cluster.ackFor("push")).as("the pusher keeps the batch at risk").isFalse();
+    }
+
+    /// #1818 L1: the drain set reaches the pusher and this receiver in separate leader pings, so the receiver
+    /// may not yet know a co-drainer the pusher excluded. The push carries the pusher's leaving set, and an
+    /// entry this node owns only in THAT view is a legitimate newcomer: placed and acked, not dropped as a
+    /// stray. Red when the receiver ignores the carried set: nothing retries the nack, so the copy is lost.
+    @Test
+    void departurePush_newcomerOnlyInThePushersView_isPlacedAndAcked_beforeThisNodeHearsOfTheCoDrainer() {
+        var cluster = new Cluster();
+        var pusher = new NodeId("node-1");
+        var coDrainer = cluster.coDrainerWithANewcomerEntry(pusher, "codrain");
+        var newcomer = cluster.entryForCoDrainNewcomer(pusher, coDrainer, "codrain");
+
+        cluster.departing(pusher);
+        cluster.receiver().antiEntropy()
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", pusher, List.of(newcomer), true, List.of(pusher, coDrainer)));
+
+        assertThat(cluster.receiverHolds(newcomer.key())).as("the pusher's legitimate newcomer takes the copy").isTrue();
+        assertThat(cluster.ackFor("push")).as("and acks it").isTrue();
+        assertThat(cluster.rejected()).isZero();
     }
 
     @Test
@@ -147,7 +167,7 @@ class DHTMigrationResponseAuthenticityTest {
 
         cluster.departing(shape.stranger());
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", shape.stranger(), List.of(shape.entry()), true));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", shape.stranger(), List.of(shape.entry()), true, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).isTrue();
         assertThat(cluster.ackFor("push")).isTrue();
@@ -161,7 +181,7 @@ class DHTMigrationResponseAuthenticityTest {
         var requestId = cluster.pullFromHolder(shape);
 
         cluster.receiver().antiEntropy()
-               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.holder(), List.of(shape.entry()), false));
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.holder(), List.of(shape.entry()), false, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).as("control: a matching answer is applied").isTrue();
         assertThat(cluster.rejected()).isZero();
@@ -230,6 +250,37 @@ class DHTMigrationResponseAuthenticityTest {
         /// An entry whose partition the receiver replicates neither with `pusher` in the ring nor without it.
         DHTMessage.KeyValue entryNotReplicatedByReceiver(NodeId pusher, String prefix) {
             return entryWhere(prefix, key -> !receiverReplicates(key, pusher, true) && !receiverReplicates(key, pusher, false));
+        }
+
+        /// A node whose departure, together with `pusher`'s, makes the receiver a newcomer for some key that the
+        /// receiver does not own with only `pusher` gone.
+        NodeId coDrainerWithANewcomerEntry(NodeId pusher, String prefix) {
+            return members.keySet()
+                          .stream()
+                          .filter(id -> !id.equals(pusher) && !id.equals(receiverId))
+                          .filter(id -> hasEntryWhere(prefix, key -> coDrainNewcomer(key, pusher, id)))
+                          .findFirst()
+                          .orElseThrow();
+        }
+
+        /// An entry the receiver replicates only once both `pusher` and `coDrainer` have left.
+        DHTMessage.KeyValue entryForCoDrainNewcomer(NodeId pusher, NodeId coDrainer, String prefix) {
+            return entryWhere(prefix, key -> coDrainNewcomer(key, pusher, coDrainer));
+        }
+
+        private boolean coDrainNewcomer(byte[] key, NodeId pusher, NodeId coDrainer) {
+            return !receiverReplicates(key, pusher, true) && !receiverReplicates(key, pusher, false)
+                   && receiver().node().ring().nodesFor(key, 3, id -> !id.equals(pusher) && !id.equals(coDrainer)).contains(receiverId);
+        }
+
+        private boolean hasEntryWhere(String prefix, Predicate<byte[]> wanted) {
+            for (int i = 0; i < 20_000; i++) {
+                if (wanted.test((prefix + "-" + i).getBytes(StandardCharsets.UTF_8))) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// An entry whose partition the receiver replicates only once `pusher` has left — a departure newcomer.

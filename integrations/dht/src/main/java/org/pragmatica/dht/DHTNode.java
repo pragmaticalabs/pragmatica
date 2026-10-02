@@ -290,7 +290,8 @@ public final class DHTNode {
             responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                         nodeId,
                                                                         java.util.List.of(),
-                                                                        false));
+                                                                        false,
+                                                                        java.util.List.of()));
 
             return;
         }
@@ -299,11 +300,13 @@ public final class DHTNode {
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                                                  nodeId,
                                                                                                  entries,
-                                                                                                 false)))
+                                                                                                 false,
+                                                                                                 java.util.List.of())))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                                            nodeId,
                                                                                            java.util.List.of(),
-                                                                                           false)));
+                                                                                           false,
+                                                                                           java.util.List.of())));
     }
 
     /// Whether `candidate` is one of the partition's replicas in THIS node's ring — the same single

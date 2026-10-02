@@ -172,7 +172,7 @@ public final class DHTRebalancer {
 
         return batches.isEmpty()
                ? Promise.success(Unit.unit())
-               : awaitAcks(sendPushes(batches), budget, observer);
+               : awaitAcks(sendPushes(batches, leaving), budget, observer);
     }
 
     /// Group every locally-held entry under each node that newly becomes responsible for it, so a
@@ -230,14 +230,16 @@ public final class DHTRebalancer {
                      .toList();
     }
 
-    private List<Promise<Unit>> sendPushes(Map<NodeId, List<DHTMessage.KeyValue>> batches) {
+    private List<Promise<Unit>> sendPushes(Map<NodeId, List<DHTMessage.KeyValue>> batches, Set<NodeId> leaving) {
         return batches.entrySet()
                       .stream()
-                      .map(this::sendAckedPush)
+                      .map(batch -> sendAckedPush(batch, leaving))
                       .toList();
     }
 
-    private Promise<Unit> sendAckedPush(Map.Entry<NodeId, List<DHTMessage.KeyValue>> batch) {
+    /// The push carries `leaving`, the set excluded when choosing its target (issue #1818 L1), so the receiver
+    /// checks placement against the same view rather than its own, which may not yet know every co-drainer.
+    private Promise<Unit> sendAckedPush(Map.Entry<NodeId, List<DHTMessage.KeyValue>> batch, Set<NodeId> leaving) {
         var correlationId = IdGenerator.generate();
         Promise<Unit> ackPromise = Promise.promise();
 
@@ -247,7 +249,11 @@ public final class DHTRebalancer {
                   batch.getKey().id(),
                   correlationId);
         network.send(batch.getKey(),
-                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), batch.getValue(), true));
+                     new DHTMessage.MigrationDataResponse(correlationId,
+                                                          node.nodeId(),
+                                                          batch.getValue(),
+                                                          true,
+                                                          List.copyOf(leaving)));
 
         return ackPromise;
     }
@@ -336,6 +342,6 @@ public final class DHTRebalancer {
 
         log.debug("Pushing {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
         network.send(target,
-                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false));
+                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false, List.of()));
     }
 }

@@ -256,7 +256,7 @@ class DHTAntiEntropyTest {
             );
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("mig-1", PEER, entries, false));
+                new DHTMessage.MigrationDataResponse("mig-1", PEER, entries, false, List.of()));
 
             // Verify entries were applied to local storage
             node.getLocal(key("repaired-k1"))
@@ -277,7 +277,7 @@ class DHTAntiEntropyTest {
             var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("mig-2", PEER, List.of(), false));
+                new DHTMessage.MigrationDataResponse("mig-2", PEER, List.of(), false, List.of()));
 
             // No storage changes
             assertThat(node.localSize()).isEqualTo(0);
@@ -295,7 +295,7 @@ class DHTAntiEntropyTest {
             var entries = List.of(new DHTMessage.KeyValue(key("pushed-k1"), value("pushed-v1"), 100L, 0L, 0L, 0L));
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("push-1", PEER, entries, true));
+                new DHTMessage.MigrationDataResponse("push-1", PEER, entries, true, List.of()));
 
             node.getLocal(key("pushed-k1"))
                 .await()
@@ -325,7 +325,7 @@ class DHTAntiEntropyTest {
             var entries = List.of(new DHTMessage.KeyValue(key("pull-k1"), value("pull-v1"), 100L, 0L, 0L, 0L));
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("pull-1", PEER, entries, false));
+                new DHTMessage.MigrationDataResponse("pull-1", PEER, entries, false, List.of()));
 
             var acks = network.captured.stream()
                                        .filter(m -> m.message() instanceof DHTMessage.MigrationDataAck)
