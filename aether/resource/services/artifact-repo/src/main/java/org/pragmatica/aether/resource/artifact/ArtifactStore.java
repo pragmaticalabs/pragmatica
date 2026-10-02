@@ -568,9 +568,9 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// so a first deploy that died between the metadata write and the list writes converges on retry.
     ///
     /// The existence check is a read, and a read that FAILS is not "absent": it fails the deploy, so DHT churn
-    /// can never turn into an overwrite (#1795). The check is not atomic with the metadata write below — the
-    /// DHT has no conditional put — so two concurrent FIRST writes of different content to one coordinate can
-    /// both pass it and the later metadata write wins; closing that needs a DHT conditional put.
+    /// can never turn into an overwrite (#1795). The read is only a fast path for content that is already stored:
+    /// the binding of the coordinate to its content is decided by the index (consensus in a cluster), which keeps
+    /// the FIRST digest proposed, so two concurrent first writes of different content cannot both succeed.
     @Override
     public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
         log.info("Deploying artifact: {} ({} bytes)", file.asString(), content.length);
@@ -623,11 +623,11 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Boolean> markerPresent(Artifact artifact) {
-        return dhtGetWithRetry(archivedKey(artifact), ReadOptions.DEFAULT).map(Option::isPresent);
+        return dhtGetWithRetry(archivedKey(artifact)).map(Option::isPresent);
     }
 
     private Promise<Option<byte[]>> readStoredMetadata(ArtifactFile file) {
-        return dhtGetWithRetry(metaKey(file), ReadOptions.DEFAULT);
+        return dhtGetWithRetry(metaKey(file));
     }
 
     /// Identical content is idempotent; different content is [ArtifactStoreError.ContentConflict]. Bytes that
@@ -816,8 +816,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Long> oldestDeployTime(Artifact artifact) {
-        return dhtGetWithRetry(filesKey(artifact),
-                               ReadOptions.DEFAULT).map(ArtifactStoreImpl::fileNames)
+        return dhtGetWithRetry(filesKey(artifact)).map(ArtifactStoreImpl::fileNames)
                               .flatMap(names -> deployTimes(artifact, names))
                               .map(ArtifactStoreImpl::oldest);
     }
@@ -837,7 +836,7 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     /// An absent or unparseable metadata key contributes nothing to the oldest time.
     private Promise<Long> deployTimeOf(Artifact artifact, String fileName) {
-        return dhtGetWithRetry(metaKey(artifact, fileName), ReadOptions.DEFAULT).map(ArtifactStoreImpl::deployedAt);
+        return dhtGetWithRetry(metaKey(artifact, fileName)).map(ArtifactStoreImpl::deployedAt);
     }
 
     private static long deployedAt(Option<byte[]> stored) {
@@ -1014,7 +1013,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Unit> mergeAndWrite(byte[] key, UnaryOperator<GrowOnlySet> change) {
-        return dhtGetWithRetry(key, ReadOptions.DEFAULT).map(ArtifactStoreImpl::setOf)
+        return dhtGetWithRetry(key).map(ArtifactStoreImpl::setOf)
                               .map(change::apply)
                               .flatMap(set -> dhtPutWithRetry(key,
                                                               set.toBytes()));
@@ -1063,6 +1062,42 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// that otherwise hangs until the 30s `operationTimeout`, manifesting as an HTTP 500
     /// on `/api/blueprints/deploy`. CRITICAL: a successful `Option.empty()` is a legitimate
     /// "not found" and is NEVER retried — only a transient FAILURE triggers a retry.
+    /// Plain quorum read with the bounded retry; a successful `Option.empty()` is "not found" and is never retried.
+    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key) {
+        return dhtGetWithRetry(key, 0);
+    }
+
+    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, int attempt) {
+        var result = Promise.<Option<byte[]>> promise();
+
+        dht.get(key)
+           .onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                           .onFailure(cause -> handlePlainGetFailure(key, attempt, cause, result)));
+
+        return result;
+    }
+
+    private void handlePlainGetFailure(byte[] key, int attempt, Cause cause, Promise<Option<byte[]>> result) {
+        var nextAttempt = attempt + 1;
+
+        if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
+            result.fail(cause);
+
+            return;
+        }
+
+        var backoff = retryPolicy.backoffFor(attempt);
+
+        log.warn("DHT get attempt {} of {} failed (transient): {}; retrying after {}ms",
+                 nextAttempt,
+                 retryPolicy.maxAttempts(),
+                 cause.message(),
+                 backoff.millis());
+        SharedScheduler.schedule(() -> dhtGetWithRetry(key, nextAttempt).onResult(result::resolve), backoff);
+    }
+
+    /// The metadata resolve read, the ONLY read that still carries `ReadOptions` (the #1770 absent-grace stop-gap).
+    /// Everything else above uses the plain read, so removing the stop-gap leaves this one method to delete.
     private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, ReadOptions options) {
         return dhtGetWithRetry(key, 0, options);
     }

@@ -575,13 +575,13 @@ class ArtifactStoreTest {
             graceStore.metadata(artifact).await();
             graceStore.versions(artifact.groupId(), artifact.artifactId()).await();
 
-            // the metadata resolve read is the only one carrying the grace (the archive-marker read beside it,
-            // #1778, is a plain one); metadata() uses the plain get, and versions() no longer reads the DHT
+            // the metadata resolve read is the only one carrying the grace; the archive-marker read beside it (#1778)
+            // and metadata() are the two plain gets, and versions() no longer reads the DHT
             var graceReads = seen.stream().filter(ReadOptions::hasAbsentGrace).toList();
 
             assertThat(graceReads).hasSize(1);
             assertThat(graceReads.getFirst().absentGrace()).isEqualTo(timeSpan(250).millis());
-            assertThat(plainGets.get()).isEqualTo(1);
+            assertThat(plainGets.get()).isEqualTo(2);
         }
     }
 
