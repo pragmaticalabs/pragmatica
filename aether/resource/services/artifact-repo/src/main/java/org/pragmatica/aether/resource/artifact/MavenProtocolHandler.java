@@ -483,6 +483,10 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                      .or(Option.none());
     }
 
+    /// The version segment must be written canonically (`Version#withQualifier`): the store keys a file by its exact
+    /// name, while a coordinate resolves its primary file as `<artifactId>-<canonical version>.jar`. A non-canonical
+    /// segment (`1.0.0.Final`, read as `1.0.0-Final`) would store a jar that its own coordinate never finds, so the
+    /// path does not parse and answers 400.
     private Option<ParsedPath> parseArtifactPath(String[] parts) {
         if (parts.length < 4) return Option.none();
 
@@ -500,7 +504,10 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         return Result.all(GroupId.groupId(groupPath.toString()),
                           ArtifactId.artifactId(artifactIdStr),
                           Version.version(versionStr))
-                     .map((groupId, artifactId, version) -> toArtifactPath(groupId, artifactId, version, fileName))
+                     .map((groupId, artifactId, version) -> version.withQualifier()
+                                                                   .equals(versionStr)
+                                                            ? toArtifactPath(groupId, artifactId, version, fileName)
+                                                            : Option.<ParsedPath> none())
                      .or(Option.none());
     }
 

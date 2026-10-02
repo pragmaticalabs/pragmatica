@@ -218,6 +218,14 @@ class MavenProtocolHandlerWriteOnceTest {
         }
     }
 
+    @Test
+    void put_refusesANonCanonicalVersionSegment_whoseJarItsOwnCoordinateCouldNeverResolve() {
+        var path = "/repository/org/example/lib/1.0.0.Final/lib-1.0.0.Final.jar";
+
+        assertThat(put(path, CONTENT).statusCode()).as("1.0.0.Final reads as 1.0.0-Final").isEqualTo(400);
+        assertThat(put("/repository/org/example/lib/1.0.0-Final/lib-1.0.0-Final.jar", CONTENT).statusCode()).isEqualTo(200);
+    }
+
     private static byte[] bytesOf(String label) {
         return label.getBytes(StandardCharsets.UTF_8);
     }
