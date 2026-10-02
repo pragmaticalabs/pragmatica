@@ -251,7 +251,14 @@ What the DHT data plane guarantees per operation, and the mechanism behind each 
   (`DHTError.WriteIndeterminate`, transient), never a definite failure. It *may have been applied*: on the
   coordinator, and on any other replica whose high-water lagged. The coordinator compare-and-deletes its
   OWN accept (`StorageEngine.removeIfExactly`), only while the stored entry is still exactly the one it
-  wrote. Every caller retries, and the retry is stamped with the epoch current by then. The callers are
+  wrote. Every caller retries, and the retry is stamped with the epoch current by then.
+  The same holds when a fence refusal is followed by a reply that is lost or slow: any recorded refusal
+  makes the outcome indeterminate and triggers the rollback, never a plain timeout.
+  **After a rollback, the coordinator's local copy of the key is gone** — including any older value the
+  deposed write had replaced there. Until anti-entropy refills it from a replica that holds the current
+  value, the coordinator answers that key as absent. A quorum read still returns a value if another
+  replica it reaches holds one, but a read that meets only the coordinator's answer and other absents
+  resolves absent for that window. The callers are
   `ArtifactStore`'s metadata and chunk writes (through `DhtStorageTier`), the encryption-marker write, the
   DHT cache, and the idempotency store.
 - **Replica copy (anti-entropy pull, departure push, survivor rebalance).** Applied **without** the
