@@ -9,9 +9,13 @@
   there even if its push never arrived, (3) while a node that JOINED a running cluster still has KV state catching up
   (`RabiaEngine.joinedFormedElectorate()` and `isPendingCatchUp()`), waits another grace window, bounded at ten windows,
   and (4) only a cluster that shows no leader and no sync in flight — or a sync that never settles — reaches `Electing`.
-  A cold-boot or restarting node is not a joiner and keeps the plain grace. [mechanism: the incident log shows
-  `LeaderCommitted` observed at viewSequence 1 while the node held the leader in `Passive`; the pull's equality skip is
-  `LeaderElectionState.adoptLeaderFromKvIfPresent`.]
+  The "joiner" flag is set whenever a node adopts an already-formed electorate (`RabiaEngine.joinFormedElectorate`), so a
+  genesis latecomer that finds the cluster already formed IS flagged as a joiner; a node that forms genesis itself or restarts
+  from its own state is not. That is the intended meaning (a late core joining a running cluster), and it is harmless for a
+  latecomer with nothing pending: it falls straight through, and the wait is bounded at ten windows either way. [mechanism:
+  inferred, not read from a log line — the incident log shows the KV state restored and the entry pull logging nothing, the
+  proposal at viewSequence 2 implies a committed baseline of 1, and the only remaining skip in the pull is its equality check
+  (`LeaderElectionState.adoptLeaderFromKvIfPresent`).]
 - **A replacement now reaches the voters it was never told about (a).** A replacement is minted with the peers that
   existed at mint time. After it joined the formed electorate, its SWIM view still lacked a later leader: the join ack
   (#1785) had been merged through a membership scope that did not yet include that voter, and gossip about it is a

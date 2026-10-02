@@ -562,8 +562,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
         consensus.onVoterConfiguration(leaderManager::installVoterConfiguration);
         // #1803: a node that joined a running cluster waits for its KV state to catch up before electing, so it
-        // cannot depose a live leader it has not yet read. A cold-boot or restarting node is not a joiner and
-        // keeps the plain grace: nothing is committed elsewhere for it to be missing.
+        // cannot depose a live leader it has not yet read. "Joined" means it adopted an already-formed electorate
+        // (a genesis latecomer counts); a node that forms genesis itself or restarts from its own state does not.
         leaderManager.installKvSyncProgress(() -> consensus.joinedFormedElectorate() && consensus.isPendingCatchUp());
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class).route(route(SetClusterSize.class,
