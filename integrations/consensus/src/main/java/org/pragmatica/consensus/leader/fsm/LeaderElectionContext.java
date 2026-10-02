@@ -163,10 +163,9 @@ public final class LeaderElectionContext {
     /// The voters a pre-vote is counted over: the installed voter set, else the configured cluster, else the
     /// transport view — always including this node.
     public List<NodeId> electorate() {
-        var base = installedVoters.get()
-                                  .or(expectedCluster.isEmpty()
-                                      ? currentTopology()
-                                      : expectedCluster);
+        var base = installedVoters.get().or(expectedCluster.isEmpty()
+                                            ? currentTopology()
+                                            : expectedCluster);
 
         return base.contains(self)
                ? base

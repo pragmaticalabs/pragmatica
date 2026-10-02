@@ -495,8 +495,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         /// view, or its leader ping has been silent for the full lease threshold. Read by the pre-vote both to
         /// keep retrying while it holds and to answer other followers' questions about this leader.
         public boolean isLeaderSuspected() {
-            return !ctx.currentTopology().contains(leader)
-                   || consecutiveSilentChecks.get() >= LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS;
+            return ! ctx.currentTopology()
+                        .contains(leader) || consecutiveSilentChecks.get() >= LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS;
         }
 
         @Override
@@ -599,7 +599,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                    Led led,
                                    TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
         ctx.preVote()
-           .filter(_ -> !led.leader().equals(ctx.self()) && ctx.isEligible(led.leader()))
+           .filter(_ -> !led.leader()
+                            .equals(ctx.self()) && ctx.isEligible(led.leader()))
            .onPresent(preVote -> tx.handle(() -> preVote.suspect(led.leader())))
            .onEmpty(() -> tx.transitionTo(ctx.reElecting()));
     }

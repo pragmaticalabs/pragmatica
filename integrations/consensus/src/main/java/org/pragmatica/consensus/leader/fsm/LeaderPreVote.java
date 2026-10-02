@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderDoubtConfirmed;
@@ -24,6 +25,9 @@ import org.pragmatica.lang.utils.SharedScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 /// Leader pre-vote (#1748): a follower that lost ITS OWN view of the committed leader does not elect on that
@@ -66,7 +70,6 @@ import org.slf4j.LoggerFactory;
 /// released, so FSM re-entry cannot deadlock against it.
 public final class LeaderPreVote {
     private static final Logger log = LoggerFactory.getLogger(LeaderPreVote.class);
-
     /// How long a round waits for answers before it refrains. Sized above a LAN/WAN round trip plus a loaded
     /// handler, below the proposal retry horizon, so a lost answer costs one retry rather than a stall.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(1).seconds();
@@ -76,7 +79,7 @@ public final class LeaderPreVote {
     private final LeaderElectionContext ctx;
     private final TimeSpan timeout;
     private final AtomicLong rounds = new AtomicLong(0);
-    private Option<Episode> episode = Option.none();
+    private Option<Episode> episode = none();
 
     private LeaderPreVote(LeaderElectionContext ctx, TimeSpan timeout) {
         this.ctx = ctx;
@@ -95,7 +98,7 @@ public final class LeaderPreVote {
         boolean asking;
         Set<NodeId> vouching = new HashSet<>();
         Set<NodeId> doubting = new HashSet<>();
-        Option<ScheduledFuture<?>> timer = Option.none();
+        Option<ScheduledFuture<?>> timer = none();
 
         Episode(NodeId leader) {
             this.leader = leader;
@@ -131,20 +134,26 @@ public final class LeaderPreVote {
     }
 
     private Option<Boolean> stanceOn(NodeId leader) {
-        return switch (ctx.fsm().current()) {
-            case LeaderElectionState.Led led -> Option.some(sees(led, leader));
-            case LeaderElectionState.Electing _, LeaderElectionState.ReElecting _ -> Option.some(false);
-            default -> Option.none();
+        return switch (ctx.fsm()
+                          .current()) {
+            case LeaderElectionState.Led led -> some(sees(led, leader));
+            case LeaderElectionState.Electing _, LeaderElectionState.ReElecting _ -> some(false);
+            default -> none();
         };
     }
 
     private boolean sees(LeaderElectionState.Led led, NodeId leader) {
-        return led.leader().equals(leader) && (leader.equals(ctx.self()) || !led.isLeaderSuspected());
+        return led.leader()
+                  .equals(leader) && (leader.equals(ctx.self()) || !led.isLeaderSuspected());
     }
 
     private void reply(LeaderPreVoteRequest request, boolean healthy) {
-        ctx.router().route(new Send(request.sender(),
-                                    new LeaderPreVoteResponse(ctx.self(), request.leader(), request.round(), healthy)));
+        ctx.router()
+           .route(new Send(request.sender(),
+                           new LeaderPreVoteResponse(ctx.self(),
+                                                     request.leader(),
+                                                     request.round(),
+                                                     healthy)));
     }
 
     private synchronized Runnable beginEpisode(NodeId leader) {
@@ -155,7 +164,7 @@ public final class LeaderPreVote {
         cancelLocked();
         var started = new Episode(leader);
 
-        episode = Option.some(started);
+        episode = some(started);
 
         return openRound(started);
     }
@@ -166,12 +175,12 @@ public final class LeaderPreVote {
 
     private void cancelLocked() {
         episode.onPresent(this::stopTimer);
-        episode = Option.none();
+        episode = none();
     }
 
     private void stopTimer(Episode current) {
         current.timer.onPresent(future -> future.cancel(false));
-        current.timer = Option.none();
+        current.timer = none();
     }
 
     /// Opens a round: the asker counts itself as doubting, asks every other voter, and arms the round
@@ -186,28 +195,26 @@ public final class LeaderPreVote {
         current.vouching = new HashSet<>();
         current.doubting = new HashSet<>(Set.of(ctx.self()));
         stopTimer(current);
-        current.timer = Option.some(SharedScheduler.schedule(() -> onRoundTimeout(current, round), timeout));
+        current.timer = some(SharedScheduler.schedule(() -> onRoundTimeout(current, round), timeout));
         log.info("Leader pre-vote round {}: {} lost its view of leader {}, asking {} voter(s) whether they still see it",
                  round,
                  ctx.self(),
                  current.leader,
                  voters.size() - 1);
-
         var ask = askAll(voters, current.leader, round);
         var verdict = evaluate(current, voters);
 
-        return () -> {
-            ask.run();
-            verdict.run();
-        };
+        return () -> Stream.of(ask, verdict).forEach(Runnable::run);
     }
 
     private Runnable askAll(List<NodeId> voters, NodeId leader, long round) {
         return () -> voters.stream()
                            .filter(voter -> !voter.equals(ctx.self()))
-                           .forEach(voter -> ctx.router()
-                                                .route(new Send(voter,
-                                                                new LeaderPreVoteRequest(ctx.self(), leader, round))));
+                           .forEach(voter -> ask(voter, leader, round));
+    }
+
+    private void ask(NodeId voter, NodeId leader, long round) {
+        ctx.router().route(new Send(voter, new LeaderPreVoteRequest(ctx.self(), leader, round)));
     }
 
     private synchronized Runnable recordResponse(LeaderPreVoteResponse response) {
@@ -219,8 +226,12 @@ public final class LeaderPreVote {
     }
 
     private boolean accepts(Episode current, LeaderPreVoteResponse response, List<NodeId> voters) {
-        return current.asking && current.round == response.round() && current.leader.equals(response.leader()) && voters.contains(response.sender()) && !response.sender()
-                                                                                                                                                         .equals(ctx.self());
+        return current.asking
+               && current.round == response.round()
+               && current.leader.equals(response.leader())
+               && voters.contains(response.sender())
+               && !response.sender()
+                           .equals(ctx.self());
     }
 
     private Runnable tally(Episode current, LeaderPreVoteResponse response, List<NodeId> voters) {
@@ -253,14 +264,15 @@ public final class LeaderPreVote {
         var vouchers = current.vouching.size();
 
         stopTimer(current);
-        episode = Option.none();
+        episode = none();
         log.info("Leader pre-vote: {} of {} voter(s) doubt leader {} ({} vouch) — proceeding to election",
                  doubters,
                  ctx.electorate().size(),
                  leader,
                  vouchers);
 
-        return () -> ctx.fsm().dispatch(new LeaderDoubtConfirmed(leader));
+        return () -> ctx.fsm()
+                        .dispatch(new LeaderDoubtConfirmed(leader));
     }
 
     private Runnable refrain(Episode current) {
@@ -275,14 +287,13 @@ public final class LeaderPreVote {
                  current.doubting.size(),
                  current.vouching.size(),
                  ctx.electorate().size());
-        current.timer = Option.some(SharedScheduler.schedule(() -> onRetry(current), retryDelay()));
+        current.timer = some(SharedScheduler.schedule(() -> onRetry(current), retryDelay()));
 
         return NO_EFFECT;
     }
 
     private TimeSpan retryDelay() {
-        return TimeSpan.timeSpan((long) (ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble())))
-                       .millis();
+        return TimeSpan.timeSpan((long)(ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble()))).millis();
     }
 
     private void onRoundTimeout(Episode current, long round) {
@@ -314,10 +325,15 @@ public final class LeaderPreVote {
     }
 
     private boolean isLive(Episode current) {
-        return episode.filter(live -> live == current).isPresent();
+        return episode.filter(live -> live == current)
+                      .isPresent();
     }
 
     private boolean stillSuspected(NodeId leader) {
-        return ctx.fsm().current() instanceof LeaderElectionState.Led led && led.leader().equals(leader) && led.isLeaderSuspected();
+        return ctx.fsm()
+                  .current() instanceof LeaderElectionState.Led led
+               && led.leader()
+                     .equals(leader)
+               && led.isLeaderSuspected();
     }
 }

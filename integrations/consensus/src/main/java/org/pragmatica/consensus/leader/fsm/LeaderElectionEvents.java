@@ -68,7 +68,8 @@ public final class LeaderElectionEvents {
     /// Fired by [`LeaderElectionState.Led`]'s lease timer when the believed leader's
     /// leader-stamped `ClusterSync` ping has been silent for
     /// [`LeaderElectionContext#LEADER_SILENCE_THRESHOLD_INTERVALS`] consecutive lease-check
-    /// intervals. Drives `Led → ReElecting`, providing the recovery edge that was previously
+    /// intervals. Drives `Led → ReElecting` (through the leader pre-vote when it is enabled, #1748: a
+    /// follower whose own ping view is the only one that went silent keeps the leader), providing the recovery edge that was previously
     /// absent when a believed leader stays SWIM-alive but never re-commits its leadership (the
     /// crossed-pointer zero-leader wedge: every node in `Led(other)`, nobody believes self, so
     /// re-election never fires off `NodeGone`). `silentLeader` is the leader the lease tracked —
