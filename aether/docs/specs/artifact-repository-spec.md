@@ -14,12 +14,12 @@ This specification replaces the internals of Aether's built-in artifact reposito
 
 These requirements are owner decisions (2026-10-02, recorded on [#1831](https://github.com/pragmaticalabs/pragmatica/issues/1831)). They are settled and are not reopened as prerequisites of any slice.
 
-1. **Placement.** The repository is a full-featured replacement of the existing built-in artifact repository: an optional part of every Aether cluster, not a separate product. Its enable/disable switch and sealed mode are cluster configuration.
+1. **Placement.** The repository is a full-featured replacement of the existing built-in artifact repository: an optional part of every Aether cluster, not a separate product. Its repository mode and upstream mode are cluster configuration (§1.2).
 2. **Namespaces.** The internal slice store becomes one namespace of the repository and keeps its write-once, no-SNAPSHOT policy (#1778). Hosted and proxy repositories have full Maven behaviour, including releases and timestamped SNAPSHOTs, hosted publication, upstream retrieval and configurable synchronization.
-3. **Sealed mode.** Upstream artifact access can be disabled entirely. A sealed cluster MUST publish and resolve locally without external services or remote UI assets.
+3. **Sealed mode.** Upstream artifact access can be disabled entirely (§1.2). A fully sealed cluster MUST publish and resolve locally without external services or remote UI assets.
 4. **Storage.** Keep AHSE as the storage module. Extend it; do not introduce a competing artifact-specific block engine.
 5. **Clustering.** The repository runs inside the cluster and scales with it, through the existing desired-node-count provisioning, joining and rebalancing operations.
-6. **UI.** A section of the Aether dashboard, not a separate repository UI. It shares the dashboard's authentication, navigation and management API, and is hidden when the repository is disabled.
+6. **UI.** A section of the Aether dashboard, not a separate repository UI. It shares the dashboard's authentication, navigation and management API, and is hidden in repository modes 1 and 2 (§1.2).
 7. **No consensus journal/WAL.** Durable repository records and AHSE reference mutations are application/storage data. Existing consensus/control-KV recovery rules remain unchanged.
 8. **Catalog authority.** From AR2 on, the catalog is the partitioned, fenced catalog on the durable-entity log substrate (§3). The consensus-KV content binding of #1778/#1821 is a mechanism of the current built-in store only; it is not used as an interim catalog authority, and the catalog replaces it.
 9. **Durability default.** §4, P1.
@@ -34,10 +34,36 @@ The repository catalog sits beside three existing planes. Each gives a different
 | Plane | What a successful write means today | Mechanism | Role for the repository |
 |---|---|---|---|
 | DHT (`MemoryStorageEngine`) | Accepted in memory by a write quorum of the key's replicas. A write that loses its quorum to owner-epoch fences is **indeterminate**: it may have been applied ([ownership fence spec](ownership-fence-spec.md) §7.1, #1820; the Dynamo stance ruled on #1777). | Per-key epoch and HLC ordering on each replica; replica copies bypass the node-wide high-water | Not an authority. It holds nothing across a whole-cluster restart (no durable tier), and it offers no compare-and-set, so it cannot serialize P3's conflict decision. It may cache derived data. |
-| Consensus KV | Committed by Rabia and applied by every node's state machine. Persisted as state snapshots, not as a separate journal. | Rabia command batches; `RabiaPersistence` saves state snapshots | Low-volume control facts: repository configuration, the enable switch and sealed mode, partition ownership, owner fences. #1821 also uses it for the current built-in store's version sets and content bindings; that use ends when the catalog replaces the store (§1.8). |
+| Consensus KV | Committed by Rabia and applied by every node's state machine. Persisted as state snapshots, not as a separate journal. | Rabia command batches; `RabiaPersistence` saves state snapshots | Low-volume control facts: repository configuration, the repository and upstream modes, partition ownership, owner fences. #1821 also uses it for the current built-in store's version sets and content bindings; that use ends when the catalog replaces the store (§1.8). |
 | Fenced replicated application logs (streams, durable entities) | In durable mode, acknowledged once CF copies, the owner included, hold the record `fsync`-durable ([storage identity spec](storage-identity-adoption-spec.md), "Publish ack"). | Owner fence on append; group-commit `fsync`; `CF − 1` non-self acks; the storage-identity and adoption rules of #1569 | The catalog substrate (§3). |
 
 §1.7 forbids a new consensus journal. It does not forbid consensus KV state: #1821 adds KV keys, which Rabia persists as state snapshots, and introduces no journal. The catalog still does not route every path mutation through consensus KV, for volume: #1821 keeps one content-binding entry per stored file forever, which is sized for slice publication, while a Maven repository holds orders of magnitude more paths and timestamped SNAPSHOT builds add paths continuously.
+
+### 1.2 Repository and upstream modes
+
+Two independent cluster settings, each with three modes (owner-decided 2026-10-02, #1831). Configuration key names are an AR1 deliverable.
+
+**Repository mode.**
+
+| Mode | Hosted/proxy/group repositories, their external endpoints, the dashboard section | Internal slice namespace | Where slices load from |
+|---|---|---|---|
+| 0 — enabled | Enabled | Enabled | The internal namespace |
+| 1 — user-facing off | Disabled | Enabled | The internal namespace |
+| 2 — external | Disabled | Disabled: the internal repository is off entirely | An externally configured Maven repository |
+
+**Upstream mode** (owner-decided 2026-10-02, #1831, as read by the CTO from the owner's "again 3 modes"; correct this table if that reading is wrong).
+
+| Mode | Repository proxy and sync | Slice loader (`RemoteRepository`) |
+|---|---|---|
+| 0 — upstream enabled | Allowed | Allowed to its configured remotes |
+| 1 — fully sealed | Blocked | Blocked: zero outbound artifact traffic |
+| 2 — repository-sealed | Blocked | Allowed to its configured remotes |
+
+How the two combine:
+
+- In repository modes 1 and 2 there are no proxy repositories, so the upstream mode governs only the slice loader.
+- In repository mode 2 the configured external repository is an explicitly allowed endpoint in every upstream mode. Under upstream mode 1 it is the only one: the slice loader reaches it and nothing else, so "zero outbound artifact traffic" means zero traffic to any origin other than that endpoint.
+
 
 ## 2. Upgrade boundaries and compatibility
 
@@ -47,7 +73,7 @@ The repository catalog sits beside three existing planes. Each gives a different
 | `aether-storage` and node storage assembly | Durable replica acknowledgement, readiness/adoption integration and optional remote-tier construction |
 | `resource/services/artifact-repo` | General repository resource identity, catalog, publication/read/removal processes, Maven metadata and upstream policies; the internal slice namespace served from the catalog |
 | HTTP server and repository routes | Streaming adapters, HEAD/conditional/range responses, typed failure mapping and repository authorization |
-| Cluster configuration | Repository enable/disable switch, sealed mode, repository and namespace definitions, the persistent-volume requirement and the explicit dev mode (§4) |
+| Cluster configuration | Repository mode and upstream mode (§1.2), the external repository for repository mode 2, repository and namespace definitions, the persistent-volume requirement and the explicit dev mode (§4) |
 | Management API, CLI and dashboard | Repository management, inventory and recovery workflows; a repository section in the existing dashboard |
 
 Keep `ArtifactStore`'s slice-facing operations (deploy, resolve, versions and, after #1821, archive in place of delete) and Aether's `Artifact`/`Version` usable by existing callers; behind them, the internal slice namespace is served from the catalog. Do not widen the slice version grammar or switch its ordering semantics as a side effect of supporting Maven versions.
@@ -107,7 +133,7 @@ A cluster without persistent volumes runs the repository only in an explicit dev
 
 **P5 — recovery.** Owner replacement and whole-cluster restart recover the resource catalog and reachable content within the P1 envelope. Surviving bytes without path bindings do not count as repository recovery. Adopt the cold-restart outcome of #1569: each catalog partition is either writable and complete, or flagged and untouched pending an operator.
 
-**P6 — sealed mode.** With upstreams disabled, the cluster makes zero outbound artifact fetch, refresh, retry or mirror requests. Enforce the gate immediately before dispatch, including after redirects and job resumption. Because sealed mode is cluster configuration, the gate also covers the slice loader's remote Maven repositories (`RemoteRepository`), not only the proxy repositories `[derived from P6; needs owner confirmation, §12]`. Local publication and internal peer operations remain enabled.
+**P6 — sealed mode.** In upstream mode 1 (fully sealed) the cluster makes zero outbound artifact fetch, refresh, retry or mirror requests, from the repository's proxy and sync and from the slice loader's `RemoteRepository` alike; the only exception is the external repository of repository mode 2 (§1.2). In upstream mode 2 the repository's proxy and sync make zero such requests, while the slice loader may reach its configured remotes. Enforce the gate immediately before dispatch, including after redirects and job resumption. Local publication and internal peer operations remain enabled.
 
 **P7 — honest failure.** Corruption, temporary unavailability, denied access and genuine absence remain distinct. An uncertain request outcome must not be reported as proof that nothing committed (the same rule as the DHT's `WriteIndeterminate`, and as a saga step with an attempt marker but no result, #1827).
 
@@ -140,7 +166,7 @@ Replacement commits the new binding before releasing the previous reference. The
 
 Removal commits an unavailable/tombstoned catalog revision and a durable reference-release instruction. Namespace policy decides archive visibility and retention eligibility. Proxy eviction, hosted deletion and snapshot history pruning are distinct policies. The internal slice namespace keeps #1778's archive-instead-of-delete policy (7-day minimum retention, configurable).
 
-Default SNAPSHOT retention (owner decision 4): the last 10 builds, or 30 days. `[unverified: whether a build is kept while EITHER condition holds or only while BOTH hold is not stated in the decision; see §12]`
+Default SNAPSHOT retention (owner decision 4; semantics owner-decided 2026-10-02, #1831): a build is kept while EITHER it is among the newest 10 builds of its base version OR it is at most 30 days old. It is removed only when it is BOTH beyond the newest 10 AND older than 30 days.
 
 Reference IDs are never reused. Shared reference state and retries MUST prevent a delayed acquire/release from resurrecting or double-releasing a logically retired reference. Reclamation needs authoritative shared reachability, not a local decrement. Integrate #1133's cluster-wide reference design with AHSE; do not bypass it with direct block deletion.
 
@@ -209,9 +235,9 @@ An enumerable durable catalog drives paginated browse/search and retention. Sear
 
 Provide read, publish and repository-administration permissions, optionally scoped to namespaces, and optional anonymous reads. A build publisher MUST NOT require cluster-operator privileges. Reuse the cluster's security infrastructure but expose a convenient standard-client credential path, with local credentials available in sealed clusters. Audit publication conflicts, administrative changes, imports and retention actions. Unauthenticated publication is never a supported posture: the current store accepts it under `security_mode=NONE` or insecure dev mode, with a warning, and the repository must not inherit that (owner-approved 2026-10-02, epic #1831).
 
-The dashboard's repository section and the matching management API/CLI cover repository/upstream configuration, browse/search/file inspection, credentials, capacity/health, sync progress, retention previews/results and backup/restore. Node-count scaling stays with the dashboard's existing cluster views. The section is hidden when the repository is disabled. Show logical, retained, temporary and physical storage separately where available; do not substitute process-local counters for cluster inventory.
+The dashboard's repository section and the matching management API/CLI cover repository/upstream configuration, browse/search/file inspection, credentials, capacity/health, sync progress, retention previews/results and backup/restore. Node-count scaling stays with the dashboard's existing cluster views. The section is hidden in repository modes 1 and 2 (§1.2). Show logical, retained, temporary and physical storage separately where available; do not substitute process-local counters for cluster inventory.
 
-The repository ships with the node; it has no separate packaging. Cluster configuration validates the persistent-volume requirement (P1) and the enable switch. Optional upstream/remote-tier features remain visibly disabled when unconfigured.
+The repository ships with the node; it has no separate packaging. Cluster configuration validates the persistent-volume requirement (P1), the repository and upstream modes, and the external repository required by repository mode 2. Optional upstream/remote-tier features remain visibly disabled when unconfigured.
 
 ## 10. Backup and failure acceptance
 
@@ -236,11 +262,11 @@ Acceptance scenarios (the `1.0.0-rc.1` case in C1 and the signature/SHA-256/SHA-
 | D6 | Destroy one node's volume after acknowledged publications; every one stays readable and RF is restored |
 | N1 | Upstream unavailable versus absent versus denied produce distinct results; only absence is cached, for the configured negative-cache period |
 | N2 | Parallel misses coalesce; metadata is revalidated after the configured freshness period; cached releases are never refetched |
-| N3 | Enable sealed mode in cluster configuration with pending sync/retry work; observe zero subsequent artifact-origin requests, including from the slice loader; local publish/read still work |
+| N3 | Switch to upstream mode 1 with pending sync/retry work; observe zero subsequent artifact-origin requests, including from the slice loader; local publish/read still work. In upstream mode 2, proxy/sync requests stop while the slice loader still reaches its configured remote |
 | N4 | Export/import a selected build bundle; fresh-cache Maven/Gradle build succeeds in an isolated environment; an import conflict is refused and reported |
 | O1 | Add/remove nodes through the existing desired-count operation while publishing/downloading; no acknowledged content disappears |
 | O2 | Restore backup to fresh eligible infrastructure; inventory, downloads and authorization match the backup contract |
-| O3 | With the repository disabled in cluster configuration, its hosted/proxy endpoints and the dashboard section are absent `[unverified: what the switch does to the internal slice namespace is open; §12]` |
+| O3 | Repository mode 1: hosted/proxy/group endpoints and the dashboard section are absent, while slices still deploy and resolve through the internal namespace. Repository mode 2: the internal repository is absent and slices load from the configured external repository, which stays reachable under upstream mode 1 while every other origin is refused |
 | L1 | Large files and concurrent clients stay within declared memory/spool/concurrency limits; cancellation releases resources |
 | A1 | Standard-client credentials work; cross-namespace reads/writes and unauthorized grouped fetches are refused; the dashboard section uses the dashboard's authentication |
 
@@ -250,7 +276,7 @@ Use actual Maven and Gradle publishing/resolution, not only mocked route tests. 
 
 | Slice | Target | Deliverable | Exit gate |
 |---|---|---|---|
-| AR1 — contracts/compatibility | rc5, #1831 | Resource grammar, metadata merge tables, shard/read/commit design, AHSE durability/ref protocol, cluster configuration keys (enable switch, sealed mode, dev mode) | Review against P1–P7; every §12 open item decided or explicitly deferred; no unresolved decision may silently become a guarantee |
+| AR1 — contracts/compatibility | rc5, #1831 | Resource grammar, metadata merge tables, shard/read/commit design, AHSE durability/ref protocol, cluster configuration keys (repository mode, upstream mode, external repository, dev mode) | Review against P1–P7; every §12 open item decided or explicitly deferred; no unresolved decision may silently become a guarantee |
 | AR2 — durable hosted path | rc5, #1831 | Existing AHSE upgrades plus catalog publication/read, basic credentials, bounded transfer and inventory; the internal slice namespace served from the catalog, retiring #1821's KV binding | C4, C5, D1–D3, D6, L1 on a real cluster |
 | AR3 — Maven completeness | rc5, #1831 | General identities, all metadata/SNAPSHOT/sidecar paths, HTTP behavior | C1–C3 with real clients and concurrent publication |
 | AR4 — proxy/sealed | next rc, #1836 | Generic proxy, groups, refresh, sync, import/export and the cluster-wide upstream gate | N1–N4, A1 |
@@ -263,13 +289,10 @@ Coordinate existing #1570/#1569/#1581/#1777/#1778/#1133/#527/#1746/#249 work ins
 
 ## 12. Decisions
 
-Decided by the owner on 2026-10-02 ([#1831](https://github.com/pragmaticalabs/pragmatica/issues/1831)): catalog authority (§1.8, §3), placement (§1.1–§1.2), durability (§4 P1), default policies (§5.1, §5.3, §8), targets (§11) and the UI (§1.6, §9).
+Decided by the owner on 2026-10-02 ([#1831](https://github.com/pragmaticalabs/pragmatica/issues/1831)): catalog authority (§1.8, §3), placement and namespaces (§1, items 1–2), the repository and upstream modes (§1.2), durability (§4 P1), default policies and the SNAPSHOT retention semantics (§5.1, §5.3, §8), targets (§11) and the UI (§1.6, §9).
 
 Still open, as AR1 inputs:
 
-- **What the enable/disable switch disables.** Slice deployment resolves through the internal namespace, so this spec assumes the switch governs the hosted/proxy/group repositories and the dashboard section while the internal slice namespace stays available. `[unverified: assumption, needs owner confirmation]`
-- **Sealed mode and the slice loader.** P6 extends the gate to `RemoteRepository`, because its fetches are artifact-origin requests. Confirm.
-- **SNAPSHOT retention semantics.** "Last 10 builds, or 30 days": kept while either condition holds, or pruned when either is exceeded.
 - Catalog partition function/read barrier and the precise distributed AHSE reference authority. This spec fixes their safety obligations but does not claim those implementations already exist.
 - Metadata merge details, submission/checksum reconciliation and supported nonstandard client behaviors.
 - Capacity limits and chunk/transfer concurrency, determined by measurement, not copied from the current store.
