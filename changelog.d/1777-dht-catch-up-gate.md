@@ -33,27 +33,35 @@
 - Wire change, re-recorded in `wire-assignment-baseline.txt`: `Readiness` (tag 90, in the one-byte window: it rides in every DHT read reply), `GetResponse`/`ExistsResponse`/
   `DigestResponse.readiness`, and `MigrationDataResponse.refused`.
   [unverified: no multi-node, Ember or cloud run. Ember and Forge were held for the suite lock.]
-- **Boot walk.** A partition pending since boot draws sources from the first RF + J nodes of its walk on the
-  current ring, where J counts the members that joined since boot. Whenever at least one of the partition's old
-  holders survives, the sources include one.
-  [mechanism: each join displaces an old holder by at most one walk position, and a removal only moves holders
-  earlier, so a surviving old holder lies within RF + J.]
+- **Boot walk.** A partition pending since boot draws sources from the first RF + J + U nodes of its walk on the
+  current ring. J counts the members that joined since boot. U counts the ring members this node has not heard
+  from over the DHT since boot (a digest request or answer). Whenever at least one of the partition's old holders
+  survives, the sources include one.
+  [mechanism: each join, and each phantom, displaces an old holder by at most one walk position, and a removal only
+  moves holders earlier, so a surviving old holder lies within RF + J + U.]
   [verified: `DHTCatchUpBootWalkTest`, 1–8 joins with 0, 2 and 4 removals, 0 misses. A fixed 2·RF walk missed every
   old holder in 0.3–3.2% of partitions at 5–8 joins, and those partitions were served empty.]
   The boot ring is the static configured-core list, so a scale-up core that joined before this node booted also
   counts toward J. That lengthens the walk, which is safe for reach.
+  **Phantom static cores.** The same list can name cores that left before this node booted. Its ring keeps such a
+  phantom until the membership prunes it, and J does not count it. Each phantom therefore took a walk slot from a
+  real holder: v1820's sim found that 2 phantoms miss every old holder in 848 of 15,521 partitions with no joins.
+  That is beyond anything run 7 showed: it had one phantom, in 1 of 4 boots, which is the sim's 0-miss row.
+  A phantom can never be heard from, so U counts it, and the holders it displaced are asked.
+  [verified: `DHTCatchUpGateTest.bootWalk_asksTheHoldersDisplacedByPhantomCores_andNeverServesEmpty`, red without U]
+  U comes from DHT contact rather than SWIM: the DHT's liveness view reports a seeded phantom as a live member.
+  Until a member has answered, it counts in U, so a booting node's first round asks every ring member.
+  When the ring prunes a node, every round that was asking it is dropped and restarted from the current ring, so
+  no round keeps a source set frozen before the prune.
+  [verified: `DHTCatchUpGateTest.roundWaitingOnAPhantom_isRestartedWhenTheRingPrunesIt`, red without the drop]
+  **Interaction with #1830** (the phantom bound): with U, a phantom does not make the gate wrong at any point in
+  the window, however long the phantom lasts. What the window still costs is time. A phantom among a partition's
+  co-replicas never answers, so a round there cannot decide until the phantom is pruned. That is a counted wait (the
+  stuck gauge), never an empty partition. #1830 shortens that wait. Interim finding (i-phantom): SWIM prunes a
+  phantom at least 75 s after boot, and after 3 min 40 s in run 7.
+  [unverified: code-only — a phantom is never pruned if the node stays in COLD_BOOT; its partitions then wait.]
   **A partition whose old holders were ALL removed is served from what remains**: the union of what its live
   sources hold, logged at WARN. Its absent answers are then best-effort.
-  [unverified premise: phantom static cores. The boot ring is seeded from the static configured-core list. If that
-  list names cores that left before this node booted, they sit in its ring as phantoms, counted in neither J nor the
-  removals, and they push the true holders later in the walk. v1820's sim: 1 phantom gives 0 misses; that is the
-  run-7 row, where one phantom appeared in 1 of 4 boots. 2 phantoms, beyond anything run 7 showed, miss every old
-  holder in 848 of 15,521 partitions with no joins (about 5%), 436 with 1 join and 47 with 3 joins. Interim finding
-  (i-phantom): nothing reconciles the ring with committed membership. SWIM prunes a phantom only late, at least 75 s
-  after boot and 3 min 40 s in run 7. A catch-up that completes inside that window can serve those partitions
-  empty. The phantoms skew this node's ownership as well, so this is a ring-truth issue that predates this change.
-  The fix is #1830.]
-  [unverified: code-only — a phantom is never pruned if the node stays in COLD_BOOT.]
   [unverified/known: a deleted key can resurrect from a copy a non-owner kept. Non-owners never drop copies, so a
   catching-up replica pulling from one, or the #428 fallback read probe (which already does this today), can bring
   back a key removed on its owners. This is durable-delete scope: #1777 track 3, rc5.]
