@@ -257,7 +257,10 @@ public final class DHTAntiEntropy {
             return;
         }
 
-        var round = CatchUpRound.catchUpRound(roundIds.incrementAndGet(), partition, sources);
+        var round = CatchUpRound.catchUpRound(roundIds.incrementAndGet(),
+                                              partition,
+                                              sources,
+                                              anchors(partition, coReplicas));
 
         rounds.put(partition.value(), round);
         warnIfStuck(partition, node.noteCatchUpRound(partition), sources);
@@ -310,6 +313,14 @@ public final class DHTAntiEntropy {
         sources.remove(node.nodeId());
 
         return Set.copyOf(sources);
+    }
+
+    private Set<NodeId> anchors(Partition partition, List<NodeId> coReplicas) {
+        var anchors = new HashSet<>(coReplicas);
+
+        anchors.addAll(node.recordedPreviousHolders(partition));
+
+        return Set.copyOf(anchors);
     }
 
     private Set<NodeId> liveOnly(Set<NodeId> candidates) {

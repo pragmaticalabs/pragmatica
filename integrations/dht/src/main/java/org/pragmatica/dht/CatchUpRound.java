@@ -42,21 +42,26 @@ final class CatchUpRound {
     private final long id;
     private final Partition partition;
     private final Set<NodeId> sources;
+    /// The sources a serving answer from may authorize deciding without the silent ones: current co-replicas
+    /// and exactly recorded previous holders — never a boot-walk node, which answers SERVING for a
+    /// partition it may never have held.
+    private final Set<NodeId> anchors;
     private final long startedNanos;
     private final ConcurrentHashMap<NodeId, Answer> answers = new ConcurrentHashMap<>();
     private final Set<NodeId> outstandingPulls = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean decided = new AtomicBoolean();
     private final AtomicBoolean anchorless = new AtomicBoolean();
 
-    private CatchUpRound(long id, Partition partition, Set<NodeId> sources, long startedNanos) {
+    private CatchUpRound(long id, Partition partition, Set<NodeId> sources, Set<NodeId> anchors, long startedNanos) {
         this.id = id;
         this.partition = partition;
         this.sources = Set.copyOf(sources);
+        this.anchors = Set.copyOf(anchors);
         this.startedNanos = startedNanos;
     }
 
-    static CatchUpRound catchUpRound(long id, Partition partition, Set<NodeId> sources) {
-        return new CatchUpRound(id, partition, sources, System.nanoTime());
+    static CatchUpRound catchUpRound(long id, Partition partition, Set<NodeId> sources, Set<NodeId> anchors) {
+        return new CatchUpRound(id, partition, sources, anchors, System.nanoTime());
     }
 
     long id() {
@@ -91,12 +96,17 @@ final class CatchUpRound {
     }
 
     /// Decide on the answers in hand, for a round some source never answered (#1777, H2): allowed only when at
-    /// least one answer came from a serving source and none was UNKNOWN. A round that heard only from
+    /// least one answer came from a serving ANCHOR (co-replica or recorded previous holder) and none was
+    /// UNKNOWN. A serving boot-walk node may hold nothing for the partition, so its answer alone would
+    /// complete it empty while the silent holder keeps the data. A round that heard only from
     /// catching-up sources never decides on silence — it would be anchorless on a guess. Returns `true`
     /// exactly once, when this call claimed the decision.
     boolean decideOnAnswersInHand() {
-        var anyServing = answers.values().stream().anyMatch(answer -> answer.readiness()
-                                                                            .authoritative());
+        var anyServing = answers.entrySet()
+                                .stream()
+                                .anyMatch(entry -> anchors.contains(entry.getKey()) && entry.getValue()
+                                                                                            .readiness()
+                                                                                            .authoritative());
 
         return anyServing
                && !anyUnknown()

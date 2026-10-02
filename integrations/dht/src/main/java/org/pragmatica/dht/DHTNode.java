@@ -182,6 +182,11 @@ public final class DHTNode {
     /// holders displaced by up to RF nodes that joined together are those nodes; walking the current ring
     /// (not the boot-time static one) finds them even when they are cores this node's configuration does
     /// not list.
+    /// The previous holders a ring change recorded exactly — without the boot walk.
+    Set<NodeId> recordedPreviousHolders(Partition partition) {
+        return catchUp.previousHolders(partition);
+    }
+
     Set<NodeId> previousHolders(Partition partition) {
         var recorded = catchUp.previousHolders(partition);
 
