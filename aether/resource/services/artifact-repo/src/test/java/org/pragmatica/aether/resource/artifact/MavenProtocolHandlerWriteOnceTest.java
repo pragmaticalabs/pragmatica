@@ -144,6 +144,48 @@ class MavenProtocolHandlerWriteOnceTest {
         assertThat(delete("/elsewhere/org/example/lib/1.0.0").statusCode()).isEqualTo(400);
     }
 
+    @Test
+    void put_storesEverySidecarOfEveryFileOfAVersion_asItsOwnWriteOnceFile() {
+        var base = "/repository/org/example/lib/1.0.0/lib-1.0.0";
+        var files = List.of(base + ".jar", base + ".pom", base + "-sources.jar");
+        var sidecars = List.of(".asc", ".sha256", ".sha512");
+
+        for (var file : files) {
+            assertThat(put(file, bytesOf(file)).statusCode()).as(file).isEqualTo(200);
+
+            for (var sidecar : sidecars) {
+                var path = file + sidecar;
+
+                assertThat(body(put(path, bytesOf(path)))).as(path).contains("\"status\":\"uploaded\"");
+            }
+
+            assertThat(put(file + ".md5", bytesOf("md5")).statusCode()).as("Maven always sends md5").isEqualTo(201);
+            assertThat(put(file + ".sha1", bytesOf("sha1")).statusCode()).as("Maven always sends sha1").isEqualTo(201);
+        }
+
+        for (var file : files) {
+            for (var sidecar : sidecars) {
+                var path = file + sidecar;
+
+                assertThat(get(path).content()).as("%s keeps its own bytes", path).isEqualTo(bytesOf(path));
+            }
+        }
+    }
+
+    @Test
+    void put_keepsASidecarWriteOnce_andAnIdenticalRePutIsAlreadyPresent() {
+        var path = JAR_PATH + ".sha256";
+
+        put(path, CONTENT);
+
+        assertThat(body(put(path, CONTENT))).contains("\"status\":\"already-present\"");
+        assertThat(put(path, OTHER).statusCode()).isEqualTo(409);
+    }
+
+    private static byte[] bytesOf(String label) {
+        return label.getBytes(StandardCharsets.UTF_8);
+    }
+
     private MavenResponse put(String path, byte[] content) {
         return handler.handlePut(path, content).await().unwrap();
     }
