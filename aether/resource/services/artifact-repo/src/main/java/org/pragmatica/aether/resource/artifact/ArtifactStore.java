@@ -145,10 +145,9 @@ public interface ArtifactStore {
         }
     }
 
-    /// Minimum time a version must have been stored before it may be archived. A MARKED GUESS (#1778): the
-    /// ticket leaves the period "a policy to define", and seven days is long enough to outlive a weekend
-    /// rollback window without keeping a retired version indefinitely. Nothing frees the archived bytes
-    /// yet, so a longer period costs nothing today.
+    /// Minimum time a version must have been stored before it may be archived. Seven days by owner ruling
+    /// (#1778, 2026-10-02); configurable per cluster with `[slice] artifact_archive_retention`. Nothing frees the
+    /// archived bytes yet, so a longer period costs nothing today.
     record ArchivePolicy(TimeSpan minimumRetention) {
         public static final ArchivePolicy DEFAULT = new ArchivePolicy(timeSpan(7).days());
 
@@ -969,11 +968,12 @@ class ArtifactStoreImpl implements ArtifactStore {
                           files -> files.add(file.fileName()));
     }
 
-    /// Read-merge-write on a grow-only set key: `change` can only add an entry or raise its flag, and the
-    /// result is merged with whatever was read, so the write never removes an entry or clears a flag. Rewrites
-    /// of one key on THIS node run one at a time ([KeyedSequencer]), so concurrent publishes through one node
-    /// never lose each other. Across nodes the DHT has no conditional put: two nodes rewriting one key at once
-    /// can still overwrite each other, and the later write wins (known limit, see #1778).
+    /// Read-merge-write on the per-version FILE list, a grow-only set in the DHT: `change` can only add an entry, and
+    /// the result is merged with whatever was read, so the write never removes one. Rewrites of one key on THIS node
+    /// run one at a time ([KeyedSequencer]). Across nodes the DHT has no conditional put, so two nodes adding files
+    /// to one version at once can overwrite each other's write; the list only dates the version for the archive
+    /// retention check, and a missing entry can only make that check stricter. The versions of an artifact are NOT
+    /// kept here: they live in the [ArtifactVersionIndex], which a node backs with consensus.
     private Promise<Unit> rewriteSet(byte[] key, UnaryOperator<GrowOnlySet> change) {
         return sequencer.sequence(new String(key, StandardCharsets.UTF_8), () -> mergeAndWrite(key, change));
     }
@@ -1142,7 +1142,6 @@ class ArtifactStoreImpl implements ArtifactStore {
         SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve), backoff);
     }
 
-
     private DeployResult recordDeployMetrics(ArtifactFile file,
                                              int contentLength,
                                              int chunks,
@@ -1194,7 +1193,6 @@ class ArtifactStoreImpl implements ArtifactStore {
 
         return key.getBytes(StandardCharsets.UTF_8);
     }
-
 
     private List<byte[]> splitIntoChunks(byte[] content) {
         var chunks = new ArrayList<byte[]>();

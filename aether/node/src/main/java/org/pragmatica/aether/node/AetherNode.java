@@ -1898,7 +1898,8 @@ public interface AetherNode extends ManageableNode {
         var artifactStore = ArtifactStore.artifactStore(dhtClient,
                                                         artifactStorage,
                                                         RepositoryFactory.archivePolicy(config.sliceConfig()),
-                                                        KvArtifactVersionIndex.kvArtifactVersionIndex(clusterNode, kvStore));
+                                                        KvArtifactVersionIndex.kvArtifactVersionIndex(clusterNode,
+                                                                                                      kvStore));
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);

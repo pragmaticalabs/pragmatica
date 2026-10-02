@@ -45,17 +45,20 @@ public final class KvArtifactVersionIndex implements ArtifactVersionIndex {
 
     @Override
     public Promise<Unit> publish(Artifact artifact) {
-        return submit(artifact, ArtifactVersionsValue.added(artifact.version().withQualifier()));
+        return submit(artifact,
+                      ArtifactVersionsValue.added(artifact.version().withQualifier()));
     }
 
     @Override
     public Promise<Unit> archive(Artifact artifact) {
-        return submit(artifact, ArtifactVersionsValue.archived(artifact.version().withQualifier()));
+        return submit(artifact,
+                      ArtifactVersionsValue.archived(artifact.version().withQualifier()));
     }
 
     @Override
     public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
-        return Promise.success(ArtifactVersionIndex.parseVersions(committed(ArtifactBase.artifactBase(groupId, artifactId)).live()));
+        return Promise.success(ArtifactVersionIndex.parseVersions(committed(ArtifactBase.artifactBase(groupId,
+                                                                                                      artifactId)).live()));
     }
 
     private Promise<Unit> submit(Artifact artifact, ArtifactVersionsValue value) {

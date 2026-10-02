@@ -156,25 +156,25 @@ period**, default **7 days**, set with `artifact_archive_retention` in the `[sli
 Archiving twice is a no-op. The chunk bytes of an archived version are retained: nothing reclaims them yet.
 
 **State order and what it guarantees.** An artifact is `never-written`, then `present`, then `archived`, and the
-store only ever moves up that order: the metadata key is written once, the archive marker is a key of its own that
-is written once and never rewritten or removed, and the versions list and file list are grow-only sets (an entry
-can be added or flagged archived, never dropped or un-flagged). Reads therefore resolve to the highest state any
-answering replica holds ("present beats absent" is the DHT's read rule), and a replica that missed the archive
-write, or a repair that replays an older copy of a list, cannot make an archived version resolve.
+store only ever moves up that order. The metadata key is written once; the archive marker is a key of its own that is
+written once and never rewritten or removed; and the **versions of each artifact live in the consensus KV plane**
+(`artifact-versions/{groupId}:{artifactId}`), not in the DHT. A publish or an archive is one `Put` of the entry it
+adds, and the Rabia applier MERGES it into the committed set (a union that takes the higher state per version). The
+consensus log orders the writers, so two nodes publishing different versions of one artifact at the same instant
+both land, and a stale add can never un-archive a version. The artifact bytes and the per-version metadata stay in
+the DHT. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
+DHT's read rule), so a replica that missed the archive write cannot make an archived version resolve. The versions
+index is part of the cluster state that a KV backup carries, because the DHT keys it indexes survive a restart.
 
 Known limits, stated so they are not mistaken for guarantees:
 
-- **Concurrent publishes through different nodes.** Publishes through one node never lose a version (rewrites of
-  a list key are serialized per node). Two nodes rewriting the same versions list at the same instant can overwrite
-  each other, because the DHT has no conditional put; the later write wins and a version can be missing from the
-  list until it is re-pushed (an identical re-push re-registers it). Anti-entropy resolves a diverged list key by
-  the later write, so it has the same effect. The artifact's own keys are not affected.
 - **Concurrent first writes of different content to one coordinate.** The conflict check is a read followed by a
-  write, not an atomic step. Two first writes racing from different clients can both pass the check, and the later
-  metadata write wins. Retried or sequential pushes are always checked.
-- **A flag that lags.** The archive marker is what reads obey. The versions-list flag only drives listing; if it is
-  lost to the race above, `maven-metadata.xml` can list an archived version until `aether artifacts archive` is
-  re-run (idempotent).
+  write, not an atomic step (the DHT has no conditional put). Two first writes racing from different clients can both
+  pass the check, and the later metadata write wins. Retried or sequential pushes are always checked.
+- **The per-version file list** (in the DHT) can lose an entry when two nodes add files to one version at once. It
+  only dates the version for the retention check, and a missing entry makes that check stricter, never looser.
+- **Mixed versions.** The merge is a change to the consensus applier; like the other applier fences it is not version
+  gated, and rc releases do not support mixed-version operation.
 - **Digest strength.** Content is compared by size, MD5 and SHA-1, the hashes the store already records.
 
 ## Configuration
@@ -336,9 +336,10 @@ artifacts/{groupId}/{artifactId}/{version}/files
 # Written once, never rewritten or removed.
 artifacts/{groupId}/{artifactId}/{version}/archived
 
-# Version list per artifact: a grow-only set; an archived version carries a trailing "!"
-artifacts/{groupId}/{artifactId}/versions
 ```
+
+The versions of an artifact are not a DHT key: they are the consensus KV entry `artifact-versions/{groupId}:{artifactId}`,
+a grow-only set whose entries carry the archived flag.
 
 Chunk content is not keyed by coordinate: each 64KB chunk is stored in the node's `artifacts`
 storage instance under its content hash (`BlockId`), and the file's `meta` entry lists the chunk

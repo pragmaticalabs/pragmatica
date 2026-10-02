@@ -25,10 +25,8 @@ import org.pragmatica.lang.Unit;
 public interface ArtifactVersionIndex {
     /// Adds the artifact's version, leaving an archived entry archived.
     Promise<Unit> publish(Artifact artifact);
-
     /// Flags the artifact's version archived, adding it if absent.
     Promise<Unit> archive(Artifact artifact);
-
     /// The versions that are present and not archived.
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
 
@@ -40,18 +38,23 @@ public interface ArtifactVersionIndex {
         return new ArtifactVersionIndex() {
             @Override
             public Promise<Unit> publish(Artifact artifact) {
-                return write(sets, artifact, ArtifactVersionsValue.added(artifact.version().withQualifier()));
+                return write(sets,
+                             artifact,
+                             ArtifactVersionsValue.added(artifact.version().withQualifier()));
             }
 
             @Override
             public Promise<Unit> archive(Artifact artifact) {
-                return write(sets, artifact, ArtifactVersionsValue.archived(artifact.version().withQualifier()));
+                return write(sets,
+                             artifact,
+                             ArtifactVersionsValue.archived(artifact.version().withQualifier()));
             }
 
             @Override
             public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
-                return Promise.success(ArtifactVersionIndex.parseVersions(sets.getOrDefault(new ArtifactBase(groupId, artifactId),
-                                                                                           ArtifactVersionsValue.empty())
+                return Promise.success(ArtifactVersionIndex.parseVersions(sets.getOrDefault(new ArtifactBase(groupId,
+                                                                                                             artifactId),
+                                                                                            ArtifactVersionsValue.empty())
                                                                               .live()));
             }
         };
@@ -69,7 +72,8 @@ public interface ArtifactVersionIndex {
     static List<Version> parseVersions(List<String> names) {
         return names.stream()
                     .map(Version::version)
-                    .flatMap(result -> result.fold(_ -> java.util.stream.Stream.<Version> empty(), java.util.stream.Stream::of))
+                    .flatMap(result -> result.fold(_ -> java.util.stream.Stream.<Version> empty(),
+                                                   java.util.stream.Stream::of))
                     .toList();
     }
 }

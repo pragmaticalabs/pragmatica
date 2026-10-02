@@ -4018,7 +4018,7 @@ archived version answers `410 Gone`; `404` stays "never written".
 
 ### GET /repository/{groupPath}/{artifactId}/maven-metadata.xml
 
-Get Maven metadata XML for an artifact. Lists the versions that are stored and not archived; `404` when there are none.
+Get Maven metadata XML for an artifact. Rendered from the artifact's versions set in the consensus KV plane: the versions that are stored and not archived; `404` when there are none.
 
 **Content-Type**: `application/xml`
 

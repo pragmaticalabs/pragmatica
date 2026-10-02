@@ -17,7 +17,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 /// Runs asynchronous tasks one at a time per key, in submission order. A read-merge-write on a DHT key is
-/// a lost-update race when two run at once; sequencing them on this node makes concurrent publishes through
+/// a lost-update race when two run at once; sequencing them on this node makes concurrent rewrites through
 /// the SAME node commute. It does nothing across nodes: the DHT offers no compare-and-set, so two nodes
 /// rewriting one key can still overwrite each other.
 final class KeyedSequencer {

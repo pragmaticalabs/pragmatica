@@ -30,8 +30,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// and combines their answers with the REAL [QuorumCollector#optionCollector] (present beats absent), so the
 /// read-merge rule under test is the DHT's own, not a model of it.
 ///
-/// Hooks (all optional): a read or write can be failed by key, the first read of a key can be held back for
-/// a while, and several reads of one key can be made to rendezvous so they all observe the same state.
+/// Hooks (all optional): a read or write can be failed by key, and the first read of a key can be held back for
+/// a while.
 final class ReplicatedTestDht implements DHTClient {
     final List<ConcurrentHashMap<String, byte[]>> replicas = new ArrayList<>();
     final CopyOnWriteArrayList<String> puts = new CopyOnWriteArrayList<>();
@@ -44,11 +44,8 @@ final class ReplicatedTestDht implements DHTClient {
     volatile Function<String, Option<Cause>> putFailure = _ -> Option.none();
     volatile Predicate<String> delayFirstGetOf = _ -> false;
     volatile long delayMillis = 0;
-    volatile Predicate<String> rendezvousOn = _ -> false;
-    volatile int rendezvousParties = 0;
 
     private final AtomicBoolean delayed = new AtomicBoolean();
-    private final List<Runnable> rendezvous = new ArrayList<>();
 
     ReplicatedTestDht(int replicaCount, int readQuorum) {
         for (var i = 0; i < replicaCount; i++) {
@@ -123,43 +120,7 @@ final class ReplicatedTestDht implements DHTClient {
             return held;
         }
 
-        return rendezvousOn.test(name)
-               ? awaitRendezvous(answered)
-               : answered;
-    }
-
-    private Promise<Option<byte[]>> awaitRendezvous(Promise<Option<byte[]>> answered) {
-        var held = Promise.<Option<byte[]>> promise();
-
-        answered.onResult(result -> arrive(() -> held.resolve(result)));
-
-        return held;
-    }
-
-    private void arrive(Runnable release) {
-        List<Runnable> toRelease = List.of();
-
-        synchronized (rendezvous) {
-            rendezvous.add(release);
-
-            if (rendezvous.size() >= rendezvousParties) {
-                toRelease = List.copyOf(rendezvous);
-                rendezvous.clear();
-            }
-        }
-
-        toRelease.forEach(Runnable::run);
-
-        // Safety net: a rendezvous nobody else joins (a single sequenced store) must not hang the test.
-        SharedScheduler.schedule(() -> flush(release), timeSpan(2).seconds());
-    }
-
-    private void flush(Runnable release) {
-        synchronized (rendezvous) {
-            rendezvous.remove(release);
-        }
-
-        release.run();
+        return answered;
     }
 
     @Override

@@ -55,9 +55,7 @@ public sealed interface AetherValue {
     /// another's version or un-archive one. A writer sends only what it adds: [#added] or [#archived].
     record ArtifactVersionsValue(List<ArtifactVersionEntry> entries) implements AetherValue, GrowOnlyMergeable<ArtifactVersionsValue> {
         public ArtifactVersionsValue {
-            entries = entries.stream()
-                             .sorted(Comparator.comparing(ArtifactVersionEntry::version))
-                             .toList();
+            entries = entries.stream().sorted(Comparator.comparing(ArtifactVersionEntry::version)).toList();
         }
 
         public static ArtifactVersionsValue added(String version) {
@@ -81,7 +79,8 @@ public sealed interface AetherValue {
 
             return new ArtifactVersionsValue(merged.entrySet()
                                                    .stream()
-                                                   .map(entry -> new ArtifactVersionEntry(entry.getKey(), entry.getValue()))
+                                                   .map(entry -> new ArtifactVersionEntry(entry.getKey(),
+                                                                                          entry.getValue()))
                                                    .toList());
         }
 
