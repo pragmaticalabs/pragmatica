@@ -525,12 +525,15 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     /// Everything after the classifier's dot is the extension, sidecar suffix included: `lib-1.0.0.jar.asc` is
     /// `jar.asc`, `lib-1.0.0-sources.pom.sha256` is `pom.sha256`. The last-dot reading mapped the sidecars of
     /// DIFFERENT files onto one key (`asc`), so under write-once the second one answered 409 (#1778). Only
-    /// `.md5` and `.sha1` are peeled off earlier, as contentless checksum paths.
+    /// `.md5` and `.sha1` are peeled off earlier, as contentless checksum paths. A name that does not start with the
+    /// `<artifactId>-<version>` stem keeps its WHOLE name as the key: reading it after its last dot aliased it onto a
+    /// stem-named file (`other-1.0.0.jar` onto the version's primary jar), and under write-once the first of the two
+    /// would claim the key for good.
     private String extractExtension(String fileName, String artifactId, String version) {
         var stemEnd = stemLength(fileName, artifactId, version);
 
         return stemEnd < 0
-               ? lastDotExtension(fileName)
+               ? fileName
                : extensionAfterStem(fileName.substring(stemEnd), fileName);
     }
 
@@ -538,16 +541,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         var dotIndex = remainder.indexOf('.');
 
         return dotIndex < 0 || !(remainder.startsWith("-") || dotIndex == 0)
-               ? lastDotExtension(fileName)
+               ? fileName
                : remainder.substring(dotIndex + 1);
-    }
-
-    private String lastDotExtension(String fileName) {
-        var lastDot = fileName.lastIndexOf('.');
-
-        return lastDot > 0
-               ? fileName.substring(lastDot + 1)
-               : "";
     }
 
     /// The classifier is what follows the file's `<artifactId>-<version>` stem. Maven 3 deploys every

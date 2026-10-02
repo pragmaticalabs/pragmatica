@@ -182,6 +182,21 @@ class MavenProtocolHandlerWriteOnceTest {
         assertThat(put(path, OTHER).statusCode()).isEqualTo(409);
     }
 
+    @Test
+    void put_keysANameOffTheStemByItsWholeName_soItNeverClaimsTheVersionsPrimaryJar() {
+        var dir = "/repository/org/example/lib/1.0.0/";
+
+        for (var offStem : List.of("other-1.0.0.jar", "lib-1.0.0rc.jar", "marker.bin")) {
+            assertThat(put(dir + offStem, bytesOf(offStem)).statusCode()).as(offStem).isEqualTo(200);
+        }
+
+        assertThat(put(dir + "lib-1.0.0.jar", CONTENT).statusCode()).as("the real jar is not pre-claimed").isEqualTo(200);
+        assertThat(get(dir + "lib-1.0.0.jar").content()).isEqualTo(CONTENT);
+        assertThat(get(dir + "other-1.0.0.jar").content()).as("no alias onto the primary jar")
+                                                        .isEqualTo(bytesOf("other-1.0.0.jar"));
+        assertThat(get(dir + "marker.bin").content()).isEqualTo(bytesOf("marker.bin"));
+    }
+
     private static byte[] bytesOf(String label) {
         return label.getBytes(StandardCharsets.UTF_8);
     }
