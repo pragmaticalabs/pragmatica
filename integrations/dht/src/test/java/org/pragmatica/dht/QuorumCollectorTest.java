@@ -18,6 +18,7 @@ package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -42,6 +43,46 @@ class QuorumCollectorTest {
         @Override
         public String message() {
             return "test failure";
+        }
+    }
+
+    /// #1777 R2: when quorum is lost to a MIX of failures, a fence refusal decides the cause. A fenced write
+    /// may have been applied on a replica whose high-water lagged, so the failure must say
+    /// `WriteIndeterminate` (#1818) before a catching-up refusal's `NotCaughtUp` (#1777), which only says some
+    /// replica could not yet answer. Plain failures alone stay `QuorumNotReached`. Today the mix does not
+    /// arise: catching-up refusals come from reads and fence refusals from writes. This pins the rule anyway.
+    @Nested
+    class FailurePrecedence {
+        private static final NodeId REPLICA = new NodeId("replica");
+
+        @Test
+        void fenceRefusal_decidesTheCause_overACatchingUpRefusal_inEitherArrivalOrder() {
+            assertThat(causeAfter(DHTError.replicaCatchingUp(REPLICA), DHTError.replicaFenced(REPLICA)))
+                .isInstanceOf(DHTError.WriteIndeterminate.class);
+            assertThat(causeAfter(DHTError.replicaFenced(REPLICA), DHTError.replicaCatchingUp(REPLICA)))
+                .isInstanceOf(DHTError.WriteIndeterminate.class);
+        }
+
+        @Test
+        void catchingUpRefusal_decidesTheCause_overAPlainFailure() {
+            assertThat(causeAfter(FAILURE, DHTError.replicaCatchingUp(REPLICA))).isInstanceOf(DHTError.NotCaughtUp.class);
+        }
+
+        @Test
+        void plainFailures_stayQuorumNotReached() {
+            assertThat(causeAfter(FAILURE, FAILURE)).isInstanceOf(DHTError.QuorumNotReached.class);
+        }
+
+        /// total=3, quorum=2: the second failure makes quorum unreachable and settles the promise.
+        private Cause causeAfter(Cause first, Cause second) {
+            Promise<Unit> promise = Promise.promise();
+            var collector = quorumCollector(2, 3, promise);
+
+            collector.onFailure(first);
+            collector.onFailure(second);
+
+            return promise.await()
+                          .fold(cause -> cause, _ -> FAILURE);
         }
     }
 
