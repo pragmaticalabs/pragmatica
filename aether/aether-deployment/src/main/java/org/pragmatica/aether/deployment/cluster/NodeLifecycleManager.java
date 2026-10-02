@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -128,6 +129,9 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     // (HetznerComputeProvider.labelsFor stamps `aether-cluster`). Counting on this tag is what
     // scopes the fleet cap to THIS cluster rather than everything in the cloud account.
     private static final String CLUSTER_TAG = "aether.cluster";
+    // The native spelling Hetzner, AWS, Azure and GCP stamp; Docker stamps the dotted CLUSTER_TAG. A lookup by node
+    // id returns instances carrying whichever the provider uses, so the ownership check reads both.
+    private static final String NATIVE_CLUSTER_TAG = "aether-cluster";
 
     @Override
     public Promise<ActionResult> executeAction(NodeAction action) {
@@ -222,7 +226,9 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     @Override
     public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise(),
-                                    provider -> provider.listInstances(Map.of(NODE_ID_TAG, nodeId.id())));
+                                    provider -> provider.listInstances(Map.of(NODE_ID_TAG,
+                                                                              nodeId.id()))
+                                                        .map(this::ownInstances));
     }
 
     @Override
@@ -251,15 +257,34 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     private Promise<Unit> lookupAndTerminate(ComputeProvider provider, NodeId nodeId) {
         return provider.listInstances(Map.of(NODE_ID_TAG,
                                              nodeId.id()))
+                       .map(this::ownInstances)
                        .flatMap(instances -> terminateMatchedInstance(provider, nodeId, instances))
                        .onFailure(cause -> log.warn("Failed to look up cloud instance for node {}: {}",
                                                     nodeId,
                                                     cause.message()));
     }
 
+    /// #1804 — node ids such as `hetzner-eu-core-1` repeat across clusters in one cloud account, and every lookup by
+    /// node id (terminate, restart, instancesForNode) is by node id alone. Once this cluster's instance is gone, the only match left is another cluster's VM,
+    /// and the lookup would terminate it. An instance labelled for a DIFFERENT cluster is never this cluster's node;
+    /// one carrying no cluster label still matches, as before. Unscoped without a cluster name.
+    private List<InstanceInfo> ownInstances(List<InstanceInfo> instances) {
+        return clusterName.fold(() -> instances,
+                                name -> instances.stream()
+                                                 .filter(instance -> !labelledForOtherCluster(instance, name))
+                                                 .toList());
+    }
+
+    private static boolean labelledForOtherCluster(InstanceInfo instance, ClusterName name) {
+        return Stream.of(CLUSTER_TAG, NATIVE_CLUSTER_TAG)
+                     .flatMap(key -> Option.option(instance.tags().get(key)).stream())
+                     .anyMatch(label -> !label.equals(name.value()));
+    }
+
     private Promise<Unit> lookupAndRestart(ComputeProvider provider, NodeId nodeId) {
         return provider.listInstances(Map.of(NODE_ID_TAG,
                                              nodeId.id()))
+                       .map(this::ownInstances)
                        .flatMap(instances -> restartMatchedInstance(provider, nodeId, instances))
                        .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
                                                     nodeId,

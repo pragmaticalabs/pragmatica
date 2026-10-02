@@ -172,8 +172,9 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    /// Core retirement requires a durable successor installation certificate.
-    default org.pragmatica.lang.Unit setRetirementAllowed(java.util.function.Predicate<NodeId> predicate) {
+    /// Core retirement requires a durable successor installation certificate. `none()` means the node is
+    /// retirable now; otherwise the reason it is not. A refused reap is logged with that reason and retried (#1804).
+    default org.pragmatica.lang.Unit setRetirementRefusal(Function<NodeId, Option<String>> refusal) {
         return org.pragmatica.lang.Unit.unit();
     }
 

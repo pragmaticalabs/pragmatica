@@ -200,7 +200,7 @@ class ClusterTopologyManagerActuatorTest {
                                                              liveness);
         // This actuator fixture models a completed voter handoff. Tests below independently
         // vary transport/SWIM/counting evidence; none may bypass those retirement checks.
-        manager.setRetirementAllowed(node -> !node.equals(SELF));
+        manager.setRetirementRefusal(node -> node.equals(SELF) ? Option.some("self is never retired") : Option.none());
         manager.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
             key -> key instanceof AutoHealStateKey ? clusterStore.autoHealState().map(value -> (AetherValue) value)
@@ -391,7 +391,7 @@ class ClusterTopologyManagerActuatorTest {
 
     @Test
     void missingRetirementProofRefusesDrainEvenWhenLeaderIsActive() {
-        ctm.setRetirementAllowed(_ -> false);
+        ctm.setRetirementRefusal(_ -> Option.some("awaiting certified voter handoff"));
         ctm.activate();
         assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
         assertThat(drainCommandSinkCalls).isEmpty();
@@ -1869,6 +1869,280 @@ class ClusterTopologyManagerActuatorTest {
         }
     }
 
+    /// #1804 — a reap the retirement check refuses is neither silent nor final. Production reached this with a
+    /// departing core still an installed voter at its first reap (refused), after which nothing re-armed the reap
+    /// once it was voted out, so its VM kept running and billing. The retirement verdict here is a mutable voter
+    /// set, the real shape of that refusal, and WARNs are read from the production logger rather than fed to it.
+    @Nested
+    class RefusedReapRetry {
+        private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
+        private static final TimeSpan GRACE = timeSpan(100).millis();
+        private static final NodeId DEAD = nodeId("node-dead").unwrap();
+        private static final List<NodeId> REMAINING = List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E);
+        private final AtomicReference<Set<NodeId>> voters = new AtomicReference<>(Set.of());
+        /// Every CTM a test activates is deactivated afterwards: a refused-reap chain outlives its test otherwise and
+        /// logs into the next test's appender, which reads the shared logger.
+        private final List<ClusterTopologyManager> activated = new CopyOnWriteArrayList<>();
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void attachAppender() {
+            appender = CapturingAppender.create("CtmRefusedReapCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            var existing = ctx.getConfiguration().getLoggerConfig(LOGGER_NAME);
+
+            loggerConfig = LOGGER_NAME.equals(existing.getName()) ? existing : createLoggerConfig(ctx.getConfiguration());
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void detachAppender() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            activated.forEach(ClusterTopologyManager::deactivate);
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        private static LoggerConfig createLoggerConfig(Configuration configuration) {
+            var created = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+
+            configuration.addLogger(LOGGER_NAME, created);
+
+            return created;
+        }
+
+        private ClusterTopologyManager voterAwareCtm(TimeSpan grace) {
+            var manager = ctmWithDrainGrace(grace);
+
+            manager.setRetirementRefusal(node -> voters.get().contains(node)
+                                                 ? Option.some("still an installed voter")
+                                                 : Option.none());
+            activated.add(manager);
+
+            return manager;
+        }
+
+        private void removed(ClusterTopologyManager manager, NodeId node) {
+            manager.onMembershipDecision(MembershipDecision.nodeRemoved(node, REMAINING));
+        }
+
+        /// The defect: refused while voting, never retried. Both arms of the same node inside one run: the refusal
+        /// provably held while it voted (nothing terminated across several ticks), and it is terminated, exactly
+        /// once, after being voted out.
+        @Test
+        void nodeRemoved_refusedWhileVoter_isTerminatedOnceVotedOut() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: still a voter, so the reap is refused")
+                                                            .isEmpty();
+
+            voters.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("terminated once voted out, and only once")
+                                                            .containsExactly(DEAD);
+        }
+
+        @Test
+        void nodeRemoved_refusal_isLoggedAtWarnWithTheReason() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+
+            assertThat(appender.capturedWarns()).as("the refusal names the node, that it was refused, and why")
+                                                .anyMatch(msg -> msg.contains(DEAD.id())
+                                                                 && msg.contains("REFUSED")
+                                                                 && msg.contains("still an installed voter"));
+        }
+
+        /// Control: a node that stays a voter is never terminated, however many retries pass.
+        @Test
+        void nodeRemoved_currentVoter_isNeverTerminated() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(900));
+
+            assertThat(appender.capturedWarns()).as("arming: the retries ran and re-read the verdict")
+                                                .anyMatch(msg -> msg.contains("still REFUSED"));
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Control: a refused reap whose node shows life while the chain waits is dropped, not executed — even once
+        /// the node is later voted out, a live node is never terminated.
+        @Test
+        void nodeRemoved_refusedThenShowsLife_isNeverTerminated() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            swimAliveNodes.set(Set.of(DEAD));
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("stopped")));
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// The retry is bounded: a node that never becomes retirable ends in an operator-visible WARN, and the chain
+        /// stops — a later change of verdict terminates nothing, because nothing is still watching.
+        @Test
+        void nodeRemoved_neverRetirable_givesUpWithAWarn() {
+            var manager = voterAwareCtm(timeSpan(5).millis());
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            await().atMost(Duration.ofSeconds(10))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("giving up")));
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A node that is only TRACKED (not live, not counted) when the chain ticks is protected exactly as the
+        /// replay protects it, and is never terminated, even once voted out. Both protections are separate tests so
+        /// each is load-bearing.
+        @Test
+        void nodeRemoved_refusedThenTracked_isNeverTerminated() {
+            assertProtectedAfterRefusal(() -> trackedMembers.set(Set.of(DEAD)));
+        }
+
+        @Test
+        void nodeRemoved_refusedThenInFlight_isNeverTerminated() {
+            assertProtectedAfterRefusal(() -> inFlightNodes.set(Set.of(DEAD)));
+        }
+
+        private void assertProtectedAfterRefusal(Runnable protect) {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            protect.run();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("stopped")));
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A chain does not outlive its activation: deactivated, its next tick terminates nothing even though the
+        /// verdict has cleared. The successor's replay owns the instance.
+        @Test
+        void nodeRemoved_chainStopsWhenCtmDeactivates() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            manager.deactivate();
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A chain of an earlier activation is dropped even after the same CTM is activated again: the new
+        /// activation's own refusal path (here, none was raised) owns the node.
+        @Test
+        void nodeRemoved_chainOfEarlierActivationIsDroppedAfterReactivation() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            manager.deactivate();
+            manager.activate();
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Two refusals of one node within one activation, half a window apart, start ONE chain. A second chain would
+        /// tick half a window out of step with the first, and each would log the same "retries left" figure.
+        @Test
+        void nodeRemoved_refusedTwiceInOneActivation_runsOneChain() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(50));
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(650));
+
+            var ticks = appender.capturedWarns().stream()
+                                .filter(msg -> msg.contains("still REFUSED"))
+                                .toList();
+
+            assertThat(ticks).as("arming: the chain ticked").hasSizeGreaterThan(2);
+            assertThat(ticks).as("one chain logs each retries-left figure once").doesNotHaveDuplicates();
+        }
+
+        /// A provider failure at terminate is visible at WARN with the provider's error, not buried at DEBUG.
+        @Test
+        void terminateFailure_isLoggedAtWarnWithTheProviderError() {
+            var manager = voterAwareCtm(GRACE);
+
+            lifecycleManager.failTerminates();
+            manager.activate();
+            removed(manager, DEAD);
+
+            assertThat(appender.capturedWarns()).anyMatch(msg -> msg.contains(DEAD.id())
+                                                                 && msg.contains("FAILED")
+                                                                 && msg.contains("stub provider refused terminate"));
+        }
+
+        /// The new-leader shape: the activation replay selects an untracked, labelled instance of this cluster, the
+        /// first verdict refuses it (a voter), and it is terminated once the verdict clears.
+        @Test
+        void activationReplay_untrackedLabelledInstance_refusedThenRetirable_isTerminated() {
+            clusterStore.seedNamed(5, CLUSTER);
+            coreCountedMembers.set(Set.of(PEER_E, nodeId("node-f").unwrap(), nodeId("node-g").unwrap()));
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            voters.set(Set.of(DEAD));
+
+            voterAwareCtm(GRACE).activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("REFUSED")));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: refused while it is a voter")
+                                                            .isEmpty();
+
+            voters.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+    }
+
     /// Collects WARN messages so a test can assert on what production actually emitted. Mirrors the
     /// appender in `ClusterTopologyManagerCasLossLoggingTest`.
     static final class CapturingAppender extends AbstractAppender {
@@ -2081,6 +2355,12 @@ class ClusterTopologyManagerActuatorTest {
             failProvision.set(true);
         }
 
+        private final java.util.concurrent.atomic.AtomicBoolean failTerminates = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        void failTerminates() {
+            failTerminates.set(true);
+        }
+
         void allowProvisions() {
             failProvision.set(false);
         }
@@ -2105,6 +2385,9 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
+            if (failTerminates.get()) {
+                return org.pragmatica.lang.utils.Causes.cause("stub provider refused terminate").promise();
+            }
             terminateCount.incrementAndGet();
             terminatedIds.add(nodeId);
             inventory.remove(nodeId);

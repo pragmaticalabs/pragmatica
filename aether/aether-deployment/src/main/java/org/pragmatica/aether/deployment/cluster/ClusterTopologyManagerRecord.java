@@ -115,18 +115,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     MembershipLiveness liveness,
                                     AtomicLong activationEpoch,
                                     Set<NodeId> abandonedReaps,
+                                    ConcurrentHashMap<NodeId, Long> refusedReaps,
                                     ConcurrentHashMap<NodeId, NodeRole> provisionedRoleIntents,
                                     ConcurrentHashMap<NodeId, RoleMismatch> roleMismatchLedger,
                                     ConcurrentHashMap<NodeId, AetherValue.NodePlacementValue> recordedPlacements,
                                     AtomicReference<Option<CommunityPlacementReconciler>> communityPlacement,
                                     AtomicReference<Supplier<List<NodeId>>> genesisVoters,
-                                    AtomicReference<java.util.function.Predicate<NodeId>> retirementAllowed,
+                                    AtomicReference<Function<NodeId, Option<String>>> retirementRefusal,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
+    private static final String NO_RETIREMENT_CHECK = "no retirement check is wired";
+    /// #1804: a refused reap is re-evaluated once per provisioning window, for an hour at the default window —
+    /// longer than the slowest voter handoff observed (14 min) with margin, bounded so a node that never becomes
+    /// retirable ends in an operator-visible WARN rather than a forever-timer.
+    static final int REFUSED_REAP_RETRIES = 60;
     private static final String AETHER_CLUSTER_SECRET_ENV = "AETHER_CLUSTER_SECRET";
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
@@ -241,9 +247,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
+                                                new ConcurrentHashMap<>(),
                                                 new AtomicReference<>(Option.none()),
                                                 new AtomicReference<>(List::of),
-                                                new AtomicReference<>(node -> false),
+                                                new AtomicReference<>(_ -> Option.some(NO_RETIREMENT_CHECK)),
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
@@ -264,8 +271,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
-    public org.pragmatica.lang.Unit setRetirementAllowed(java.util.function.Predicate<NodeId> predicate) {
-        retirementAllowed.set(predicate);
+    public org.pragmatica.lang.Unit setRetirementRefusal(Function<NodeId, Option<String>> refusal) {
+        retirementRefusal.set(refusal);
 
         return org.pragmatica.lang.Unit.unit();
     }
@@ -1655,7 +1662,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// heartbeat + backstop).
     @Override
     public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
-        if (!active.get() || !retirementAllowed.get().test(targetNodeId)) {
+        if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
             return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
                                                    .promise();
         }
@@ -1708,10 +1715,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void reapDrainedNode(NodeId targetNodeId) {
-        if (!active.get() || !retirementAllowed.get().test(targetNodeId)) {
+        if (!active.get()) {
             return;
         }
 
+        retirementRefusal.get()
+                         .apply(targetNodeId)
+                         .onPresent(reason -> parkRefusedReap(targetNodeId, reason))
+                         .onEmpty(() -> terminateDrained(targetNodeId));
+    }
+
+    @Contract
+    private void terminateDrained(NodeId targetNodeId) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
         lifecycleManager.terminateNode(targetNodeId)
                         .onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
@@ -1890,17 +1905,107 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                           autoHealConfig.provisioningTimeout().millis() / REAP_LIVENESS_RECHECKS)).millis();
     }
 
+    /// #1804 — a refused reap is parked and retried ([#parkRefusedReap]), never dropped: the refusal is a point-in-time
+    /// verdict (a voter is refused only until it is voted out), so a silent return here left the VM running and billing.
     @Contract
     private void terminateDeparted(NodeId nodeId) {
-        if (!active.get() || !retirementAllowed.get().test(nodeId)) {
+        if (!active.get()) {
             return;
         }
 
+        retirementRefusal.get()
+                         .apply(nodeId)
+                         .onPresent(reason -> parkRefusedReap(nodeId, reason))
+                         .onEmpty(() -> terminateRetired(nodeId));
+    }
+
+    /// A provider failure is logged at WARN and NOT retried here — FER, with the activation replay as the backstop:
+    /// the failures seen are mostly permanent until state changes (no provider wired, no capacity reservation
+    /// committed for the id), so a timer would repeat a refusal, while a transient provider error leaves the instance
+    /// listed, and the next activation's replay selects it again. Guarantee earned: the failure is visible, not that
+    /// the VM is gone.
+    @Contract
+    private void terminateRetired(NodeId nodeId) {
         abandonedReaps.remove(nodeId);
+        refusedReaps.remove(nodeId);
         lifecycleManager.terminateNode(nodeId)
-                        .onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
-                                                      nodeId,
-                                                      cause.message()));
+                        .onFailure(cause -> log.warn("CTM: reap of departed node {} FAILED at the provider: {}",
+                                                     nodeId,
+                                                     cause.message()));
+    }
+
+    /// #1804 — WARN the refusal with its reason and, unless a chain of this activation is already pending for
+    /// `nodeId`, start one. The chain is level-triggered: each tick re-reads the retirement verdict and the
+    /// liveness evidence, and ends when the node is terminated, becomes protected (live, tracked or in flight — the
+    /// activation replay's own protection, [MembershipLiveness#replayProtected]), the activation ends, or
+    /// [#REFUSED_REAP_RETRIES] ticks are spent. A refusal arriving while a chain is pending only logs.
+    @Contract
+    private void parkRefusedReap(NodeId nodeId, String reason) {
+        var epoch = activationEpoch.get();
+
+        log.warn("CTM: reap of {} REFUSED — {}; retrying every {}ms", nodeId, reason, activationReplayGrace().millis());
+        if (Option.option(refusedReaps.put(nodeId, epoch)).filter(pending -> pending == epoch).isEmpty()) {
+            scheduleRefusedReapRetry(nodeId, epoch, REFUSED_REAP_RETRIES);
+        }
+    }
+
+    @Contract
+    private void scheduleRefusedReapRetry(NodeId nodeId, long epoch, int retriesLeft) {
+        SharedScheduler.schedule(() -> retryRefusedReap(nodeId, epoch, retriesLeft), activationReplayGrace());
+    }
+
+    /// One tick of a refused-reap chain. A chain whose entry is gone (terminated meanwhile) or belongs to another
+    /// activation stops; a deposed view never reaps, the next activation's replay owns the instance. Evidence of
+    /// life stops the chain and parks the reap for the next SWIM FAULTY, exactly as [#reapUnlessLive] abandons.
+    @Contract
+    private void retryRefusedReap(NodeId nodeId, long epoch, int retriesLeft) {
+        if (!refusedReaps.remove(nodeId, epoch)) {
+            return;
+        }
+
+        if (!active.get() || activationEpoch.get() != epoch) {
+            log.debug("CTM: refused reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
+                      nodeId);
+
+            return;
+        }
+
+        if (liveness.replayProtected(nodeId)) {
+            abandonRefusedReap(nodeId);
+
+            return;
+        }
+
+        retirementRefusal.get()
+                         .apply(nodeId)
+                         .onPresent(reason -> continueRefusedReap(nodeId, epoch, retriesLeft, reason))
+                         .onEmpty(() -> terminateRetired(nodeId));
+    }
+
+    @Contract
+    private void continueRefusedReap(NodeId nodeId, long epoch, int retriesLeft, String reason) {
+        if (retriesLeft <= 0) {
+            log.warn("CTM: reap of {} still REFUSED after {} retries ({}); giving up — its instance may still be running at the provider and needs an operator",
+                     nodeId,
+                     REFUSED_REAP_RETRIES,
+                     reason);
+
+            return;
+        }
+
+        log.warn("CTM: reap of {} still REFUSED — {}; {} retries left", nodeId, reason, retriesLeft);
+        refusedReaps.put(nodeId, epoch);
+        scheduleRefusedReapRetry(nodeId, epoch, retriesLeft - 1);
+    }
+
+    @Contract
+    private void abandonRefusedReap(NodeId nodeId) {
+        abandonedReaps.add(nodeId);
+        log.warn("CTM: refused reap of {} stopped — it is protected ({}, tracked={}, inFlight={}); a live, tracked or booting node is never terminated; re-armed by the next SWIM FAULTY for it",
+                 nodeId,
+                 liveness.evidence(nodeId),
+                 liveness.trackedMembers().get().contains(nodeId),
+                 liveness.inFlightProvisioning().get().contains(nodeId));
     }
 
     /// R4 — ACTIVATION REPLAY. `activate()` runs a one-shot reconciliation of this cluster's core instances,

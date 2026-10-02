@@ -10,6 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -73,6 +74,98 @@ class NodeLifecycleManagerTerminateTest {
         assertThat(provider.terminated).isEmpty();
     }
 
+    /// #1804 — core ids such as `hetzner-eu-core-1` repeat across clusters in one cloud account. Once cluster A's
+    /// instance is gone, the lookup by node id finds exactly one match: cluster B's VM. It must not be terminated.
+    @Test
+    void terminateNode_onlyMatchBelongsToAnotherCluster_terminatesNothing() {
+        var provider = new RecordingProvider(List.of(instanceIn("i-b", NODE, "aether-cluster", "cluster-b")));
+        var manager = scopedTo("cluster-a", provider);
+
+        var result = manager.terminateNode(NODE)
+                            .await();
+
+        assertThat(result.isSuccess()).as("this cluster's instance is already gone: %s", result)
+                                      .isTrue();
+        assertThat(provider.terminated).as("another cluster's VM is never this node's")
+                                       .isEmpty();
+    }
+
+    @Test
+    void terminateNode_nodeIdSharedAcrossClusters_terminatesOnlyThisClustersInstance() {
+        var provider = new RecordingProvider(List.of(instanceIn("i-a", NODE, "aether-cluster", "cluster-a"),
+                                                     instanceIn("i-b", NODE, "aether-cluster", "cluster-b")));
+
+        scopedTo("cluster-a", provider).terminateNode(NODE).await();
+
+        assertThat(provider.terminated).containsExactly("i-a");
+    }
+
+    /// Docker stamps the dotted label; the ownership check reads it as well as the native one.
+    @Test
+    void terminateNode_dottedClusterLabelOfAnotherCluster_terminatesNothing() {
+        var provider = new RecordingProvider(List.of(instanceIn("i-b", NODE, "aether.cluster", "cluster-b")));
+
+        scopedTo("cluster-a", provider).terminateNode(NODE).await();
+
+        assertThat(provider.terminated).isEmpty();
+    }
+
+    @Test
+    void terminateNode_instanceWithoutClusterLabel_stillMatches() {
+        var provider = new RecordingProvider(List.of(instanceFor("i-1", NODE)));
+
+        scopedTo("cluster-a", provider).terminateNode(NODE).await();
+
+        assertThat(provider.terminated).containsExactly("i-1");
+    }
+
+    /// The same lookup feeds restart and instancesForNode: they must not reach another cluster's VM either.
+    @Test
+    void restartNode_nodeIdSharedAcrossClusters_restartsOnlyThisClustersInstance() {
+        var provider = new RecordingProvider(List.of(instanceIn("i-a", NODE, "aether-cluster", "cluster-a"),
+                                                     instanceIn("i-b", NODE, "aether-cluster", "cluster-b")));
+
+        scopedTo("cluster-a", provider).restartNode(NODE).await();
+
+        assertThat(provider.restarted).containsExactly("i-a");
+    }
+
+    @Test
+    void restartNode_onlyMatchBelongsToAnotherCluster_restartsNothing() {
+        var provider = new RecordingProvider(List.of(instanceIn("i-b", NODE, "aether-cluster", "cluster-b")));
+
+        scopedTo("cluster-a", provider).restartNode(NODE).await();
+
+        assertThat(provider.restarted).isEmpty();
+    }
+
+    @Test
+    void instancesForNode_excludesAnotherClustersInstance() {
+        var provider = new RecordingProvider(List.of(instanceIn("i-a", NODE, "aether-cluster", "cluster-a"),
+                                                     instanceIn("i-b", NODE, "aether-cluster", "cluster-b")));
+
+        var found = scopedTo("cluster-a", provider).instancesForNode(NODE).await();
+
+        assertThat(found.unwrap()).extracting(instance -> instance.id().value()).containsExactly("i-a");
+    }
+
+    private static NodeLifecycleManager scopedTo(String cluster, ComputeProvider provider) {
+        return NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
+                                                         Option.some(ClusterName.clusterName(cluster).unwrap()),
+                                                         Option.empty());
+    }
+
+    private static InstanceInfo instanceIn(String instanceId, NodeId nodeId, String clusterKey, String cluster) {
+        return InstanceInfo.instanceInfo(InstanceId.instanceId(instanceId)
+                                                   .unwrap(),
+                                         InstanceStatus.RUNNING,
+                                         List.of("127.0.0.1"),
+                                         InstanceType.ON_DEMAND,
+                                         Map.of(NODE_ID_TAG, nodeId.id(), clusterKey, cluster),
+                                         Option.some(nodeId.id()))
+                           .unwrap();
+    }
+
     private static InstanceInfo instanceFor(String instanceId, NodeId nodeId) {
         return InstanceInfo.instanceInfo(InstanceId.instanceId(instanceId)
                                                    .unwrap(),
@@ -87,6 +180,7 @@ class NodeLifecycleManagerTerminateTest {
     private static final class RecordingProvider implements ComputeProvider {
         private final List<InstanceInfo> instances;
         private final List<String> terminated = new CopyOnWriteArrayList<>();
+        private final List<String> restarted = new CopyOnWriteArrayList<>();
 
         private RecordingProvider(List<InstanceInfo> instances) {
             this.instances = instances;
@@ -100,6 +194,13 @@ class NodeLifecycleManagerTerminateTest {
         @Override
         public Promise<Unit> terminate(InstanceId instanceId) {
             terminated.add(instanceId.value());
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> restart(InstanceId instanceId) {
+            restarted.add(instanceId.value());
 
             return Promise.success(Unit.unit());
         }
