@@ -328,6 +328,48 @@ class DHTChurnSurvivalTest {
                                             .isEqualTo(3);
     }
 
+    /// Issue #1818, staggered drains: the second drain arrives in a LATER ping, so the first drainer
+    /// pushes knowing only itself and its push lands before the second drainer's own push enumerates
+    /// its storage. The first push may land on the second drainer; the second drainer, knowing both,
+    /// relays it to the true post-departure newcomer. No re-push on a drain-set change is needed.
+    @Test
+    void staggeredDeparture_secondDrainerRelaysWhatTheFirstHandedIt() {
+        var cluster = sevenNodeCluster();
+        var shape = cluster.findKeyWhoseNewcomerIsAlsoLeaving("staggered");
+        var leaving = Set.of(shape.holder(), shape.coDeparting());
+
+        cluster.seedOnly(shape.holder(), shape.key(), value("payload"));
+        cluster.member(shape.holder()).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+
+        assertThat(cluster.holds(shape.coDeparting(), shape.key())).as("control: the first push landed on the later drainer")
+                                                                   .isTrue();
+
+        cluster.member(shape.coDeparting()).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
+        cluster.remove(shape.holder());
+        cluster.remove(shape.coDeparting());
+
+        assertThat(cluster.holds(shape.postDepartureNewcomer(), shape.key())).as("the relay reached the live newcomer")
+                                                                             .isTrue();
+    }
+
+    @Test
+    void staggeredDeparture_twoHolders_stockEveryVacatedSlot() {
+        var cluster = sevenNodeCluster();
+        var key = key("two-holders-staggered");
+        var before = cluster.responsibleFor(key);
+        var first = before.get(0);
+        var second = before.get(1);
+
+        before.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+        cluster.member(first).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+        cluster.member(second).rebalancer().pushOnDeparture(Set.of(first, second), DeparturePushObserver.noop()).await();
+        cluster.remove(first);
+        cluster.remove(second);
+
+        assertThat(cluster.inSetCopies(key)).as("every slot of the post-departure replica set holds the key")
+                                            .isEqualTo(3);
+    }
+
     /// Two drains commanded together: both nodes push while both are still in every ring, then both
     /// leave. `second` pushes FIRST: in run 7 both pushes left in the same millisecond, so each drainer
     /// enumerated its storage before the other's push landed. The reverse order would let `second`

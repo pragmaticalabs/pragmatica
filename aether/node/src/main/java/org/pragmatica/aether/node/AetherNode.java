@@ -2988,8 +2988,10 @@ public interface AetherNode extends ManageableNode {
         // ping's global drain set), so it never lands on, or counts as a survivor, a co-drainer.
         var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
         var movementDrain = new AtomicReference<Option<CommunityDrainCoordinator>>(Option.none());
-        Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(metricsCollector.commandedDrainNodes(),
-                                                                                    departurePushObserverRef.get())
+        var dhtDeparturePush = DhtDeparturePush.dhtDeparturePush(dhtRebalancer,
+                                                                 metricsCollector,
+                                                                 departurePushObserverRef::get);
+        Supplier<Promise<Unit>> departurePush = () -> dhtDeparturePush.get()
                                                                    .flatMap(_ -> movementDrain.get()
                                                                                               .fold(Promise::unitPromise,
                                                                                                     CommunityDrainCoordinator::onQuiesced));
