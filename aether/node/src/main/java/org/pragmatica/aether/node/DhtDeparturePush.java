@@ -20,7 +20,9 @@ import org.pragmatica.lang.Unit;
 /// drain command records its global `drainNodes` before the drain handler fires, so the push sees every
 /// node commanded in the same ping. The set can only ever ADD targets — a node wrongly in it is skipped
 /// as a target and not counted as a surviving holder, so the push goes one node further along the ring
-/// instead; a stale or cleared set can therefore cost an extra copy, never a missing one.
+/// instead, or, when the exclusion exhausts the ring, to every remaining node; a stale entry can
+/// therefore cost an extra copy, never a missing one. A cleared set is the pre-#1818 behaviour: a
+/// co-drainer missing from it can still absorb the push or be counted as a survivor.
 public sealed interface DhtDeparturePush {
     /// The departure push the drain procedure invokes once at DRAINING.
     static Supplier<Promise<Unit>> dhtDeparturePush(DHTRebalancer rebalancer,

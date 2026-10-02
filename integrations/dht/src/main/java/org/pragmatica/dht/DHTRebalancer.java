@@ -205,12 +205,15 @@ public final class DHTRebalancer {
     /// (`newSet \ existing`) are targeted. When self has ALREADY been pruned (the ring can no longer
     /// identify the newcomer), fall back to the whole `newSet`: the versioned puts are idempotent, so
     /// re-sending to an existing replica is harmless, and this guarantees no loss regardless of the
-    /// prune-vs-drain ordering.
+    /// prune-vs-drain ordering. The same fallback applies when the exclusion exhausts the ring
+    /// (`newSet` shorter than the replication factor): no node lies beyond the vacated slots to absorb
+    /// the push, so a node wrongly in `leaving` would otherwise remove the only newcomer and leave the
+    /// copy resting on survivors that may not hold it.
     private List<NodeId> departureTargets(byte[] key, int replicationFactor, Set<NodeId> leaving) {
         var newSet = node.ring().nodesFor(key, replicationFactor, candidate -> !leaving.contains(candidate));
         var currentSet = node.ring().nodesFor(key, replicationFactor);
 
-        return currentSet.contains(node.nodeId())
+        return currentSet.contains(node.nodeId()) && newSet.size() >= replicationFactor
                ? excludeExistingReplicas(newSet, currentSet, leaving)
                : newSet;
     }
