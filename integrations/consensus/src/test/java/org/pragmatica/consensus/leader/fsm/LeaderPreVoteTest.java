@@ -502,6 +502,9 @@ class LeaderPreVoteTest {
 
             assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
             assertThat(requests).isEmpty();
+            assertThat(h.handled().stream().filter(x -> x.event() instanceof ClusterFsmEvent.NodeGone))
+                .as("the NodeGone was answered by a transition, not by a handler that re-dispatches from inside itself")
+                .isEmpty();
             h.dispatch(new ClusterFsmEvent.Shutdown());
         }
 
