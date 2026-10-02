@@ -321,13 +321,13 @@ public final class DHTAntiEntropy {
 
     private void onPullAnswer(PendingPull pull, DHTMessage.MigrationDataResponse response) {
         if (!pull.peer().equals(response.sender())) {
-            reject(response, "answer to a pull sent to " + pull.peer().id());
+            reject(response,
+                   "answer to a pull sent to " + pull.peer().id());
 
             return;
         }
 
         pendingPulls.remove(response.requestId());
-
         if (!allInPartition(response.entries(), pull.partitionIndex())) {
             reject(response, "entries outside the requested partition " + pull.partitionIndex());
 
@@ -367,15 +367,16 @@ public final class DHTAntiEntropy {
     /// Whether both `sender` and this node replicate the entry's partition in this node's ring.
     private boolean coReplicaOfEntry(NodeId sender, DHTMessage.KeyValue entry) {
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
-        var replicas = node.ring()
-                           .nodesFor(entry.key(), replicationFactor);
+        var replicas = node.ring().nodesFor(entry.key(), replicationFactor);
 
         return replicas.contains(sender) && replicas.contains(node.nodeId());
     }
 
     private boolean allInPartition(List<DHTMessage.KeyValue> entries, int partitionIndex) {
         return entries.stream()
-                      .allMatch(entry -> node.ring().partitionFor(entry.key()).value() == partitionIndex);
+                      .allMatch(entry -> node.ring()
+                                             .partitionFor(entry.key())
+                                             .value() == partitionIndex);
     }
 
     private void applyAndAcknowledge(DHTMessage.MigrationDataResponse response) {
