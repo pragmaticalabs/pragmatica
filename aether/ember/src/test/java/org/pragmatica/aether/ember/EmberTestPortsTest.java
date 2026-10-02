@@ -226,7 +226,7 @@ class EmberTestPortsTest {
     @Test
     @Timeout(60)
     void freeBase_everyCandidateBusy_waitsAndReturnsTheBaseOnceItIsReleased() throws Exception {
-        var onlyBase = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST, 50, 3, 40, 80);
+        var onlyBase = singleBaseBlock();
         var holder = takeTcp(onlyBase.first() + onlyBase.mgmtOffset());
 
         taken.add(holder);
@@ -251,7 +251,7 @@ class EmberTestPortsTest {
     @Test
     @Timeout(60)
     void freeBase_everyCandidateStaysBusy_failsOnlyAfterTheWaitBound() {
-        var onlyBase = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST, 50, 3, 40, 80);
+        var onlyBase = singleBaseBlock();
 
         taken.add(takeTcp(onlyBase.first() + onlyBase.mgmtOffset()));
         var startedAt = System.nanoTime();
@@ -265,7 +265,7 @@ class EmberTestPortsTest {
     @Test
     @Timeout(60)
     void freeBase_backoffIsOneBudgetPerTest_soASecondExhaustedProbeFailsAtOnce() {
-        var onlyBase = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST, 50, 3, 40, 80);
+        var onlyBase = singleBaseBlock();
 
         taken.add(takeTcp(onlyBase.first() + onlyBase.mgmtOffset()));
         EmberTestPorts.resetBackoffBudget(2_500);
@@ -311,6 +311,15 @@ class EmberTestPortsTest {
         }
         taken.add(takeTcp(base + tcp.offset()));
         takeUdp(base + udp.offset()).close();
+    }
+
+    /// A one-candidate block on a base that is free RIGHT NOW. A fixed pool base would not do: the tests before this one
+    /// in the same JVM leave TCP TIME_WAIT on the pool's first bases for up to a minute, which would make the block busy
+    /// for a reason that is not this test's.
+    private static EmberTestPorts.Block singleBaseBlock() {
+        var base = EmberTestPorts.freeBase(BLOCK);
+
+        return new EmberTestPorts.Block(base, base, BLOCK.step(), BLOCK.slots(), BLOCK.mgmtOffset(), BLOCK.appOffset());
     }
 
     private static DatagramSocket takeUdp(int port) {
