@@ -278,14 +278,14 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 var faultyB = MembershipUpdate.membershipUpdate(NODE_B, MemberState.FAULTY, 0, ADDR_B);
                 protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(faultyB)));
 
+                // #1830: NODE_A's FAULTY edge was DEFERRED by cold boot, not dropped — it replays once the
+                // gate closes, so FaultyObserved carries NODE_A as well as the fresh NODE_B. (Before #1830
+                // this asserted exactly one FaultyObserved, which pinned the dropped verdict.)
                 await().atMost(Duration.ofSeconds(2))
-                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
-                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                    .as("RECOVERING phase: FAULTY direct gossip must emit FaultyObserved")
-                    .hasSize(1);
-                assertThat(observations.byType(SwimObservation.FaultyObserved.class)
-                                       .getFirst()
-                                       .peer()).isEqualTo(NODE_B);
+                       .until(() -> faultyPeers(observations).containsAll(List.of(NODE_A, NODE_B)));
+                assertThat(faultyPeers(observations))
+                    .as("RECOVERING phase: FAULTY direct gossip must emit FaultyObserved; the deferred edge replays")
+                    .containsExactlyInAnyOrder(NODE_A, NODE_B);
             } finally {
                 protocol.stop();
             }
@@ -372,14 +372,14 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 var faultyB = MembershipUpdate.membershipUpdate(NODE_B, MemberState.FAULTY, 0, ADDR_B);
                 protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(faultyB)));
 
+                // #1830: NODE_A's FAULTY edge was DEFERRED by cold boot, not dropped — it replays once the
+                // gate closes, so FaultyObserved carries NODE_A as well as the fresh NODE_B. (Before #1830
+                // this asserted exactly one FaultyObserved, which pinned the dropped verdict.)
                 await().atMost(Duration.ofSeconds(2))
-                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
-                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                    .as("NORMAL phase: FAULTY direct gossip must emit FaultyObserved")
-                    .hasSize(1);
-                assertThat(observations.byType(SwimObservation.FaultyObserved.class)
-                                       .getFirst()
-                                       .peer()).isEqualTo(NODE_B);
+                       .until(() -> faultyPeers(observations).containsAll(List.of(NODE_A, NODE_B)));
+                assertThat(faultyPeers(observations))
+                    .as("NORMAL phase: FAULTY direct gossip must emit FaultyObserved; the deferred edge replays")
+                    .containsExactlyInAnyOrder(NODE_A, NODE_B);
             } finally {
                 protocol.stop();
             }
@@ -728,6 +728,13 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 protocol.stop();
             }
         }
+    }
+
+    private static List<NodeId> faultyPeers(RecordingObservationSink observations) {
+        return observations.byType(SwimObservation.FaultyObserved.class)
+                           .stream()
+                           .map(SwimObservation.FaultyObserved::peer)
+                           .toList();
     }
 
     // -- Test infrastructure --

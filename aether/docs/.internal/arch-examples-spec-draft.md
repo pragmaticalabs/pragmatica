@@ -139,27 +139,34 @@ instances of the same subscriber group split the load.
 
 ### 3.4 Saga — **effort L** · **gated on #345 facade (spec §7, §13 Ph4)** · example-first
 
-**Shape.** Targets the specced-but-unimplemented `Saga<C>` facade (`durable-entity-primitive-spec.md`
-§7.7). Order saga with three steps + compensations (spec §7.10): `reserve-inventory` (IDEMPOTENT),
-`charge-payment` (**RUN_ONCE** — a second charge moves real money), `confirm-order` (IDEMPOTENT).
+**Shape.** Targets the specced-but-unimplemented `Saga<I, S, O, D>` facade (`durable-entity-primitive-spec.md`
+§7.7). Order saga with three steps + compensations (spec §7.10): `reserve-inventory`,
+`charge-payment` (a second charge moves real money; recovery capability per spec §7.4), `confirm-order`.
+Spec §7.10 is now the R1–R5 example (accumulating state, `StepContext`, an approval wait); align this
+example to it when the facade lands.
 HTTP `POST /orders/{id}/place` → `saga.run(id, ctx)`.
 
 **Acceptance assertions (these define the facade's done-definition, spec §13 acceptance line).**
-- Happy path → `SagaResult.Succeeded`, all three `StepRecord`s present.
-- Forward failure at step 2 → compensations run in reverse; terminal `SagaResult.Compensated`.
-- **RUN_ONCE crash-window (spec §7.10):** kill the owner after `charge-payment` succeeds but before
-  ledger commit; new owner recovers, finds the `StepAttempt(id,1)` marker, does **not** re-charge,
-  proceeds to step 3. Assert exactly one charge downstream (dedup on `(sagaId, stepIndex)`).
+- Happy path → `SagaOutcome.Succeeded`, all three `StepRecord`s present (spec §7.7).
+- Forward failure at step 2 → compensations run in reverse; terminal `SagaOutcome.Compensated`.
+- **Crash windows (spec §7.4, §7.11 A1–A2; corrected 2026-10-02, #1827):** kill the owner (A1) after
+  the step-2 attempt marker commits but before the charge reaches the payment slice, and (A2) after the
+  charge succeeds but before its `ChargeId` commits. Assert per the declared recovery capability (spec
+  §7.4): one charge downstream, the original `ChargeId` recovered (`Replayable`/`Lookup`), or the saga
+  parked in `NeedsReconciliation` (`Neither`) — and **never** a step completion recorded from the marker
+  alone. The earlier expectation here ("finds the marker … proceeds to step 3") is withdrawn: in A1 it
+  confirmed an unpaid order. The payment slice receives `StepContext.operationId` as its dedup key.
 - Compensation failure → terminal `PartiallyCompensated`, queryable via `status(id)` (spec §7.5).
 
 **Surfaces:** entity fence/single-writer (primary), HTTP, crash recovery (primary), `@Sql`(○ ledger).
-**Gating:** requires #345 fence stream-path (piece 1b, MISSING) + per-key serialization + saga facade.
+**Gating:** requires the saga facade (#354) and the #1827 rulings (spec §14 S6–S10). The #345 stream-path
+fence (piece 1b) and per-key serialization have since shipped (spec §11, v0.6.0).
 Restart-durable recovery additionally needs #349; on the #345 fence alone the example proves
 **HA/owner-handover** recovery, not full-cluster-restart durability (spec §4.4). Frame accordingly.
 
 ### 3.5 Workflow — **effort M** · **gated on #345 facade (spec §6, §13 Ph3)** · example-first
 
-**Shape.** Targets `PersistentWorkflow<S,E>` (spec §6.2). `OrderProcess` FSM (spec §6.4): states
+**Shape.** Targets the PLANNED `PersistentWorkflow<S,E>` façade (spec §6.2; #353, no code yet). `OrderProcess` FSM (spec §6.4): states
 `Pending/Confirmed/Shipped/Cancelled`, events `Confirm/Ship/Cancel`, built on the verified
 `StateMachineDefinition` builder (`C = Unit`, spec §6.4). HTTP routes per transition +
 **signal injection** (`POST /api/workflows/{type}/{id}/signal`, spec §6.6 — the management triad).
@@ -170,8 +177,8 @@ Restart-durable recovery additionally needs #349; on the #345 fence alone the ex
 - Signal injection routes to `dispatch` on the owner and is fenced like any write (spec §6.6).
 - **Owner-handover:** kill the partition owner mid-workflow; in-flight `dispatch` retries transparently;
   the deposed owner cannot commit after handover (fence assertion, spec §8).
-- Durable one-shot timer fires the scheduled event after owner handover (spec §4.5) — *if* piece 3
-  (durable timers) is in scope for the phase; otherwise deferred.
+- Durable one-shot timer fires the scheduled event after owner handover (spec §4.5). Entity timers
+  shipped with #351; the workflow façade's `scheduleTimer` rides them once #353 lands.
 
 **Surfaces:** entity fence/single-writer (primary), HTTP, crash recovery. **Same #345/#349 gating as
 §3.4.**
@@ -241,8 +248,9 @@ HotStream (§3.7) and CQRS (§3.1) ship k6 first; others get k6 as a follow-on. 
 Assertions must name the **per-operation** guarantee, not a system label:
 - Competing consumers = **at-least-once + dedup on a stable key**, never "exactly-once" unqualified
   (§3.3, §3.4 downstream dedup on `(sagaId, stepIndex)`, spec §7.4/§10).
-- Saga `RUN_ONCE` = **at-most-once invocation** of `forward`; end-to-end once-only requires the
-  downstream to dedup (spec §7.4). Do not assert "exactly-once".
+- Saga steps: the runtime re-invokes, queries or parks per the declared capability (spec §7.4); a
+  single effect downstream is earned by the downstream deduping on `operationId`. Do not assert
+  "exactly-once".
 - Entity/workflow reads default to **BOUNDED_STALE**; only assert linearizability where the example
   explicitly requests `LINEARIZABLE` (spec §8.1).
 - Saga/Workflow crash recovery on the #345 fence alone = **HA/handover-durable**, *not*
@@ -260,8 +268,9 @@ Risk-first, matching the repo's stabilize-foundation-first invariant:
 2. **Wave A (post-streaming-debt):** EDA (evolve url-shortener, lowest risk) → EventSrc → CQRS
    (consumes #429/#430) → HotStream (k6 flagship) → Outbox (gap-probe, cheap, batch freely).
 3. **Wave B — with the #345 facade phase (spec §13 Ph0→Ph4):** Workflow (§3.5, Ph3) then Saga
-   (§3.4, Ph4), written **example-first** so their assertions are the facade acceptance gate. These
-   need stream-path fence (piece 1b) + per-key serialization first; full restart-durable variants
+   (§3.4, Ph4), written **example-first** so their assertions are the facade acceptance gate. Both
+   prerequisites named here earlier — stream-path fence (piece 1b) and per-key serialization — have
+   shipped (spec §11, v0.6.0); these now wait on the facades (#353, #354). Full restart-durable variants
    wait on #349.
 4. Validation gate between waves: in-JVM Forge/Ember proof first, then the remote-docker 15-suite
    gate, cloud sweep last (never the primary debug surface).

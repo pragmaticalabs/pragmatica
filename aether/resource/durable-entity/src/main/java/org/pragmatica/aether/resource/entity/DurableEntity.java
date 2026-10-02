@@ -57,7 +57,7 @@ import org.pragmatica.lang.Unit;
 /// Used bare at the factory parameter, with no string in sight:
 ///
 /// ```
-/// static OrderSlice orderSlice(@OrderEntity DurableEntity<String, OrderState> orders) { ... }
+/// static OrderSlice orderSlice(@OrderEntity DurableEntity<String, OrderState, OrderCommand> orders) { ... }
 /// ```
 ///
 /// A slice holding several families declares several qualifiers — `@OrderEntity`,
@@ -65,10 +65,11 @@ import org.pragmatica.lang.Unit;
 /// The section named must exist in the blueprint's `resources.toml`.
 ///
 /// **Serialization comes for free.** The slice processor collects the type arguments of every
-/// resource-qualified parameter as codec types, so `K` and `S` above (`String`, `OrderState`) are
-/// registered in the slice's `SliceCodec` without any author annotation. Records and enums have
-/// their codecs generated; a state type that is neither must have a codec supplied by the node
-/// (`@CodecFor`), and its absence fails at slice load with a named type rather than at first write.
+/// resource-qualified parameter as codec types, so `K`, `S` and `C` above (`String`, `OrderState`,
+/// `OrderCommand`) are registered in the slice's `SliceCodec` without any author annotation. Records
+/// and enums have their codecs generated; a state type that is neither must have a codec supplied by
+/// the node (`@CodecFor`), and its absence fails at slice load with a named type rather than at first
+/// write.
 ///
 /// ## Shipped implementation
 ///

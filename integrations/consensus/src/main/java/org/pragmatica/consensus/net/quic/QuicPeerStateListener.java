@@ -42,6 +42,11 @@ public interface QuicPeerStateListener {
     /// Peer authoritatively left (REMOVED) or QUIC view-change emitted REMOVE.
     void onPeerLeft(NodeId nodeId);
 
+    /// A dial to `dialed` completed a handshake whose Hello came from `claimant`, and was rejected
+    /// (#1830): the dialed address now belongs to another node. Evidence against `dialed` only.
+    /// Default no-op, so listeners that track attach/leave alone need not implement it.
+    default void onPeerIdentityRefuted(NodeId dialed, NodeId claimant) {}
+
     static QuicPeerStateListener noop() {
         return new QuicPeerStateListener() {
             @Override
