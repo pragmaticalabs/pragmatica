@@ -14,6 +14,11 @@
   - When no live source is serving (genesis, a whole-cluster cold restart, every holder gone), the partition completes
     on the union of what the sources hold. That is logged at WARN, because its absent answers are then best-effort.
   - A 1 s catch-up tick retries pending partitions. Dead sources are skipped.
+  - A round pulls from every source whose digest differs.
+  - A timed-out round decides on its serving answers, so a silent source does not block. A partition stuck behind
+    silent sources is warned and counted by the gauge `aether.dht.catchup.stuck.partitions`.
+  - At boot the previous holders are walked on the live ring.
+  - A partition lost while pending leaves the set.
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTCatchUpGateTest.java`,
   `aether/node/src/test/java/org/pragmatica/aether/node/AetherNodeDhtCatchUpBootTest.java`]
 - **The #1770 `absentGrace` stop-gap is removed.** That covers `ReadOptions`, `AbsentGrace`, the grace collector, and
