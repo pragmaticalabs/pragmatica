@@ -9,6 +9,7 @@
 #   E1  200 + allow-listed OwnershipNotYetCommitted twice, then created -> succeeds after 3 requests
 #   E1b 503 + StorageUnavailable body twice, then 200 created          -> succeeds after 3 requests
 #   E1c 503 with a body carrying no failureType, then created          -> retried (the status alone is enough)
+#   E1d 200 + allow-listed OwnerTransitioning (rebalance handoff) twice, then created -> succeeds after 3 requests
 #   E2  500 + StorageFailed                                            -> fails at once, 1 request, FULL body logged
 #   E3  500 + ForwardRefused                                           -> fails at once, 1 request
 #   E4  503 forever                                                    -> fails at the deadline, full body logged
@@ -94,6 +95,10 @@ else fail "E1b rc=$(cat "$WORK/rc.e1b") calls=$(calls e1b)"; fi
 run e1c STATUS=503 BODY='{"title":"Service Unavailable"}' STATUS_2=200 BODY_2="$CREATED"
 if [ "$(cat "$WORK/rc.e1c")" = "0" ] && [ "$(calls e1c)" = "2" ]; then ok "E1c a 503 whose body has no failureType is still retried"
 else fail "E1c rc=$(cat "$WORK/rc.e1c") calls=$(calls e1c)"; fi
+
+run e1d STATUS=200 BODY='{"outcome":"refused","failureType":"OwnerTransitioning","message":"mid-handoff"}' BODY_3="$CREATED"
+if [ "$(cat "$WORK/rc.e1d")" = "0" ] && [ "$(calls e1d)" = "3" ]; then ok "E1d 200 + OwnerTransitioning (rebalance handoff) twice, then created succeeds after 3 requests"
+else fail "E1d rc=$(cat "$WORK/rc.e1d") calls=$(calls e1d)"; fi
 
 run e2 STATUS=500 BODY="$STORAGE"
 if [ "$(cat "$WORK/rc.e2")" = "1" ] && [ "$(calls e2)" = "1" ] && grep -q 'TAIL-MARKER' "$WORK/err.e2"; then ok "E2 500 + StorageFailed fails at once (1 request) with the FULL body, tail included, logged"

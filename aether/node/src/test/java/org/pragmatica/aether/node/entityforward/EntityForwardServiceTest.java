@@ -161,6 +161,60 @@ class EntityForwardServiceTest {
         assertRefusedAsUnknownKeyspace((EntityUpdateForwardResponse) sender.lastMessage());
     }
 
+    /// THE rebalance-handoff pin (run 8, 02w). The slice unloaded and the target was unregistered, but
+    /// committed state still names this node as host/owner, so the sender's request has not been re-routed
+    /// yet. The answer must be the TRANSIENT not-ready, never the terminal UnknownKeyspace — which the
+    /// sender turned into a refusal no caller retried. Armed by the first assertion (the registered target
+    /// serves), and by the sibling below (the same unregistered keyspace is terminal WITHOUT a stake).
+    @Test
+    void onEntityCreateForward_afterUnregister_whileCommittedHost_answersTheTransientHandoffCause() {
+        var service = entityForwardService(SELF, sender, LONG_TIMEOUT, keyspace -> keyspace.equals("orders"));
+
+        service.register("orders", echoTarget());
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-h1", "orders", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
+
+        assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
+            .as("registered keyspace must serve — else the handoff answer below proves nothing")
+            .isTrue();
+
+        service.unregister("orders");
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-h2", "orders", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
+
+        var response = (EntityUpdateForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isFalse();
+        assertThat(response.failureType()).isEqualTo("OwnerTransitioning");
+        assertThat(response.errorMessage()).contains("orders");
+    }
+
+    /// Every verb shares the one receiving protocol, but the read carries its own response carrier — pinned
+    /// separately so a handoff read cannot come back terminal while writes come back transient.
+    @Test
+    void onEntityGetForward_noTarget_whileCommittedHost_answersTheTransientHandoffCause() {
+        var service = entityForwardService(SELF, sender, LONG_TIMEOUT, keyspace -> true);
+
+        service.onEntityGetForward(EntityGetForward.entityGetForward(OWNER, "corr-h3", "orders", bytes("k1"), Deadline.NO_BUDGET));
+
+        var response = (EntityGetForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isFalse();
+        assertThat(response.failureType()).isEqualTo("OwnerTransitioning");
+    }
+
+    /// A genuinely unknown keyspace stays TERMINAL even when the committed-stake test is wired: the stake
+    /// is per keyspace, so a node hosting `orders` still refuses `ghosts` for good.
+    @Test
+    void onEntityCreateForward_noTarget_withoutCommittedStake_staysTerminalUnknownKeyspace() {
+        var service = entityForwardService(SELF, sender, LONG_TIMEOUT, keyspace -> keyspace.equals("orders"));
+
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-h4", "ghosts", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
+
+        var response = (EntityUpdateForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isFalse();
+        assertThat(response.failureType()).isEqualTo("UnknownKeyspace");
+    }
+
     /// Idempotent by contract: the close hook runs per keyspace and a node that never hosted one still
     /// calls through. Unregistering an unknown keyspace must not disturb the ones that ARE registered.
     @Test
