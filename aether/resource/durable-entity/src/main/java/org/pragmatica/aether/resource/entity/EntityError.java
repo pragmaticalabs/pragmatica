@@ -210,9 +210,10 @@ public sealed interface EntityError extends Cause {
         }
     }
 
-    /// The request reached a node that the COMMITTED state still names as the owner (or a host) of the entity
-    /// key's keyspace, but that can no longer serve it: the keyspace's slice has unloaded there and ownership
-    /// has not yet been re-minted elsewhere. The owner-handoff window of a rebalance.
+    /// The request reached a node that the COMMITTED state names as the owner (or a host) of the entity
+    /// key's keyspace, but that cannot serve it right now: either the keyspace's slice has unloaded there and
+    /// ownership has not yet been re-minted elsewhere (the handoff window of a rebalance), or it is still
+    /// loading — declared as a host before its forward target or partition ring is in place.
     ///
     /// **This is TRANSIENT and self-clearing**, and it is the answer that replaces a terminal
     /// "no entity registered for keyspace" for that window. Unloading retracts the node's hosting
@@ -228,7 +229,7 @@ public sealed interface EntityError extends Cause {
         @Override
         public String message() {
             return "Durable entity operation for key '" + key
-                 + "' reached an owner that is mid-handoff — transient, retry: " + reason;
+                 + "' reached an owner that is transitioning (loading or handing off) — transient, retry: " + reason;
         }
     }
 

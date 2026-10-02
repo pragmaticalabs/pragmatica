@@ -522,7 +522,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         log.warn("Entity owner-forward: no target for keyspace '{}' — {} (correlationId={})",
                  keyspace,
                  handoff
-                 ? "committed host/owner mid-handoff, answering transient"
+                 ? "committed host/owner is transitioning (loading or handing off), answering transient"
                  : "not a committed host or owner, answering terminal",
                  correlationId);
         answer(requester,
@@ -530,8 +530,8 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                handoff
                ? failure.apply(OWNER_TRANSITIONING,
                                "keyspace " + keyspace
-                              + " is mid-handoff on this node: its slice has unloaded but"
-                              + " ownership has not yet moved")
+                              + " owner is transitioning (loading or handing off) on this node:"
+                              + " retry once ownership has settled")
                : failure.apply("UnknownKeyspace", "no entity registered for keyspace " + keyspace));
     }
 

@@ -449,6 +449,72 @@ class EntityOwnershipReconcilerTest {
             assertThat(observed).as("a registration removal must re-ask the writer for every arc")
                                 .hasSize(PARTITIONS);
         }
+        /// Passes now have three triggers on different (virtual) threads — the periodic tick, `retract`, a
+        /// committed registration removal — and every pass publishes the SHARED hosting snapshot the writer's
+        /// per-arc asks read. Two overlapping passes would emit the same delta twice and could drive one
+        /// pass's writer from the other pass's snapshot. Pins the `synchronized` on `tick`: while one pass is
+        /// inside the writer, a second must BLOCK on the monitor, never enter. Deterministic: the wait ends
+        /// as soon as the second thread is either BLOCKED or inside the writer, so it needs no timeout.
+        @Test
+        void tick_neverRunsTwoPassesAtOnce() throws InterruptedException {
+            var store = storeRegisteredOn(HOSTS);
+            var inside = new java.util.concurrent.atomic.AtomicInteger();
+            var maxInside = new java.util.concurrent.atomic.AtomicInteger();
+            var firstEntered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var writer = new StreamPartitionOwnershipWriter() {
+                @Override
+                public Option<KVCommand<AetherKey>> decide(String stream,
+                                                           int partition,
+                                                           Option<StreamPartitionOwnershipValue> committed,
+                                                           NodeId hrwOwner,
+                                                           Epoch committedEpoch) {
+                    return Option.none();
+                }
+
+                @Override
+                public Option<KVCommand<AetherKey>> writeOwnershipChange(String stream, int partition) {
+                    return Option.none();
+                }
+
+                @Override
+                public List<KVCommand<AetherKey>> writeOwnershipChanges(List<PartitionKey> partitions) {
+                    maxInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
+                    firstEntered.countDown();
+                    try {
+                        release.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    inside.decrementAndGet();
+
+                    return List.of();
+                }
+            };
+            var reconciler = reconciler(store, writer, java.util.Collections.synchronizedList(new ArrayList<>()));
+            var first = Thread.ofPlatform().start(reconciler::tick);
+
+            firstEntered.await();
+
+            var second = Thread.ofPlatform().start(reconciler::tick);
+
+            while (second.getState() != Thread.State.BLOCKED && second.getState() != Thread.State.TERMINATED
+                   && inside.get() < 2) {
+                Thread.onSpinWait();
+            }
+
+            var overlapped = inside.get() >= 2;
+
+            release.countDown();
+            first.join();
+            second.join();
+
+            assertThat(overlapped).as("a second pass must block on the monitor, never enter the writer alongside the first")
+                                  .isFalse();
+            assertThat(maxInside.get()).as("both passes ran, one at a time")
+                                       .isEqualTo(1);
+        }
+
         private static EntityOwnershipReconciler reconciler(KVStore<AetherKey, AetherValue> store,
                                                             StreamPartitionOwnershipWriter writer,
                                                             List<List<KVCommand<AetherKey>>> applied) {
