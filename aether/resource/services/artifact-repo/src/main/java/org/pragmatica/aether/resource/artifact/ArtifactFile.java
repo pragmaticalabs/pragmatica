@@ -5,42 +5,37 @@
 package org.pragmatica.aether.resource.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.lang.Option;
 
 
-/// One FILE of a Maven coordinate: the coordinate plus the classifier and extension that tell
-/// `lib-1.0.0.jar`, `lib-1.0.0.pom` and `lib-1.0.0-sources.jar` apart. The store keys every
-/// file separately (#281); a GAV-only key made the pom a duplicate of the jar.
+/// One FILE of a Maven coordinate, identified by its EXACT file name (the path segment): `lib-1.0.0.jar`,
+/// `lib-1.0.0.pom`, `lib-1.0.0-sources.jar`, `lib-1.0.0.jar.asc`. The store keys every file separately (#281) and
+/// keys it by that whole name (#1778): identity is never a parsed reading (classifier, extension) of the name, so no
+/// two distinct names can alias one key, whatever they look like.
 ///
-/// The PRIMARY file — extension `jar`, no classifier — is what the GAV-typed store operations
-/// mean, so internal consumers that resolve a slice by its coordinate keep their signature.
-public record ArtifactFile(Artifact artifact, Option<String> classifier, String extension) {
-    public static final String PRIMARY_EXTENSION = "jar";
-
+/// The PRIMARY file — `<artifactId>-<version>.jar` — is what the GAV-typed store operations mean, so internal
+/// consumers that resolve a slice by its coordinate keep their signature.
+public record ArtifactFile(Artifact artifact, String fileName) {
     public static ArtifactFile primary(Artifact artifact) {
-        return new ArtifactFile(artifact, Option.none(), PRIMARY_EXTENSION);
+        return artifactFile(artifact, "", "jar");
     }
 
-    /// A blank classifier means "none" — the Maven path parser yields `""` for an unclassified file.
+    /// The file named exactly `fileName` under the coordinate's version.
+    public static ArtifactFile named(Artifact artifact, String fileName) {
+        return new ArtifactFile(artifact, fileName);
+    }
+
+    /// The conventionally named file `<artifactId>-<version>[-<classifier>].<extension>`; a blank classifier
+    /// means "none".
     public static ArtifactFile artifactFile(Artifact artifact, String classifier, String extension) {
-        return new ArtifactFile(artifact,
-                                classifier.isEmpty()
-                                ? Option.none()
-                                : Option.some(classifier),
-                                extension);
-    }
+        var stem = artifact.artifactId().id() + "-" + artifact.version().withQualifier();
 
-    public boolean isPrimary() {
-        return classifier.isEmpty() && PRIMARY_EXTENSION.equals(extension);
-    }
-
-    /// The key segment that names this file under its version: `[classifier.]extension`.
-    public String fileName() {
-        return classifier.map(c -> c + "." + extension)
-                         .or(extension);
+        return named(artifact,
+                     classifier.isEmpty()
+                     ? stem + "." + extension
+                     : stem + "-" + classifier + "." + extension);
     }
 
     public String asString() {
-        return artifact.asString() + ":" + fileName();
+        return artifact.asString() + ":" + fileName;
     }
 }

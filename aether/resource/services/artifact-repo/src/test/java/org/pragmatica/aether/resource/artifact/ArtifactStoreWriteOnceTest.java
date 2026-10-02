@@ -149,18 +149,18 @@ class ArtifactStoreWriteOnceTest {
         @Test
         void deploy_keepsTheStoredBytesAndMetadata_whenDifferentContentIsRefused() {
             deploy(v1, CONTENT);
-            var metaBefore = dht.union().get("artifacts/org.example/lib/1.0.0/jar/meta").clone();
+            var metaBefore = dht.union().get("artifacts/org.example/lib/1.0.0/lib-1.0.0.jar/meta").clone();
 
             failureOf(store.deploy(v1, OTHER));
 
-            assertThat(dht.union().get("artifacts/org.example/lib/1.0.0/jar/meta")).isEqualTo(metaBefore);
+            assertThat(dht.union().get("artifacts/org.example/lib/1.0.0/lib-1.0.0.jar/meta")).isEqualTo(metaBefore);
             assertThat(store.resolve(v1).await().onFailureRun(Assertions::fail).unwrap()).isEqualTo(CONTENT);
         }
 
         @Test
         void deploy_isIdempotent_whenContentIsIdentical() {
             var first = deploy(v1, CONTENT);
-            var metaBefore = dht.union().get("artifacts/org.example/lib/1.0.0/jar/meta").clone();
+            var metaBefore = dht.union().get("artifacts/org.example/lib/1.0.0/lib-1.0.0.jar/meta").clone();
             now.addAndGet(DAY);
 
             var again = deploy(v1, CONTENT);
@@ -168,7 +168,7 @@ class ArtifactStoreWriteOnceTest {
             assertThat(first.alreadyPresent()).isFalse();
             assertThat(again.alreadyPresent()).isTrue();
             assertThat(again.sha1()).isEqualTo(first.sha1());
-            assertThat(dht.union().get("artifacts/org.example/lib/1.0.0/jar/meta")).as("not rewritten")
+            assertThat(dht.union().get("artifacts/org.example/lib/1.0.0/lib-1.0.0.jar/meta")).as("not rewritten")
                                                                                    .isEqualTo(metaBefore);
             assertThat(listedVersions()).containsExactly("1.0.0");
         }
@@ -209,7 +209,7 @@ class ArtifactStoreWriteOnceTest {
         @Test
         void deploy_refusesAnIdenticalMd5AndSha1_whenTheStoredSha256Differs() {
             deploy(v1, CONTENT);
-            var key = "artifacts/org.example/lib/1.0.0/jar/meta";
+            var key = "artifacts/org.example/lib/1.0.0/lib-1.0.0.jar/meta";
             var parts = new String(dht.union().get(key), StandardCharsets.UTF_8).split(":");
 
             parts[4] = "tampered-sha256";
@@ -241,7 +241,7 @@ class ArtifactStoreWriteOnceTest {
 
         @Test
         void deploy_keepsTheOriginalDeployTime_whenAnIdenticalRePutRewritesMissingMetadata() {
-            var key = "artifacts/org.example/lib/1.0.0/jar/meta";
+            var key = "artifacts/org.example/lib/1.0.0/lib-1.0.0.jar/meta";
 
             deploy(v1, CONTENT);
             var original = new String(dht.union().get(key), StandardCharsets.UTF_8).split(":")[5];
@@ -275,7 +275,7 @@ class ArtifactStoreWriteOnceTest {
 
         @Test
         void deploy_failsWithoutWriting_whenTheExistenceCheckFailsTransiently() {
-            dht.getFailure = key -> key.endsWith("/jar/meta")
+            dht.getFailure = key -> key.endsWith("/lib-1.0.0.jar/meta")
                                     ? Option.<Cause> some(DHTError.quorumNotReached(2, 1))
                                     : Option.none();
 
@@ -452,7 +452,7 @@ class ArtifactStoreWriteOnceTest {
             assertThat(dht.removes).as("archive replaces delete: no key is ever removed").isEmpty();
             assertThat(dht.puts.stream().filter(key -> key.endsWith("/archived")).count())
                 .as("the marker is written exactly once").isEqualTo(1);
-            assertThat(dht.puts.stream().filter(key -> key.endsWith("/jar/meta")).count())
+            assertThat(dht.puts.stream().filter(key -> key.endsWith("/lib-1.0.0.jar/meta")).count())
                 .as("the metadata is written exactly once").isEqualTo(1);
         }
 
@@ -581,7 +581,7 @@ class ArtifactStoreWriteOnceTest {
             jar.await().onFailureRun(Assertions::fail);
             pom.await().onFailureRun(Assertions::fail);
 
-            assertThat(new String(dht.union().get(FILES_KEY), StandardCharsets.UTF_8)).isEqualTo("jar,pom");
+            assertThat(new String(dht.union().get(FILES_KEY), StandardCharsets.UTF_8)).isEqualTo("lib-1.0.0.jar,lib-1.0.0.pom");
         }
 
         @Test

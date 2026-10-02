@@ -197,6 +197,27 @@ class MavenProtocolHandlerWriteOnceTest {
         assertThat(get(dir + "marker.bin").content()).isEqualTo(bytesOf("marker.bin"));
     }
 
+    @Test
+    void put_keysEveryFileByItsExactName_soNoTwoDistinctNamesAlias() {
+        var dir = "/repository/org/example/lib/1.0.0/";
+        var names = List.of("lib-1.0.0.sources.jar",
+                            "lib-1.0.0-sources.jar",
+                            "lib-1.0.0.jar.sha256",
+                            "lib-1.0.0-jar.sha256",
+                            "lib-1.0.0.tar.gz",
+                            "lib-1.0.0-tar.gz",
+                            "lib-1.0.0",
+                            "lib-1.0.0.jar");
+
+        for (var name : names) {
+            assertThat(put(dir + name, bytesOf(name)).statusCode()).as(name).isEqualTo(200);
+        }
+
+        for (var name : names) {
+            assertThat(get(dir + name).content()).as("%s keeps its own bytes", name).isEqualTo(bytesOf(name));
+        }
+    }
+
     private static byte[] bytesOf(String label) {
         return label.getBytes(StandardCharsets.UTF_8);
     }

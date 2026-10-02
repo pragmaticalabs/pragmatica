@@ -209,12 +209,12 @@ class ArtifactStoreTest {
             store.deploy(ArtifactFile.artifactFile(artifact, "sources", "jar"), content).await().onFailureRun(Assertions::fail);
 
             assertThat(dhtStorage.keySet()).containsExactlyInAnyOrder(
-                "artifacts/org.example/keyed/1.0.0-rc4/jar/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/pom/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/sources.jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4.jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4.pom/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4-sources.jar/meta",
                 "artifacts/org.example/keyed/1.0.0-rc4/files");
             assertThat(new String(dhtStorage.get("artifacts/org.example/keyed/1.0.0-rc4/files"), StandardCharsets.UTF_8))
-                .isEqualTo("jar,pom,sources.jar");
+                .isEqualTo("keyed-1.0.0-rc4.jar,keyed-1.0.0-rc4.pom,keyed-1.0.0-rc4-sources.jar");
         }
 
         @Test
@@ -224,7 +224,7 @@ class ArtifactStoreTest {
 
             store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
             // Move the primary's metadata to the pre-#281 key: the store must not find it there.
-            var meta = dhtStorage.remove("artifacts/org.example/legacy/1.0.0/jar/meta");
+            var meta = dhtStorage.remove("artifacts/org.example/legacy/1.0.0/legacy-1.0.0.jar/meta");
             dhtStorage.put("artifacts/org.example/legacy/1.0.0/meta", meta);
 
             store.exists(artifact)
@@ -593,7 +593,7 @@ class ArtifactStoreTest {
         void resolveWithMetadata_absentKey_notFoundNamesTheDhtKeyHex() {
             var artifact = Artifact.artifact("org.example:absent:1.0.0").unwrap();
             var keyHex = java.util.HexFormat.of()
-                                            .formatHex("artifacts/org.example/absent/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+                                            .formatHex("artifacts/org.example/absent/1.0.0/absent-1.0.0.jar/meta".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await()
@@ -622,7 +622,7 @@ class ArtifactStoreTest {
         @Test
         void resolveWithMetadata_unparseableMetadata_isNotNotFound() {
             var artifact = Artifact.artifact("org.example:garbled:1.0.0").unwrap();
-            dhtStorage.put("artifacts/org.example/garbled/1.0.0/jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
+            dhtStorage.put("artifacts/org.example/garbled/1.0.0/garbled-1.0.0.jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await()
@@ -686,7 +686,7 @@ class ArtifactStoreTest {
             var store = new ArtifactStoreImpl(hangingDht, storage, new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())), FAST_BASE, FAST_PER_CHUNK, FAST_CEILING, lines::add);
             var artifact = Artifact.artifact("org.example:hang-meta:1.0.0").unwrap();
             var keyHex = java.util.HexFormat.of()
-                                            .formatHex("artifacts/org.example/hang-meta/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+                                            .formatHex("artifacts/org.example/hang-meta/1.0.0/hang-meta-1.0.0.jar/meta".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await(timeSpan(10).seconds())

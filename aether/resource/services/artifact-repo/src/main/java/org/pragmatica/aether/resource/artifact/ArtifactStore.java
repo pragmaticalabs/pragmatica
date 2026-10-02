@@ -64,7 +64,7 @@ public interface ArtifactStore {
 
     /// The store is keyed per FILE (#281): a coordinate's jar, pom and classified files are
     /// distinct entries. The `Artifact`-typed operations address the coordinate's PRIMARY file
-    /// (`jar`, no classifier), which is what slice resolution means by "the artifact".
+    /// (`<artifactId>-<version>.jar`), which is what slice resolution means by "the artifact".
     Promise<DeployResult> deploy(ArtifactFile file, byte[] content);
     Promise<byte[]> resolve(ArtifactFile file);
     Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file);
@@ -1278,8 +1278,8 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     /// Storage format, pinned by `ArtifactStoreTest.KeyShapeTests`: one metadata key per FILE —
-    /// `artifacts/<group>/<artifact>/<version>/<[classifier.]extension>/meta`, the primary jar
-    /// included (`.../jar/meta`). The pre-#281 GAV-only key (`.../<version>/meta`) is NOT read:
+    /// `artifacts/<group>/<artifact>/<version>/<file name>/meta` with the EXACT file name, the primary jar
+    /// included (`.../lib-1.0.0.jar/meta`). The pre-#281 GAV-only key (`.../<version>/meta`) is NOT read:
     /// artifact-store contents are cluster DHT state with no pre-GA compatibility promise.
     private byte[] metaKey(ArtifactFile file) {
         return metaKey(file.artifact(), file.fileName());

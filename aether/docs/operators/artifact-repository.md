@@ -340,9 +340,9 @@ Every file of a Maven coordinate is its own entry — the jar, the pom and each 
 (`-sources.jar`, `-javadoc.jar`, …) are keyed separately, so they never collide:
 
 ```
-# Metadata of one file (hashes, size, chunk ids); {file} is [{classifier}.]{extension}
+# Metadata of one file (hashes, size, chunk ids); {file} is the EXACT file name (identity is never parsed)
 artifacts/{groupId}/{artifactId}/{version}/{file}/meta
-#   e.g. …/1.0.0/jar/meta, …/1.0.0/pom/meta, …/1.0.0/sources.jar/meta
+#   e.g. …/1.0.0/lib-1.0.0.jar/meta, …/1.0.0/lib-1.0.0.pom/meta, …/1.0.0/lib-1.0.0.jar.asc/meta
 
 # Files deployed for a version: a grow-only set, used to date the version for the archive retention check
 artifacts/{groupId}/{artifactId}/{version}/files

@@ -9,8 +9,6 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Locale;
-import java.util.regex.Pattern;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -89,9 +87,10 @@ public interface MavenProtocolHandler {
     }
 
     sealed interface ParsedPath {
-        record ArtifactPath(Artifact artifact, String classifier, String extension) implements ParsedPath {
+        /// `fileName` is the exact path segment: the store keys the file by it, never by a parsed reading of it.
+        record ArtifactPath(Artifact artifact, String fileName) implements ParsedPath {
             ArtifactFile file() {
-                return ArtifactFile.artifactFile(artifact, classifier, extension);
+                return ArtifactFile.named(artifact, fileName);
             }
         }
 
@@ -178,7 +177,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     private Promise<MavenResponse> handleGetArtifact(ParsedPath.ArtifactPath ap) {
         return store.resolve(ap.file())
                     .map(content -> MavenResponse.ok(content,
-                                                     contentTypeFor(ap.extension())))
+                                                     contentTypeFor(ap.fileName())))
                     .recover(cause -> getFailureResponse(ap, cause));
     }
 
@@ -498,103 +497,29 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             groupPath.append(parts[i]);
         }
 
-        var extension = extractExtension(fileName, artifactIdStr, versionStr);
-        var classifier = extractClassifier(fileName, artifactIdStr, versionStr);
-
         return Result.all(GroupId.groupId(groupPath.toString()),
                           ArtifactId.artifactId(artifactIdStr),
                           Version.version(versionStr))
                      .map((groupId, artifactId, version) -> toArtifactPath(groupId,
                                                                            artifactId,
                                                                            version,
-                                                                           classifier,
-                                                                           extension))
+                                                                           fileName))
                      .or(Option.none());
     }
 
     private Option<ParsedPath> toArtifactPath(GroupId groupId,
                                               ArtifactId artifactId,
                                               Version version,
-                                              String classifier,
-                                              String extension) {
+                                              String fileName) {
         var artifact = new Artifact(groupId, artifactId, version);
 
-        return Option.some(new ParsedPath.ArtifactPath(artifact, classifier, extension));
-    }
-
-    /// Everything after the classifier's dot is the extension, sidecar suffix included: `lib-1.0.0.jar.asc` is
-    /// `jar.asc`, `lib-1.0.0-sources.pom.sha256` is `pom.sha256`. The last-dot reading mapped the sidecars of
-    /// DIFFERENT files onto one key (`asc`), so under write-once the second one answered 409 (#1778). Only
-    /// `.md5` and `.sha1` are peeled off earlier, as contentless checksum paths. A name that does not start with the
-    /// `<artifactId>-<version>` stem keeps its WHOLE name as the key: reading it after its last dot aliased it onto a
-    /// stem-named file (`other-1.0.0.jar` onto the version's primary jar), and under write-once the first of the two
-    /// would claim the key for good.
-    private String extractExtension(String fileName, String artifactId, String version) {
-        var stemEnd = stemLength(fileName, artifactId, version);
-
-        return stemEnd < 0
-               ? fileName
-               : extensionAfterStem(fileName.substring(stemEnd), fileName);
-    }
-
-    private String extensionAfterStem(String remainder, String fileName) {
-        var dotIndex = remainder.indexOf('.');
-
-        return dotIndex < 0 || !(remainder.startsWith("-") || dotIndex == 0)
-               ? fileName
-               : remainder.substring(dotIndex + 1);
-    }
-
-    /// The classifier is what follows the file's `<artifactId>-<version>` stem. Maven 3 deploys every
-    /// SNAPSHOT under a unique timestamped stem — `<artifactId>-<base>-<yyyyMMdd.HHmmss>-<n>` inside
-    /// the `<base>-SNAPSHOT` directory — so that stem is accepted too; before, a timestamped
-    /// `-sources.jar` read as unclassified and collided with the jar (#281 round 2).
-    private String extractClassifier(String fileName, String artifactId, String version) {
-        var stemEnd = stemLength(fileName, artifactId, version);
-
-        if (stemEnd < 0) return "";
-
-        var remainder = fileName.substring(stemEnd);
-
-        if (remainder.startsWith("-")) {
-            var dotIndex = remainder.indexOf('.');
-
-            return dotIndex > 1
-                   ? remainder.substring(1, dotIndex)
-                   : "";
-        }
-
-        return "";
+        return Option.some(new ParsedPath.ArtifactPath(artifact, fileName));
     }
 
     /// `<latest>` is the highest version by [VersionOrder], `<release>` the highest non-SNAPSHOT
     /// one (falling back to `<latest>` when every version is a snapshot); `<versions>` lists them
     /// ascending. The versions list is stored in deploy order, so "last deployed" used to be
     /// reported as latest (#281).
-    private static final Pattern TIMESTAMP_SUFFIX = Pattern.compile("^-\\d{8}\\.\\d{6}-\\d+");
-    private static final String SNAPSHOT_SUFFIX = "-SNAPSHOT";
-
-    /// Length of the `<artifactId>-<version>` stem, or of the timestamped SNAPSHOT stem
-    /// `<artifactId>-<base>-<yyyyMMdd.HHmmss>-<n>` when the version is a snapshot; -1 if neither.
-    private static int stemLength(String fileName, String artifactId, String version) {
-        var plain = artifactId + "-" + version;
-
-        if (fileName.startsWith(plain)) return plain.length();
-
-        if (!version.toUpperCase(Locale.ROOT).endsWith(SNAPSHOT_SUFFIX)) return -1;
-
-        var base = artifactId + "-" + version.substring(0,
-                                                        version.length() - SNAPSHOT_SUFFIX.length());
-
-        if (!fileName.startsWith(base)) return -1;
-
-        var matcher = TIMESTAMP_SUFFIX.matcher(fileName.substring(base.length()));
-
-        return matcher.find()
-               ? base.length() + matcher.end()
-               : -1;
-    }
-
     private String generateMavenMetadata(GroupId groupId, ArtifactId artifactId, List<Version> unordered) {
         var versions = unordered.stream().sorted(VersionOrder.INSTANCE).toList();
         var latest = versions.getLast();
@@ -632,8 +557,9 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                 .replace("'", "&apos;");
     }
 
-    private String contentTypeFor(String extension) {
-        return switch (extension) {
+    /// Content type is the one thing read from the file name's tail; identity never is.
+    private String contentTypeFor(String fileName) {
+        return switch (fileName.substring(fileName.lastIndexOf('.') + 1)) {
             case "jar" -> "application/java-archive";
             case "pom" -> "application/xml";
             case "xml" -> "application/xml";
