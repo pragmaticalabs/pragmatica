@@ -241,7 +241,7 @@ public final class DHTNode {
     }
 
     private boolean unconfirmed(NodeId member) {
-        return !member.equals(nodeId) && !heardFrom.contains(member);
+        return ! member.equals(nodeId) && !heardFrom.contains(member);
     }
 
     /// Record that `peer` has reached this node over the DHT since boot (#1777 Q1).

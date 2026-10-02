@@ -479,7 +479,8 @@ public final class DHTAntiEntropy {
     }
 
     private static boolean asks(CatchUpRound round, NodeId node) {
-        return round.sources().contains(node);
+        return round.sources()
+                    .contains(node);
     }
 
     private boolean isCurrent(CatchUpRound round) {
