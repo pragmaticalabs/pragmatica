@@ -1585,7 +1585,8 @@ String from`): identical bytes, but each side reads the other's value under the 
 type sets with equal fingerprints are compatible **only if no component name present in both appears at a
 different position within the same type**. A pure rename (a name that disappears, replaced at the same
 position by a new one) passes; a name that moves is refused. This is decidable from the two sets' NAMED
-SHAPE lines, which the hash deliberately omits, so the runtime keeps them:
+SHAPE lines, which the hash deliberately omits, so the runtime keeps them (mechanism CTO-confirmed
+2026-10-02):
 
 - every definition registration publishes its named SHAPE lines (state set and contract set) to a
   cluster-wide, content-addressed **shape registry** in the KV store, keyed by the SHA-256 of the named
@@ -2135,7 +2136,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 | CTO-confirmed: the 381 s arithmetic with upward-only jitter, the `StepRefusal` marker, `maxFireAttempts` = 5 | — |
 | Renames exempt from the codec fingerprint (CTO ruling): it hashes type identity, component types and positions, TAG and ENUM content — not component names | — |
 | **D9 (owner): separate input and output.** `Saga<I, S, O, D>`: `run(I)`, pure `init` I→S, pure `finish` S→O; contract = `I`, `O`, `D`'s closure (signal payloads, receipts); `S` private and absent from `SagaOutcome`/`SagaStatus`; the "S on the boundary" limitation removed; §7.10 example and A9(a) updated | — |
-| **Swap guard (CTO):** equal fingerprints are compatible only if no shared component name moves position within a type; named SHAPE lines kept in a content-addressed shape registry, binding and request envelope carry the named-shape hash; A9(e) | — |
+| **Swap guard (CTO):** equal fingerprints are compatible only if no shared component name moves position within a type; named SHAPE lines kept in a content-addressed shape registry (CTO-confirmed), binding and request envelope carry the named-shape hash; A9(e) | — |
 | **D8 refined (owner):** private state coexists freely, every decode site dispatches on the binding (sites enumerated); drift guard `BoundVersionFingerprintMismatch`; inbound contract fingerprint carried in the envelope and checked before decode, `ContractFingerprintMismatch`; `VersionBinding` carries `stateFingerprint` + `contractFingerprint`; `IncompatibleDurableCodec` retired; A9 rewritten (different `S` coexists, drift refused, contract mismatch refused, pure rename accepted) | G1 |
 
 ---
