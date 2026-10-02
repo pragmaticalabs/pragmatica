@@ -16,6 +16,7 @@
 package org.pragmatica.dht;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -143,10 +144,9 @@ public final class DHTNode {
     /// anti-entropy's anchorless rule makes them serving after one round.
     ///
     /// At boot there is no ring change to diff, so the previous holders are not known exactly. They are
-    /// bounded instead: a node inserted into the ring only pushes existing replicas LATER along a
-    /// partition's walk, so the holders displaced by up to RF nodes that joined together are the next RF
-    /// nodes after the replica set. They are recorded as catch-up sources, so a booting node whose whole
-    /// replica set is new still finds the old holders rather than completing on an empty union.
+    /// bounded instead, and walked LIVE ([#previousHolders]) rather than recorded here: the ring a node
+    /// boots with is its statically configured cores, while the holders it must find are members of the
+    /// ring the cluster actually has, which this node only learns as `NodeJoined` decisions arrive.
     @Contract
     public void beginCatchUp() {
         if (config.isFullReplication()) {
@@ -159,8 +159,7 @@ public final class DHTNode {
                  .mapToObj(Partition::at)
                  .filter(partition -> ring.nodesFor(partition, replicationFactor)
                                           .contains(nodeId))
-                 .forEach(partition -> catchUp.markCatchingUp(partition,
-                                                              ring.nodesFor(partition, 2 * replicationFactor)));
+                 .forEach(catchUp::markCatchingUpSinceBoot);
     }
 
     /// Whether this node's answers for `partition` are authoritative.
@@ -177,8 +176,24 @@ public final class DHTNode {
         return catchUp.pendingPartitions();
     }
 
+    /// The catch-up sources beyond the current co-replicas: the previous replica set a ring change recorded
+    /// and, for a partition pending since boot, the next RF nodes after the replica set on the CURRENT ring.
+    /// A node inserted into the ring only pushes existing replicas later along a partition's walk, so the
+    /// holders displaced by up to RF nodes that joined together are those nodes; walking the current ring
+    /// (not the boot-time static one) finds them even when they are cores this node's configuration does
+    /// not list.
     Set<NodeId> previousHolders(Partition partition) {
-        return catchUp.previousHolders(partition);
+        var recorded = catchUp.previousHolders(partition);
+
+        if (!catchUp.pendingSinceBoot(partition)) {
+            return recorded;
+        }
+
+        var holders = new HashSet<>(recorded);
+
+        holders.addAll(ring.nodesFor(partition, 2 * config.effectiveReplicationFactor(ring.nodeCount())));
+
+        return Set.copyOf(holders);
     }
 
     @Contract

@@ -41,13 +41,15 @@ import org.pragmatica.lang.Option;
 /// In memory by design: the store is in memory too, so a restarted node is empty and must start pending.
 final class CatchUpState {
     /// A pending partition: the previous holders recorded for it and the catch-up rounds started so far.
-    private record Pending(Set<NodeId> previousHolders, int rounds) {
+    /// `sinceBoot` marks a partition pending since this node booted, whose previous holders are not known
+    /// exactly and are read off the current ring instead (see [DHTNode#previousHolders]).
+    private record Pending(Set<NodeId> previousHolders, int rounds, boolean sinceBoot) {
         Pending merge(Pending other) {
-            return new Pending(union(previousHolders, other.previousHolders), rounds);
+            return new Pending(union(previousHolders, other.previousHolders), rounds, sinceBoot || other.sinceBoot);
         }
 
         Pending nextRound() {
-            return new Pending(previousHolders, rounds + 1);
+            return new Pending(previousHolders, rounds + 1, sinceBoot);
         }
     }
 
@@ -62,7 +64,19 @@ final class CatchUpState {
     /// Mark `partition` catching up, adding `previousHolders` to the sources already recorded for it.
     @Contract
     void markCatchingUp(Partition partition, Collection<NodeId> previousHolders) {
-        pending.merge(partition.value(), new Pending(Set.copyOf(previousHolders), 0), Pending::merge);
+        pending.merge(partition.value(), new Pending(Set.copyOf(previousHolders), 0, false), Pending::merge);
+    }
+
+    /// Mark `partition` catching up since boot: no previous holders are recorded, they are walked live.
+    @Contract
+    void markCatchingUpSinceBoot(Partition partition) {
+        pending.merge(partition.value(), new Pending(Set.of(), 0, true), Pending::merge);
+    }
+
+    boolean pendingSinceBoot(Partition partition) {
+        return Option.option(pending.get(partition.value()))
+                     .map(Pending::sinceBoot)
+                     .or(false);
     }
 
     /// Mark `partition` serving: the node is authoritative for it from now on.

@@ -320,6 +320,24 @@ class DHTCatchUpGateTest {
         assertThat(cluster.member(joiner).node().stuckCatchUpPartitions()).as("reported stuck").isPositive();
     }
 
+    /// H3/H7: the boot walk's 2·RF bound, on the LIVE ring. Three cores join together and become a key's whole
+    /// replica set. Each boots knowing only the configured cores — the three joiners — and learns the old
+    /// holders as ring members afterwards. Only a walk of the current ring past the replica set (RF more
+    /// nodes) reaches them; a walk of RF, or of the boot-time static ring, completes on an empty union.
+    @Test
+    void bootWalk_reachesOldHoldersOnTheLiveRing_whenTheWholeReplicaSetBootedTogether() {
+        var cluster = Cluster.of(3);
+        var joiners = List.of(new NodeId("node-3"), new NodeId("node-4"), new NodeId("node-5"));
+        var key = cluster.keyWholeSetReplacedBy(joiners, "h3");
+
+        cluster.seedOnReplicas(key);
+        cluster.bootTogetherKnowingOnly(joiners);
+        cluster.catchUpEverywhere();
+
+        assertThat(cluster.replicasOf(key)).as("control: the joiners are the whole replica set").containsExactlyInAnyOrderElementsOf(joiners);
+        joiners.forEach(joiner -> assertThat(cluster.holds(joiner, key)).as("%s filled from an old holder", joiner.id()).isTrue());
+    }
+
     /// T2b: when quorum becomes unreachable because replicas refused as catching up, the read fails with
     /// the transient [DHTError.NotCaughtUp] — never "absent", and distinguishable from an unreachable quorum.
     @Test
@@ -538,6 +556,17 @@ class DHTCatchUpGateTest {
                                    dhtTopologyListener(node, dhtRebalancer(node, network, CONFIG), antiEntropy),
                                    distributedDHTClient(node, network, CONFIG)));
             node.beginCatchUp();
+        }
+
+        /// `joiners` boot together, each with a ring of only the joiners (its configured cores), and then learn
+        /// the existing members as ring changes — without any anti-entropy round running in between.
+        void bootTogetherKnowingOnly(List<NodeId> joiners) {
+            var existing = List.copyOf(members.keySet());
+
+            joiners.forEach(joiner -> members.values().forEach(member -> member.node().changeRing(ring -> ring.addNode(joiner))));
+            joiners.forEach(joiner -> members.put(joiner, member(joiner, joiners)));
+            joiners.forEach(joiner -> members.get(joiner).node().beginCatchUp());
+            joiners.forEach(joiner -> existing.forEach(old -> members.get(joiner).node().changeRing(ring -> ring.addNode(old))));
         }
 
         /// Only the nodes in `aware` learn of the joiner — the others' rings disagree with it.
