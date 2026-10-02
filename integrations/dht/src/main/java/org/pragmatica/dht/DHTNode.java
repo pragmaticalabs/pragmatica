@@ -220,10 +220,7 @@ public final class DHTNode {
 
     private int bootWalkLength() {
         var boot = bootMembers.get();
-        var joinedSinceBoot = (int) ring.nodes()
-                                        .stream()
-                                        .filter(member -> !boot.contains(member))
-                                        .count();
+        var joinedSinceBoot = (int) ring.nodes().stream().filter(member -> !boot.contains(member)).count();
 
         return config.effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot;
     }
