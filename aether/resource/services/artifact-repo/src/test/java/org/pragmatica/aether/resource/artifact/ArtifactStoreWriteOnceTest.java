@@ -173,7 +173,7 @@ class ArtifactStoreWriteOnceTest {
         @Test
         void deploy_refusesALoser_whenAnotherDigestIsAlreadyBoundToTheCoordinate_andUploadsNothing() {
             // Another uploader's digest was committed first; its metadata has not landed yet.
-            index.bindContent(ArtifactFile.primary(v1), new ArtifactContentValue(OTHER.length, "other-md5", "other-sha1"))
+            index.bindContent(ArtifactFile.primary(v1), new ArtifactContentValue(OTHER.length, "other-md5", "other-sha1", "other-sha256"))
                  .await()
                  .onFailureRun(Assertions::fail);
 
@@ -182,6 +182,41 @@ class ArtifactStoreWriteOnceTest {
             assertThat(cause).isInstanceOf(ArtifactStoreError.ContentConflict.class);
             assertThat(((ArtifactStoreError.ContentConflict) cause).storedSha1()).isEqualTo("other-sha1");
             assertThat(dht.puts).as("a loser uploads nothing and writes no metadata").isEmpty();
+        }
+
+        @Test
+        void deploy_refusesAnOfferWhoseMd5AndSha1MatchTheBinding_butWhoseSha256Differs() {
+            // A collision of the two old digests: same size, same MD5, same SHA-1, a different SHA-256.
+            index.bindContent(ArtifactFile.primary(v1),
+                              new ArtifactContentValue(CONTENT.length, digest("MD5", CONTENT), digest("SHA-1", CONTENT), "a-different-sha256"))
+                 .await()
+                 .onFailureRun(Assertions::fail);
+
+            var cause = failureOf(store.deploy(v1, CONTENT));
+
+            assertThat(cause).isInstanceOf(ArtifactStoreError.ContentConflict.class);
+            assertThat(cause.message()).contains("stored sha256=a-different-sha256").contains("offered sha256=" + digest("SHA-256", CONTENT));
+            assertThat(dht.puts).as("nothing of the loser is uploaded").isEmpty();
+        }
+
+        @Test
+        void deploy_refusesAnIdenticalMd5AndSha1_whenTheStoredSha256Differs() {
+            deploy(v1, CONTENT);
+            var key = "artifacts/org.example/lib/1.0.0/jar/meta";
+            var parts = new String(dht.union().get(key), StandardCharsets.UTF_8).split(":");
+
+            parts[4] = "tampered-sha256";
+            dht.replicas.getFirst().put(key, String.join(":", parts).getBytes(StandardCharsets.UTF_8));
+
+            assertThat(failureOf(store.deploy(v1, CONTENT))).isInstanceOf(ArtifactStoreError.ContentConflict.class);
+        }
+
+        private String digest(String algorithm, byte[] bytes) {
+            try {
+                return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance(algorithm).digest(bytes));
+            } catch (java.security.NoSuchAlgorithmException e) {
+                throw new IllegalStateException(e);
+            }
         }
 
         @Test

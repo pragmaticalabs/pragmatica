@@ -161,6 +161,7 @@ public interface ArtifactStore {
                             int chunkCount,
                             String md5,
                             String sha1,
+                            String sha256,
                             long deployedAt,
                             List<String> blockIds) {
         public byte[] toBytes() {
@@ -168,6 +169,7 @@ public interface ArtifactStore {
                      + ":" + chunkCount
                      + ":" + md5
                      + ":" + sha1
+                     + ":" + sha256
                      + ":" + deployedAt
                      + ":" + String.join(",", blockIds);
 
@@ -182,17 +184,18 @@ public interface ArtifactStore {
             try {
                 var parts = new String(bytes, StandardCharsets.UTF_8).split(":");
 
-                if (parts.length != 6) {
+                if (parts.length != 7) {
                     return none();
                 }
 
-                var ids = List.of(parts[5].split(","));
+                var ids = List.of(parts[6].split(","));
 
                 return some(new ArtifactMetadata(Long.parseLong(parts[0]),
                                                  Integer.parseInt(parts[1]),
                                                  parts[2],
                                                  parts[3],
-                                                 Long.parseLong(parts[4]),
+                                                 parts[4],
+                                                 Long.parseLong(parts[5]),
                                                  ids));
             } catch (Exception e) {
                 return none();
@@ -244,13 +247,19 @@ public interface ArtifactStore {
         }
 
         /// A coordinate is written once (#1778): the stored content and the offered content differ. Names
-        /// both SHA-1 digests so the operator can tell which of the two is the one they meant.
-        record ContentConflict(ArtifactFile file, String storedSha1, String offeredSha1) implements ArtifactStoreError {
+        /// both SHA-1 and SHA-256 digests so the operator can tell which of the two is the one they meant.
+        record ContentConflict(ArtifactFile file,
+                               String storedSha1,
+                               String offeredSha1,
+                               String storedSha256,
+                               String offeredSha256) implements ArtifactStoreError {
             @Override
             public String message() {
                 return "Artifact " + file.asString()
                      + " is already stored with different content (stored sha1=" + storedSha1
                      + ", offered sha1=" + offeredSha1
+                     + ", stored sha256=" + storedSha256
+                     + ", offered sha256=" + offeredSha256
                      + "); a coordinate is written once, publish the new content under a new version";
             }
         }
@@ -593,6 +602,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         log.info("Deploying artifact: {} ({} bytes)", file.asString(), content.length);
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
+        var digest = new ArtifactContentValue(content.length, md5, sha1, computeHash(content, "SHA-256"));
         // Aggregate timeout on the FULL deploy pipeline (checks + chunk fan-out + metadata + list writes —
         // each issues its own DHT operations). A single failing-to-quorum DHT write (e.g. when a peer's QUIC
         // channel is unwritable due to backpressure and `writeIfWritable` silently drops) blocks the chain
@@ -601,12 +611,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         return rejectSnapshot(file).async()
                              .flatMap(_ -> rejectIfArchived(file))
                              .flatMap(_ -> readStoredMetadata(file))
-                             .flatMap(stored -> stored.map(bytes -> acceptIdentical(file,
-                                                                                    bytes,
-                                                                                    content.length,
-                                                                                    md5,
-                                                                                    sha1))
-                                                      .or(() -> bindThenWrite(file, content, md5, sha1)))
+                             .flatMap(stored -> stored.map(bytes -> acceptIdentical(file, bytes, digest))
+                                                      .or(() -> bindThenWrite(file, content, digest)))
                              .timeout(DEPLOY_TIMEOUT);
     }
 
@@ -649,33 +655,29 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     /// Identical content is idempotent; different content is [ArtifactStoreError.ContentConflict]. Bytes that
     /// are present but do not parse are corruption and are never overwritten.
-    private Promise<DeployResult> acceptIdentical(ArtifactFile file,
-                                                  byte[] storedBytes,
-                                                  int size,
-                                                  String md5,
-                                                  String sha1) {
+    private Promise<DeployResult> acceptIdentical(ArtifactFile file, byte[] storedBytes, ArtifactContentValue offered) {
         return ArtifactMetadata.fromBytes(storedBytes)
                                .async(new ArtifactStoreError.MetadataUnparseable(file,
                                                                                  keyHex(file)))
-                               .flatMap(stored -> acceptIfSame(file, stored, size, md5, sha1));
+                               .flatMap(stored -> acceptIfSame(file, stored, offered));
     }
 
-    private Promise<DeployResult> acceptIfSame(ArtifactFile file,
-                                               ArtifactMetadata stored,
-                                               int size,
-                                               String md5,
-                                               String sha1) {
-        return sameContent(stored, size, md5, sha1)
+    private Promise<DeployResult> acceptIfSame(ArtifactFile file, ArtifactMetadata stored, ArtifactContentValue offered) {
+        return sameContent(stored, offered)
                ? reassertRegistration(file, stored)
-               : new ArtifactStoreError.ContentConflict(file, stored.sha1(), sha1).promise();
+               : new ArtifactStoreError.ContentConflict(file,
+                                                        stored.sha1(),
+                                                        offered.sha1(),
+                                                        stored.sha256(),
+                                                        offered.sha256()).promise();
     }
 
-    private static boolean sameContent(ArtifactMetadata stored, int size, String md5, String sha1) {
-        return stored.size() == size
-               && stored.md5()
-                        .equals(md5)
-               && stored.sha1()
-                        .equals(sha1);
+    /// Size, MD5, SHA-1 AND SHA-256 must all match: a collision of the two old digests is not enough to pass.
+    private static boolean sameContent(ArtifactMetadata stored, ArtifactContentValue offered) {
+        return stored.size() == offered.size()
+               && stored.md5().equals(offered.md5())
+               && stored.sha1().equals(offered.sha1())
+               && stored.sha256().equals(offered.sha256());
     }
 
     private Promise<DeployResult> reassertRegistration(ArtifactFile file, ArtifactMetadata stored) {
@@ -693,9 +695,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// before writing leaves a bound coordinate with no metadata; an identical re-put finds its own digest bound and
     /// completes the write. The version bound is checked BEFORE binding, so a version refused for want of room does
     /// not leave its coordinate bound to content that was never stored.
-    private Promise<DeployResult> bindThenWrite(ArtifactFile file, byte[] content, String md5, String sha1) {
-        var offered = new ArtifactContentValue(content.length, md5, sha1);
-
+    private Promise<DeployResult> bindThenWrite(ArtifactFile file, byte[] content, ArtifactContentValue offered) {
         return versionIndex.requireCapacity(file.artifact())
                            .flatMap(_ -> versionIndex.bindContent(file, offered))
                            .flatMap(bound -> writeIfBound(file, content, offered, bound));
@@ -706,11 +706,15 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                ArtifactContentValue offered,
                                                ArtifactContentValue bound) {
         return bound.equals(offered)
-               ? writeNew(file, content, offered.md5(), offered.sha1())
-               : new ArtifactStoreError.ContentConflict(file, bound.sha1(), offered.sha1()).promise();
+               ? writeNew(file, content, offered)
+               : new ArtifactStoreError.ContentConflict(file,
+                                                        bound.sha1(),
+                                                        offered.sha1(),
+                                                        bound.sha256(),
+                                                        offered.sha256()).promise();
     }
 
-    private Promise<DeployResult> writeNew(ArtifactFile file, byte[] content, String md5, String sha1) {
+    private Promise<DeployResult> writeNew(ArtifactFile file, byte[] content, ArtifactContentValue digest) {
         var chunks = splitIntoChunks(content);
         // CORRECTNESS: boundedFanOut preserves chunk order — blockIds are recorded into
         // metadata in chunk order and reassembled in that order on resolve; reordering
@@ -718,9 +722,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry).flatMap(blockIds -> storeMetadataAndVersions(file,
                                                                                                                                     blockIds,
                                                                                                                                     chunks.size(),
-                                                                                                                                    md5,
-                                                                                                                                    sha1,
-                                                                                                                                    content.length));
+                                                                                                                                    digest));
     }
 
     @Override
@@ -903,16 +905,14 @@ class ArtifactStoreImpl implements ArtifactStore {
     private Promise<DeployResult> storeMetadataAndVersions(ArtifactFile file,
                                                            List<BlockId> blockIds,
                                                            int chunkCount,
-                                                           String md5,
-                                                           String sha1,
-                                                           int contentLength) {
+                                                           ArtifactContentValue digest) {
         var hexIds = blockIds.stream().map(BlockId::hexString).toList();
-        var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1, clock.getAsLong(), hexIds);
+        var metadata = new ArtifactMetadata(digest.size(), chunkCount, digest.md5(), digest.sha1(), digest.sha256(), clock.getAsLong(), hexIds);
 
         return dhtPutWithRetry(metaKey(file),
                                metadata.toBytes()).flatMap(_ -> publishVersion(file.artifact()))
                               .flatMap(_ -> registerFile(file))
-                              .map(_ -> recordDeployMetrics(file, contentLength, chunkCount, md5, sha1));
+                              .map(_ -> recordDeployMetrics(file, (int) digest.size(), chunkCount, digest.md5(), digest.sha1()));
     }
 
     private Promise<ResolvedArtifact> resolveChunksFromStorage(ArtifactFile file, ArtifactMetadata meta) {

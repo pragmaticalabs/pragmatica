@@ -161,7 +161,7 @@ final class BackupFixtures {
                        new Fixture(AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:orders-slice").unwrap(),
                                                                                    "1.0.0",
                                                                                    "sources.jar"),
-                                   new AetherValue.ArtifactContentValue(1234L, "d41d8cd98f00b204e9800998ecf8427e", "da39a3ee5e6b4b0d3255bfef95601890afd80709")),
+                                   new AetherValue.ArtifactContentValue(1234L, "d41d8cd98f00b204e9800998ecf8427e", "da39a3ee5e6b4b0d3255bfef95601890afd80709", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")),
                        new Fixture(AetherKey.ArtifactVersionsKey.artifactVersionsKey(ArtifactBase.artifactBase("org.example:orders-slice").unwrap()),
                                    new AetherValue.ArtifactVersionsValue(List.of(new AetherValue.ArtifactVersionEntry("1.0.0", true),
                                                                                  new AetherValue.ArtifactVersionEntry("1.1.0", false)),

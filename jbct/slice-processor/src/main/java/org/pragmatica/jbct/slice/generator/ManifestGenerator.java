@@ -245,8 +245,10 @@ public class ManifestGenerator {
         }
     }
 
-    /// `Properties.store` stamps the wall-clock date and writes entries in hash order. This text has neither, so the
-    /// same inputs produce the same bytes (reproducible jars, #1778): the comment, then the entries sorted by key.
+    /// `Properties.store` stamps the wall-clock date; this text does not, so the same inputs produce the same bytes
+    /// (reproducible jars, #1778): the comment, then the entries. Entry ORDER is the JDK's: since JDK 18
+    /// (JDK-8231640) `store` writes entries sorted by key, so no sort is repeated here; `ManifestReproducibleTextTest`
+    /// pins the ordering, so a runtime that stopped sorting fails there instead of silently making jars differ.
     static String reproducibleText(Properties props, String comment) {
         var writer = new java.io.StringWriter();
 
@@ -257,7 +259,7 @@ public class ManifestGenerator {
         }
 
         var lines = writer.toString().lines().toList();
-        var entries = lines.stream().filter(line -> !line.startsWith("#")).sorted().toList();
+        var entries = lines.stream().filter(line -> !line.startsWith("#")).toList();
 
         return "#" + comment + "\n" + String.join("\n", entries) + "\n";
     }

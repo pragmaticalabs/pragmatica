@@ -280,7 +280,7 @@ class MavenProtocolHandlerTest {
 
             @Override
             public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
-                var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", 0L, java.util.List.of("blk"));
+                var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", "existing-sha256", 0L, java.util.List.of("blk"));
                 return Promise.success(Option.some(meta));
             }
 
