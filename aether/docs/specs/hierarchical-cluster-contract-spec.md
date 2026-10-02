@@ -61,9 +61,9 @@ Zone diversity requires an explicit workload placement policy; community zone co
 does not provide that guarantee.
 
 H06. Replayed activation does not allocate duplicate schedulers, listeners or worker runtimes.
-A directive naming a different community is refused at commit (H11); removal of a node's
-directive stops its runtime. Shutdown cancels all owned subscriptions and tasks. Initial
-membership is sampled; activation must not wait for a later unrelated SWIM edge.
+A directive naming a different community is refused at commit (H11). Shutdown cancels all
+owned subscriptions and tasks. Initial membership is sampled; activation must not wait for a
+later unrelated SWIM edge.
 
 H07. Observation is not authorization. Any authenticated cluster member can exchange ping/pong
 observations independently of leadership. Authority-bearing piggybacks have their own sender,
@@ -82,21 +82,26 @@ H10. Correctness traffic has bounded queues isolated from bulk telemetry and rep
 freedom from connection-wide QUIC flow-control starvation.
 Steady-state operation and failure recovery must both fit the supported resource envelope.
 
-H11. A node's community assignment is final for the node's lifetime. The first committed
+H11. A node's community assignment is final for the identity's lifetime. The first committed
 `ActivationDirective` community of a NodeId is the only one it carries; a later write naming a
 different community for that NodeId is refused at commit. An identical rewrite is a no-op.
 [mechanism: an arm of the KV applier's committed-state fence (`KVStore.staleWrite`), a pure
 function of the committed and incoming values, so every replica refuses identically and a refused
 `LeaderTransaction` applies none of its mutations]. A writer-side "already assigned" check is not
 this guarantee: it runs before commit and a concurrent or other writer bypasses it.
-Removal of the directive at departure or retirement ends the lifetime; removal is terminal, and
-the NodeId is not re-admitted as a worker under a new assignment. Moving capacity between
-communities is make-before-break replacement: provision in the target community, wait for
-READY, then drain and terminate the old node (§6). Dissolving or merging a community replaces
-its nodes; no node is relabelled.
-[limit: removal-then-readmission] The applier arm sees only the stored directive. Once departure
-removes it, refusing a later directive for the same NodeId needs retained evidence (a
-retired-identity record or a boot-token fence). Which record carries it is open (#1840).
+The directive is not removed while the identity can still appear. A DEAD verdict is an
+observation (H07): it triggers replacement and a release request to the node source, not removal
+of the directive. Removal is garbage collection, permitted only after the node source confirms
+the instance is terminated (#1842: the source owns release and termination, and its reconcile is
+the collection point). A falsely-DEAD node that returns while its instance exists therefore finds
+its assignment intact: it rejoins the same community, or the source terminates it if a release was
+already issued. It is not re-assigned. Moving capacity between communities is make-before-break
+replacement: provision in the target community, wait for READY, then drain and terminate the old
+node (§6). Dissolving or merging a community replaces its nodes; no node is relabelled.
+[limit: dead-edge-deletion] Until #1842 lands, a worker DEAD edge removes the directive
+(`MembershipDeltaProjector` emits `WorkerLeaveDecision`; `ClusterDeploymentState.processWorkerLeave`
+calls `handleNodeRemoval`, which removes it), in violation of this invariant. Community placement
+retirement already removes it only after the provider reports the previous instance absent.
 
 H12. SWIM membership is scoped by role. A core retains SWIM state for cores and for each
 community's committed governor, approximately `K + G`; a worker retains it for cores and the
@@ -211,8 +216,8 @@ activation. Every affected resource enforces community identity, owner and gener
 write boundary; a metadata-only fence is insufficient.
 
 Activation owns one runtime handle containing all subscriptions and scheduled tasks. The handle
-is reused for an identical directive and released with orderly cancellation when the directive
-is removed. A directive for another community is refused at commit (H11), so no handle is swapped.
+is reused for an identical directive and released with orderly cancellation at shutdown. A
+directive for another community is refused at commit (H11), so no handle is swapped.
 Committed authority is consulted for effects, while observations can continue without authority.
 
 ## 8. Isolation and reconnection
@@ -270,7 +275,7 @@ The acceptance matrix must drive the live production path, not only invoke consu
 | H-T11 | One-region outage, asymmetric loss, mass reconnect | Bounded queues, fenced effects, continuing control responsiveness |
 | H-T12 | 10K logical nodes plus real increasing-size clusters | Report CPU, memory, bytes, convergence and recovery bounds |
 | H-T13 | Worker join wave of `N` with fixed `K`, `G` and `M` | Retained SWIM membership and per-edge work on every node independent of `N` |
-| H-T14 | Departure, then the same NodeId admitted again | No second assignment committed for that NodeId |
+| H-T14 | A falsely-DEAD worker re-admitted under the same NodeId | Directive survives the DEAD edge; the worker keeps its original community |
 | H-T15 | Worker SWIM view holds cores with lower ids; a core-role node submits a governor claim | Only community workers are nominated; the core refuses the core-role claim |
 
 Synthetic topology tests establish algorithmic bounds only. In-JVM tests establish wiring and
