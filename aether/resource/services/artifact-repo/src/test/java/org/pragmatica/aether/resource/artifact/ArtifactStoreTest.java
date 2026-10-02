@@ -212,8 +212,7 @@ class ArtifactStoreTest {
                 "artifacts/org.example/keyed/1.0.0-rc4/jar/meta",
                 "artifacts/org.example/keyed/1.0.0-rc4/pom/meta",
                 "artifacts/org.example/keyed/1.0.0-rc4/sources.jar/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/files",
-                "artifacts/org.example/keyed/versions");
+                "artifacts/org.example/keyed/1.0.0-rc4/files");
             assertThat(new String(dhtStorage.get("artifacts/org.example/keyed/1.0.0-rc4/files"), StandardCharsets.UTF_8))
                 .isEqualTo("jar,pom,sources.jar");
         }
@@ -577,12 +576,12 @@ class ArtifactStoreTest {
             graceStore.versions(artifact.groupId(), artifact.artifactId()).await();
 
             // the metadata resolve read is the only one carrying the grace (the archive-marker read beside it,
-            // #1778, is a plain one); metadata() and versions() use the plain get
+            // #1778, is a plain one); metadata() uses the plain get, and versions() no longer reads the DHT
             var graceReads = seen.stream().filter(ReadOptions::hasAbsentGrace).toList();
 
             assertThat(graceReads).hasSize(1);
             assertThat(graceReads.getFirst().absentGrace()).isEqualTo(timeSpan(250).millis());
-            assertThat(plainGets.get()).isEqualTo(2);
+            assertThat(plainGets.get()).isEqualTo(1);
         }
     }
 

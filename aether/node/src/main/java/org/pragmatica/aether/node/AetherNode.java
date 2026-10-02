@@ -161,6 +161,7 @@ import org.pragmatica.aether.metrics.deployment.DeploymentMetricsScheduler;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.repository.KvArtifactVersionIndex;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
@@ -1892,9 +1893,12 @@ public interface AetherNode extends ManageableNode {
         var contentStorage = Objects.requireNonNull(storageSetups.get("content"),
                                                     "storageSetups missing \"content\" after createAll succeeded -- invariant violated")
                                     .instance();
+        // #1778: the versions of each artifact are kept in consensus, where concurrent publishes are folded by the
+        // applier; the bytes and per-version metadata stay in the DHT.
         var artifactStore = ArtifactStore.artifactStore(dhtClient,
                                                         artifactStorage,
-                                                        RepositoryFactory.archivePolicy(config.sliceConfig()));
+                                                        RepositoryFactory.archivePolicy(config.sliceConfig()),
+                                                        KvArtifactVersionIndex.kvArtifactVersionIndex(clusterNode, kvStore));
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);

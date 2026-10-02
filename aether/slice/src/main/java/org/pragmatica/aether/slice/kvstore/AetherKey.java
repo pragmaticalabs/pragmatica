@@ -81,6 +81,36 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The versions of one artifact in the built-in artifact store (#1778): a grow-only set whose entries carry
+    /// the archived flag, kept in consensus so concurrent publishes are folded by the applier instead of racing
+    /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Backed up
+    /// with the rest of the cluster state, because the DHT keys it indexes survive a restart.
+    record ArtifactVersionsKey(ArtifactBase artifactBase) implements ClusterStateKey {
+        private static final String PREFIX = "artifact-versions/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ArtifactVersionsKey artifactVersionsKey(ArtifactBase artifactBase) {
+            return new ArtifactVersionsKey(artifactBase);
+        }
+
+        public static Result<ArtifactVersionsKey> artifactVersionsKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ARTIFACT_VERSIONS_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return ArtifactBase.artifactBase(key.substring(PREFIX.length())).map(ArtifactVersionsKey::new);
+        }
+    }
+
     record AppBlueprintKey(BlueprintId blueprintId) implements ClusterStateKey {
         private static final String PREFIX = "app-blueprint/";
 
@@ -1333,6 +1363,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
 
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
+
+    Fn1<Cause, String> ARTIFACT_VERSIONS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-versions key format: %s");
 
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
 

@@ -5,9 +5,11 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeMap;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -26,6 +28,7 @@ import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
+import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
@@ -42,6 +45,55 @@ import static org.pragmatica.lang.Option.none;
 @CodecFor(ExecutionMode.class)
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
+    /// One version of an artifact and whether it was archived (#1778).
+    record ArtifactVersionEntry(String version, boolean archived) {}
+
+    /// The versions of one artifact in the built-in artifact store, keyed by `AetherKey.ArtifactVersionsKey`
+    /// (#1778). A grow-only set: the applier MERGES a written value into the committed one
+    /// ([GrowOnlyMergeable]), the merge is a union that takes the higher state per version
+    /// (`present < archived`), so concurrent publishes are folded in consensus order and no writer can lose
+    /// another's version or un-archive one. A writer sends only what it adds: [#added] or [#archived].
+    record ArtifactVersionsValue(List<ArtifactVersionEntry> entries) implements AetherValue, GrowOnlyMergeable<ArtifactVersionsValue> {
+        public ArtifactVersionsValue {
+            entries = entries.stream()
+                             .sorted(Comparator.comparing(ArtifactVersionEntry::version))
+                             .toList();
+        }
+
+        public static ArtifactVersionsValue added(String version) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, false)));
+        }
+
+        public static ArtifactVersionsValue archived(String version) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, true)));
+        }
+
+        public static ArtifactVersionsValue empty() {
+            return new ArtifactVersionsValue(List.of());
+        }
+
+        @Override
+        public ArtifactVersionsValue mergeInto(ArtifactVersionsValue committed) {
+            var merged = new TreeMap<String, Boolean>();
+
+            committed.entries().forEach(entry -> merged.merge(entry.version(), entry.archived(), Boolean::logicalOr));
+            entries.forEach(entry -> merged.merge(entry.version(), entry.archived(), Boolean::logicalOr));
+
+            return new ArtifactVersionsValue(merged.entrySet()
+                                                   .stream()
+                                                   .map(entry -> new ArtifactVersionEntry(entry.getKey(), entry.getValue()))
+                                                   .toList());
+        }
+
+        /// The versions that are present and not archived, in version-string order.
+        public List<String> live() {
+            return entries.stream()
+                          .filter(entry -> !entry.archived())
+                          .map(ArtifactVersionEntry::version)
+                          .toList();
+        }
+    }
+
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,
                             int minInstances,

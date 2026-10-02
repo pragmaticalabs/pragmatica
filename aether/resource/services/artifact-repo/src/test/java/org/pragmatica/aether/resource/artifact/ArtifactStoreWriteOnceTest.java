@@ -7,7 +7,6 @@ package org.pragmatica.aether.resource.artifact;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -37,7 +36,7 @@ class ArtifactStoreWriteOnceTest {
     private static final ArchivePolicy SEVEN_DAYS = ArchivePolicy.archivePolicy(timeSpan(7).days());
     private static final byte[] CONTENT = "content".getBytes(StandardCharsets.UTF_8);
     private static final byte[] OTHER = "other content".getBytes(StandardCharsets.UTF_8);
-    private static final String VERSIONS_KEY = "artifacts/org.example/lib/versions";
+    private static final String FILES_KEY = "artifacts/org.example/lib/1.0.0/files";
 
     private final Artifact v1 = Artifact.artifact("org.example:lib:1.0.0").unwrap();
     private final Artifact v2 = Artifact.artifact("org.example:lib:2.0.0").unwrap();
@@ -46,13 +45,41 @@ class ArtifactStoreWriteOnceTest {
     private AtomicLong now;
     private StorageInstance storage;
     private ArtifactStore store;
+    private FlakyIndex index;
 
     @BeforeEach
     void setup() {
         dht = ReplicatedTestDht.single();
         now = new AtomicLong(1_000_000L);
         storage = StorageInstance.storageInstance("test-artifacts", List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
-        store = newStore(dht);
+        index = new FlakyIndex();
+        store = new ArtifactStoreImpl(dht, storage, SEVEN_DAYS, now::get, index);
+    }
+
+    /// The versions index with an off switch, so a test can kill the step that runs after the metadata write.
+    private static final class FlakyIndex implements ArtifactVersionIndex {
+        private final ArtifactVersionIndex delegate = ArtifactVersionIndex.inMemory();
+        volatile boolean failing;
+
+        @Override
+        public Promise<org.pragmatica.lang.Unit> publish(Artifact artifact) {
+            return failing
+                   ? DHTError.NO_AVAILABLE_NODES.promise()
+                   : delegate.publish(artifact);
+        }
+
+        @Override
+        public Promise<org.pragmatica.lang.Unit> archive(Artifact artifact) {
+            return failing
+                   ? DHTError.NO_AVAILABLE_NODES.promise()
+                   : delegate.archive(artifact);
+        }
+
+        @Override
+        public Promise<List<org.pragmatica.aether.artifact.Version>> versions(org.pragmatica.aether.artifact.GroupId groupId,
+                                                                              org.pragmatica.aether.artifact.ArtifactId artifactId) {
+            return delegate.versions(groupId, artifactId);
+        }
     }
 
     private ArtifactStore newStore(ReplicatedTestDht backing) {
@@ -150,11 +177,9 @@ class ArtifactStoreWriteOnceTest {
 
         @Test
         void deploy_reassertsRegistration_whenAnIdenticalRePutFollowsAPartialFirstDeploy() {
-            dht.putFailure = key -> key.equals(VERSIONS_KEY)
-                                    ? Option.<Cause> some(DHTError.NO_AVAILABLE_NODES)
-                                    : Option.none();
+            index.failing = true;
             failureOf(store.deploy(v1, CONTENT));
-            dht.putFailure = _ -> Option.none();
+            index.failing = false;
 
             assertThat(listedVersions()).as("the first deploy died before listing the version").isEmpty();
 
@@ -276,11 +301,9 @@ class ArtifactStoreWriteOnceTest {
         void archive_completesAnInterruptedArchive_onRerun() {
             deploy(v1, CONTENT);
             now.addAndGet(7 * DAY);
-            dht.putFailure = key -> key.equals(VERSIONS_KEY)
-                                    ? Option.<Cause> some(DHTError.NO_AVAILABLE_NODES)
-                                    : Option.none();
+            index.failing = true;
             failureOf(store.archive(v1));
-            dht.putFailure = _ -> Option.none();
+            index.failing = false;
 
             assertThat(failureOf(store.resolve(v1))).as("the marker landed first, so reads already refuse")
                                                     .isInstanceOf(ArtifactStoreError.Archived.class);
@@ -346,48 +369,35 @@ class ArtifactStoreWriteOnceTest {
         }
 
         @Test
-        void resolve_staysArchived_whenARepairReplaysAStaleVersionsList() {
-            // A repair copies a pre-archive replica value back: the versions list loses its archived flag.
-            dht.replicas.getFirst().put(VERSIONS_KEY, "1.0.0".getBytes(StandardCharsets.UTF_8));
-
-            assertThat(failureOf(store.resolve(v1))).as("reads obey the marker, not the list flag")
-                                                    .isInstanceOf(ArtifactStoreError.Archived.class);
-            assertThat(failureOf(store.deploy(v1, CONTENT))).isInstanceOf(ArtifactStoreError.Archived.class);
-
-            store.archive(v1).await().onFailureRun(Assertions::fail);
-
-            assertThat(listedVersions()).as("re-running the archive restores the listing flag").isEmpty();
-        }
-
-        @Test
         void publishingAnotherVersion_doesNotUnflagTheArchivedOne() {
             deploy(v2, CONTENT);
 
-            assertThat(listedVersions()).containsExactly("2.0.0");
-            assertThat(new String(dht.union().get(VERSIONS_KEY), StandardCharsets.UTF_8)).isEqualTo("1.0.0!,2.0.0");
+            assertThat(listedVersions()).as("v1 stays archived, v2 is listed").containsExactly("2.0.0");
         }
     }
 
+    /// The versions list moved to the consensus KV plane (#1778); its concurrency is pinned where the applier lives,
+    /// in `aether/node` (`ArtifactVersionsConsensusTest`). What stays here is the per-version FILE list in the DHT.
     @Nested
-    class GrowOnlyVersions {
+    class GrowOnlyFiles {
         @Test
-        void versions_keepsEveryVersion_whenPublishedConcurrentlyThroughOneNode() {
-            // The first read of the versions key is held back, so without per-key sequencing a second
-            // publish would read the same (empty) list and one of the two writes would erase the other.
-            dht.delayFirstGetOf = key -> key.equals(VERSIONS_KEY);
+        void files_keepEveryFile_whenPublishedConcurrentlyThroughOneNode() {
+            // The first read of the file list is held back, so without per-key sequencing the second file's
+            // rewrite would read the same (empty) list and one of the two writes would erase the other.
+            dht.delayFirstGetOf = key -> key.equals(FILES_KEY);
             dht.delayMillis = 300;
 
-            var first = store.deploy(v1, CONTENT);
-            var second = store.deploy(v2, CONTENT);
+            var jar = store.deploy(v1, CONTENT);
+            var pom = store.deploy(ArtifactFile.artifactFile(v1, "", "pom"), OTHER);
 
-            first.await().onFailureRun(Assertions::fail);
-            second.await().onFailureRun(Assertions::fail);
+            jar.await().onFailureRun(Assertions::fail);
+            pom.await().onFailureRun(Assertions::fail);
 
-            assertThat(listedVersions()).containsExactly("1.0.0", "2.0.0");
+            assertThat(new String(dht.union().get(FILES_KEY), StandardCharsets.UTF_8)).isEqualTo("jar,pom");
         }
 
         @Test
-        void versions_keepsEveryVersion_whenManyArePublishedAtOnce() {
+        void versions_keepEveryVersion_whenManyArePublishedAtOnce() {
             var publishes = new ArrayList<Promise<DeployResult>>();
 
             for (var i = 1; i <= 12; i++) {
@@ -397,62 +407,6 @@ class ArtifactStoreWriteOnceTest {
             publishes.forEach(p -> p.await().onFailureRun(Assertions::fail));
 
             assertThat(listedVersions()).hasSize(12);
-        }
-
-        @Test
-        void archive_keepsItsFlag_whenAnotherVersionIsPublishedConcurrently() {
-            deploy(v1, CONTENT);
-            now.addAndGet(7 * DAY);
-            dht.delayFirstGetOf = key -> key.equals(VERSIONS_KEY);
-            dht.delayMillis = 300;
-
-            var archive = store.archive(v1);
-            var publish = store.deploy(v2, CONTENT);
-
-            archive.await().onFailureRun(Assertions::fail);
-            publish.await().onFailureRun(Assertions::fail);
-
-            assertThat(listedVersions()).as("v1 stays archived, v2 stays listed").containsExactly("2.0.0");
-        }
-
-        /// KNOWN LIMIT, pinned as an ENABLED tripwire (#1778). Two NODES rewriting one versions list at once
-        /// can overwrite each other: the DHT has no conditional put, so the sequencing above is per node.
-        /// When the DHT gains one this test goes RED on purpose — delete it and enable the pair below.
-        @Test
-        void versions_losesAVersion_whenTwoNodesPublishAtOnce_KNOWN_LIMIT() {
-            var shared = ReplicatedTestDht.single();
-            shared.rendezvousOn = key -> key.equals(VERSIONS_KEY);
-            shared.rendezvousParties = 2;
-            var nodeA = newStore(shared);
-            var nodeB = newStore(shared);
-
-            var a = nodeA.deploy(v1, CONTENT);
-            var b = nodeB.deploy(v2, CONTENT);
-
-            a.await().onFailureRun(Assertions::fail);
-            b.await().onFailureRun(Assertions::fail);
-
-            assertThat(nodeA.versions(v1.groupId(), v1.artifactId()).await().unwrap())
-                .as("the DHT now keeps both: delete this tripwire and enable the Disabled pair")
-                .hasSize(1);
-        }
-
-        @Disabled("needs a DHT conditional put or server-side merge (#1778 follow-up); see the tripwire above")
-        @Test
-        void versions_keepsEveryVersion_whenTwoNodesPublishAtOnce() {
-            var shared = ReplicatedTestDht.single();
-            shared.rendezvousOn = key -> key.equals(VERSIONS_KEY);
-            shared.rendezvousParties = 2;
-            var nodeA = newStore(shared);
-            var nodeB = newStore(shared);
-
-            var a = nodeA.deploy(v1, CONTENT);
-            var b = nodeB.deploy(v2, CONTENT);
-
-            a.await().onFailureRun(Assertions::fail);
-            b.await().onFailureRun(Assertions::fail);
-
-            assertThat(nodeA.versions(v1.groupId(), v1.artifactId()).await().unwrap()).hasSize(2);
         }
     }
 

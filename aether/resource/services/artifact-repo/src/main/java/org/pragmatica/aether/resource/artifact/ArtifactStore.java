@@ -321,6 +321,16 @@ public interface ArtifactStore {
         return new ArtifactStoreImpl(dht, storage, archivePolicy, System::currentTimeMillis);
     }
 
+    /// The cluster variant: the versions of each artifact live in `versionIndex`, which a node backs with the
+    /// consensus KV plane so concurrent publishes are serialized (#1778). The artifact bytes and per-version
+    /// metadata stay in the DHT.
+    static ArtifactStore artifactStore(DHTClient dht,
+                                       StorageInstance storage,
+                                       ArchivePolicy archivePolicy,
+                                       ArtifactVersionIndex versionIndex) {
+        return new ArtifactStoreImpl(dht, storage, archivePolicy, System::currentTimeMillis, versionIndex);
+    }
+
     /// Variant that overrides the metadata-read absent grace (default one second). Used by tests that
     /// drive the late-holder scenario with a short `TimeSpan`.
     static ArtifactStore artifactStore(DHTClient dht, StorageInstance storage, TimeSpan metadataAbsentGrace) {
@@ -414,12 +424,21 @@ class ArtifactStoreImpl implements ArtifactStore {
     private final Consumer<String> readFailureSink;
     private final ArchivePolicy archivePolicy;
     private final LongSupplier clock;
-    /// Serializes this node's read-merge-write rewrites of the grow-only sets (versions list, file list).
+    private final ArtifactVersionIndex versionIndex;
+    /// Serializes this node's read-merge-write rewrites of the per-version file list in the DHT.
     private final KeyedSequencer sequencer = new KeyedSequencer();
     private final AtomicInteger artifactCount = new AtomicInteger(0);
     private final AtomicInteger chunkCount = new AtomicInteger(0);
 
     ArtifactStoreImpl(DHTClient dht, StorageInstance storage, ArchivePolicy archivePolicy, LongSupplier clock) {
+        this(dht, storage, archivePolicy, clock, ArtifactVersionIndex.inMemory());
+    }
+
+    ArtifactStoreImpl(DHTClient dht,
+                      StorageInstance storage,
+                      ArchivePolicy archivePolicy,
+                      LongSupplier clock,
+                      ArtifactVersionIndex versionIndex) {
         this(dht,
              storage,
              dht.config().retryPolicy(),
@@ -429,7 +448,8 @@ class ArtifactStoreImpl implements ArtifactStore {
              log::warn,
              DEFAULT_METADATA_ABSENT_GRACE,
              archivePolicy,
-             clock);
+             clock,
+             versionIndex);
     }
 
     ArtifactStoreImpl(DHTClient dht, StorageInstance storage) {
@@ -509,7 +529,8 @@ class ArtifactStoreImpl implements ArtifactStore {
              readFailureSink,
              metadataAbsentGrace,
              ArchivePolicy.DEFAULT,
-             System::currentTimeMillis);
+             System::currentTimeMillis,
+             ArtifactVersionIndex.inMemory());
     }
 
     ArtifactStoreImpl(DHTClient dht,
@@ -521,9 +542,11 @@ class ArtifactStoreImpl implements ArtifactStore {
                       Consumer<String> readFailureSink,
                       TimeSpan metadataAbsentGrace,
                       ArchivePolicy archivePolicy,
-                      LongSupplier clock) {
+                      LongSupplier clock,
+                      ArtifactVersionIndex versionIndex) {
         this.archivePolicy = archivePolicy;
         this.clock = clock;
+        this.versionIndex = versionIndex;
         this.readFailureSink = readFailureSink;
         this.dht = dht;
         this.storage = storage;
@@ -742,9 +765,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// The versions that are stored and not archived.
     @Override
     public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
-        return dht.get(versionsKey(groupId, artifactId))
-                  .map(ArtifactStoreImpl::fileNames)
-                  .map(this::parseVersions);
+        return versionIndex.versions(groupId, artifactId);
     }
 
     /// Archive is a one-way, version-wide state change (#1778). Order matters: the retention check reads the
@@ -824,8 +845,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Unit> flagArchived(Artifact artifact) {
-        return rewriteSet(versionsKey(artifact.groupId(), artifact.artifactId()),
-                          versions -> versions.archive(artifact.version().withQualifier()));
+        return versionIndex.archive(artifact);
     }
 
     private Promise<DeployResult> storeMetadataAndVersions(ArtifactFile file,
@@ -941,8 +961,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Unit> publishVersion(Artifact artifact) {
-        return rewriteSet(versionsKey(artifact.groupId(), artifact.artifactId()),
-                          versions -> versions.add(artifact.version().withQualifier()));
+        return versionIndex.publish(artifact);
     }
 
     private Promise<Unit> registerFile(ArtifactFile file) {
@@ -1123,17 +1142,6 @@ class ArtifactStoreImpl implements ArtifactStore {
         SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve), backoff);
     }
 
-    /// Version strings that no longer parse are skipped, as they always were.
-    @Contract
-    private List<Version> parseVersions(List<String> names) {
-        var versions = new ArrayList<Version>();
-
-        for (var name : names) {
-            Version.version(name).onSuccess(versions::add);
-        }
-
-        return versions;
-    }
 
     private DeployResult recordDeployMetrics(ArtifactFile file,
                                              int contentLength,
@@ -1187,11 +1195,6 @@ class ArtifactStoreImpl implements ArtifactStore {
         return key.getBytes(StandardCharsets.UTF_8);
     }
 
-    private byte[] versionsKey(GroupId groupId, ArtifactId artifactId) {
-        var key = KEY_PREFIX + groupId.id() + "/" + artifactId.id() + "/versions";
-
-        return key.getBytes(StandardCharsets.UTF_8);
-    }
 
     private List<byte[]> splitIntoChunks(byte[] content) {
         var chunks = new ArrayList<byte[]>();
