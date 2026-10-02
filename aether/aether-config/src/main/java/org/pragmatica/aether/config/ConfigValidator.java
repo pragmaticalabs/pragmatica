@@ -118,10 +118,6 @@ public final class ConfigValidator {
         }
     }
 
-    /// `reshuffle_concurrency` bounds how many partitions one node materializes+backfills at once. Zero or
-    /// negative would stall every REPLICA materialization permanently — the exact starvation the bound
-    /// exists to pace — so it is rejected here rather than silently floored, and joins the collected report
-    /// with every other config problem.
     /// `[slice] artifact_archive_retention` is the minimum age before a version may be archived (#1778). Zero or
     /// negative would let a version be archived the moment it is stored, and an unparseable value is carried here
     /// as a negative sentinel, so both are reported rather than defaulted.
@@ -131,6 +127,10 @@ public final class ConfigValidator {
         }
     }
 
+    /// `reshuffle_concurrency` bounds how many partitions one node materializes+backfills at once. Zero or
+    /// negative would stall every REPLICA materialization permanently — the exact starvation the bound
+    /// exists to pace — so it is rejected here rather than silently floored, and joins the collected report
+    /// with every other config problem.
     private static void streamingErrors(StreamingConfig streaming, List<String> errors) {
         if (streaming.reshuffleConcurrency() < 1) {
             errors.add("streaming.reshuffle_concurrency must be >= 1 (0 would stall every replica backfill). Got: " + streaming.reshuffleConcurrency());
