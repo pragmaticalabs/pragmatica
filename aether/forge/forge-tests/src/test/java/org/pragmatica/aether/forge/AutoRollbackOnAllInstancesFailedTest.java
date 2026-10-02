@@ -77,7 +77,7 @@ class AutoRollbackOnAllInstancesFailedTest {
     private static final int MGMT_OFFSET = 40;
     private static final int APP_OFFSET = 80;
     /// Below the Linux ephemeral floor (32768), where a concurrent module's outbound connection cannot take a port
-    /// between the probe and the bind. Step 100: candidates are alternatives that never coexist. Registered in
+    /// between the probe and the bind. Step 100. Registered in
     /// TEST_PORT_ALLOCATION.md ("2000-2800 scan").
     private static final int FIRST_CANDIDATE_BASE = 2000;
     private static final int LAST_CANDIDATE_BASE = 2800;

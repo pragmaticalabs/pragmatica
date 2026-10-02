@@ -31,12 +31,16 @@ import static org.assertj.core.api.Assertions.fail;
 class ForgePortPreflightTest {
     private static final int NODES = 5;
     private static final Random RANDOM = new Random();
+    /// A band of its own, below the Linux ephemeral floor (32768), that no TEST_PORT_ALLOCATION.md row uses except this
+    /// test's: 2910..2999 (the last base leaves room for NODES ports). Registered there as "ForgePortPreflightTest".
+    private static final int BAND_FIRST = 2910;
+    private static final int BAND_SIZE = 91 - NODES;
 
     /// A base port whose whole `NODES`-wide range is bindable right now. Scans from a random high
     /// base so concurrent modules in a parallel reactor do not converge on one range (#939).
     private static int freeBase() {
         for (var attempt = 0; attempt < 200; attempt++) {
-            var candidate = 20_000 + RANDOM.nextInt(11_900); // below the Linux ephemeral floor (32768), above the fixed-port blocks
+            var candidate = BAND_FIRST + RANDOM.nextInt(BAND_SIZE);
 
             if (rangeIsBindable(candidate)) {
                 return candidate;

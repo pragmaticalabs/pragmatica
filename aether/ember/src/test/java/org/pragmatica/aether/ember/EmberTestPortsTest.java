@@ -259,6 +259,32 @@ class EmberTestPortsTest {
         assertThat((System.nanoTime() - startedAt) / 1_000_000).isGreaterThanOrEqualTo(3_000);
     }
 
+    /// The back-off is one budget per test: once it is spent, a further probe fails at once with the named message
+    /// instead of waiting again, so a test never waits past the budget in total.
+    @Test
+    @Timeout(60)
+    void freeBase_backoffIsOneBudgetPerTest_soASecondExhaustedProbeFailsAtOnce() {
+        var onlyBase = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST, 50, 3, 40, 80);
+
+        taken.add(takeTcp(onlyBase.first() + onlyBase.mgmtOffset()));
+        EmberTestPorts.resetBackoffBudget(2_500);
+        try {
+            var firstStartedAt = System.nanoTime();
+
+            assertThatThrownBy(() -> EmberTestPorts.freeBase(onlyBase)).hasMessageContaining("no free port block")
+                                                                      .hasMessageContaining("per-test budget");
+            assertThat((System.nanoTime() - firstStartedAt) / 1_000_000).as("the first probe spent the budget")
+                                                                         .isGreaterThanOrEqualTo(2_500);
+            var secondStartedAt = System.nanoTime();
+
+            assertThatThrownBy(() -> EmberTestPorts.freeBase(onlyBase)).hasMessageContaining("no free port block");
+            assertThat((System.nanoTime() - secondStartedAt) / 1_000_000).as("the second probe did not wait again")
+                                                                          .isLessThan(1_000);
+        } finally {
+            EmberTestPorts.resetBackoffBudget(EmberTestPorts.EXHAUSTION_WAIT_MS);
+        }
+    }
+
     @Test
     void hold_bindsThePortsOnAFreeBlock_andReleasesThemOnClose() {
         var tcp = EmberTestPorts.Hold.tcp(BLOCK.mgmtOffset());

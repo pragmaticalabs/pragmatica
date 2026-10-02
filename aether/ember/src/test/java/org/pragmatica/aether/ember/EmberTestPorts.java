@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.function.ToIntFunction;
@@ -47,12 +48,18 @@ final class EmberTestPorts {
     /// Longer than TCP TIME_WAIT (60 s) on Linux, so a pool whose every base is dirty becomes free again within it.
     static final long EXHAUSTION_WAIT_MS = 90_000L;
     static final long RESCAN_MS = 2_000L;
+    /// The back-off is a budget per TEST, not per call: a test that probes several times (or retries) can wait
+    /// EXHAUSTION_WAIT_MS in total, so it fails with "no free port block" at about (time before its last probe) + 90 s,
+    /// inside every pool test's own `@Timeout` (the shortest that probes is 120 s), never as a JUnit timeout. Reset before
+    /// each test by [EmberPortBudgetReset].
+    private static final AtomicLong backoffBudgetMs = new AtomicLong(EXHAUSTION_WAIT_MS);
     /// The one probed pool every Ember test that scans for a free block draws from. Below the Linux ephemeral floor
     /// (32768): a base inside 32768-60999 can be taken by any concurrent module's outbound connection between probe and
-    /// bind. Tests in this module run one after another, so they share it; a block still held or in TIME_WAIT from the
-    /// test before is skipped by the probe. The step is a quarter of a block (50): candidates are alternatives that never coexist, and
-    /// the probe binds every port of a candidate, so a running cluster's ports rule out the overlapping candidates.
-    /// Registered as one scan row in TEST_PORT_ALLOCATION.md.
+    /// bind. The tests of this module run one after another and share it; a block still held, or in TCP TIME_WAIT from
+    /// the test before, is skipped by the probe. A few tests do run two clusters at once (EmberClusterForeignAdmissionTest):
+    /// that is safe because the probe binds every port of a candidate, so a candidate that overlaps a live cluster's ports
+    /// fails the probe and is skipped, and one that passes shares no port with it. The step is a quarter of a block (50),
+    /// which gives 17 candidates. Registered as one scan row in TEST_PORT_ALLOCATION.md.
     static final int POOL_FIRST = 1030;
     static final int POOL_LAST = 1830;
     static final int POOL_STEP = 50;
@@ -80,7 +87,18 @@ final class EmberTestPorts {
     /// As [#freeBase(Block)], skipping `excluded` bases (#1707 review: a base that lost a bind is not retried, even if
     /// the port that collided has since been released).
     static int freeBase(Block block, Set<Integer> excluded) {
-        return freeBase(block, excluded, EXHAUSTION_WAIT_MS);
+        var allowed = backoffBudgetMs.get();
+        var startedAt = System.nanoTime();
+
+        try {
+            return freeBase(block, excluded, allowed);
+        } finally {
+            backoffBudgetMs.addAndGet(-Math.min(allowed, (System.nanoTime() - startedAt) / 1_000_000L));
+        }
+    }
+
+    static void resetBackoffBudget(long ms) {
+        backoffBudgetMs.set(ms);
     }
 
     /// As above. When EVERY candidate is busy (a port still held, or a TCP port in TIME_WAIT: the probe binds without
@@ -97,7 +115,8 @@ final class EmberTestPorts {
             }
 
             if (System.nanoTime() >= deadline) {
-                return fail("no free port block between " + block.first() + " and " + block.last() + " after " + waitMs + " ms");
+                return fail("no free port block between " + block.first() + " and " + block.last() + " after " + waitMs
+                              + " ms of back-off (the per-test budget)");
             }
 
             log.warn("Every port block between {} and {} is busy (held, or TCP TIME_WAIT); rescanning in {} ms",
