@@ -2992,9 +2992,9 @@ public interface AetherNode extends ManageableNode {
                                                                  metricsCollector,
                                                                  departurePushObserverRef::get);
         Supplier<Promise<Unit>> departurePush = () -> dhtDeparturePush.get()
-                                                                   .flatMap(_ -> movementDrain.get()
-                                                                                              .fold(Promise::unitPromise,
-                                                                                                    CommunityDrainCoordinator::onQuiesced));
+                                                                      .flatMap(_ -> movementDrain.get()
+                                                                                                 .fold(Promise::unitPromise,
+                                                                                                       CommunityDrainCoordinator::onQuiesced));
         // #273 item 1: forward-declared hook resolved once the ScheduledTaskManager is built below. The
         // drain edge for scheduled tasks is THIS emitter, not a MembershipDecision — `NodeDraining` has
         // no producer since the membership-v2 finale removed the per-node lifecycle projection.

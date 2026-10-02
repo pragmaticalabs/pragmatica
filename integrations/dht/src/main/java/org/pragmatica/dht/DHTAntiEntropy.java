@@ -296,7 +296,8 @@ public final class DHTAntiEntropy {
                      response.sender().id());
         }
 
-        network.send(response.sender(), new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied));
+        network.send(response.sender(),
+                     new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied));
     }
 
     private void requestMigrationData(NodeId peer, int partitionIndex) {

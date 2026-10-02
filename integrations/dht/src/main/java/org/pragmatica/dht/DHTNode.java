@@ -318,11 +318,8 @@ public final class DHTNode {
     /// @return `true` when every entry was stored or was already superseded by a newer stored entry;
     ///         `false` when any entry failed to store — the outcome an honest ack reports (issue #1818).
     public Promise<Boolean> applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
-        return Promise.allOf(entries.stream()
-                                    .map(this::applyReplica)
-                                    .toList())
-                      .map(outcomes -> outcomes.stream()
-                                               .allMatch(Result::isSuccess));
+        return Promise.allOf(entries.stream().map(this::applyReplica).toList()).map(outcomes -> outcomes.stream()
+                                                                                                        .allMatch(Result::isSuccess));
     }
 
     private Promise<Boolean> applyReplica(DHTMessage.KeyValue kv) {
