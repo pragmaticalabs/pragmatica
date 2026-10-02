@@ -187,11 +187,7 @@ Known limits, stated so they are not mistaken for guarantees:
 - **Mixed versions (known, [unverified]).** The merges are changes to the consensus applier; like the other applier
   fences they are not version gated. Before GA there is no mixed-version operation; the GA rolling-upgrade contract has
   to gate them together with the other applier changes.
-- **Coordinates stored before this change** have no consensus binding, and their metadata is in the pre-SHA-256
-  six-field format, which this version does not parse. Such a coordinate neither resolves (`410`) nor accepts a re-put
-  (`409`), with a clear typed error (`LegacyArtifactMetadata`: it predates the write-once store and cannot be re-pushed
-  in place); it is never overwritten. Pre-GA nothing migrates them: publish under a new version or re-create the
-  cluster's artifact store.
+- **Metadata format.** The metadata format changed; no compatibility with pre-#1778 stores (pre-GA).
 - **The version cap is per node.** `artifact_max_versions` travels in each publish command, so every replica decides a
   command alike, but each node enforces its OWN configured cap: configure it identically on every node.
 - **Digest strength.** Content is compared by size, MD5, SHA-1 and SHA-256, so a collision of the two older digests alone does not pass. The integrity check on resolve still verifies SHA-1 only.

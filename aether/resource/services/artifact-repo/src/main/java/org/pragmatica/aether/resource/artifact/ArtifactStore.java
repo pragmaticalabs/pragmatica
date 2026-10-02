@@ -176,11 +176,6 @@ public interface ArtifactStore {
             return data.getBytes(StandardCharsets.UTF_8);
         }
 
-        /// The format before SHA-256 and the write-once store: six colon-separated fields.
-        public static boolean isLegacyFormat(byte[] bytes) {
-            return new String(bytes, StandardCharsets.UTF_8).split(":").length == 6;
-        }
-
         public static Option<ArtifactMetadata> fromBytes(byte[] bytes) {
             return parseMetadataBytes(bytes);
         }
@@ -227,19 +222,6 @@ public interface ArtifactStore {
             @Override
             public String message() {
                 return "Artifact metadata unparseable: " + file.asString() + " (dht key " + keyHex + ")";
-            }
-        }
-
-        /// The stored metadata is in the format that predates the write-once store (six fields, no SHA-256). Such a
-        /// coordinate was never bound to its content and cannot be verified against a re-put, so it is neither served
-        /// nor overwritten (#1778): write-once stands. Pre-GA nothing migrates it; publish under a new version, or
-        /// re-create the cluster's artifact store.
-        record LegacyArtifactMetadata(ArtifactFile file) implements ArtifactStoreError {
-            @Override
-            public String message() {
-                return "Artifact " + file.asString()
-                     + " was stored before the write-once artifact store and cannot be served or re-pushed in place;"
-                     + " publish it under a new version or re-create the cluster's artifact store";
             }
         }
 
@@ -696,7 +678,8 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// are present but do not parse are corruption and are never overwritten.
     private Promise<DeployResult> acceptIdentical(ArtifactFile file, byte[] storedBytes, ArtifactContentValue offered) {
         return ArtifactMetadata.fromBytes(storedBytes)
-                               .async(unreadable(file, storedBytes))
+                               .async(new ArtifactStoreError.MetadataUnparseable(file,
+                                                                                 keyHex(file)))
                                .flatMap(stored -> acceptIfSame(file, stored, offered));
     }
 
@@ -837,15 +820,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         var keyHex = keyHex(file);
 
         return metaOpt.async(new ArtifactStoreError.NotFound(file, keyHex, elapsedMillis))
-                      .flatMap(bytes -> ArtifactMetadata.fromBytes(bytes).async(unreadable(file, bytes)));
-    }
-
-    /// Present bytes that do not parse: the pre-write-once six-field format is its own typed cause (a clear 409/410),
-    /// anything else is corruption.
-    private Cause unreadable(ArtifactFile file, byte[] bytes) {
-        return ArtifactMetadata.isLegacyFormat(bytes)
-               ? new ArtifactStoreError.LegacyArtifactMetadata(file)
-               : new ArtifactStoreError.MetadataUnparseable(file, keyHex(file));
+                      .flatMap(bytes -> ArtifactMetadata.fromBytes(bytes).async(new ArtifactStoreError.MetadataUnparseable(file,
+                                                                                                                           keyHex)));
     }
 
     @Override
