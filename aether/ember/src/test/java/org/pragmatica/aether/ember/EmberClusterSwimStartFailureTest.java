@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The pin is on the CAUSE, not merely on "it failed": a bounded `await` returns a `Timeout` failure
 /// too, and that is exactly the hang. Reverting the join turns this red with the `START_BOUND`
 /// `Timeout` cause instead of `Address already in use`.
+@PortBudget
 class EmberClusterSwimStartFailureTest {
     /// The shared Ember pool (EmberTestPorts.POOL_*), below the Linux ephemeral floor.
     /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with

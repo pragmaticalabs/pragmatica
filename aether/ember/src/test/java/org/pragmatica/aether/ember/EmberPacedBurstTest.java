@@ -34,6 +34,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// (`partitionsDeferred == 0`) inside [#MATERIALIZED_BOUND_MS]. It is a guard on the happy burst — the loss path
 /// itself (a role flap through NONE while queued) is not inducible from outside, and is pinned deterministically by
 /// `PacedMaterializeRetryTest`. [unverified: red at the base commit — the burst alone may materialize there too]
+@PortBudget
 class EmberPacedBurstTest {
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;

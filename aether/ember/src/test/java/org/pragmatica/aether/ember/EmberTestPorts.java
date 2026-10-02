@@ -53,6 +53,8 @@ final class EmberTestPorts {
     /// inside every pool test's own `@Timeout` (the shortest that probes is 120 s), never as a JUnit timeout. Reset before
     /// each test by [EmberPortBudgetReset].
     private static final AtomicLong backoffBudgetMs = new AtomicLong(EXHAUSTION_WAIT_MS);
+    /// True only while a test whose class carries [PortBudget] is running.
+    private static volatile boolean armed;
     /// The one probed pool every Ember test that scans for a free block draws from. Below the Linux ephemeral floor
     /// (32768): a base inside 32768-60999 can be taken by any concurrent module's outbound connection between probe and
     /// bind. The tests of this module run one after another and share it; a block still held, or in TCP TIME_WAIT from
@@ -87,6 +89,11 @@ final class EmberTestPorts {
     /// As [#freeBase(Block)], skipping `excluded` bases (#1707 review: a base that lost a bind is not retried, even if
     /// the port that collided has since been released).
     static int freeBase(Block block, Set<Integer> excluded) {
+        if (!armed) {
+            return fail("EmberTestPorts probed outside a test whose class carries @PortBudget: the back-off budget would"
+                        + " be stale (shared with the test before). Add @PortBudget to the test class.");
+        }
+
         var allowed = backoffBudgetMs.get();
         var startedAt = System.nanoTime();
 
@@ -95,6 +102,10 @@ final class EmberTestPorts {
         } finally {
             backoffBudgetMs.addAndGet(-Math.min(allowed, (System.nanoTime() - startedAt) / 1_000_000L));
         }
+    }
+
+    static void arm(boolean value) {
+        armed = value;
     }
 
     static void resetBackoffBudget(long ms) {

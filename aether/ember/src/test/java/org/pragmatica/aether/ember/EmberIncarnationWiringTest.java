@@ -28,6 +28,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// cannot pin it. Bootstrap commits it just BEFORE the registrar commits the genesis incarnation (observed
 /// 52 ms apart), so it carries incarnation 0 whatever the wiring does, and a takeover rewrite runs only on a
 /// later leader gain (killing the owner did not produce one within 120 s).
+@PortBudget
 class EmberIncarnationWiringTest {
     private static final int CORES = 3;
     private static final int SLOTS = 2 * CORES;

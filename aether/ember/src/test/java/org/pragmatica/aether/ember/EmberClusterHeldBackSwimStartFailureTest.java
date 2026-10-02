@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// SETTLE (reverting it: `Timeout`, not `Address already in use`). `EmberCluster.stopFailedHeldBackNode`
 /// makes the failure REACH the node (reverting it: the release settles, but the node's management
 /// port is still bound).
+@PortBudget
 class EmberClusterHeldBackSwimStartFailureTest {
     /// The shared Ember pool (EmberTestPorts.POOL_*), below the Linux ephemeral floor.
     /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with

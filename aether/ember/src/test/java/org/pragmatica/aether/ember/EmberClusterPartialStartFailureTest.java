@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The pin is on the CAUSE, not merely on "it failed": a bounded `await` returns a `Timeout` failure
 /// too, and that is exactly the old behaviour. Reverting `EmberCluster.abortStart` turns this red
 /// with a 60-second `Timeout` cause instead of the bind failure.
+@PortBudget
 class EmberClusterPartialStartFailureTest {
     /// #939: a probed block, not fixed ports: a fixed port collides with whatever else holds it (CI runs a
     /// module-parallel reactor), and this test's own failure mode IS a bind failure, so a collision would read as

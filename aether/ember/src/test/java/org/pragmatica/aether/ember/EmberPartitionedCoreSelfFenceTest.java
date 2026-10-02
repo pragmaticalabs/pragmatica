@@ -27,6 +27,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// The black-hole starts only after the cold-boot convergence window has elapsed on every node, because a
 /// quorum-loss self-drain is deliberately deferred during that window (A6); the property under test is the
 /// steady-state fence, not the boot deferral.
+@PortBudget
 class EmberPartitionedCoreSelfFenceTest {
     private static final Logger log = LoggerFactory.getLogger(EmberPartitionedCoreSelfFenceTest.class);
     private static final int CLUSTER_SIZE = 5;

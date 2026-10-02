@@ -31,6 +31,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// A worker is added whose configured peers are the three live cores PLUS a core that never started: an
 /// address with nothing listening. The worker must still join, become ready and be counted by the leader.
 /// Armed by asserting the dead seed really is in the worker's own configured topology.
+@PortBudget
 class EmberWorkerDeadSeedTest {
     private static final int CORES = 3;
     private static final int SLOTS = 2 * CORES;

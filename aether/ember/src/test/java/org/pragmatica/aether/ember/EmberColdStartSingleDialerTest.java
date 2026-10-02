@@ -54,6 +54,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// genesis, and requires that it dial only the peers it is the designated dialer for. It pins the dial
 /// DECISION rather than a handshake total: the designated side's own retries to a peer that was down
 /// can land more than once after the peer starts, a transport behaviour this rule does not govern.
+@PortBudget
 class EmberColdStartSingleDialerTest {
     private static final int CLUSTER_SIZE = 5;
     private static final int JOIN_CLUSTER_SIZE = 3;

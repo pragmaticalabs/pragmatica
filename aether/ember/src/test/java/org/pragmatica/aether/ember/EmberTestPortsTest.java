@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// #1667 acceptance: a port taken between the probe and the cluster's bind does not fail the test; the start moves
 /// to a fresh block. The collision is made deterministic by taking a port of the probed block inside the factory,
 /// after the probe and before `start()`.
+@PortBudget
 class EmberTestPortsTest {
     private static final EmberTestPorts.Block BLOCK = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
@@ -283,6 +284,18 @@ class EmberTestPortsTest {
         } finally {
             EmberTestPorts.resetBackoffBudget(EmberTestPorts.EXHAUSTION_WAIT_MS);
         }
+    }
+
+    /// The guard: a probe that runs while the budget is not armed (a test class without @PortBudget) fails loudly.
+    @Test
+    void freeBase_whenTheBudgetIsNotArmed_failsLoudlyNamingTheAnnotation() {
+        EmberTestPorts.arm(false);
+        try {
+            assertThatThrownBy(() -> EmberTestPorts.freeBase(BLOCK)).hasMessageContaining("@PortBudget");
+        } finally {
+            EmberTestPorts.arm(true);
+        }
+        assertThat(EmberTestPorts.freeBase(BLOCK)).as("control: armed, the same probe succeeds").isGreaterThan(0);
     }
 
     @Test

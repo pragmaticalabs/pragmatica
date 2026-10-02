@@ -43,6 +43,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// their tokens, so it must be stopped too before the cores start; Ember admits workers only into a formed
 /// cluster, so this class cannot put one next to pending cores, and the worker half of the procedure is
 /// stated from the #1545 mechanism, not measured here.
+@PortBudget
 class EmberGenesisRecoveryTest {
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;

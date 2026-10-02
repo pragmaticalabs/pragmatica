@@ -45,6 +45,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// actually present in the most recently constructed node's real `AetherNodeConfig` object — never a
 /// value mirrored independently at construction time — so reverting either production wiring line
 /// alone (leaving the other untouched) still flips the corresponding test red.
+@PortBudget
 class EmberClusterForeignAdmissionTest {
     /// #1189: probed blocks (the shared Ember pool, below the ephemeral floor), and a start that loses a port between the
     /// probe and the bind moves to a fresh block. Test 1 never starts a cluster, so it binds nothing.
