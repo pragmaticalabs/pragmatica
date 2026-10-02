@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.8.0
+**Version:** 0.9.0
 **Status:** Draft. **§5 (`DurableEntity`) is reconciled with the shipped named-command API**
 (`DurableEntity<K, S, C extends Mutator<S>>`). **§6 (workflow) and §7 (saga) are PLANNED façades with no
 production code** (#353, #354; milestone v1.0.0-rc5). **§7 was reopened by #1827 and its five contract
@@ -728,17 +728,44 @@ public record StepContext(SagaInstanceId instance,
 public record OperationId(String value) {}
 ```
 
-**Derivation.** `operationId = "<keyspace>/<sagaId>/<incarnation>/<stepIndex>/fwd"`,
-`compensationId = "<keyspace>/<sagaId>/<incarnation>/<stepIndex>/cmp"`. Both are computed from persisted
-fields of the instance, never from a clock, node, attempt or random source, so every owner that ever
-holds the instance computes the same values.
+**Derivation — a fixed-length digest (owner decision D6).**
+
+```
+operationId    = base32( SHA-256( enc("aether.saga.fwd.v1") ‖ enc(keyspace) ‖ enc(incarnation) ‖ enc(sagaId) ‖ enc(stepIndex) ) )
+compensationId = base32( SHA-256( enc("aether.saga.cmp.v1") ‖ enc(keyspace) ‖ enc(incarnation) ‖ enc(sagaId) ‖ enc(stepIndex) ) )
+
+enc(string) = 4-byte big-endian length ‖ UTF-8 bytes      enc(long) = 8 bytes big-endian      enc(int) = 4 bytes big-endian
+base32      = RFC 4648 alphabet, lower-case, no padding
+```
+
+- **Fixed length: 52 characters.** 256 bits at 5 bits per character is 51.2, so 52 characters carry the
+  whole digest: nothing is truncated, and the collision bound is the full SHA-256 one. For `n` distinct
+  identities the probability that any two collide is at most `n² / 2²⁵⁷`; even `n = 2⁶⁴` identities gives
+  at most `2⁻¹²⁹`. A shorter length, should one ever be needed, keeps `b = 5 × length` bits and the bound
+  becomes `n² / 2^(b+1)` — state it at the same time as the change.
+- **Unambiguous.** Every field is length-prefixed, so no choice of `keyspace` or `sagaId` text, however
+  it uses `/` or any other character, can make two different tuples encode to the same bytes (v1828's
+  objection to the v0.7.0 `/` join).
+- **Within downstream key limits.** 52 ASCII characters fit common idempotency-key limits — Stripe accepts
+  keys of up to 255 characters (Stripe API reference, "Idempotent requests"); an author whose downstream is
+  stricter must declare that step `Neither` or wrap the key.
+- **Reveals nothing.** The key carries no business id (`sagaId` is often an order or customer id); a
+  downstream sees an opaque token.
+- **Distinct forward vs compensation** by the domain tag, not by a suffix the downstream might strip.
+- **The readable tuple is kept alongside.** `StepContext` and every operator view, log line and
+  `Reconcile` reason carry `(keyspace, incarnation, sagaId, stepIndex, fwd|cmp)` next to the digest, so an
+  operator matching a downstream record to a saga never has to invert a hash.
+
+Both are computed from persisted fields of the instance, never from a clock, node, attempt or random
+source, so every owner that ever holds the instance computes the same values.
 
 - **Stable across retries and owner changes** — by construction: none of the inputs changes when the
   owner, node, attempt or code version changes.
-- **Distinct for forward vs compensation** — the `/fwd` vs `/cmp` suffix, so a downstream that dedups on
-  the key can never mistake a refund for a repeated charge.
-- **`attempt`** counts invocations of this step's forward (or compensation) recorded in the ledger. It
-  exists for logs and operator views; a downstream MUST NOT key on it, and the runtime never does.
+- **Distinct for forward vs compensation** — the `fwd` vs `cmp` domain tags, so a downstream that dedups
+  on the key can never mistake a refund for a repeated charge.
+- **`attempt`** counts this step's attempts recorded in the ledger — invocations, re-invocations and
+  lookups (§7.4, D7). It exists for logs, operator views and the retry budget; a downstream MUST NOT key on
+  it, and the runtime never uses it in a key.
 
 **What a "genuinely new logical operation" is.** Exactly one thing mints new identities: **creating a new
 saga instance**. Each step index of an instance is one logical operation for its whole life. Re-invocation
@@ -746,8 +773,8 @@ after a crash, a timeout, an owner change, a redeploy, an operator `resolve`, or
 *same* operation and carries the *same* `operationId`. A caller that wants the effect again (a second
 charge) must start a new saga instance; there is no API to re-mint a step's identity inside an instance.
 
-**[author choice] `keyspace` and `incarnation` are part of the key.** The ruling says "derived from
-sagaId + stepIndex". Two refinements, both needed for "distinct for a genuinely new logical operation":
+**`keyspace` and `incarnation` are part of the key (confirmed by D6).** Both are needed for "distinct for a
+genuinely new logical operation":
 `keyspace`, because two saga types may reuse a business id (`order-saga/42` and `refund-saga/42`) against
 one shared downstream; and `incarnation`, minted once when the instance is created and persisted with it,
 because `delete(id)` followed by `run(id, …)` creates a NEW instance under the same `sagaId` — without the
@@ -789,7 +816,8 @@ public record SagaStep<S, R extends SagaData>(
     Fn2<S, S, R>                         fold,              // PURE (S, R) -> S; no IO
     StepRecovery<S, R>                   recovery,          // forward's in-flight recovery (§7.4)
     Fn3<Promise<Unit>, StepContext, S, R> compensation,     // undoes the step given ITS OWN R; ctx.compensationId()
-    StepRecovery<S, Unit>                compensationRecovery // [author choice] same three-way rule for compensation (§7.5)
+    StepRecovery<S, Unit>                compensationRecovery, // [author choice] same three-way rule for compensation (§7.5)
+    RetryBudget                          retry              // ONE budget for retries, re-invokes and lookups (§7.4, D7b)
 ) implements SagaStepKind<S> {}
 
 /** A wait step (R5, §7.8): parks until a named signal or its deadline. */
@@ -867,8 +895,10 @@ public sealed interface DeliveryEvidence {
 }
 ```
 
-- **`NotSent` is definite:** the step took no effect. Whether the runtime retries a `NotSent` failure
-  before treating it as the step's failure is the retry-budget question still pending (v1828 B3).
+- **`NotSent` is definite:** the step took no effect. It is **retried with backoff inside the step's
+  retry budget** (below, D7a) — no endpoints, an open circuit and a serialization fault included — and only
+  an exhausted budget parks the saga. A brief endpoint gap (a restart, a rolling replacement) therefore
+  never parks.
 - **`Sent` is ambiguous:** the step takes the R1 recovery path below (re-invoke, look up, or park), within
   the key-retention window.
 - **No tag means `Sent`.** A failure from a resource that does not carry the evidence — author code, a
@@ -882,7 +912,7 @@ public sealed interface DeliveryEvidence {
 | Declared capability | Recovery action for an in-flight step | What it earns, and the condition it rests on |
 |---|---|---|
 | `Replayable` | within the key-retention window (below): re-invoke `forward` with the **same** `operationId` (`attempt` + 1, same persisted `S`); commit the returned `R`, fold, continue. Past the window: as `Neither` | the effect is applied at most once **and** the receipt is recovered — **iff** the downstream dedups on `operationId` and answers a repeat with the original result. The runtime cannot check that; the declaration is the author's assertion about the downstream. |
-| `Lookup` | within the key-retention window (below): call `outcome(ctx, S)`. `some(R)` → commit `R` as the step's result. `none()` → invoke `forward` (same `operationId`). Past the window: as `Neither` | the receipt is recovered when the operation happened; a `none()` is "safe to invoke" **iff** the query is ordered against the operation — no earlier attempt carrying this `operationId` can still be applied after the query answers `none()` (e.g. the downstream records the key durably before acting, or rejects late arrivals). A query that can race an in-flight earlier attempt makes `Lookup` unsound; such a downstream must be declared `Neither`. A lookup that itself fails ambiguously is retried, never treated as `none()`. |
+| `Lookup` | within the key-retention window (below): call `outcome(ctx, S)`. `some(R)` → commit `R` as the step's result. `none()` → invoke `forward` (same `operationId`). Past the window: as `Neither` | the receipt is recovered when the operation happened; a `none()` is "safe to invoke" **iff** the query is ordered against the operation — no earlier attempt carrying this `operationId` can still be applied after the query answers `none()` (e.g. the downstream records the key durably before acting, or rejects late arrivals). A query that can race an in-flight earlier attempt makes `Lookup` unsound; such a downstream must be declared `Neither`. A lookup that itself fails is retried inside the step's retry budget and is never treated as `none()`; an exhausted budget parks the step `OutcomeUnknown`. |
 | `Neither` | no invocation. The step enters **`OutcomeUnknown`** and the saga parks in **`NeedsReconciliation`** (§7.6) | nothing is guessed. The operator resolves it (§7.7) as **succeeded-with-receipt** (supplies `R`), **failed** (no effect), **compensate**, or — as last resort — **abandon** (§7.7, D3). The parked instance keeps its version pin (§7.9) and is counted by the retirement gate. |
 
 **Key-retention window (v1828 B1, CTO ruling T1).** A downstream remembers an operation key for a
@@ -905,6 +935,30 @@ downstream's clock for its window. The marker is committed before the request is
 downstream's own window starts no earlier than `attempt.at`; that delay errs on the safe side and needs no
 margin. Nothing in the runtime measures the skew; the margin is the author's declaration, like the
 capability itself.
+
+**Retry budget (owner decision D7b, closes v1828 B3).** Every forward step declares ONE `RetryBudget` —
+a maximum number of attempts and a maximum total time, with defaults — and that single budget is shared
+by everything the runtime does for the step without a fresh decision: retries of `NotSent` failures,
+`Replayable` re-invocations and `Lookup` queries. It is never infinite. Each such action commits a new
+`StepAttempt` (`attempt + 1`) first, so the count survives an owner change, and elapsed time is measured
+from the step's first `attempt.at`, so a handover does not reset the clock. Backoff between attempts is
+exponential with jitter, capped.
+
+```java
+public record RetryBudget(int maxAttempts, Duration maxElapsed, Duration initialBackoff, Duration maxBackoff) {
+    /** [author choice: the default VALUES] 8 attempts, 10 minutes, 200 ms doubling to 30 s. */
+    public static final RetryBudget DEFAULT = new RetryBudget(8, Duration.ofMinutes(10),
+                                                              Duration.ofMillis(200), Duration.ofSeconds(30));
+}
+```
+
+**Whichever expires first wins:** the budget (attempts or `maxElapsed`) or the T1 key-retention limit
+`keyRetention − clockSafetyMargin`. On exhaustion the step parks in `NeedsReconciliation` with
+`OutcomeUnknown` if any attempt carried `Sent` evidence (the effect may have happened), or with
+`RetriesExhausted` if every attempt was `NotSent` (it definitely did not) **[author choice: the split; D7
+says "exhaustion → NeedsReconciliation"]**. `RetriesExhausted` caused by no live endpoint for a bound
+version is reported as `BoundVersionUnavailable`. **[author choice]** A step's compensation is governed by
+the same declared budget, counted separately from its forward.
 
 `IDEMPOTENT`/`RUN_ONCE` (v0.5.0) are superseded: `Replayable` covers what `IDEMPOTENT` meant *and* says
 how the receipt comes back; `RUN_ONCE`'s at-most-once invocation is what `Neither` gives, now with a
@@ -996,6 +1050,7 @@ public sealed interface CompensationOutcome {
 public sealed interface Reconcile {
     record OutcomeUnknown(int stepIndex, OperationId operationId, int attempts)             implements Reconcile {}
     record CompensationOutcomeUnknown(int stepIndex, OperationId compensationId, int attempts) implements Reconcile {}
+    record RetriesExhausted(int stepIndex, OperationId operationId, int attempts)           implements Reconcile {}  // all attempts NotSent
     record BoundVersionUnavailable(String artifact, String detail)                          implements Reconcile {}
     record ForceRetired(String version, String byOperator)                                  implements Reconcile {}
 }
@@ -1091,6 +1146,7 @@ every row, because a version with bound work is never unloaded (§7.9, "reconcil
 | `NeedsReconciliation(OutcomeUnknown(i))` | `SucceededWithReceipt(R)` · `Failed` · `Compensate(some(R))` · `Abandon` | fold `R` and continue · compensate steps `< i` · record `R`, compensate steps `≤ i` · terminal `Failed(OperatorAbandoned)` |
 | `NeedsReconciliation(CompensationOutcomeUnknown(j))` | `CompensationResolved(effective)` · `Abandon` | record step `j`'s compensation as done or failed and continue the reverse sequence · `Failed(OperatorAbandoned)` |
 | `NeedsReconciliation(ForceRetired)` | `Compensate(none())` · `Abandon` | compensate every completed step from the suspended point, on the retained code · `Failed(OperatorAbandoned)` |
+| `NeedsReconciliation(RetriesExhausted(i))` | `Resume` · `Failed` · `Abandon` | retry step `i` with a fresh budget (no effect happened, so this is safe) · compensate steps `< i` · `Failed(OperatorAbandoned)` **[author choice: row added with D7's split]** |
 | `NeedsReconciliation(BoundVersionUnavailable)` | `Resume` · `Abandon` | continue the suspended phase once the bound code answers again (refused while it does not) · `Failed(OperatorAbandoned)` |
 | `Waiting(w)` | `Cancel` · `Abandon` | cancel the deadline timer, then compensate every completed step from the current point · `Failed(OperatorAbandoned)` |
 
@@ -1154,7 +1210,8 @@ and arm a timer": `update` and `scheduleTimer` are separate appends (`DurableEnt
 deadline is therefore built so that every interleaving of those two appends with a crash is safe:
 
 1. **Arm first.** Entering a wait first calls `scheduleTimer` with a **deterministic token**
-   `<operationId of the wait step>/deadline` (one wait step = one token; §7.2) and the command
+   `base32(SHA-256(enc("aether.saga.deadline.v1") ‖ enc(keyspace) ‖ enc(incarnation) ‖ enc(sagaId) ‖
+   enc(waitStepIndex)))` — the §7.2 construction under its own domain tag (one wait step = one token) — and the command
    `DeadlineFired(waitStep, token)`.
 2. **Then persist `Waiting(waitStep, deadlineAt, token)`.**
 3. **A fire is a guarded no-op unless it matches.** `DeadlineFired` is a pure transition: if the phase is
@@ -1265,9 +1322,14 @@ the create record, a `VersionBinding`:
 ```java
 public record VersionBinding(String definitionName, int definitionVersion,
                              String sliceArtifact,                    // groupId:artifactId:version
-                             Map<String, String> dependencyVersions,  // artifactBase -> version, as resolved at registration
+                             Map<String, String> dependencyVersions,  // artifactBase -> version: the FULL resolved closure (D7c)
                              String codecFingerprint) {}              // identity of S/D/command codecs
 ```
+
+**The pin is transitive (owner decision D7c, closes v1828 B4).** `dependencyVersions` records the full
+resolved dependency **closure** at creation — every slice the saga's slice depends on, directly or through
+another dependency, with the version `DependencyResolver` resolved — not only the direct dependencies. A
+dependent call made anywhere in that chain on behalf of the instance is routed to the closure's version.
 
 From then on **everything the instance does runs on its binding, not on live weights**: forward,
 lookup and compensation invocations, signal and deadline handling, recovery, and **every dependent slice
@@ -1280,12 +1342,12 @@ across the per-key executor hop, as `submitWithDeadline` already does for the re
 (`PartitionFencedDurableEntity.java:235-238`).
 
 **Missing bound code fails loudly.** If the bound slice version, definition, or a bound dependency
-version has no live endpoint, nothing falls back to the latest version: the invocation is not made, the
-instance parks in `NeedsReconciliation(BoundVersionUnavailable)`, and the cause is `SagaError.BoundVersionUnavailable`.
-Because no invocation was made, this is not an `OutcomeUnknown`. Under D3 a version with bound work is never
-unloaded, so this arises from lost capacity, not from retirement, and is resolved by `Resume` or `Abandon`
-(§7.7). *Whether a momentary absence (a restart blip) parks at once or is first retried is an owner decision
-still pending (v1828 should-fix).*
+version has no live endpoint, nothing falls back to the latest version: the invocation is not made
+(`NotSent`, cause `SagaError.BoundVersionUnavailable`). It is retried with backoff inside the step's
+budget (D7a), so a restart or a rolling replacement of the bound version does not park the saga. Only an
+exhausted budget parks it, in `NeedsReconciliation(BoundVersionUnavailable)`; because no invocation was
+made, this is never an `OutcomeUnknown`. Under D3 and D7c a version with bound work is never unloaded, so
+the park signals lost capacity, not retirement, and is resolved by `Resume` or `Abandon` (§7.7).
 
 **Shared keyspace — bidirectional codec compatibility (owner decision D5).** v1 and v2 may host the same
 saga keyspace at once only if each can read the other's records: **v2 reads every v1 record and v1 reads
@@ -1312,7 +1374,10 @@ enters **DRAINING** instead of being deallocated:
   its fold and publishes it; the retirement gate sums them. Visible through the management triad
   (`GET /api/sagas/{type}/versions`, CLI, docs).
 - **Retired only at zero.** The deallocation paths of §7.11.1 (`removeNonTargetVersions` and the
-  others) consult the gate before unloading a version that hosts a saga keyspace.
+  others) consult the gate before unloading **any version that appears in any live binding** — the saga's
+  own slice version and every version in a binding's dependency closure (D7c). A dependency version
+  referenced only through a live binding is therefore DRAINING, not removable, and its live count names
+  the bindings that hold it.
 - **Takeover capacity.** A node is eligible to own a saga keyspace partition only if it hosts every
   version still bound by live work in that keyspace (ACTIVE or DRAINING), and the deployment keeps a
   draining version allocated on at least `replication_factor` of the keyspace's hosting nodes, so an
@@ -1363,7 +1428,8 @@ static Result<SagaDefinition<OrderSagaState, OrderSagaData>> orderSaga(Inventory
             OrderSagaState::withReservation,
             new StepRecovery.Replayable<>(Duration.ofDays(7)),      // inventory keeps keys 7 days
             (ctx, s, reservation) -> inventory.release(ctx.compensationId(), reservation),  // A's OWN R
-            new StepRecovery.Replayable<>(Duration.ofDays(7))))
+            new StepRecovery.Replayable<>(Duration.ofDays(7)),
+            RetryBudget.DEFAULT))
         // B: charge, CONSUMING A's folded result from S. The provider offers a lookup by our key that is
         //    ORDERED against the charge: it records the key before charging, so not-found means no attempt
         //    carrying the key can still land. A search API that is only eventually consistent does NOT
@@ -1376,7 +1442,8 @@ static Result<SagaDefinition<OrderSagaState, OrderSagaData>> orderSaga(Inventory
             new StepRecovery.Lookup<>(Duration.ofHours(24),          // the provider's key window
                                       (ctx, s) -> payment.findCharge(ctx.operationId())),
             (ctx, s, chargeId) -> payment.refund(ctx.compensationId(), chargeId),
-            new StepRecovery.Neither<>()))      // a refund with no lookup: unknown outcome goes to the operator
+            new StepRecovery.Neither<>(),       // a refund with no lookup: unknown outcome goes to the operator
+            RetryBudget.DEFAULT))
         // W: manual approval for large orders, 24h; on expiry compensate.
         .await(new WaitStep<OrderSagaState, Approval>(
             "approval", Approval.class, OrderSagaState::withApproval,
@@ -1388,7 +1455,8 @@ static Result<SagaDefinition<OrderSagaState, OrderSagaData>> orderSaga(Inventory
             (s, shipment) -> s,
             new StepRecovery.Neither<>(),
             (ctx, s, shipment) -> shipping.recall(shipment),
-            new StepRecovery.Neither<>()))
+            new StepRecovery.Neither<>(),
+            new RetryBudget(3, Duration.ofMinutes(2), Duration.ofSeconds(1), Duration.ofSeconds(20))))
         .build();
 }
 ```
@@ -1433,15 +1501,17 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A2 | **Effect succeeds before result commit** (W2) | downstream applies the effect and returns `R`; kill before `R` commits; run once per capability | `Replayable`: the repeat returns the ORIGINAL `R`; `Lookup`: `some(R)` committed without invoking; `Neither`: parked `OutcomeUnknown`; operator `SucceededWithReceipt(R)` → saga continues with that `R` (R1) | downstream effects > 1; a later compensation of step `i` invoked with an `R` other than the original |
 | A3 | **Crash during compensation** | step `k` definitely fails; kill the owner while compensation of step `j < k` is in flight | per `compensationRecovery`: `Replayable` re-invoked with the same `compensationId`; `Lookup` resolved by query; `Neither` → `NeedsReconciliation(CompensationOutcomeUnknown(j))`. Remaining compensations still run in reverse; any definite compensation failure ends in `PartiallyCompensated` (R1, R2, §7.5) | a compensation skipped in the reverse order; a compensation keyed by `operationId` instead of `compensationId`; terminal `Compensated` while any compensation failed or is unresolved |
 | A4 | **v2 promotion with active v1 work** | instances created under v1 with pending steps, timers and waits; roll out v2 through a canary/split and complete | v1 instances keep running on v1 — their steps, timers, compensations **and dependent slice calls** — while new starts bind to v2; on completion v1 goes DRAINING with a live count, not deallocated (R4a, R4b) | a v1-bound invocation or dependent call served by v2 code; v1 deallocated while its count is > 0 |
-| A5 | **v1 owner failure** | as A4 with v1 DRAINING; kill the owner of a partition holding v1-bound instances | ownership moves to a node hosting every live bound version; v1 instances resume there from persisted state, no replay (R4b) | v1-bound work stranded with no eligible owner; any `BoundVersionUnavailable` while v1 is DRAINING |
+| A5 | **v1 owner failure** | as A4 with v1 DRAINING; kill the owner of a partition holding v1-bound instances | ownership moves to a node hosting every live bound version; v1 instances resume there from persisted state, no replay; calls refused `NotSent` during the gap are retried inside the budget (R4b, D7a) | v1-bound work stranded with no eligible owner; a `BoundVersionUnavailable` park while the budget is not exhausted |
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
-| A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint) and drive a step that calls it | the call is not made against any other version; instance parks `NeedsReconciliation(BoundVersionUnavailable)` (R4a) | a dependent call served by a non-bound version |
+| A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint) (a) briefly, then restore it; (b) for longer than the step's budget | the call is never made against another version; (a) retried with backoff and succeeds, no park; (b) parks `NeedsReconciliation(BoundVersionUnavailable)` at budget exhaustion (R4a, D7a) | a dependent call served by a non-bound version; a park in (a) |
 | A9 | **Codec compatibility, both directions** (D5) | (a) deploy v2 adding an optional field to `S`; (b) deploy v2 removing or retyping a field, or adding a command variant | (a) accepted; v1 and v2 each read the other's records in the shared log. (b) refused at deploy with `IncompatibleDurableCodec` (R4a, D5) | a deploy accepted that either version cannot read; a refusal surfacing only at first read; a v1 replica freezing on a v2 record after an accepted deploy |
 | A10 | **Recovery past the key window** (v1828 B1) | park a `Replayable` and a `Lookup` step after the marker commits, then resume once `now − attempt.at ≥ keyRetention − clockSafetyMargin` | no re-invocation and no lookup; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1) | an invocation or lookup issued past the window |
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite ([author choice] `Answered`) | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
 | A13 | **Resolution table** (D3) | park one instance per row of §7.7's table and apply each accepted resolution, then each unlisted one | each accepted resolution has the row's effect, resumed from the persisted suspended phase; each unlisted one is refused `ResolutionNotApplicable`; `Abandon` works on every row | a resolution applied outside its row; a resolution needing unloaded code |
+| A14 | **Retry budget** (D7a, D7b) | (a) a `NotSent` failure that clears after two attempts; (b) persistent `NotSent` failures; (c) persistent `Sent` failures on a `Replayable` step; (d) a key window shorter than the budget's `maxElapsed`; kill the owner mid-budget in each | (a) succeeds with no park; (b) parks `RetriesExhausted`; (c) parks `OutcomeUnknown`; (d) stops at the key window, not the budget; in every case the attempt count and elapsed time continue across the owner change | an attempt beyond `maxAttempts` or after `maxElapsed`; an attempt past the key window; a budget reset by an owner change |
+| A15 | **Transitive pin** (D7c) | create an instance whose slice depends on X, which depends on Y; roll out new versions of Y; try to retire the old Y | the binding lists X and Y at creation; calls from X on the instance's behalf go to the bound Y; retiring the old Y is blocked with a live count naming the binding | a call reaching a Y version outside the binding; the old Y unloaded while a live binding references it |
 | W1 | **Signal before the wait** | deliver the `approval` signal while the saga is still on step B | buffered and acknowledged; consumed on entering the wait, payload folded into `S`, no deadline scheduled (R5) | the signal lost; a deadline timer armed despite a buffered signal |
 | W2 | **Duplicate signal** | deliver the same `(waitName, signalId)` twice, once buffered and once after consumption; then a different `signalId` | both duplicates are no-ops answered with the original `SignalAccepted`; the different id is refused `WaitAlreadySignalled` (R5) | payload folded more than once |
 | W3 | **Deadline expiry** | let the wait's deadline pass with no signal, once per `OnDeadline`; then send a late signal | `ContinueWith`: default folded, saga continues; `Compensate`: compensation of completed steps in reverse; the late signal refused `WaitExpired` (R5) | both the deadline and a signal applied to one wait; a fire earlier than `deadlineAt` by the firing owner's clock |
@@ -1451,7 +1521,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | W7 | **Signal to a replaced incarnation** (v1828 B8) | `delete` a terminal instance, `run` the same `sagaId` again, then retry a signal addressed to the old incarnation | refused `SignalRejected(IncarnationReplaced)`; the new instance's state is unchanged (T4) | an old-incarnation signal folded into, or buffered on, the new instance |
 | W8 | **Crash between arming and `Waiting`** (v1828 B6) | kill the owner after the deadline `scheduleTimer` lands and before `Waiting` commits; separately, make a `DeadlineFired` transition fail | the stray fire is a no-op; recovery re-enters the wait with one live timer. The failing fire stays pending and re-fires each tick, ERROR-logged with its attempt count, until the transition commits (T2) | a wait with no live deadline timer; a failed deadline fire consumed |
 | D1 | **Typed dataflow after recovery** | kill the owner between A's commit and B's invocation | B reads A's `ReservationId` from the recovered `S`; if B then definitely fails, A's compensation receives the same `ReservationId` (R3) | B invoked with no reservation in `S`; A's compensation invoked with a value differing from A's `StepRecord` |
-| I1 | **Identity stability** | force re-invocations across owner change and a redeploy of the same version; delete a terminal instance and `run` the same `sagaId` again | the same `operationId`/`compensationId` on every re-invocation of one instance; different values for the new incarnation; `attempt` changes and appears in no key (R2) | two different `operationId`s for one step of one instance; one `operationId` shared by two incarnations |
+| I1 | **Identity stability** | force re-invocations across owner change and a redeploy of the same version; delete a terminal instance and `run` the same `sagaId` again; use a `sagaId` containing `/` | the same `operationId`/`compensationId` on every re-invocation of one instance; different values for the new incarnation; every id is 52 lower-case base32 characters and contains no business id; `attempt` changes and appears in no key (R2, D6) | two different `operationId`s for one step of one instance; one `operationId` shared by two incarnations or by two distinct tuples; a key that is not 52 characters |
 
 #### 7.11.1 What the current rollout code does to durable work (source read, `564d2d3df`, not run)
 
@@ -1706,8 +1776,11 @@ whether the request was sent (`NotSent` definite, `Sent` ambiguous; §7.4). D2: 
 receives the snapshot `S_j` (§7.5). D3: code is retained until every bound instance is resolved
 (reconcile-only), with the per-reason resolution table and `Abandon` as last resort (§7.7, §7.9). D4: §7.9
 applies to workflows (§6; added #353 scope). D5: codec compatibility is bidirectional; anything else needs
-a new keyspace or a migration (§7.9). Still pending: retry budget (v1828 B3), dependency-pin scope and its
-retirement gate (B4), operation-key encoding, and whether a momentary endpoint absence parks at once.
+a new keyspace or a migration (§7.9). D6: `operationId`/`compensationId` are 52-character base32 SHA-256
+digests of a length-prefixed, domain-tagged tuple, with the readable tuple kept alongside (§7.2). D7:
+`NotSent` failures retry inside a budget, so a brief endpoint gap never parks; ONE declared per-step retry
+budget, bounded by the key window as well; the pin is transitive and the retirement gate covers every
+version in any live binding (§7.4, §7.9). Round 2 of the #1828 review is fully decided.
 
 **S1 — signals scope for v1. RESOLVED (2026-07-04); saga half SUPERSEDED by S10 (2026-10-02)** — saga
 `WAIT_SIGNAL` is specified in rc4 (§7.8); the workflow half stands. Original text: **signal injection IS
@@ -1757,6 +1830,19 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.9.0 (2026-10-02)
+
+**Owner decisions D6–D7 on the #1828 review; round 2 complete.**
+
+| What | Decision | v1828 | Where |
+|---|---|---|---|
+| Operation ids are 52-char base32 SHA-256 digests of a length-prefixed, domain-tagged `(keyspace, incarnation, sagaId, stepIndex)`; collision bound `n²/2²⁵⁷`; readable tuple kept alongside; deadline token built the same way | D6 | author-choice item 6 | §7.2, §7.8, §7.11 I1 |
+| `NotSent` failures retry with backoff inside the budget; a brief endpoint gap never parks | D7a | should-fix (restart blip) | §7.4, §7.9, §7.11 A5, A8, A14 |
+| One declared per-step `RetryBudget` shared by retries, re-invokes and lookups; bounded by the key window too; exhaustion parks (`OutcomeUnknown` or [author choice] `RetriesExhausted`) | D7b | B3 | §7.3, §7.4, §7.6, §7.7, §7.11 A14 |
+| Transitive pin: the binding records the full dependency closure; the retirement gate covers every version in any live binding | D7c | B4 | §7.9, §7.11 A15 |
 
 ---
 
