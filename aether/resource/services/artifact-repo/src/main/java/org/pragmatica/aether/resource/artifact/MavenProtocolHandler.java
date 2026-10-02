@@ -498,7 +498,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             groupPath.append(parts[i]);
         }
 
-        var extension = extractExtension(fileName);
+        var extension = extractExtension(fileName, artifactIdStr, versionStr);
         var classifier = extractClassifier(fileName, artifactIdStr, versionStr);
 
         return Result.all(GroupId.groupId(groupPath.toString()),
@@ -522,7 +522,27 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         return Option.some(new ParsedPath.ArtifactPath(artifact, classifier, extension));
     }
 
-    private String extractExtension(String fileName) {
+    /// Everything after the classifier's dot is the extension, sidecar suffix included: `lib-1.0.0.jar.asc` is
+    /// `jar.asc`, `lib-1.0.0-sources.pom.sha256` is `pom.sha256`. The last-dot reading mapped the sidecars of
+    /// DIFFERENT files onto one key (`asc`), so under write-once the second one answered 409 (#1778). Only
+    /// `.md5` and `.sha1` are peeled off earlier, as contentless checksum paths.
+    private String extractExtension(String fileName, String artifactId, String version) {
+        var stemEnd = stemLength(fileName, artifactId, version);
+
+        return stemEnd < 0
+               ? lastDotExtension(fileName)
+               : extensionAfterStem(fileName.substring(stemEnd), fileName);
+    }
+
+    private String extensionAfterStem(String remainder, String fileName) {
+        var dotIndex = remainder.indexOf('.');
+
+        return dotIndex < 0 || !(remainder.startsWith("-") || dotIndex == 0)
+               ? lastDotExtension(fileName)
+               : remainder.substring(dotIndex + 1);
+    }
+
+    private String lastDotExtension(String fileName) {
         var lastDot = fileName.lastIndexOf('.');
 
         return lastDot > 0
