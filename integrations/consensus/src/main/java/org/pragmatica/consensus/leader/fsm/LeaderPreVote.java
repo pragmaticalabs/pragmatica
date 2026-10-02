@@ -112,10 +112,11 @@ public final class LeaderPreVote {
         beginEpisode(leader).run();
     }
 
-    /// Ends any live episode (the follower left `Led`, or adopted another leader).
+    /// Ends the live episode about `leader` (the follower left that `Led` tenure). Scoped to the leader: a
+    /// tenure's late `onExit` must not end an episode the next tenure has already started about another one.
     @Contract
-    public void cancel() {
-        cancelEpisode();
+    public void cancel(NodeId leader) {
+        cancelEpisode(leader);
     }
 
     /// Answers a peer's question from this node's own view. No view of the leadership, no answer.
@@ -169,8 +170,10 @@ public final class LeaderPreVote {
         return openRound(started);
     }
 
-    private synchronized void cancelEpisode() {
-        cancelLocked();
+    private synchronized void cancelEpisode(NodeId leader) {
+        if (episode.filter(e -> e.leader.equals(leader)).isPresent()) {
+            cancelLocked();
+        }
     }
 
     private void cancelLocked() {

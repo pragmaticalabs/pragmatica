@@ -483,7 +483,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void onExit() {
             cancelFuture(leaseFuture);
-            ctx.preVote().onPresent(LeaderPreVote::cancel);
+            ctx.preVote().onPresent(preVote -> preVote.cancel(leader));
         }
 
         @Override

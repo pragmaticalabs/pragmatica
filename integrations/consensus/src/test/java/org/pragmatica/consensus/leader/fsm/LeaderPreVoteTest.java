@@ -283,6 +283,29 @@ class LeaderPreVoteTest {
             assertThat(List.of(N1, N2, N4, N5)).allMatch(id -> cluster.node(id).isLedBy(N1));
         }
 
+        /// A tenure's late `onExit` must not end an episode the next tenure already started about ANOTHER
+        /// leader: cancelling about N2 leaves the live episode about N1 asking, cancelling about N1 ends it.
+        @Test
+        void cancel_isScopedToTheLeaderOfTheEpisode() {
+            cluster = new Cluster(true, Map.of());
+            var preVote = cluster.node(N3).ctx.preVote().unwrap();
+
+            cluster.lose(N3, N1);
+            preVote.cancel(N2);
+            var afterWrongCancel = cluster.requests.size();
+
+            assertThat(await(() -> cluster.requests.size() >= afterWrongCancel + 8, 3_000))
+                .as("the episode about N1 survives a cancel about N2 and keeps asking")
+                .isTrue();
+
+            preVote.cancel(N1);
+            sleep(300);
+            var afterRightCancel = cluster.requests.size();
+            sleep(SETTLE_MS / 2);
+
+            assertThat(cluster.requests).as("cancelling about N1 ends the episode: no further questions").hasSize(afterRightCancel);
+        }
+
         /// The S05 shape: a 2-vs-3 partition whose cuts land staggered. N2 loses N1 and keeps its links to N3
         /// and N4 (so, with itself, it can reach three of five — a Rabia quorum — exactly the commit that
         /// deposed core-0); N5 is isolated first. The leader must stay on the majority side.
