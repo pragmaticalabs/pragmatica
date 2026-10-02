@@ -16,10 +16,14 @@
 package org.pragmatica.dht;
 
 import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 import java.util.zip.CRC32;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.dht.DHTMessage.Readiness;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
@@ -42,6 +46,7 @@ public final class DHTNode {
     private final ConsistentHashRing<NodeId> ring;
     private final DHTConfig config;
     private final HlcClock hlcClock;
+    private final CatchUpState catchUp = CatchUpState.catchUpState();
 
     private DHTNode(NodeId nodeId,
                     StorageEngine storage,
@@ -108,6 +113,92 @@ public final class DHTNode {
     /// Get the HLC clock.
     public HlcClock hlcClock() {
         return hlcClock;
+    }
+
+    /// Apply a ring change and mark catching up every partition this node GAINED by it (#1777 track 2),
+    /// recording the partition's previous replica set as catch-up sources: those holders may still be
+    /// ring members holding the data. Every ring mutation that can make this node a replica goes through
+    /// here; [ConsistentHashRing] itself stays ownership-agnostic. FULL replication has no catch-up: every
+    /// node is a replica of everything, and anti-entropy does not run in that mode.
+    @Contract
+    public void changeRing(Consumer<ConsistentHashRing<NodeId>> change) {
+        if (config.isFullReplication()) {
+            change.accept(ring);
+
+            return;
+        }
+
+        var before = replicaSets();
+
+        change.accept(ring);
+        markGained(before, replicaSets());
+    }
+
+    /// Mark every partition this node currently owns catching up — the boot state of a node whose store
+    /// starts empty (#1777 track 2). A restarted node therefore never answers "absent" for data its
+    /// co-replicas hold; at genesis, or after a whole-cluster cold restart, every replica is empty and
+    /// anti-entropy's anchorless rule makes them serving after one round.
+    ///
+    /// At boot there is no ring change to diff, so the previous holders are not known exactly. They are
+    /// bounded instead: a node inserted into the ring only pushes existing replicas LATER along a
+    /// partition's walk, so the holders displaced by up to RF nodes that joined together are the next RF
+    /// nodes after the replica set. They are recorded as catch-up sources, so a booting node whose whole
+    /// replica set is new still finds the old holders rather than completing on an empty union.
+    @Contract
+    public void beginCatchUp() {
+        if (config.isFullReplication()) {
+            return;
+        }
+
+        var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
+
+        IntStream.range(0, Partition.MAX_PARTITIONS)
+                 .mapToObj(Partition::at)
+                 .filter(partition -> ring.nodesFor(partition, replicationFactor)
+                                          .contains(nodeId))
+                 .forEach(partition -> catchUp.markCatchingUp(partition,
+                                                              ring.nodesFor(partition, 2 * replicationFactor)));
+    }
+
+    /// Whether this node's answers for `partition` are authoritative.
+    public Readiness readiness(Partition partition) {
+        return catchUp.readiness(partition);
+    }
+
+    /// Whether this node's answers for the partition holding `key` are authoritative.
+    public Readiness readinessFor(byte[] key) {
+        return readiness(ring.partitionFor(key));
+    }
+
+    List<Partition> pendingPartitions() {
+        return catchUp.pendingPartitions();
+    }
+
+    Set<NodeId> previousHolders(Partition partition) {
+        return catchUp.previousHolders(partition);
+    }
+
+    @Contract
+    void markServing(Partition partition) {
+        catchUp.markServing(partition);
+    }
+
+    private List<List<NodeId>> replicaSets() {
+        var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
+
+        return IntStream.range(0, Partition.MAX_PARTITIONS)
+                        .mapToObj(index -> ring.nodesFor(Partition.at(index), replicationFactor))
+                        .toList();
+    }
+
+    private void markGained(List<List<NodeId>> before, List<List<NodeId>> after) {
+        IntStream.range(0, Partition.MAX_PARTITIONS)
+                 .filter(index -> gained(before.get(index), after.get(index)))
+                 .forEach(index -> catchUp.markCatchingUp(Partition.at(index), before.get(index)));
+    }
+
+    private boolean gained(List<NodeId> before, List<NodeId> after) {
+        return after.contains(nodeId) && !before.contains(nodeId);
     }
 
     /// Get a value from local storage.
@@ -180,16 +271,22 @@ public final class DHTNode {
         return storage.shutdown();
     }
 
-    /// Handle a get request (for message routing integration).
+    /// Handle a get request (for message routing integration). The reply carries this node's
+    /// [Readiness] for the key's partition, so the reader can discount an absent answer from a replica
+    /// that is still catching up (#1777 track 2).
     @Contract
     public void handleGetRequest(DHTMessage.GetRequest request, Consumer<DHTMessage.GetResponse> responseHandler) {
+        var readiness = readinessFor(request.key());
+
         storage.get(request.key())
                .onSuccess(value -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
                                                                                      nodeId,
-                                                                                     value)))
+                                                                                     value,
+                                                                                     readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
                                                                                  nodeId,
-                                                                                 Option.none())));
+                                                                                 Option.none(),
+                                                                                 readiness)));
     }
 
     /// Handle a put request (for message routing integration).
@@ -229,32 +326,43 @@ public final class DHTNode {
                                                                                     false)));
     }
 
-    /// Handle an exists request (for message routing integration).
+    /// Handle an exists request (for message routing integration), carrying this node's [Readiness] for
+    /// the key's partition like [#handleGetRequest].
     @Contract
     public void handleExistsRequest(DHTMessage.ExistsRequest request,
                                     Consumer<DHTMessage.ExistsResponse> responseHandler) {
+        var readiness = readinessFor(request.key());
+
         storage.exists(request.key())
                .onSuccess(exists -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
                                                                                          nodeId,
-                                                                                         exists)))
+                                                                                         exists,
+                                                                                         readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
                                                                                     nodeId,
-                                                                                    false)));
+                                                                                    false,
+                                                                                    readiness)));
     }
 
-    /// Handle a digest request: compute digest for the requested partition range and respond.
+    /// Handle a digest request: compute digest for the requested partition range and respond, with this
+    /// node's [Readiness] for the partition so a catching-up requester can tell an authoritative source
+    /// from another catching-up replica (#1777 track 2). A digest that could not be computed is reported
+    /// [Readiness#UNKNOWN] — never as an authoritative empty partition.
     @Contract
     public void handleDigestRequest(DHTMessage.DigestRequest request,
                                     Consumer<DHTMessage.DigestResponse> responseHandler) {
         var partition = Partition.at(request.partitionStart());
+        var readiness = readiness(partition);
 
         storage.entriesForPartition(ring, partition)
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
                                                                                           nodeId,
-                                                                                          computeDigest(entries))))
+                                                                                          computeDigest(entries),
+                                                                                          readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
                                                                                     nodeId,
-                                                                                    new byte[0])));
+                                                                                    new byte[0],
+                                                                                    Readiness.UNKNOWN)));
     }
 
     /// Handle a migration data request: return the partition's entries, but ONLY to a node that this
@@ -270,7 +378,10 @@ public final class DHTNode {
     /// A holder whose own ring is stale refuses a legitimate owner: the requester then keeps nothing
     /// and the next anti-entropy round repeats the exchange, so a wrong refusal costs a delay, never a
     /// copy. Refusing to hand out is the only safe correction available — DELETING an unowned copy
-    /// against a ring that may be partial could drop the last one.
+    /// against a ring that may be partial could drop the last one. The refusal is EXPLICIT
+    /// (`refused=true`, #1777), as is a holder that could not read its own store: an empty entry list
+    /// must only ever mean "the holder has nothing here", or a catching-up requester would take a
+    /// refusal for a completed catch-up.
     @Contract
     public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
                                            Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
@@ -285,7 +396,8 @@ public final class DHTNode {
             responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                         nodeId,
                                                                         java.util.List.of(),
-                                                                        false));
+                                                                        false,
+                                                                        true));
 
             return;
         }
@@ -294,11 +406,13 @@ public final class DHTNode {
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                                                  nodeId,
                                                                                                  entries,
+                                                                                                 false,
                                                                                                  false)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                                            nodeId,
                                                                                            java.util.List.of(),
-                                                                                           false)));
+                                                                                           false,
+                                                                                           true)));
     }
 
     /// Whether `candidate` is one of the partition's replicas in THIS node's ring — the same single

@@ -208,7 +208,7 @@ public final class DHTRebalancer {
                   batch.getKey().id(),
                   correlationId);
         network.send(batch.getKey(),
-                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), batch.getValue(), true));
+                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), batch.getValue(), true, false));
 
         return ackPromise;
     }
@@ -293,6 +293,6 @@ public final class DHTRebalancer {
 
         log.debug("Pushing {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
         network.send(target,
-                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false));
+                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false, false));
     }
 }

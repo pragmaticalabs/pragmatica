@@ -569,7 +569,8 @@ public interface SystemTags {
         pin(table, 1743, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
-        // ---- 2114..16383 RESERVED ----
+        pin(table, 2114, "org.pragmatica.dht.DHTMessage.Readiness");
+        // ---- 2115..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

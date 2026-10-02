@@ -29,6 +29,13 @@ public sealed interface DHTError extends Cause {
         return new QuorumNotReached(required, achieved);
     }
 
+    /// A read could not reach an authoritative quorum because replicas it needed are still catching up after
+    /// a ring change (#1777 track 2). Never "absent": the value may exist on replicas that have not yet been
+    /// filled or on the holders they are filling from. Transient — a retry after catch-up is answered.
+    static DHTError notCaughtUp(int required, int authoritative) {
+        return new NotCaughtUp(required, authoritative);
+    }
+
     /// Data-plane epoch-fence rejection (#345 piece 1c): a versioned put whose owner epoch is
     /// STRICTLY older than the replica's per-DHT-partition high-water — a deposed owner attempting
     /// to commit an OLD epoch over a newer one. Carries the presented epoch as its two primitive
@@ -73,6 +80,27 @@ public sealed interface DHTError extends Cause {
         @Override
         public String message() {
             return "Quorum not reached: required " + required + ", achieved " + achieved;
+        }
+    }
+
+    /// One replica's refusal of one read slot: it holds no value and is still catching up, so its "absent"
+    /// is not counted (#1777 track 2). The read as a whole fails [NotCaughtUp] if quorum becomes
+    /// unreachable because of it.
+    static DHTError replicaCatchingUp(NodeId replica) {
+        return new ReplicaCatchingUp(replica);
+    }
+
+    record ReplicaCatchingUp(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " is still catching up";
+        }
+    }
+
+    record NotCaughtUp(int required, int authoritative) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replicas not caught up: required " + required + " authoritative answers, got " + authoritative;
         }
     }
 
