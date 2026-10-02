@@ -49,10 +49,13 @@
   "After the departure" is the pusher's view: `MigrationDataResponse` gains `leaving`, the set the pusher excluded
   when it chose this receiver. The receiver excludes that set together with its own departing set. The drain set
   reaches pusher and receiver in separate leader pings, and a receiver that had not yet heard of a co-drainer
-  dropped the pusher's legitimate newcomer as a stray. Nothing retries a nacked batch, so that copy was lost. Wire
-  change: re-recorded in `wire-assignment-baseline.txt`.
+  dropped the pusher's legitimate newcomer as a stray. Nothing retries a nacked batch, so that copy was lost. The push
+  also carries `view`, the pusher's ring membership, and the receiver keeps only nodes in it. Otherwise a joiner the
+  receiver knew but the pusher did not (joins concurrent with drains, as in a fleet replacement) pushed the receiver
+  past RF in its own view and lost the copy the same way. Wire change: re-recorded in `wire-assignment-baseline.txt`.
   [verified: `DHTDepartureReceiverViewTest` (120 topologies, 0 lost keys in every drain-set view; 527 with the
-  carried set ignored), `DHTMigrationResponseAuthenticityTest.departurePush_newcomerOnlyInThePushersView_*`]
+  carried set ignored), `DHTDepartureConcurrentJoinTest` (0 lost at 0–3 concurrent joins; 1172 and 2075 at 2 and 3
+  joins with `view` ignored), `DHTMigrationResponseAuthenticityTest.departurePush_newcomerOnlyInThePushersView_*`]
 - **A deposed owner's DHT write could survive its own refusal (owner ruling, the Dynamo stance).**
   - A put whose quorum was lost to owner-epoch fences now fails `DHTError.WriteIndeterminate`: transient, and "may
     have been applied". `PutResponse` gains `fenced`.
