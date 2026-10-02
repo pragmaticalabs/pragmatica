@@ -20,10 +20,10 @@ class ManifestReproducibleTextTest {
         second.setProperty("a.key", "1");
         second.setProperty("b.key", "2");
 
-        var text = ManifestGenerator.reproducibleText(first, "Slice manifest for X");
+        var text = ManifestGenerator.reproducibleText(first, "Slice manifest for X").unwrap();
 
         assertThat(text).isEqualTo("#Slice manifest for X\na.key=1\nb.key=2\n");
-        assertThat(ManifestGenerator.reproducibleText(second, "Slice manifest for X")).isEqualTo(text);
+        assertThat(ManifestGenerator.reproducibleText(second, "Slice manifest for X").unwrap()).isEqualTo(text);
     }
 
     @Test
@@ -32,11 +32,11 @@ class ManifestReproducibleTextTest {
 
         props.setProperty("slice.interface", "org.example.X");
 
-        var one = ManifestGenerator.reproducibleText(props, "c");
+        var one = ManifestGenerator.reproducibleText(props, "c").unwrap();
 
         Thread.sleep(1100);
 
-        assertThat(ManifestGenerator.reproducibleText(props, "c")).as("no wall-clock stamp").isEqualTo(one);
+        assertThat(ManifestGenerator.reproducibleText(props, "c").unwrap()).as("no wall-clock stamp").isEqualTo(one);
     }
 
     @Test
@@ -48,7 +48,7 @@ class ManifestReproducibleTextTest {
 
         var loaded = new Properties();
 
-        loaded.load(new java.io.StringReader(ManifestGenerator.reproducibleText(props, "c")));
+        loaded.load(new java.io.StringReader(ManifestGenerator.reproducibleText(props, "c").unwrap()));
 
         assertThat(loaded).isEqualTo(props);
     }
