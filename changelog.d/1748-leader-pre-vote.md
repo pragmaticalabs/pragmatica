@@ -32,12 +32,12 @@
 - Preserved: #1797 / #1800 in-flight guard and `LeaderTerm` re-adopt (consensus 784 non-QUIC tests, aether/node 2190,
   aether-deployment 1458, all green), #1807 `AwaitingKvSync` follows the known leader (`AwaitingKvSyncTest`,
   `JoinerElectionTest` green), #1815 eligibility pin (a voted-out leader is lost immediately, pinned).
-- [verified: `LeaderPreVoteTest` — 15 tests over five real `LeaderManager`s on an in-memory network that cuts single
+- [verified: `LeaderPreVoteTest` — 16 tests over five real `LeaderManager`s on an in-memory network that cuts single
   links. Pins: a follower losing only its own view of the leader does not depose it and never proposes; the S05
   shape (2-vs-3, staggered cut, the challenger still reaching two vouching voters) keeps the leader on the majority side and
   then, fully isolated, still cannot challenge; a silent leader ping seen by one follower only does not depose it.
   Controls: a dead leader is replaced inside 3 s; staggered detection proceeds once a majority doubts, without a new event;
   the majority side of a partition re-elects; the crossed-pointer wedge still recovers through the lease. Mutations on
-  the fixed code, each reddening named tests of those 15 in `integrations/consensus` only: restoring the immediate
+  the fixed code, each reddening named tests of those 16 in `integrations/consensus` only: restoring the immediate
   `ReElecting` on leader loss (the unfixed behaviour) 4, majority of one 4, silence-as-doubt 2, voters that always doubt 6,
-  no retry 2, asking about a voted-out leader 1, stance ignoring the leader's identity 1.]
+  no retry 2, asking about a voted-out leader 1, stance ignoring the leader's identity 1, a tenure exit that cancels another leader's episode 1.]
