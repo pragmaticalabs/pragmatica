@@ -21,6 +21,7 @@ class TransientClassificationTest {
         Cause[] transientCauses = {
             new EntityError.OwnershipNotYetCommitted("k", "ks", 0),
             new EntityError.LinearizableUnavailable("k"),
+            new EntityError.OwnerTransitioning("k", "mid-handoff"),
             new EntityError.StorageUnavailable("k", new EntityLogError.FoldInProgress("ks", 0)),
             new EntityLogError.FoldInProgress("ks", 0),
         };

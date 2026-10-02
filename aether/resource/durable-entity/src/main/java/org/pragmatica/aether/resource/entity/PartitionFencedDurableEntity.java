@@ -1097,13 +1097,18 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// way). Only the variants that legitimately cross this boundary are reconstructed; anything
     /// else keeps the carrier, whose message already names the owner's reason. [EntityError.StorageUnavailable]
     /// crosses so a transient refusal stays transient for the caller; the carrier becomes its wrapped cause, so
-    /// the owner's inner reason survives in the message.
+    /// the owner's inner reason survives in the message. The owner's not-ready answers
+    /// (`OwnerTransitioning`, `OwnershipNotYetCommitted`, `FoldInProgress`) cross as
+    /// [EntityError.OwnerTransitioning], for the same reason: left as the terminal carrier they read as a
+    /// permanent refusal during a handoff that clears by itself.
     private Cause retypeForwarded(Cause cause, K key) {
-        return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ignored)
+        return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ownerMessage)
                ? switch (failureType) {
             case "EntityAlreadyExists" -> new EntityError.EntityAlreadyExists(String.valueOf(key));
             case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
             case "StorageUnavailable" -> new EntityError.StorageUnavailable(String.valueOf(key), cause);
+            case "OwnerTransitioning", "OwnershipNotYetCommitted", "FoldInProgress" -> new EntityError.OwnerTransitioning(String.valueOf(key),
+                                                                                                                          ownerMessage);
             default -> cause;
         }
                : cause;

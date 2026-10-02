@@ -369,6 +369,43 @@ class EntityOwnerForwardTest {
         });
     }
 
+    /// The rebalance-handoff refusal (run 8, 02w): the owner is mid-handoff and says so. It must stay
+    /// transient for the caller. The three names are the not-ready answers an owner can send — its own
+    /// handoff answer, an admission that has not yet seen the committed owner, and a fold still replaying.
+    /// Left as the terminal carrier, each read to the 02w harness (and to any client) as a permanent refusal.
+    @Test
+    void create_ownerIsMidHandoff_surfacesTheTransientCause_forEveryNotReadyName() {
+        for (var failureType : List.of(EntityError.OwnerTransitioning.class.getSimpleName(),
+                                       EntityError.OwnershipNotYetCommitted.class.getSimpleName(),
+                                       EntityLogError.FoldInProgress.class.getSimpleName())) {
+            transport.refuseWith(new EntityOwnerForward.ForwardRefused(failureType, "owner not ready"));
+
+            var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+            assertThat(result.isFailure()).as(failureType).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).as(failureType).isInstanceOf(EntityError.OwnerTransitioning.class);
+                assertThat(cause.isTransient()).as(failureType).isTrue();
+                assertThat(cause.message()).contains("owner not ready");
+            });
+        }
+    }
+
+    /// The control for the row above: the terminal `UnknownKeyspace` (a keyspace nobody provisioned) must
+    /// keep the carrier, so retyping stays an allow-list and a genuinely unknown keyspace is never retried.
+    @Test
+    void create_ownerRefusesAsUnknownKeyspace_staysTerminal() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("UnknownKeyspace", "no entity registered for keyspace orders"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardRefused.class);
+            assertThat(cause.isTransient()).isFalse();
+        });
+    }
+
     /// An unknown failureType keeps the carrier — its message names the owner's reason verbatim,
     /// and minting a wrong typed cause would be worse than a generic one.
     @Test

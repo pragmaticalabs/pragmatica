@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -30,6 +31,7 @@ import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter.HrwOwner;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -96,6 +98,8 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     private final BooleanSupplier consensusActive;
     private final StreamPartitionOwnershipWriter writer;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
+    /// Where an event-triggered pass runs (see [#requestReconcile]) — injected so a test can run it inline.
+    private final Executor reconcileExecutor;
     /// The registration view the writer's [HrwOwner] reads, refreshed ONCE per tick — the writer asks
     /// per arc, and answering each ask with a fresh full scan would make a tick O(arcs × records).
     private volatile Map<String, HostedKeyspace> committedKeyspaces = Map.of();
@@ -105,13 +109,15 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
                                       Supplier<List<NodeId>> membersSupplier,
                                       BooleanSupplier consensusActive,
                                       Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
-                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                      Executor reconcileExecutor) {
         this.kvStore = kvStore;
         this.self = self;
         this.membersSupplier = membersSupplier;
         this.consensusActive = consensusActive;
         this.writer = writerFactory.apply(this::snapshotArcOwner);
         this.applier = applier;
+        this.reconcileExecutor = reconcileExecutor;
     }
 
     /// `writerFactory` receives the hosting-set [HrwOwner] this reconciler computes and returns the
@@ -123,8 +129,15 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
                                                                Supplier<List<NodeId>> membersSupplier,
                                                                BooleanSupplier consensusActive,
                                                                Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
-                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return new EntityOwnershipReconciler(kvStore, self, membersSupplier, consensusActive, writerFactory, applier);
+                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                               Executor reconcileExecutor) {
+        return new EntityOwnershipReconciler(kvStore,
+                                             self,
+                                             membersSupplier,
+                                             consensusActive,
+                                             writerFactory,
+                                             applier,
+                                             reconcileExecutor);
     }
 
     /// One keyspace's committed registration view: the hosting set, the arc span, and whether the
@@ -160,19 +173,48 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     }
 
     /// Forget a locally-unloaded entity keyspace — the retract mirror of [#declare], same contract.
-    /// The next [#tick] sees "committed for this node but not declared" and prunes the record, which
+    /// A [#tick] sees "committed for this node but not declared" and prunes the record, which
     /// is also how a node that restarted WITHOUT the slice sheds its stale registration.
+    ///
+    /// The prune is requested NOW ([#requestReconcile]) rather than left to the periodic tick: from the
+    /// moment the slice unloads, this node is still the committed owner of arcs it cannot serve until the
+    /// registration is pruned AND the leader re-mints. Waiting a full interval for the first half is what
+    /// made that window seconds long; the second half is shortened by [#onRegistrationRemoved].
     @Override
     public Unit retract(String keyspace) {
         entityKeyspaces.remove(keyspace);
+        requestReconcile();
 
         return Unit.unit();
     }
 
+    /// Run one reconcile pass off the caller's thread, now. Event-triggered, as the level-triggered
+    /// periodic [#tick] cannot be the only way a hosting-set change reaches the leader: the interval is
+    /// the length of the handoff window it would otherwise leave open. The periodic tick stays as the
+    /// backstop — a kick whose apply failed is healed by the next interval, never lost.
+    @Contract
+    void requestReconcile() {
+        reconcileExecutor.execute(this::tick);
+    }
+
+    /// Route target for committed-registration REMOVALS: a hosting-set shrink must reach the leader's mint
+    /// now, since until the leader re-mints the retracted node is still the committed owner. Any other
+    /// removal is ignored. Runs on every node; the writer's leader gate leaves followers a no-op.
+    @Contract
+    void onRegistrationRemoved(ValueRemove<?, ?> removal) {
+        if (removal.cause().key() instanceof EntityKeyspaceRegistrationKey) {
+            requestReconcile();
+        }
+    }
+
     /// One reconcile pass — both halves, in order, so a tick that registers a keyspace can mint its
     /// arcs on the next pass over committed state.
+    ///
+    /// `synchronized` because passes now have three triggers (the periodic tick, [#retract], a committed
+    /// removal) on different threads, and two concurrent passes would each compute the same delta and commit
+    /// it twice. The body never blocks — every apply is fire-and-forget — so serialising costs nothing.
     @Contract
-    void tick() {
+    synchronized void tick() {
         // ScheduledExecutorService CANCELS a periodic task whose run throws, silently and permanently.
         // This tick is the only thing that ever mints entity ownership records, so a single throw would
         // leave every entity write refused forever with a cause that says "transient" — undiagnosable

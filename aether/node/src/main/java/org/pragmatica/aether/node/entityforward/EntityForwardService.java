@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.function.BiFunction;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCancelTimerForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward;
@@ -18,6 +19,7 @@ import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntitySched
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse;
+import org.pragmatica.aether.resource.entity.EntityError;
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
 import org.pragmatica.aether.resource.entity.EntityOwnerForward;
 import org.pragmatica.consensus.NodeId;
@@ -53,10 +55,16 @@ import org.slf4j.LoggerFactory;
 /// double-applied one is not.
 public final class EntityForwardService implements EntityOwnerForward, EntityForwardRegistry {
     private static final Logger log = LoggerFactory.getLogger(EntityForwardService.class);
+    /// The wire `failureType` of the handoff answer — the entity-side class's simple name, which is what
+    /// the sender's `retypeForwarded` matches on.
+    static final String OWNER_TRANSITIONING = EntityError.OwnerTransitioning.class.getSimpleName();
 
     private final NodeId selfNodeId;
     private final Sender sender;
     private final TimeSpan timeout;
+    /// Whether the COMMITTED cluster state still makes this node answerable for a keyspace — see
+    /// [CommittedEntityStake]. Consulted only when there is no local target.
+    private final Predicate<String> committedStake;
     private final Map<String, ForwardTarget> targets = new ConcurrentHashMap<>();
     private final Map<String, Promise<byte[]>> pending = new ConcurrentHashMap<>();
     /// The read half's correlation map, distinct from [#pending] because a read's answer is an
@@ -78,14 +86,26 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         Promise<WriteOutcome> send(NodeId target, EntityForwardMessage message);
     }
 
-    private EntityForwardService(NodeId selfNodeId, Sender sender, TimeSpan timeout) {
+    private EntityForwardService(NodeId selfNodeId, Sender sender, TimeSpan timeout, Predicate<String> committedStake) {
         this.selfNodeId = selfNodeId;
         this.sender = sender;
         this.timeout = timeout;
+        this.committedStake = committedStake;
     }
 
+    /// A service that never claims a stake: a keyspace with no local target is unknown, terminally.
     public static EntityForwardService entityForwardService(NodeId selfNodeId, Sender sender, TimeSpan timeout) {
-        return new EntityForwardService(selfNodeId, sender, timeout);
+        return new EntityForwardService(selfNodeId, sender, timeout, _ -> false);
+    }
+
+    /// `committedStake` answers "does committed cluster state still name this node as host or owner of
+    /// this keyspace" — what separates a handoff window (transient) from a keyspace nobody provisioned
+    /// here (terminal).
+    public static EntityForwardService entityForwardService(NodeId selfNodeId,
+                                                            Sender sender,
+                                                            TimeSpan timeout,
+                                                            Predicate<String> committedStake) {
+        return new EntityForwardService(selfNodeId, sender, timeout, committedStake);
     }
 
     // --- registry (receiving side) ---
@@ -473,10 +493,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         var target = targets.get(keyspace);
 
         if (target == null) {
-            log.warn("Entity owner-forward: no target for keyspace '{}' (correlationId={})", keyspace, correlationId);
-            answer(requester,
-                   correlationId,
-                   failure.apply("UnknownKeyspace", "no entity registered for keyspace " + keyspace));
+            answerNoTarget(requester, correlationId, keyspace, failure);
 
             return;
         }
@@ -489,6 +506,33 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                                             correlationId,
                                             failure.apply(cause.getClass().getSimpleName(),
                                                           cause.message())));
+    }
+
+    /// No local target. Whether that is a handoff or a mistake is decided from COMMITTED state, never from
+    /// the absence itself: a node the cluster still counts as host or owner of the keyspace has just
+    /// unloaded its slice and answers with the transient [EntityError.OwnerTransitioning] — the caller's
+    /// retry lands on the re-minted owner. A node with no stake has never been told it serves this
+    /// keyspace, and a genuinely unknown keyspace stays terminal (`UnknownKeyspace`).
+    private void answerNoTarget(NodeId requester,
+                                String correlationId,
+                                String keyspace,
+                                Fn2<EntityForwardMessage, String, String> failure) {
+        var handoff = committedStake.test(keyspace);
+
+        log.warn("Entity owner-forward: no target for keyspace '{}' — {} (correlationId={})",
+                 keyspace,
+                 handoff
+                 ? "committed host/owner mid-handoff, answering transient"
+                 : "not a committed host or owner, answering terminal",
+                 correlationId);
+        answer(requester,
+               correlationId,
+               handoff
+               ? failure.apply(OWNER_TRANSITIONING,
+                               "keyspace " + keyspace
+                              + " is mid-handoff on this node: its slice has unloaded but"
+                              + " ownership has not yet moved")
+               : failure.apply("UnknownKeyspace", "no entity registered for keyspace " + keyspace));
     }
 
     /// A refused RESPONSE send is logged and nothing more: the requester's own timeout (or its own
