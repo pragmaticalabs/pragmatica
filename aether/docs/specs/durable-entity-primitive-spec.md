@@ -892,6 +892,8 @@ public sealed interface DeliveryEvidence {
     record NotSent()  implements DeliveryEvidence {}
     /** The request may have reached the downstream: timeout, connection reset after write, or anything unclassified. */
     record Sent()     implements DeliveryEvidence {}
+    /** The downstream received the request and replied with a refusal (decoded from its own reply). Definite. */
+    record Answered() implements DeliveryEvidence {}
 }
 ```
 
@@ -903,11 +905,11 @@ public sealed interface DeliveryEvidence {
   the key-retention window.
 - **No tag means `Sent`.** A failure from a resource that does not carry the evidence — author code, a
   third-party client — is treated as possibly delivered. Being unclassified never makes a failure definite.
-- **[author choice] An ANSWERED refusal is definite.** A failure decoded from the downstream's own reply
-  (a declined card, a typed business refusal returned by the remote slice) proves the request arrived
-  and was refused. D1 names two tags; without this third reading such a refusal would carry `Sent` and
-  re-invoke or park a step whose outcome is known. Proposed tag: `Answered()`, definite like `NotSent`;
-  the runtime treats it as the step's failure and compensates.
+- **An ANSWERED refusal is definite (CTO-confirmed 2026-10-02 as consistent with D1).** A failure decoded
+  from the downstream's own reply (a declined card, a typed business refusal returned by the remote slice)
+  proves the request arrived and was refused. It carries the third tag, `Answered`, definite like
+  `NotSent` but never retried: the runtime treats it as the step's failure and compensates. Without it such
+  a refusal would carry `Sent` and re-invoke or park a step whose outcome is known.
 
 | Declared capability | Recovery action for an in-flight step | What it earns, and the condition it rests on |
 |---|---|---|
@@ -1152,8 +1154,8 @@ every row, because a version with bound work is never unloaded (§7.9, "reconcil
 
 `Abandon` marks the instance terminal `Failed` with cause `OperatorAbandoned` and compensates nothing; it
 is explicit, recorded with the operator and reason, and is the last resort on every parked instance
-**[author choice: "always available" is read as "on every parked instance"; abandoning a Running or
-Compensating instance mid-invocation would race the in-flight call]**. This table replaces the earlier
+**(CTO-confirmed 2026-10-02: "always available" means on every PARKED instance; abandoning a Running or
+Compensating instance mid-invocation would race the in-flight call)**. This table replaces the earlier
 "`resolve` is accepted only in `NeedsReconciliation`", which contradicted §7.8's operator action on a
 waiting instance.
 
@@ -1507,7 +1509,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint) (a) briefly, then restore it; (b) for longer than the step's budget | the call is never made against another version; (a) retried with backoff and succeeds, no park; (b) parks `NeedsReconciliation(BoundVersionUnavailable)` at budget exhaustion (R4a, D7a) | a dependent call served by a non-bound version; a park in (a) |
 | A9 | **Codec compatibility, both directions** (D5) | (a) deploy v2 adding an optional field to `S`; (b) deploy v2 removing or retyping a field, or adding a command variant | (a) accepted; v1 and v2 each read the other's records in the shared log. (b) refused at deploy with `IncompatibleDurableCodec` (R4a, D5) | a deploy accepted that either version cannot read; a refusal surfacing only at first read; a v1 replica freezing on a v2 record after an accepted deploy |
 | A10 | **Recovery past the key window** (v1828 B1) | park a `Replayable` and a `Lookup` step after the marker commits, then resume once `now − attempt.at ≥ keyRetention − clockSafetyMargin` | no re-invocation and no lookup; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1) | an invocation or lookup issued past the window |
-| A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite ([author choice] `Answered`) | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
+| A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
 | A13 | **Resolution table** (D3) | park one instance per row of §7.7's table and apply each accepted resolution, then each unlisted one | each accepted resolution has the row's effect, resumed from the persisted suspended phase; each unlisted one is refused `ResolutionNotApplicable`; `Abandon` works on every row | a resolution applied outside its row; a resolution needing unloaded code |
 | A14 | **Retry budget** (D7a, D7b) | (a) a `NotSent` failure that clears after two attempts; (b) persistent `NotSent` failures; (c) persistent `Sent` failures on a `Replayable` step; (d) a key window shorter than the budget's `maxElapsed`; kill the owner mid-budget in each | (a) succeeds with no park; (b) parks `RetriesExhausted`; (c) parks `OutcomeUnknown`; (d) stops at the key window, not the budget; in every case the attempt count and elapsed time continue across the owner change | an attempt beyond `maxAttempts` or after `maxElapsed`; an attempt past the key window; a budget reset by an owner change |
@@ -1852,7 +1854,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 
 | What | Decision | v1828 | Where |
 |---|---|---|---|
-| Failures tagged `NotSent` (definite) / `Sent` (ambiguous, R1 path); untagged = `Sent`; [author choice] `Answered` refusal is definite | D1 | B2 | §7.4, §7.11 A11 |
+| Failures tagged `NotSent` (definite) / `Sent` (ambiguous, R1 path); untagged = `Sent`; `Answered` refusal is definite (CTO-confirmed) refusal is definite | D1 | B2 | §7.4, §7.11 A11 |
 | Compensation of step `j` receives the snapshot `S_j`; snapshots kept until terminal; storage bound stated | D2 | author-choice item 2 | §7.5, §7.6, §7.11 A12 |
 | Retain code until resolved: force-retire → reconcile-only; resolution table per reason incl. `Waiting` → `Cancel`, `Abandon` always on parked instances; `resolve` takes the incarnation | D3 | B5, B7 | §7.7, §7.8, §7.9, §7.11 A7, A13, W5 |
 | §7.9 binding rules apply to workflows; added #353 scope | D4 | author-choice item 4 | §6 |
