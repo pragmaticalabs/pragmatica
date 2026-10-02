@@ -38,6 +38,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// on its first run because port 25702 was held by another tenant of this shared box — a failure that
 /// says nothing about the node state this class exists to pin. `EmberClusterPartialStartFailureTest`
 /// keeps its fixed ports because it must pre-bind two of them on purpose.
+@PortBudget
 class EmberClusterObservedNodeStateTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`, so a block must cover twice the

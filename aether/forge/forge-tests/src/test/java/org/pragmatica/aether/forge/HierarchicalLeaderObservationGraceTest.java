@@ -30,7 +30,7 @@ import static org.awaitility.Awaitility.await;
 @Execution(ExecutionMode.SAME_THREAD)
 class HierarchicalLeaderObservationGraceTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 35400, 35500, 35600, "observation-grace");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3440, 3540, 3640, "observation-grace");
 
     @AfterEach void stop() {
         cluster.allNodes().forEach(node -> node.setInboundFaultFilter((_, _) -> true));
