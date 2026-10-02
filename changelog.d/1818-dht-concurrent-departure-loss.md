@@ -46,6 +46,13 @@
   node that drains itself on quorum loss is in neither set, and it halts with its in-memory store, so without this
   rule a last copy it held would be lost. An accepted push places copies only on partitions the receiver replicates,
   before or after the departure. Any other entry is nacked, so the pusher keeps it at risk.
+  "After the departure" is the pusher's view: `MigrationDataResponse` gains `leaving`, the set the pusher excluded
+  when it chose this receiver. The receiver excludes that set together with its own departing set. The drain set
+  reaches pusher and receiver in separate leader pings, and a receiver that had not yet heard of a co-drainer
+  dropped the pusher's legitimate newcomer as a stray. Nothing retries a nacked batch, so that copy was lost. Wire
+  change: re-recorded in `wire-assignment-baseline.txt`.
+  [verified: `DHTDepartureReceiverViewTest` (120 topologies, 0 lost keys in every drain-set view; 527 with the
+  carried set ignored), `DHTMigrationResponseAuthenticityTest.departurePush_newcomerOnlyInThePushersView_*`]
 - **A deposed owner's DHT write could survive its own refusal (owner ruling, the Dynamo stance).**
   - A put whose quorum was lost to owner-epoch fences now fails `DHTError.WriteIndeterminate`: transient, and "may
     have been applied". `PutResponse` gains `fenced`.
@@ -54,7 +61,8 @@
     refills the key, the coordinator reads it as absent.
   - Each copy applied below the receiver's high-water is counted (`DHTNode.belowHighWaterCopyCount`) and logged at
     INFO with its partition.
-  - ArtifactStore retries `WriteIndeterminate`. The guarantee is documented in `ownership-fence-spec.md` §7.1.
+  - Only ArtifactStore retries `WriteIndeterminate` by name; §7.1 of `ownership-fence-spec.md` states the guarantee and
+    each consumer's handling.
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTDeposedWriterRollbackTest.java`,
   `ArtifactStoreTest$WriteIndeterminateTests`]
   [unverified: another lagging replica that also accepted the deposed write can still spread it, on keys the new
