@@ -25,6 +25,7 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
 import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -86,7 +87,10 @@ class NodeDepartureNotifierTest {
                                                                            () -> false);
             var alerts = AlertManager.readOnly((KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class));
 
-            return new Fixture(NodeDepartureNotifier.nodeDepartureNotifier(aggregator, alerts, SELF), aggregator, alerts);
+            return new Fixture(NodeDepartureNotifier.nodeDepartureNotifier(aggregator,
+                                                                                    alerts,
+                                                                                    SELF,
+                                                                                    OperatorWarningSink.handingOffTo(aggregator::onOperatorWarning)), aggregator, alerts);
         }
 
         List<ClusterEvent> events() {

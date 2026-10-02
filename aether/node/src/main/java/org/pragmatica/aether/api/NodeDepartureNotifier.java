@@ -7,6 +7,7 @@ package org.pragmatica.aether.api;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
@@ -32,13 +33,17 @@ import org.slf4j.LoggerFactory;
 /// latch, read at the DEAD edge. A death with no such evidence goes to [`#onNeverJoined`] instead, a
 /// non-CRITICAL operator warning, so a configured core that never came up stays visible without being
 /// reported as a failure.
-public record NodeDepartureNotifier(ClusterEventAggregator aggregator, AlertManager alertManager, NodeId self) {
+public record NodeDepartureNotifier(ClusterEventAggregator aggregator,
+                                    AlertManager alertManager,
+                                    NodeId self,
+                                    OperatorWarningSink warningSink) {
     private static final Logger LOG = LoggerFactory.getLogger(NodeDepartureNotifier.class);
 
     public static NodeDepartureNotifier nodeDepartureNotifier(ClusterEventAggregator aggregator,
                                                               AlertManager alertManager,
-                                                              NodeId self) {
-        return new NodeDepartureNotifier(aggregator, alertManager, self);
+                                                              NodeId self,
+                                                              OperatorWarningSink warningSink) {
+        return new NodeDepartureNotifier(aggregator, alertManager, self, warningSink);
     }
 
     /// Fan a confirmed departure out to both observability surfaces.
@@ -62,7 +67,7 @@ public record NodeDepartureNotifier(ClusterEventAggregator aggregator, AlertMana
     @Contract
     public void onNeverJoined(NodeId departed) {
         OperatorWarnings.raise(LOG,
-                               aggregator::onOperatorWarning,
+                               warningSink,
                                OperatorWarningCode.NODE_NEVER_JOINED,
                                departed.id(),
                                "Node {} died without this node (observer {}) ever observing it reachable — it never joined",

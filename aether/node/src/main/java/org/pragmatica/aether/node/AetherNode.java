@@ -4579,7 +4579,7 @@ public interface AetherNode extends ManageableNode {
         // this same death edge — behaviour parity, sampler out of the loop. Without it the nudge
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
-        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator, alertManager, config.self());
+        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator, alertManager, config.self(), operatorWarningSink);
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed,
