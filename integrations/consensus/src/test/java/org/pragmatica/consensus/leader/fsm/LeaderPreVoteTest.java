@@ -82,6 +82,7 @@ class LeaderPreVoteTest {
         final Set<NodeId> dead = ConcurrentHashMap.newKeySet();
         final List<LeaderPreVoteRequest> requests = new CopyOnWriteArrayList<>();
         final ExecutorService network = Executors.newSingleThreadExecutor();
+        private final Map<NodeId, NodeId> believes;
 
         record Node(NodeId id,
                     FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness,
@@ -108,6 +109,13 @@ class LeaderPreVoteTest {
         }
 
         Cluster(boolean preVote, Map<NodeId, Predicate<NodeId>> pingFresh) {
+            this(preVote, pingFresh, Map.of());
+        }
+
+        /// `believes` names the leader a node starts out following (default N1) — the crossed-pointer wedge
+        /// has every node following a different one.
+        Cluster(boolean preVote, Map<NodeId, Predicate<NodeId>> pingFresh, Map<NodeId, NodeId> believes) {
+            this.believes = believes;
             ALL.forEach(id -> nodes.put(id, buildNode(id, preVote, pingFresh.getOrDefault(id, _ -> true))));
             nodes.values().forEach(this::wire);
         }
@@ -156,11 +164,10 @@ class LeaderPreVoteTest {
         }
 
         private void wire(Node node) {
-            // all nodes follow N1
             node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
             node.harness.dispatch(new ClusterFsmEvent.NodeAdded(node.id, ALL));
             node.harness.dispatch(new ConsensusReady());
-            node.harness.dispatch(new LeaderCommitted(N1, 1L));
+            node.harness.dispatch(new LeaderCommitted(believes.getOrDefault(node.id, N1), 1L));
         }
 
         private void route(NodeId from, Send send) {
@@ -381,6 +388,21 @@ class LeaderPreVoteTest {
 
             assertThat(await(() -> List.of(N3, N4, N5).stream().allMatch(id -> cluster.node(id).isReElecting()),
                              1_500)).as("the majority side replaces the unreachable leader").isTrue();
+        }
+
+        /// The recovery edge the lease exists for must survive the gate: the crossed-pointer wedge has every node
+        /// following a different leader and nobody following itself, no `NodeGone` ever fires, and every leader
+        /// ping is silent. Each node's question is about ITS leader; the others follow someone else, so they doubt
+        /// it, a majority forms at once, and the cluster re-elects.
+        @Test
+        void crossedPointerWedge_stillRecoversThroughTheLease() {
+            var allSilent = Map.<NodeId, Predicate<NodeId>>of(N1, _ -> false, N2, _ -> false, N3, _ -> false, N4, _ -> false, N5, _ -> false);
+
+            cluster = new Cluster(true, allSilent, Map.of(N1, N2, N2, N1, N3, N2, N4, N2, N5, N2));
+
+            assertThat(await(() -> ALL.stream().allMatch(id -> cluster.node(id).isReElecting()), 3_000))
+                .as("every node left its crossed pointer for an election")
+                .isTrue();
         }
 
         /// Without the pre-vote enabled (local mode, stubs) the edge is the old immediate one.
