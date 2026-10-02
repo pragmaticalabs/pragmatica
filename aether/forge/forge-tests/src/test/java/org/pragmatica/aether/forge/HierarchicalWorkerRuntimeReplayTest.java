@@ -33,7 +33,7 @@ import static org.awaitility.Awaitility.await;
 @Execution(ExecutionMode.SAME_THREAD)
 class HierarchicalWorkerRuntimeReplayTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 35700, 35800, 35900, "runtime-replay");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3660, 3760, 3860, "runtime-replay");
 
     @AfterEach void stop() {
         LifecycleAwait.bestEffort("stop runtime replay", cluster, cluster.stop());

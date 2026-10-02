@@ -15,6 +15,9 @@
  */
 package org.pragmatica.dht;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -38,6 +41,10 @@ public final class DHTTopologyListener {
     private final DHTNode node;
     private final Option<DHTRebalancer> rebalancer;
     private final Option<DHTAntiEntropy> antiEntropy;
+    /// Nodes seen entering DEPARTING and not since recovered or rejoined — the membership half of "who may
+    /// send a departure push" (#1818 round 3). Kept past the node's removal: its push can land after the
+    /// ring has pruned it.
+    private final Set<NodeId> departing = ConcurrentHashMap.newKeySet();
 
     private DHTTopologyListener(DHTNode node, Option<DHTRebalancer> rebalancer, Option<DHTAntiEntropy> antiEntropy) {
         this.node = node;
@@ -81,6 +88,7 @@ public final class DHTTopologyListener {
     public void onNodeJoined(MembershipDecision.NodeJoined event) {
         var addedNodeId = event.nodeId();
 
+        departing.remove(addedNodeId);
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
         node.ring().addNode(addedNodeId);
         antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
@@ -118,6 +126,7 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeDeparting(NodeId departingNodeId) {
         log.info("DHT: Node {} entering DEPARTING, pruning ring ahead of halt", departingNodeId.id());
+        departing.add(departingNodeId);
         removeFromRing(departingNodeId);
     }
 
@@ -132,10 +141,16 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {
         log.info("DHT: Node {} recovered from DEPARTING, re-adding to ring", recoveredNodeId.id());
+        departing.remove(recoveredNodeId);
         node.ring().addNode(recoveredNodeId);
         // Same shape as a join: the re-added node counts toward RF again; a round settles what it
         // missed while pruned (issue #420).
         antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
+    }
+
+    /// Whether `nodeId` was seen entering DEPARTING and has not since recovered or rejoined.
+    public boolean isDeparting(NodeId nodeId) {
+        return departing.contains(nodeId);
     }
 
     /// Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown

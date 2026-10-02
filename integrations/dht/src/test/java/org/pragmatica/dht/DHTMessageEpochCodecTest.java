@@ -25,6 +25,7 @@ import org.pragmatica.serialization.SliceCodec;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,6 +59,30 @@ class DHTMessageEpochCodecTest {
             assertThat(decoded.epochCounter()).isEqualTo(3L);
             assertThat(decoded.key()).isEqualTo(bytes("k"));
             assertThat(decoded.value()).isEqualTo(bytes("v"));
+        } finally {
+            buf.release();
+        }
+    }
+
+    /// #1818 L1: the departure view the receiver checks placement against crosses the wire. Every in-JVM
+    /// departure test hands the record over directly, so only this round trip reaches the codec.
+    @Test
+    void migrationDataResponse_roundTrip_preservesThePushersLeavingSet() {
+        var codec = codec();
+        var leaving = List.of(new NodeId("pusher"), new NodeId("co-drainer"));
+        var entry = new DHTMessage.KeyValue(bytes("mk"), bytes("mv"), 99L, 0L, 12L, 5L);
+        var view = List.of(new NodeId("pusher"), new NodeId("co-drainer"), new NodeId("newcomer"));
+        var original = new DHTMessage.MigrationDataResponse("push-1", new NodeId("pusher"), List.of(entry), true, leaving, view);
+        var buf = Unpooled.buffer();
+
+        try {
+            codec.write(buf, original);
+            DHTMessage.MigrationDataResponse decoded = codec.read(buf);
+
+            assertThat(decoded.leaving()).containsExactlyElementsOf(leaving);
+            assertThat(decoded.view()).containsExactlyElementsOf(view);
+            assertThat(decoded.ackRequested()).isTrue();
+            assertThat(decoded.entries()).hasSize(1);
         } finally {
             buf.release();
         }
