@@ -75,4 +75,10 @@ public final class LeaderElectionEvents {
     /// carried so a stale `LeaderSilent` from a prior tenure (leader already swapped) is
     /// discarded rather than triggering a spurious re-election.
     public record LeaderSilent(NodeId silentLeader) implements ClusterFsmEvent {}
+
+    /// Fired by [`LeaderPreVote`] when a majority of the electorate (the asker included) affirmatively doubts
+    /// the leader a follower lost its own view of (#1748). Only then does [`LeaderElectionState.Led`] go to
+    /// `ReElecting`. Carries the leader the round was about, so a verdict that outlives its tenure (leader
+    /// swapped, follower left `Led`) is discarded rather than deposing the new leader.
+    public record LeaderDoubtConfirmed(NodeId leader) implements ClusterFsmEvent {}
 }
