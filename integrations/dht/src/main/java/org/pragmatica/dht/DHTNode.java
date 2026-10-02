@@ -186,6 +186,16 @@ public final class DHTNode {
         catchUp.markServing(partition);
     }
 
+    int noteCatchUpRound(Partition partition) {
+        return catchUp.noteRound(partition);
+    }
+
+    /// Partitions still catching up after [DHTAntiEntropy#STUCK_AFTER_ROUNDS] catch-up rounds (#1777) — a
+    /// gauge for a partition that cannot complete, e.g. because every source that may hold it is silent.
+    public int stuckCatchUpPartitions() {
+        return catchUp.stuck(DHTAntiEntropy.STUCK_AFTER_ROUNDS);
+    }
+
     private List<List<NodeId>> replicaSets() {
         var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
 

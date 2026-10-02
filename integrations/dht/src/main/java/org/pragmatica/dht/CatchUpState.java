@@ -34,12 +34,24 @@ import org.pragmatica.lang.Option;
 /// pending, the node's "absent" is no evidence of absence. For each pending partition the set remembers
 /// the PREVIOUS replica set as of the change that made this node a replica: those holders may still be
 /// ring members holding the data, so they are catch-up sources alongside the current co-replicas. A
-/// partition the node stops owning while pending stays pending — the node never became authoritative
-/// for it and must not answer as if it had.
+/// partition the node stops owning while pending leaves the set (rounds run only for owned partitions, so
+/// it would otherwise answer CATCHING_UP forever). Each pending partition also counts the catch-up rounds
+/// started for it, so a partition that cannot complete is visible ([#stuck]).
 ///
 /// In memory by design: the store is in memory too, so a restarted node is empty and must start pending.
 final class CatchUpState {
-    private final ConcurrentHashMap<Integer, Set<NodeId>> pending = new ConcurrentHashMap<>();
+    /// A pending partition: the previous holders recorded for it and the catch-up rounds started so far.
+    private record Pending(Set<NodeId> previousHolders, int rounds) {
+        Pending merge(Pending other) {
+            return new Pending(union(previousHolders, other.previousHolders), rounds);
+        }
+
+        Pending nextRound() {
+            return new Pending(previousHolders, rounds + 1);
+        }
+    }
+
+    private final ConcurrentHashMap<Integer, Pending> pending = new ConcurrentHashMap<>();
 
     private CatchUpState() {}
 
@@ -50,7 +62,7 @@ final class CatchUpState {
     /// Mark `partition` catching up, adding `previousHolders` to the sources already recorded for it.
     @Contract
     void markCatchingUp(Partition partition, Collection<NodeId> previousHolders) {
-        pending.merge(partition.value(), Set.copyOf(previousHolders), CatchUpState::union);
+        pending.merge(partition.value(), new Pending(Set.copyOf(previousHolders), 0), Pending::merge);
     }
 
     /// Mark `partition` serving: the node is authoritative for it from now on.
@@ -67,7 +79,24 @@ final class CatchUpState {
 
     /// The previous holders recorded for a pending partition; empty when it is serving.
     Set<NodeId> previousHolders(Partition partition) {
-        return Option.option(pending.get(partition.value())).or(Set.of());
+        return Option.option(pending.get(partition.value()))
+                     .map(Pending::previousHolders)
+                     .or(Set.of());
+    }
+
+    /// Count one more catch-up round started for `partition`; returns the count, or 0 when it is serving.
+    int noteRound(Partition partition) {
+        return Option.option(pending.computeIfPresent(partition.value(), (_, entry) -> entry.nextRound()))
+                     .map(Pending::rounds)
+                     .or(0);
+    }
+
+    /// Pending partitions that have started at least `rounds` catch-up rounds without completing.
+    int stuck(int rounds) {
+        return (int) pending.values()
+                            .stream()
+                            .filter(entry -> entry.rounds() >= rounds)
+                            .count();
     }
 
     List<Partition> pendingPartitions() {

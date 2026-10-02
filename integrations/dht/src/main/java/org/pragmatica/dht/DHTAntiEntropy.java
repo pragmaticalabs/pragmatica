@@ -56,6 +56,9 @@ public final class DHTAntiEntropy {
     public static final TimeSpan CATCH_UP_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// A catch-up round that has not decided and completed within this long is abandoned and restarted.
     static final TimeSpan CATCH_UP_ROUND_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    /// A pending partition that has started this many catch-up rounds without completing is reported stuck:
+    /// one WARN when it crosses, and [DHTNode#stuckCatchUpPartitions] counts it.
+    public static final int STUCK_AFTER_ROUNDS = 10;
 
     /// Tracks a pending digest comparison: local digest + partition for a remote peer, stamped with
     /// the monotonic time it was registered so an unanswered one can be expired.
@@ -72,6 +75,7 @@ public final class DHTAntiEntropy {
     private final DHTNetwork network;
     private final DHTConfig config;
     private final TimeSpan antiEntropyInterval;
+    private final TimeSpan catchUpRoundTimeout;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
@@ -88,11 +92,16 @@ public final class DHTAntiEntropy {
     /// Pulls a holder refused (ring disagreement or an unreadable store) — counted, never silent (#1777).
     private final AtomicLong refusedPulls = new AtomicLong();
 
-    private DHTAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config, TimeSpan antiEntropyInterval) {
+    private DHTAntiEntropy(DHTNode node,
+                           DHTNetwork network,
+                           DHTConfig config,
+                           TimeSpan antiEntropyInterval,
+                           TimeSpan catchUpRoundTimeout) {
         this.node = node;
         this.network = network;
         this.config = config;
         this.antiEntropyInterval = antiEntropyInterval;
+        this.catchUpRoundTimeout = catchUpRoundTimeout;
     }
 
     /// Create an anti-entropy process for the given node with default interval.
@@ -101,7 +110,7 @@ public final class DHTAntiEntropy {
     /// @param network cluster network for sending digest requests
     /// @param config  DHT configuration
     public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DHTAntiEntropy(node, network, config, DEFAULT_ANTI_ENTROPY_INTERVAL);
+        return new DHTAntiEntropy(node, network, config, DEFAULT_ANTI_ENTROPY_INTERVAL, CATCH_UP_ROUND_TIMEOUT);
     }
 
     /// Create an anti-entropy process for the given node with configurable interval.
@@ -114,7 +123,16 @@ public final class DHTAntiEntropy {
                                                 DHTNetwork network,
                                                 DHTConfig config,
                                                 TimeSpan antiEntropyInterval) {
-        return new DHTAntiEntropy(node, network, config, antiEntropyInterval);
+        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT);
+    }
+
+    /// Test seam: an anti-entropy process whose catch-up rounds time out after `catchUpRoundTimeout`.
+    static DHTAntiEntropy dhtAntiEntropy(DHTNode node,
+                                         DHTNetwork network,
+                                         DHTConfig config,
+                                         TimeSpan antiEntropyInterval,
+                                         TimeSpan catchUpRoundTimeout) {
+        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, catchUpRoundTimeout);
     }
 
     /// Start the periodic anti-entropy process.
@@ -222,7 +240,11 @@ public final class DHTAntiEntropy {
     private void startCatchUpRound(Partition partition, List<NodeId> coReplicas) {
         var inFlight = Option.option(rounds.get(partition.value()));
 
-        if (inFlight.filter(round -> !round.olderThan(CATCH_UP_ROUND_TIMEOUT.nanos())).isPresent()) {
+        if (inFlight.filter(round -> !round.olderThan(catchUpRoundTimeout.nanos())).isPresent()) {
+            return;
+        }
+
+        if (inFlight.filter(this::decidedOnAnswersInHand).isPresent()) {
             return;
         }
 
@@ -238,6 +260,7 @@ public final class DHTAntiEntropy {
         var round = CatchUpRound.catchUpRound(roundIds.incrementAndGet(), partition, sources);
 
         rounds.put(partition.value(), round);
+        warnIfStuck(partition, node.noteCatchUpRound(partition), sources);
         // A local store that cannot be read sends no digest; the round never decides, expires after
         // CATCH_UP_ROUND_TIMEOUT and is restarted by the next tick — FER: the catch-up is delayed, never
         // completed on a read that did not happen.
@@ -252,6 +275,35 @@ public final class DHTAntiEntropy {
     /// hold this partition's data (#1777, ruling C1). Self is never a source, and neither is a node the
     /// transport does not consider live: a dead source never answers, and a round waits for every source,
     /// so it would never decide (the same liveness view the read path filters its targets by).
+    /// A round that timed out with a source still silent decides on the answers in hand when a serving source
+    /// answered (#1777, H2): a live-but-silent node — SUSPECT, a backpressured lane — must not hold the
+    /// partition catching up while an authoritative answer is in. Pulls from every answered source whose
+    /// digest differs; the silent one's data is not waited for.
+    private boolean decidedOnAnswersInHand(CatchUpRound round) {
+        if (!round.decideOnAnswersInHand()) {
+            return false;
+        }
+
+        log.info("Catch-up of partition {}: deciding on the answers in hand; {} of {} sources stayed silent",
+                 round.partition().value(),
+                 round.silentCount(),
+                 round.sources().size());
+        decideCatchUp(round);
+
+        return true;
+    }
+
+    private void warnIfStuck(Partition partition, int rounds, Set<NodeId> sources) {
+        if (rounds == STUCK_AFTER_ROUNDS) {
+            log.warn("Partition {} is still catching up after {} rounds: no serving source among {} has answered",
+                     partition.value(),
+                     rounds,
+                     sources.stream()
+                            .map(NodeId::id)
+                            .toList());
+        }
+    }
+
     private Set<NodeId> ringSources(Partition partition, List<NodeId> coReplicas) {
         var members = node.ring().nodes();
         var sources = new HashSet<>(coReplicas);

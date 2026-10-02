@@ -26,9 +26,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -271,6 +273,53 @@ class DHTCatchUpGateTest {
         assertThat(cluster.holds(joiner, key)).isTrue();
     }
 
+    /// H2: a live-but-silent source (SUSPECT, a backpressured lane) must not hold a partition catching up once a
+    /// serving source has answered: the timed-out round decides on the answers in hand.
+    @Test
+    void silentSource_doesNotBlockCatchUp_onceAServingSourceAnswered() throws InterruptedException {
+        var cluster = Cluster.of(5, timeSpan(1).millis());
+        var joiner = new NodeId("node-5");
+        var key = cluster.keyGainedBy(joiner, "h2-answered");
+
+        cluster.seedOnReplicas(key);
+        cluster.joinWithoutCatchUp(joiner);
+
+        var silent = cluster.replicasOf(key).stream().filter(id -> !id.equals(joiner)).findFirst().orElseThrow();
+
+        cluster.silence(silent);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+
+        assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).as("control: the round waits on the silent source")
+                                                                                   .isEqualTo(Readiness.CATCHING_UP);
+
+        Thread.sleep(5);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+
+        assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).isEqualTo(Readiness.SERVING);
+        assertThat(cluster.holds(joiner, key)).as("filled from the serving source that answered").isTrue();
+    }
+
+    /// H2: when only silent nodes could be serving, the partition never completes on silence — it stays
+    /// catching up, and after `STUCK_AFTER_ROUNDS` rounds it is reported stuck.
+    @Test
+    void onlySilentSources_staysCatchingUp_andIsReportedStuck() throws InterruptedException {
+        var cluster = Cluster.of(5, timeSpan(1).millis());
+        var joiner = new NodeId("node-5");
+        var key = cluster.keyGainedBy(joiner, "h2-silent");
+
+        cluster.seedOnReplicas(key);
+        cluster.joinWithoutCatchUp(joiner);
+        cluster.members().stream().filter(member -> !member.id().equals(joiner)).forEach(member -> cluster.silence(member.id()));
+
+        for (int round = 0; round <= DHTAntiEntropy.STUCK_AFTER_ROUNDS; round++) {
+            cluster.member(joiner).antiEntropy().catchUpNow();
+            Thread.sleep(2);
+        }
+
+        assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).isEqualTo(Readiness.CATCHING_UP);
+        assertThat(cluster.member(joiner).node().stuckCatchUpPartitions()).as("reported stuck").isPositive();
+    }
+
     /// T2b: when quorum becomes unreachable because replicas refused as catching up, the read fails with
     /// the transient [DHTError.NotCaughtUp] — never "absent", and distinguishable from an unreachable quorum.
     @Test
@@ -388,10 +437,18 @@ class DHTCatchUpGateTest {
         private final Set<NodeId> silenced = new HashSet<>();
         private final Set<NodeId> dead = new HashSet<>();
         private int catchUpTraffic;
+        private TimeSpan roundTimeout = DHTAntiEntropy.CATCH_UP_ROUND_TIMEOUT;
 
         /// `size` nodes formed and serving: every node knows every other.
         static Cluster of(int size) {
+            return of(size, DHTAntiEntropy.CATCH_UP_ROUND_TIMEOUT);
+        }
+
+        /// `size` nodes whose catch-up rounds time out after `roundTimeout` — short, to exercise a timed-out round.
+        static Cluster of(int size, TimeSpan roundTimeout) {
             var cluster = new Cluster();
+
+            cluster.roundTimeout = roundTimeout;
             var ids = ids(size);
 
             ids.forEach(id -> cluster.members.put(id, cluster.member(id, ids)));
@@ -419,7 +476,7 @@ class DHTCatchUpGateTest {
 
             var node = dhtNode(id, memoryStorageEngine(), ring, CONFIG);
             DHTNetwork network = network();
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL, roundTimeout);
             var listener = dhtTopologyListener(node, dhtRebalancer(node, network, CONFIG), antiEntropy);
 
             return new Member(id, node, antiEntropy, listener, distributedDHTClient(node, network, CONFIG));
@@ -427,6 +484,10 @@ class DHTCatchUpGateTest {
 
         Member member(NodeId id) {
             return members.get(id);
+        }
+
+        Collection<Member> members() {
+            return members.values();
         }
 
         /// Delivers synchronously; reports as live every member not killed (no view at all until one is).
@@ -468,7 +529,7 @@ class DHTCatchUpGateTest {
 
             var node = dhtNode(joiner, new RefusingCopies(memoryStorageEngine()), ring, CONFIG);
             DHTNetwork network = network();
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL, roundTimeout);
 
             members.put(joiner,
                         new Member(joiner,

@@ -90,6 +90,22 @@ final class CatchUpRound {
         return answers.size() == sources.size() && decided.compareAndSet(false, true);
     }
 
+    /// Decide on the answers in hand, for a round some source never answered (#1777, H2): allowed only when at
+    /// least one answer came from a serving source and none was UNKNOWN. A round that heard only from
+    /// catching-up sources never decides on silence — it would be anchorless on a guess. Returns `true`
+    /// exactly once, when this call claimed the decision.
+    boolean decideOnAnswersInHand() {
+        var anyServing = answers.values()
+                                .stream()
+                                .anyMatch(answer -> answer.readiness().authoritative());
+
+        return anyServing && !anyUnknown() && decided.compareAndSet(false, true);
+    }
+
+    int silentCount() {
+        return sources.size() - answers.size();
+    }
+
     /// Whether any source could not report a trustworthy state — the round must not decide on it.
     boolean anyUnknown() {
         return answers.values()
