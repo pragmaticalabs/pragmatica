@@ -1466,14 +1466,30 @@ withdrawn.)
 **The fingerprint.** For a saga or workflow keyspace, the fingerprint covers every type whose bytes reach
 the keyspace's log: the state `S`, every record in the data root `D`'s sealed closure (step results and
 signal payloads), the saga's runtime command and ledger records, and every type reachable through their
-components. It is the SHA-256 of the sorted lines that describe those types in the wire baseline's own
-format — `TAG <type> <wire tag>`, `ENUM <type> <NAME=ordinal,…>`, and `SHAPE <type> (<name>:<type>,…)`,
-the components in declaration order, which for a positional codec **is** the layout
-(`aether/node/src/test/resources/wire-assignment-baseline.txt:1-14` defines the format;
-`WireAssignmentTripwireTest` derives it from the generator). Today that derivation covers the node's
-`@Codec` types; producing the same lines for a slice's generated codecs is #354 implementation work.
-A component rename at the same type and position is byte-neutral but still changes the line, so it
-changes the fingerprint — deliberately conservative.
+components. It is the SHA-256 of the sorted lines that describe those types in the wire baseline's
+format (`aether/node/src/test/resources/wire-assignment-baseline.txt:1-14` defines it;
+`WireAssignmentTripwireTest` derives it from the generator), **with component names removed**:
+
+- `TAG <type> <wire tag>` — as in the baseline;
+- `ENUM <type> <NAME=ordinal,…>` — as in the baseline;
+- `SHAPE <type> (<type>,<type>,…)` — each fingerprinted type's identity followed by its component TYPES in
+  declaration order. The position of each type in the list is its position on the wire.
+
+**Renames are exempt (CTO ruling, 2026-10-02).** The codec is positional: a component is written and read
+by its position and type, never by its name, and the baseline itself records that a same-type,
+same-position rename is byte-neutral (`wire-assignment-baseline.txt:13-14`). Refusing such a rename would
+force a migration for a change that alters nothing on disk, so the fingerprint omits component names.
+What it keeps — the type's identity, each component's type and position, the TAG and ENUM content — is
+exactly what changes the bytes or the meaning of the bytes.
+
+*Residual hazard, stated:* the exemption also passes a **same-typed name swap** — two components of the
+same type exchanging names (`String from, String to` → `String to, String from`). The bytes are unchanged,
+so neither version misreads them, but each now interprets the other's value under the other's meaning.
+This is a semantic change the codec cannot see; the baseline pins names precisely so such a swap shows up in
+its diff. The fingerprint does not catch it; code review of the type change has to.
+
+Today the TAG/ENUM/SHAPE derivation covers the node's `@Codec` types; producing the same lines for a
+slice's generated codecs is #354 implementation work.
 
 - **Identical fingerprint:** the rollout proceeds through the normal rolling/split/canary path, and v1 and v2
   read each other's records because the bytes are the same layout.
@@ -1641,7 +1657,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint), on a step with no earlier attempts and the default budget, (a) for 300 s, then restore it; (b) for 600 s | the call is never made against another version; (a) retried with backoff and succeeds, no park (300 s < 381 s); (b) parks `NeedsReconciliation(BoundVersionUnavailable)` when the 20th attempt fails, at 381–476 s (R4a, D7a, E4) | a dependent call served by a non-bound version; a park in (a); no park in (b) |
-| A9 | **Codec coexistence, fingerprint-only** (D8) | (a) deploy v2 whose saga types are unchanged (identical TAG/ENUM/SHAPE lines); (b) deploy v2 that adds, removes, reorders or retypes a component of any fingerprinted type, adds a variant to `D`, or renames a component | (a) accepted; v1 and v2 share the keyspace; (b) refused at deploy with `IncompatibleDurableCodec`, naming the differing lines — the change needs a new keyspace or a migration | a deploy accepted with any fingerprint difference; a refusal surfacing only at first read; a v1 or v2 reader freezing on the other's record after an accepted deploy |
+| A9 | **Codec coexistence, fingerprint-only** (D8; rename ruling) | (a) deploy v2 whose saga types are unchanged; (b) deploy v2 that only renames a component, at the same type and position; (c) deploy v2 that adds, removes, reorders or retypes a component of any fingerprinted type, or adds a variant to `D` | (a) and (b) accepted — identical fingerprints, so v1 and v2 share the keyspace and read each other's records; (c) refused at deploy with `IncompatibleDurableCodec`, naming the differing lines — the change needs a new keyspace or a migration | a deploy accepted with any fingerprint difference; a pure rename refused; a refusal surfacing only at first read; a v1 or v2 reader freezing on the other's record after an accepted deploy |
 | A10 | **Recovery past the key window** (v1828 B1, N3) | for a `Replayable` and a `Lookup` step: a first attempt ends `Sent`, later re-invokes keep failing `Sent`, then resume once `now − origin ≥ keyRetention − clockSafetyMargin`, where origin is the FIRST attempt's `at`; repeat with the first attempt's evidence unrecorded (crash) | no re-invocation and no lookup after that point, although the LATEST attempt is still inside the window; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1, E3, E7) | an invocation or lookup issued once the earliest possibly-sent attempt is past the window |
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
@@ -1987,6 +2003,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 | §3 row no longer calls the stream-path fence a "remaining gap" | G3 |
 | v0.8.0 changelog-row typo | G4 |
 | CTO-confirmed: the 381 s arithmetic with upward-only jitter, the `StepRefusal` marker, `maxFireAttempts` = 5 | — |
+| Renames exempt from the codec fingerprint (CTO ruling): it hashes type identity, component types and positions, TAG and ENUM content — not component names; A9 gains a pure-rename accept case | — |
 
 ---
 
