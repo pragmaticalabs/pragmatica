@@ -490,14 +490,39 @@ public final class DHTAntiEntropy {
 
     private static boolean allStored(List<DHTMessage.KeyValue> pulled, List<DHTMessage.KeyValue> local) {
         var stored = local.stream()
-                          .collect(Collectors.toMap(DHTAntiEntropy::keyOf, DHTMessage.KeyValue::version, Math::max));
+                          .collect(Collectors.toMap(DHTAntiEntropy::keyOf, entry -> entry, DHTAntiEntropy::newer));
 
         return pulled.stream()
                      .allMatch(entry -> isStored(stored, entry));
     }
 
-    private static boolean isStored(Map<String, Long> stored, DHTMessage.KeyValue entry) {
-        return stored.getOrDefault(keyOf(entry), Long.MIN_VALUE) >= entry.version();
+    /// Stored means the local entry is at least as new as the pulled one under the store's own ordering — owner
+    /// epoch first, then HLC version (#1818). A copy kept out by a newer-epoch entry with a lower HLC version is
+    /// superseded, not refused; comparing versions alone would leave the partition catching up forever.
+    private static boolean isStored(Map<String, DHTMessage.KeyValue> stored, DHTMessage.KeyValue entry) {
+        return Option.option(stored.get(keyOf(entry)))
+                     .filter(local -> compareOrder(local, entry) >= 0)
+                     .isPresent();
+    }
+
+    private static DHTMessage.KeyValue newer(DHTMessage.KeyValue left, DHTMessage.KeyValue right) {
+        return compareOrder(left, right) >= 0
+               ? left
+               : right;
+    }
+
+    private static int compareOrder(DHTMessage.KeyValue left, DHTMessage.KeyValue right) {
+        var byIncarnation = Long.compare(left.epochIncarnation(), right.epochIncarnation());
+        var byTerm = Long.compare(left.epochTerm(), right.epochTerm());
+        var byCounter = Long.compare(left.epochCounter(), right.epochCounter());
+
+        return byIncarnation != 0
+               ? byIncarnation
+               : byTerm != 0
+                 ? byTerm
+                 : byCounter != 0
+                   ? byCounter
+                   : Long.compare(left.version(), right.version());
     }
 
     private static String keyOf(DHTMessage.KeyValue entry) {
