@@ -21,6 +21,6 @@
   sees it as unavailable, never as `ArtifactNotFound`. The cache treats it as a miss. The idempotency store fails the
   request retryably instead of re-running it.
   [verified: `ArtifactStoreTest$NotCaughtUpResolveTests`, `IdempotencyInterceptorTest$StoreUnreadable`]
-- Wire change, re-recorded in `wire-assignment-baseline.txt`: `Readiness` (tag 2114), `GetResponse`/`ExistsResponse`/
+- Wire change, re-recorded in `wire-assignment-baseline.txt`: `Readiness` (tag 90, in the one-byte window: it rides in every DHT read reply), `GetResponse`/`ExistsResponse`/
   `DigestResponse.readiness`, and `MigrationDataResponse.refused`.
   [unverified: no multi-node, Ember or cloud run. Ember and Forge were held for the suite lock.]

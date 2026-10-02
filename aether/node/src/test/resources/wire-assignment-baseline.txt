@@ -695,7 +695,7 @@ TAG  org.pragmatica.dht.DHTMessage$MigrationDataRequest 62
 TAG  org.pragmatica.dht.DHTMessage$MigrationDataResponse 63
 TAG  org.pragmatica.dht.DHTMessage$PutRequest 64
 TAG  org.pragmatica.dht.DHTMessage$PutResponse 65
-TAG  org.pragmatica.dht.DHTMessage$Readiness 2114
+TAG  org.pragmatica.dht.DHTMessage$Readiness 90
 TAG  org.pragmatica.dht.DHTMessage$RemoveRequest 66
 TAG  org.pragmatica.dht.DHTMessage$RemoveResponse 67
 TAG  org.pragmatica.dht.Partition 68

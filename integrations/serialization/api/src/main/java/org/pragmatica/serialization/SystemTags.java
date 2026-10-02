@@ -183,6 +183,9 @@ public interface SystemTags {
         // #1526: genesis agreement. Consensus-prefixed, so it must sit in the one-byte window; 89 was
         // the next free slot in it (blocks are advisory).
         pin(table, 89, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement");
+        // #1777: carried in every DHT read reply; DHT-prefixed, so it must sit in the one-byte window, and 90
+        // was a free slot in it (blocks are advisory).
+        pin(table, 90, "org.pragmatica.dht.DHTMessage.Readiness");
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
@@ -569,8 +572,7 @@ public interface SystemTags {
         pin(table, 1743, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
-        pin(table, 2114, "org.pragmatica.dht.DHTMessage.Readiness");
-        // ---- 2115..16383 RESERVED ----
+        // ---- 2114..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
