@@ -108,9 +108,10 @@ final class CatchUpRound {
                              .toList();
 
         anchorless.set(serving.isEmpty());
-        var candidates = serving.isEmpty()
-                         ? List.copyOf(answers.keySet())
-                         : serving;
+        // Pull from EVERY source whose digest differs, serving or not: a serving source (a non-owner in the
+        // boot walk, a previous holder) may hold nothing while a catching-up co-replica holds the only
+        // pushed copy; per-key ordering makes the extra pull harmless.
+        var candidates = List.copyOf(answers.keySet());
         var targets = candidates.stream().filter(source -> !answers.get(source)
                                                                    .digestMatches()).toList();
 

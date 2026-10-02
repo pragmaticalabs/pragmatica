@@ -131,7 +131,10 @@ public final class DHTNode {
         var before = replicaSets();
 
         change.accept(ring);
-        markGained(before, replicaSets());
+        var after = replicaSets();
+
+        markGained(before, after);
+        forgetLost(after);
     }
 
     /// Mark every partition this node currently owns catching up — the boot state of a node whose store
@@ -198,6 +201,16 @@ public final class DHTNode {
                                          after.get(index)))
                  .forEach(index -> catchUp.markCatchingUp(Partition.at(index),
                                                           before.get(index)));
+    }
+
+    /// A pending partition this node no longer owns leaves the set: it was never authoritative for it, and
+    /// leaving it pending would answer CATCHING_UP for it forever, since rounds run only for owned ones.
+    private void forgetLost(List<List<NodeId>> after) {
+        catchUp.pendingPartitions()
+               .stream()
+               .filter(partition -> !after.get(partition.value())
+                                          .contains(nodeId))
+               .forEach(catchUp::markServing);
     }
 
     private boolean gained(List<NodeId> before, List<NodeId> after) {

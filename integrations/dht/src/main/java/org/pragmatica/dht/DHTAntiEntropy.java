@@ -226,10 +226,11 @@ public final class DHTAntiEntropy {
             return;
         }
 
-        var sources = catchUpSources(partition, coReplicas);
+        var candidates = ringSources(partition, coReplicas);
+        var sources = liveOnly(candidates);
 
         if (sources.isEmpty()) {
-            completeCatchUp(partition, true);
+            completeWhenAlone(partition, candidates);
 
             return;
         }
@@ -251,15 +252,36 @@ public final class DHTAntiEntropy {
     /// hold this partition's data (#1777, ruling C1). Self is never a source, and neither is a node the
     /// transport does not consider live: a dead source never answers, and a round waits for every source,
     /// so it would never decide (the same liveness view the read path filters its targets by).
-    private Set<NodeId> catchUpSources(Partition partition, List<NodeId> coReplicas) {
+    private Set<NodeId> ringSources(Partition partition, List<NodeId> coReplicas) {
         var members = node.ring().nodes();
         var sources = new HashSet<>(coReplicas);
 
         node.previousHolders(partition).stream().filter(members::contains).forEach(sources::add);
         sources.remove(node.nodeId());
+
+        return Set.copyOf(sources);
+    }
+
+    private Set<NodeId> liveOnly(Set<NodeId> candidates) {
+        var sources = new HashSet<>(candidates);
+
         retainLive(sources);
 
         return Set.copyOf(sources);
+    }
+
+    /// No live source: complete only when the ring holds no other node at all (a single-node DHT). When
+    /// sources exist but none is live — a liveness view that has not yet learned its peers, or every
+    /// holder departing — nothing has been heard, so the partition stays catching up; a dead source
+    /// stops blocking once it leaves the ring, and the next tick retries.
+    private void completeWhenAlone(Partition partition, Set<NodeId> candidates) {
+        if (candidates.isEmpty()) {
+            completeCatchUp(partition, true);
+        } else {
+            log.debug("Catch-up of partition {} waits: none of its {} sources is live",
+                      partition.value(),
+                      candidates.size());
+        }
     }
 
     /// An empty live set means the adapter has no liveness view (non-cluster paths): every source stays.
