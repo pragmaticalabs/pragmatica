@@ -504,20 +504,25 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         return Result.all(GroupId.groupId(groupPath.toString()),
                           ArtifactId.artifactId(artifactIdStr),
                           Version.version(versionStr))
-                     .map((groupId, artifactId, version) -> version.withQualifier()
-                                                                   .equals(versionStr)
-                                                            ? toArtifactPath(groupId, artifactId, version, fileName)
-                                                            : Option.<ParsedPath> none())
+                     .map((groupId, artifactId, version) -> toArtifactPath(groupId,
+                                                                           artifactId,
+                                                                           version,
+                                                                           versionStr,
+                                                                           fileName))
                      .or(Option.none());
     }
 
     private Option<ParsedPath> toArtifactPath(GroupId groupId,
                                               ArtifactId artifactId,
                                               Version version,
+                                              String versionStr,
                                               String fileName) {
         var artifact = new Artifact(groupId, artifactId, version);
 
-        return Option.some(new ParsedPath.ArtifactPath(artifact, fileName));
+        return version.withQualifier()
+                      .equals(versionStr)
+               ? Option.some(new ParsedPath.ArtifactPath(artifact, fileName))
+               : Option.none();
     }
 
     /// `<latest>` is the highest version by [VersionOrder], `<release>` the highest non-SNAPSHOT
