@@ -251,21 +251,39 @@ What the DHT data plane guarantees per operation, and the mechanism behind each 
   (`DHTError.WriteIndeterminate`, transient), never a definite failure. It *may have been applied*: on the
   coordinator, and on any other replica whose high-water lagged. The coordinator compare-and-deletes its
   OWN accept (`StorageEngine.removeIfExactly`), only while the stored entry is still exactly the one it
-  wrote. Every caller retries, and the retry is stamped with the epoch current by then.
+  wrote. Nothing retries *because* the outcome is indeterminate except `ArtifactStore`; how each consumer
+  handles it is in the table below. A put that is retried is stamped with the epoch current by then.
   The same holds when a fence refusal is followed by a reply that is lost or slow: any recorded refusal
   makes the outcome indeterminate and triggers the rollback, never a plain timeout.
   **After a rollback, the coordinator's local copy of the key is gone** — including any older value the
   deposed write had replaced there. Until anti-entropy refills it from a replica that holds the current
   value, the coordinator answers that key as absent. A quorum read still returns a value if another
   replica it reaches holds one, but a read that meets only the coordinator's answer and other absents
-  resolves absent for that window. The callers are
-  `ArtifactStore`'s metadata and chunk writes (through `DhtStorageTier`), the encryption-marker write, the
-  DHT cache, and the idempotency store.
+  resolves absent for that window.
 - **Replica copy (anti-entropy pull, departure push, survivor rebalance).** Applied **without** the
   high-water check, keeping per-key epoch and HLC ordering. A copy never overwrites a stored entry of a
   newer epoch or version, and never advances the high-water. Without this, every key written before an
   ownership rewrite could never be re-replicated (#1818, run 7). Each copy applied below the receiver's
   high-water is counted (`DHTNode.belowHighWaterCopyCount`) and logged at INFO with its partition.
+
+Each consumer of the DHT put path, and what it does with `WriteIndeterminate` (#1818 L2). `StorageFactory`
+gives every storage instance a `DhtStorageTier`, so every `StorageInstance` write is a consumer:
+
+| Consumer | Handling |
+|---|---|
+| `ArtifactStore` metadata and version writes (`dhtPutWithRetry`) | Retried. `isTransientDhtFailure` classifies `WriteIndeterminate` as transient; this is the only consumer that names it. |
+| `ArtifactStore` chunk writes (`storagePutWithRetry` → `StorageInstance` → `DhtStorageTier`) | Retried by the same classifier; `StorageInstance` surfaces the tier's original cause. |
+| Encryption-marker write (`StorageFactory`) | Retried, but generically: the marker check retries every cause that is not `Cause.Terminal`, and `WriteIndeterminate` is not. |
+| DHT cache (`DHTCacheBackend.put` via `CacheMethodInterceptor.store`) | Not retried. The method's value is returned and the key is invalidated. |
+| Idempotency store (`DHTCacheBackend` via `IdempotencyMethodInterceptor.recordOutcome`) | Not retried here. The request fails retryably, as for any put failure; the client's retry finds the recorded outcome if it was applied, and re-runs otherwise. |
+| Stream segment sealing (`SegmentSealer` → `StorageSegmentSink`) | Retried, generically: `SEAL_RETRY` retries any failure, and an exhausted cycle keeps the segment pending and restarts. |
+| Stream consumer cursor commit (`CursorStore.commit` → `StorageInstance.replaceRef`) | Not retried. Returned to the committing caller as a failure; a later commit supersedes it. |
+| Durable-entity checkpoint (`StreamEntityLogSubstrate.saveCheckpoint`) | Not retried in place. The outcome is recorded and the next tick saves again; the KV pointer is published only after the block write succeeds. |
+| Tiered-storage demotion (`DefaultDemotionManager.writeThenDelete`) | Not retried in place. Logged, the source copy is kept, and the next maintenance tick tries again. |
+
+[design intent — unverified: the handling column was read from source (`git grep DHTClient` and
+`git grep StorageInstance` over production code in `aether/` and `integrations/`); only the `ArtifactStore`
+rows are pinned by a test (`ArtifactStoreTest$WriteIndeterminateTests`).]
 
 **What is NOT guaranteed (residual, until #1777 track 3's per-key versions).** A deposed owner's write that
 another *lagging* replica also accepted is not rolled back. Anti-entropy copies bypass the high-water, so it
@@ -279,7 +297,7 @@ again is safe: per-key epoch ordering keeps the newer entry everywhere.
 | Surface | `Cause` | Caller action |
 |---|---|---|
 | Fenced KV put | `StaleEpoch(key, presented, current)` | re-resolve owner; retry against current owner/epoch |
-| DHT put losing its quorum to fences | `DHTError.WriteIndeterminate(required, achieved, fenced)` | treat as "may have been applied"; retry (§7.1) |
+| DHT put losing its quorum to fences | `DHTError.WriteIndeterminate(required, achieved, fenced)` | treat as "may have been applied"; per-consumer handling in §7.1 |
 | Stream append | `StaleEpochAppend(stream, partition, presented, current)` | same |
 | Owner read (deposed) | `NotCurrentOwner(redirectTo)` | route to the resolved current owner |
 
