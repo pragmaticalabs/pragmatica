@@ -107,6 +107,13 @@ ping interval; governor replacement waits the community-absence window (§8) and
 guarded successor claim and generation fence (§7). A community that stops answering is handled
 as §8 states, without declaring individual workers dead (resource envelope below).
 
+H13. Governor candidates are workers whose first committed assignment (H11) names the community;
+core-role nodes are not candidates (§1: a governor is an operation a worker performs). Candidate
+derivation selects by committed role and community, independently of which peers a SWIM view
+contains. The core's guarded claim acceptance (§7) independently refuses a claim whose owner is
+not a WORKER assigned to that community. [mechanism: the nominee's committed directive is a read
+witness of the claim's `LeaderTransaction`, so a directive changed before apply refuses the claim]
+
 ## 3. Facts and owners
 
 | Fact | Owner | Readers and enforcement |
@@ -264,6 +271,7 @@ The acceptance matrix must drive the live production path, not only invoke consu
 | H-T12 | 10K logical nodes plus real increasing-size clusters | Report CPU, memory, bytes, convergence and recovery bounds |
 | H-T13 | Worker join wave of `N` with fixed `K`, `G` and `M` | Retained SWIM membership and per-edge work on every node independent of `N` |
 | H-T14 | Departure, then the same NodeId admitted again | No second assignment committed for that NodeId |
+| H-T15 | Worker SWIM view holds cores with lower ids; a core-role node submits a governor claim | Only community workers are nominated; the core refuses the core-role claim |
 
 Synthetic topology tests establish algorithmic bounds only. In-JVM tests establish wiring and
 failure behavior, not WAN throughput. Real cluster measurements state node counts, workload
