@@ -83,24 +83,29 @@ freedom from connection-wide QUIC flow-control starvation.
 Steady-state operation and failure recovery must both fit the supported resource envelope.
 
 H11. A node's community assignment is final for the identity's lifetime. The first committed
-`ActivationDirective` community of a NodeId is the only one it carries; a later write naming a
-different community for that NodeId is refused at commit. An identical rewrite is a no-op.
+non-empty `ActivationDirective` community of a NodeId is the only one it carries; a later write
+naming a different community for that NodeId is refused at commit. An identical rewrite is a no-op.
 [mechanism: an arm of the KV applier's committed-state fence (`KVStore.staleWrite`), a pure
 function of the committed and incoming values, so every replica refuses identically and a refused
-`LeaderTransaction` applies none of its mutations]. A writer-side "already assigned" check is not
-this guarantee: it runs before commit and a concurrent or other writer bypasses it.
+`LeaderTransaction` applies none of its mutations]. A writer's own compare-and-set (a directive
+mutation expecting absence) is not this guarantee: it binds only that writer's transaction, and a
+writer that reads the committed directive first passes it. The arm compares against the committed
+directive, so it holds only while the directive exists; the removal rule below is what extends it
+to the identity's lifetime.
 The directive is not removed while the identity can still appear. A DEAD verdict is an
 observation (H07): it triggers replacement and a release request to the node source, not removal
-of the directive. Removal is garbage collection, permitted only after the node source confirms
-the instance is terminated (#1842: the source owns release and termination, and its reconcile is
-the collection point). A falsely-DEAD node that returns while its instance exists therefore finds
-its assignment intact: it rejoins the same community, or the source terminates it if a release was
-already issued. It is not re-assigned. Moving capacity between communities is make-before-break
-replacement: provision in the target community, wait for READY, then drain and terminate the old
-node (§6). Dissolving or merging a community replaces its nodes; no node is relabelled.
-[limit: dead-edge-deletion] Until #1842 lands, a worker DEAD edge removes the directive
-(`MembershipDeltaProjector` emits `WorkerLeaveDecision`; `ClusterDeploymentState.processWorkerLeave`
-calls `handleNodeRemoval`, which removes it), in violation of this invariant. Community placement
+of the directive, and is not the terminal fencing of §8. Removal is garbage collection, permitted
+only after the node source confirms the instance is terminated (#1842: the source owns release and
+termination, and its reconcile is the collection point). A falsely-DEAD node that returns while
+its instance exists therefore finds its assignment intact: it rejoins the same community, or the
+source terminates it if a release was already issued. It is not re-assigned. Moving capacity between
+communities is make-before-break replacement: provision in the target community, wait for READY,
+then drain and terminate the old node (§6). Dissolving or merging a community replaces its nodes; no node is relabelled.
+[limit: dead-edge-deletion] Until #1842 lands, every caller of
+`ClusterDeploymentState.handleNodeRemoval` removes the directive, in violation of this invariant: a
+worker DEAD edge (`MembershipDeltaProjector` emits `WorkerLeaveDecision`; `processWorkerLeave`), a
+core DEAD edge (`NodeRemoved`), `NodeDecommissioned`, a self-shutdown observation, and the
+restored-worker sweep (directives without a committed community only). Community placement
 retirement already removes it only after the provider reports the previous instance absent.
 
 H12. SWIM membership is scoped by role. A core retains SWIM state for cores and for each
@@ -114,10 +119,12 @@ as §8 states, without declaring individual workers dead (resource envelope belo
 
 H13. Governor candidates are workers whose first committed assignment (H11) names the community;
 core-role nodes are not candidates (§1: a governor is an operation a worker performs). Candidate
-derivation selects by committed role and community, independently of which peers a SWIM view
-contains. The core's guarded claim acceptance (§7) independently refuses a claim whose owner is
-not a WORKER assigned to that community. [mechanism: the nominee's committed directive is a read
-witness of the claim's `LeaderTransaction`, so a directive changed before apply refuses the claim]
+derivation chooses deterministically among the ALIVE peers of the community's SWIM view (§7:
+derive eligible local candidates); eligibility comes from the committed role and community, never
+from presence in that view, so a core the worker observes is not a candidate. The core's guarded
+claim acceptance (§7) independently refuses a claim whose owner is not a WORKER assigned
+to that community. [mechanism: the nominee's committed directive is a read witness of the claim's
+`LeaderTransaction`, so a directive changed before apply refuses the claim]
 
 ## 3. Facts and owners
 
