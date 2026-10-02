@@ -602,15 +602,14 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     /// Archived when EITHER the consensus-committed flag or the DHT marker says so. The flag is the authority: the
     /// marker is a DHT key on its own replica set, so a churn that loses it on every replica that answers must not
-    /// resurrect the version. The marker still covers a node whose KV has not yet applied the flag.
+    /// resurrect the version. The marker still covers a node whose KV has not yet applied the flag. The flag is
+    /// read first (a local read): a flagged version needs no DHT read, and a failed marker read surfaces with its
+    /// own cause (a transient `NotCaughtUp` stays transient, so it answers 503, not 500).
     private Promise<Boolean> isArchived(Artifact artifact) {
-        return Promise.all(markerPresent(artifact),
-                           versionIndex.isArchived(artifact))
-                      .map(ArtifactStoreImpl::eitherArchived);
-    }
-
-    private static boolean eitherArchived(boolean marker, boolean flagged) {
-        return marker || flagged;
+        return versionIndex.isArchived(artifact)
+                           .flatMap(flagged -> flagged
+                                               ? Promise.success(true)
+                                               : markerPresent(artifact));
     }
 
     private Promise<Boolean> markerPresent(Artifact artifact) {

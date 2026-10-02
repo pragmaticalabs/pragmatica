@@ -524,6 +524,11 @@ class ArtifactStoreTest {
 
         /// Answers `NotCaughtUp` while `refusalsLeft` is positive, then delegates.
         private DHTClient catchingUp() {
+            return catchingUp(_ -> true);
+        }
+
+        /// As [#catchingUp()], refusing only the keys `refused` selects.
+        private DHTClient catchingUp(java.util.function.Predicate<String> refused) {
             var delegate = testDht();
 
             return new DHTClient() {
@@ -531,7 +536,7 @@ class ArtifactStoreTest {
                 public Promise<Option<byte[]>> get(byte[] key) {
                     countIfMetadata(key);
 
-                    return refusalsLeft.getAndDecrement() > 0
+                    return refused.test(new String(key, StandardCharsets.UTF_8)) && refusalsLeft.getAndDecrement() > 0
                            ? DHTError.notCaughtUp(2, 0).promise()
                            : delegate.get(key);
                 }
@@ -585,6 +590,22 @@ class ArtifactStoreTest {
                                                                 .onSuccessRun(Assertions::fail)
                                                                 .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
             assertThat(gets.get()).as("the bounded retry re-issued the metadata read").isEqualTo(3);
+        }
+
+        @Test
+        void resolveWithMetadata_archiveMarkerNotCaughtUpThroughout_failsNotCaughtUp_neverServesTheBytes() {
+            // The metadata is readable; only the archive-marker read meets replicas still catching up. "Not known to
+            // be archived" is not "live": the resolve must fail with the refusal, never serve the bytes.
+            var artifact = Artifact.artifact("org.example:marker-catching-up:1.0.0").unwrap();
+            var store = storeOver(catchingUp(key -> key.endsWith("/archived")), "marker-catching-up-artifacts");
+
+            store.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
+            refusalsLeft.set(Integer.MAX_VALUE);
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
         }
     }
 
