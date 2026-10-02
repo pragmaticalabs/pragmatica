@@ -184,7 +184,7 @@ public interface SystemTags {
         // the next free slot in it (blocks are advisory).
         pin(table, 89, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement");
         // #1777: carried in every DHT read reply; DHT-prefixed, so it must sit in the one-byte window, and 90
-        // was a free slot in it (blocks are advisory). Tag 90 was `org.pragmatica.dht.DHTRelayMessage`, removed
+        // was a free slot in it (blocks are advisory). Tag 90 was `org.pragmatica.aether.worker.network.DHTRelayMessage`, removed
         // by #1390 (09a2185fb) WITHOUT a retired pin. It had no handler or registration, so no peer of any
         // shipped build sends it; reuse is a pre-GA exception to "never reuse", as 89 was (#1526).
         pin(table, 90, "org.pragmatica.dht.DHTMessage.Readiness");
