@@ -22,7 +22,6 @@ import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.dht.Partition;
-import org.pragmatica.dht.ReadOptions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -630,28 +629,27 @@ class ArtifactStoreTest {
         }
     }
 
-    /// #1775: only the artifact METADATA resolve read opts into the absent grace (artifacts are write-once);
-    /// every other DHT read keeps the default quorum rule, because the DHT has no tombstones and a grace window
-    /// resurrects a removed value from the replica that missed the remove.
+    /// #1777 track 2: a metadata read that meets replicas still catching up after a ring change fails
+    /// [DHTError.NotCaughtUp]. That is not an answer about the artifact: it is retried like any transient DHT
+    /// failure, and if it persists the resolve fails with it — never with "not found", which would let the
+    /// slice loader conclude the artifact is gone.
     @Nested
-    class MetadataAbsentGraceTests {
-        private final CopyOnWriteArrayList<ReadOptions> seen = new CopyOnWriteArrayList<>();
-        private final AtomicInteger plainGets = new AtomicInteger();
+    class NotCaughtUpResolveTests {
+        private final AtomicInteger gets = new AtomicInteger();
+        private final AtomicInteger refusalsLeft = new AtomicInteger();
 
-        private DHTClient recordingDht() {
+        /// Answers `NotCaughtUp` while `refusalsLeft` is positive, then delegates.
+        private DHTClient catchingUp() {
             var delegate = testDht();
 
             return new DHTClient() {
                 @Override
                 public Promise<Option<byte[]>> get(byte[] key) {
-                    plainGets.incrementAndGet();
-                    return delegate.get(key);
-                }
+                    gets.incrementAndGet();
 
-                @Override
-                public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
-                    seen.add(options);
-                    return delegate.get(key);
+                    return refusalsLeft.getAndDecrement() > 0
+                           ? DHTError.notCaughtUp(2, 0).promise()
+                           : delegate.get(key);
                 }
 
                 @Override
@@ -676,83 +674,33 @@ class ArtifactStoreTest {
             };
         }
 
-        /// The bounded retry re-issues the metadata read after a transient failure; the retry must carry the same
-        /// absent grace as the first attempt, or a retried resolve silently falls back to absent-on-two-empties.
-        @Test
-        void resolveWithMetadata_retryAfterTransientFailure_keepsTheAbsentGrace() {
-            var artifact = Artifact.artifact("org.example:grace-retry:1.0.0").unwrap();
-            var storageInstance = StorageInstance.storageInstance("grace-retry-artifacts",
-                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
-            var inner = recordingDht();
-            var failFirstGrace = new AtomicInteger();
-            DHTClient flaky = new DHTClient() {
-                @Override
-                public Promise<Option<byte[]>> get(byte[] key) {
-                    return inner.get(key);
-                }
+        private ArtifactStore storeOver(DHTClient dht, String name) {
+            var storageInstance = StorageInstance.storageInstance(name, List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
 
-                @Override
-                public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
-                    return failFirstGrace.getAndIncrement() == 0
-                           ? DHTError.quorumNotReached(2, 1).promise()
-                           : inner.get(key, options);
-                }
-
-                @Override
-                public Promise<Unit> put(byte[] key, byte[] value) {
-                    return inner.put(key, value);
-                }
-
-                @Override
-                public Promise<Boolean> remove(byte[] key) {
-                    return inner.remove(key);
-                }
-
-                @Override
-                public Promise<Boolean> exists(byte[] key) {
-                    return inner.exists(key);
-                }
-
-                @Override
-                public Partition partitionFor(byte[] key) {
-                    return inner.partitionFor(key);
-                }
-            };
-            var retryStore = ArtifactStore.artifactStore(flaky,
-                                                         storageInstance,
-                                                         new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())));
-
-            retryStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
-            seen.clear();
-            failFirstGrace.set(0);
-
-            retryStore.resolveWithMetadata(artifact).await().onFailureRun(Assertions::fail);
-
-            // attempt 1 failed before reaching the delegate; the RETRY is the one recorded, and it keeps the grace
-            assertThat(failFirstGrace.get()).isEqualTo(2);
-            assertThat(seen).hasSize(1);
-            assertThat(seen.getFirst().hasAbsentGrace()).isTrue();
+            return ArtifactStore.artifactStore(dht, storageInstance, new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())));
         }
 
         @Test
-        void resolveWithMetadata_readsMetadataWithAbsentGrace_andNothingElseDoes() {
-            var artifact = Artifact.artifact("org.example:grace:1.0.0").unwrap();
-            var storageInstance = StorageInstance.storageInstance("grace-artifacts",
-                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
-            var graceStore = ArtifactStore.artifactStore(recordingDht(), storageInstance, timeSpan(250).millis());
+        void resolveWithMetadata_notCaughtUpOnce_isRetriedAndResolves() {
+            var artifact = Artifact.artifact("org.example:catching-up:1.0.0").unwrap();
+            var store = storeOver(catchingUp(), "catching-up-artifacts");
 
-            graceStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
-            seen.clear();
-            plainGets.set(0);
+            store.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
+            refusalsLeft.set(1);
 
-            graceStore.resolveWithMetadata(artifact).await().onFailureRun(Assertions::fail);
-            graceStore.metadata(artifact).await();
-            graceStore.versions(artifact.groupId(), artifact.artifactId()).await();
+            store.resolveWithMetadata(artifact).await().onFailure(cause -> Assertions.fail(cause.message()));
+        }
 
-            // the metadata resolve read is the only one carrying the grace; metadata() and versions() use the plain get
-            assertThat(seen).hasSize(1);
-            assertThat(seen.getFirst().absentGrace()).isEqualTo(timeSpan(250).millis());
-            assertThat(plainGets.get()).isEqualTo(2);
+        @Test
+        void resolveWithMetadata_notCaughtUpThroughout_failsNotCaughtUp_neverNotFound() {
+            var artifact = Artifact.artifact("org.example:never-caught-up:1.0.0").unwrap();
+
+            refusalsLeft.set(Integer.MAX_VALUE);
+            storeOver(catchingUp(), "never-caught-up-artifacts").resolveWithMetadata(artifact)
+                                                                .await()
+                                                                .onSuccessRun(Assertions::fail)
+                                                                .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
+            assertThat(gets.get()).as("the bounded retry re-issued the read").isEqualTo(3);
         }
     }
 

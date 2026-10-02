@@ -31,7 +31,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
@@ -121,11 +120,6 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
-        return get(key, ReadOptions.DEFAULT);
-    }
-
-    @Override
-    public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
@@ -142,7 +136,7 @@ public final class DistributedDHTClient implements DHTClient {
 
         Promise<Option<byte[]>> promise = Promise.promise();
         var deadlineNanos = readDeadlineNanos();
-        var collector = readCollector(quorum, targets.size(), promise, options, deadlineNanos);
+        var collector = QuorumCollector.<Option<byte[]>> quorumCollector(quorum, targets.size(), promise);
         var read = InFlightRead.inFlightRead(key, collector, deadlineNanos, DEFAULT_READ_REISSUE_LIMIT);
         var unsubscribe = node.ring().onNodeRemoved(departed -> reissueAfterDeparture(read, departed));
         // every original target is addressed before the first dispatch, so a departure landing mid-loop can
@@ -317,12 +311,14 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     // --- Response handlers (called by message router) ---
-    /// Handle a get response from a remote node.
+    /// Handle a get response from a remote node. An absent answer from a replica that is still
+    /// catching up is a refusal of the slot, not an "absent" vote (#1777 track 2).
     @Contract
     public void onGetResponse(DHTMessage.GetResponse response) {
-        removePending(response.requestId()).onPresent(op -> castCollector(op, Option.class).onSuccess(response.value(),
-                                                                                                      response.sender()
-                                                                                                              .id()));
+        removePending(response.requestId()).onPresent(op -> recordGet(castCollector(op, Option.class),
+                                                                      response.value(),
+                                                                      response.readiness(),
+                                                                      response.sender()));
     }
 
     /// Handle a put response from a remote node. A refusal by the replica's owner-epoch fence is reported as
@@ -351,35 +347,45 @@ public final class DistributedDHTClient implements DHTClient {
         removePending(response.requestId()).onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.found()));
     }
 
-    /// Handle an exists response from a remote node.
+    /// Handle an exists response from a remote node. A `false` from a replica still catching up is a
+    /// refusal of the slot, like an absent [#onGetResponse] (#1777 track 2).
     @Contract
     public void onExistsResponse(DHTMessage.ExistsResponse response) {
-        removePending(response.requestId()).onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.exists()));
+        removePending(response.requestId()).onPresent(op -> recordExists(castCollector(op, Boolean.class),
+                                                                         response.exists(),
+                                                                         response.readiness(),
+                                                                         response.sender()));
+    }
+
+    /// Count a get answer: a present value always votes; an absent one only from an authoritative replica.
+    private static void recordGet(QuorumCollector<Option<byte[]>> collector,
+                                  Option<byte[]> value,
+                                  DHTMessage.Readiness readiness,
+                                  NodeId sender) {
+        if (value.isEmpty() && !readiness.authoritative()) {
+            failCollector(collector, DHTError.replicaCatchingUp(sender));
+        } else {
+            collector.onSuccess(value, sender.id());
+        }
+    }
+
+    /// Same `@Contract` void-mutator suppression as [#failCollector].
+    @SuppressWarnings("JBCT-RET-07")
+    private static void recordExists(QuorumCollector<Boolean> collector,
+                                     boolean exists,
+                                     DHTMessage.Readiness readiness,
+                                     NodeId sender) {
+        if (!exists && !readiness.authoritative()) {
+            failCollector(collector, DHTError.replicaCatchingUp(sender));
+        } else {
+            collector.onSuccess(exists);
+        }
     }
 
     // --- Private helpers ---
     private long readDeadlineNanos() {
         return System.nanoTime() + config.operationTimeout()
                                          .nanos();
-    }
-
-    /// The collector for one read: plain quorum-count by default, grace mode only when the caller opted
-    /// in through [ReadOptions#absentGrace].
-    private static QuorumCollector<Option<byte[]>> readCollector(int quorum,
-                                                                 int total,
-                                                                 Promise<Option<byte[]>> promise,
-                                                                 ReadOptions options,
-                                                                 long deadlineNanos) {
-        return options.hasAbsentGrace()
-               ? QuorumCollector.<byte[]> graceCollector(quorum,
-                                                         total,
-                                                         promise,
-                                                         collector -> AbsentGrace.schedule(collector,
-                                                                                           promise,
-                                                                                           options,
-                                                                                           deadlineNanos,
-                                                                                           SharedScheduler::schedule))
-               : QuorumCollector.<Option<byte[]>> quorumCollector(quorum, total, promise);
     }
 
     private void dispatchRead(InFlightRead read, NodeId target) {
@@ -697,9 +703,12 @@ public final class DistributedDHTClient implements DHTClient {
     /// observed by the success/failure callbacks below; the Promise handle itself is intentionally
     /// not retained (the collector owns resolution of the outer per-op promise).
     private void handleLocalGet(byte[] key, QuorumCollector<Option<byte[]>> collector) {
+        var readiness = node.readinessFor(key);
         var _ = node.getLocal(key)
-                    .onSuccess(value -> collector.onSuccess(value,
-                                                            node.nodeId().id()))
+                    .onSuccess(value -> recordGet(collector,
+                                                  value,
+                                                  readiness,
+                                                  node.nodeId()))
                     .onFailure(collector::onFailure);
     }
 
@@ -724,7 +733,13 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private void handleLocalExists(byte[] key, QuorumCollector<Boolean> collector) {
-        var _ = node.existsLocal(key).onSuccess(collector::onSuccess).onFailure(collector::onFailure);
+        var readiness = node.readinessFor(key);
+        var _ = node.existsLocal(key)
+                    .onSuccess(exists -> recordExists(collector,
+                                                      exists,
+                                                      readiness,
+                                                      node.nodeId()))
+                    .onFailure(collector::onFailure);
     }
 
     private void sendRemoteGet(NodeId target, byte[] key, QuorumCollector<Option<byte[]>> collector) {

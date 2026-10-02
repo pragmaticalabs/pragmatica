@@ -39,8 +39,23 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
     }
 
-    /// Response to a get request.
-    record GetResponse(String requestId, NodeId sender, Option<byte[]> value) implements DHTMessage {}
+    /// Whether a replica's answers for a partition are authoritative (#1777 track 2). A node that became a
+    /// replica through a ring change is [#CATCHING_UP] until handoff or anti-entropy has filled it: its
+    /// "absent" is no evidence of absence and must not vote. [#UNKNOWN] is the codec sentinel (an ordinal
+    /// this build does not have) and is consumed as a refusal, never as serving.
+    @Codec
+    enum Readiness {
+        SERVING,
+        CATCHING_UP,
+        UNKNOWN;
+        /// Whether an absent answer from a replica in this state counts as evidence of absence.
+        public boolean authoritative() {
+            return this == SERVING;
+        }
+    }
+
+    /// Response to a get request, carrying the answering replica's [Readiness] for the key's partition.
+    record GetResponse(String requestId, NodeId sender, Option<byte[]> value, Readiness readiness) implements DHTMessage {}
 
     /// Request to put a value.
     ///
@@ -84,8 +99,8 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
     }
 
-    /// Response to exists request.
-    record ExistsResponse(String requestId, NodeId sender, boolean exists) implements DHTMessage {}
+    /// Response to exists request, carrying the answering replica's [Readiness] for the key's partition.
+    record ExistsResponse(String requestId, NodeId sender, boolean exists, Readiness readiness) implements DHTMessage {}
 
     /// A key-value pair with version used in migration data transfers. Carries the owner epoch as
     /// three primitive `long`s (`epochIncarnation`, `epochTerm`, `epochCounter`) so migrated entries preserve their
@@ -104,7 +119,9 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// reply with a [MigrationDataAck] once the entries are applied, so a departing node can confirm
     /// its held chunks reached a surviving replica before it halts. The two fire-and-forget senders
     /// (survivor-side rebalance and anti-entropy pull) leave it `false` — the receiver stays silent
-    /// then, exactly as before; only the graceful-departure push sets it `true`.
+    /// then, exactly as before; only the graceful-departure push sets it `true`. `refused` (#1777) marks a
+    /// pull the holder declined because the requester is not a replica in the holder's ring — distinct
+    /// from a holder that simply has no entries, so the requester never mistakes a refusal for completion.
     ///
     /// `leaving` is the set the departure push excluded when it chose this receiver: the pusher and every
     /// co-departing node it knew of (issue #1818 L1). The receiver checks placement against the ring without
@@ -116,15 +133,35 @@ public sealed interface DHTMessage extends ProtocolMessage {
                                  NodeId sender,
                                  List<KeyValue> entries,
                                  boolean ackRequested,
+                                 boolean refused,
                                  List<NodeId> leaving,
                                  List<NodeId> view) implements DHTMessage {
-        /// A response carrying no departure view: every sender but the departure push.
+        /// A pull answer or a survivor-rebalance push: no departure view.
+        public MigrationDataResponse(String requestId,
+                                     NodeId sender,
+                                     List<KeyValue> entries,
+                                     boolean ackRequested,
+                                     boolean refused) {
+            this(requestId, sender, entries, ackRequested, refused, List.of(), List.of());
+        }
+
+        /// A response that is not a refusal and carries no departure view beyond `leaving`.
         public MigrationDataResponse(String requestId,
                                      NodeId sender,
                                      List<KeyValue> entries,
                                      boolean ackRequested,
                                      List<NodeId> leaving) {
-            this(requestId, sender, entries, ackRequested, leaving, List.of());
+            this(requestId, sender, entries, ackRequested, false, leaving, List.of());
+        }
+
+        /// A departure push: never a refusal.
+        public MigrationDataResponse(String requestId,
+                                     NodeId sender,
+                                     List<KeyValue> entries,
+                                     boolean ackRequested,
+                                     List<NodeId> leaving,
+                                     List<NodeId> view) {
+            this(requestId, sender, entries, ackRequested, false, leaving, view);
         }
     }
 
@@ -139,8 +176,9 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// Request to compute digest of keys in a partition range.
     record DigestRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}
 
-    /// Response containing partition digest.
-    record DigestResponse(String requestId, NodeId sender, byte[] digest) implements DHTMessage {
+    /// Response containing partition digest and the sender's [Readiness] for that partition (#1777), so a
+    /// catching-up requester can tell an authoritative source from another catching-up replica.
+    record DigestResponse(String requestId, NodeId sender, byte[] digest, Readiness readiness) implements DHTMessage {
         public DigestResponse {
             digest = digest.clone();
         }

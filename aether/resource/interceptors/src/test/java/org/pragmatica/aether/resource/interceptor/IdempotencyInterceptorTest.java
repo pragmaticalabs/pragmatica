@@ -7,9 +7,12 @@ package org.pragmatica.aether.resource.interceptor;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.dht.DHTError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
@@ -66,6 +69,47 @@ class IdempotencyInterceptorTest {
             assertThat(value1).isEqualTo("result-key1");
             assertThat(value2).isEqualTo("result-key2");
             assertThat(callCount.get()).isEqualTo(2);
+        }
+    }
+
+    /// #1777 track 2: a store read that meets DHT replicas still catching up fails `NotCaughtUp`. That is not
+    /// "no outcome recorded" — treating it as absent would re-run a request that may already have run — so
+    /// the request fails retryably and the method does not run.
+    @Nested
+    class StoreUnreadable {
+        @Test
+        void intercept_storeReadNotCaughtUp_failsRetryably_andNeverRunsTheMethod() {
+            var interceptor = idempotencyMethodInterceptor(notCaughtUpStore(), IDENTITY_KEY_EXTRACTOR);
+            var callCount = new AtomicInteger(0);
+            Fn1<Promise<String>, String> method = request -> {
+                callCount.incrementAndGet();
+                return Promise.success("result-" + request);
+            };
+
+            var outcome = interceptor.intercept(method).apply("key1").await();
+
+            assertThat(outcome.isFailure()).isTrue();
+            outcome.onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
+            assertThat(callCount.get()).as("the method must not run on an unreadable record").isZero();
+        }
+
+        private CacheBackend notCaughtUpStore() {
+            return new CacheBackend() {
+                @Override
+                public Promise<Option<Object>> get(Object key) {
+                    return DHTError.notCaughtUp(2, 0).promise();
+                }
+
+                @Override
+                public Promise<Unit> put(Object key, Object value) {
+                    return Promise.success(Unit.unit());
+                }
+
+                @Override
+                public Promise<Unit> remove(Object key) {
+                    return Promise.success(Unit.unit());
+                }
+            };
         }
     }
 

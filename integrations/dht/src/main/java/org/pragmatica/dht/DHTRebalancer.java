@@ -343,6 +343,6 @@ public final class DHTRebalancer {
 
         log.debug("Pushing {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
         network.send(target,
-                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false, List.of()));
+                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false, false));
     }
 }

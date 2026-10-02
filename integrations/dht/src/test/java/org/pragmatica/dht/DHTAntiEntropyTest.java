@@ -120,7 +120,7 @@ class DHTAntiEntropyTest {
             injectPendingDigest(requestId, PEER, 0, localDigest);
 
             // Respond with matching digest
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest, DHTMessage.Readiness.SERVING));
 
             // No migration data request should be sent
             var migrationRequests = network.captured.stream()
@@ -137,7 +137,7 @@ class DHTAntiEntropyTest {
             injectPendingDigest(requestId, PEER, 5, localDigest);
 
             // Respond with different digest
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, remoteDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, remoteDigest, DHTMessage.Readiness.SERVING));
 
             // Should send migration data request
             var migrationRequests = network.captured.stream()
@@ -155,7 +155,7 @@ class DHTAntiEntropyTest {
             var digest = DHTNode.computeDigest(List.of());
 
             // Respond with unknown request ID
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("unknown-id", PEER, digest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("unknown-id", PEER, digest, DHTMessage.Readiness.SERVING));
 
             // No migration request sent
             assertThat(network.captured).isEmpty();
@@ -169,7 +169,7 @@ class DHTAntiEntropyTest {
 
             assertThat(antiEntropy.pendingDigestCount()).isEqualTo(1);
 
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, localDigest, DHTMessage.Readiness.SERVING));
 
             assertThat(antiEntropy.pendingDigestCount()).isEqualTo(0);
         }
@@ -200,7 +200,7 @@ class DHTAntiEntropyTest {
 
             injectPendingDigest("test-req-stale-ring", PEER, partitionIndex, localDigest);
 
-            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("test-req-stale-ring", PEER, remoteDigest));
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("test-req-stale-ring", PEER, remoteDigest, DHTMessage.Readiness.SERVING));
 
             assertThat(network.captured.stream().filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest).toList())
                 .as("a partition this node no longer replicates is not pulled")
