@@ -334,7 +334,7 @@ SHAPE org.pragmatica.dht.DHTMessage$MigrationDataAck (requestId:java.lang.String
 SHAPE org.pragmatica.dht.DHTMessage$MigrationDataRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,partitionStart:int,partitionEnd:int)
 SHAPE org.pragmatica.dht.DHTMessage$MigrationDataResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,entries:java.util.List<org.pragmatica.dht.DHTMessage$KeyValue>,ackRequested:boolean)
 SHAPE org.pragmatica.dht.DHTMessage$PutRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[],value:byte[],version:long,epochIncarnation:long,epochTerm:long,epochCounter:long)
-SHAPE org.pragmatica.dht.DHTMessage$PutResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,success:boolean,superseded:boolean)
+SHAPE org.pragmatica.dht.DHTMessage$PutResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,success:boolean,superseded:boolean,fenced:boolean)
 SHAPE org.pragmatica.dht.DHTMessage$RemoveRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[])
 SHAPE org.pragmatica.dht.DHTMessage$RemoveResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,found:boolean)
 SHAPE org.pragmatica.dht.Partition (value:int)
