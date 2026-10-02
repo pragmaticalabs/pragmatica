@@ -309,11 +309,13 @@ public final class DHTNode {
                    .contains(candidate);
     }
 
-    /// Apply migration data by merging received entries into local storage using versioned puts,
-    /// preserving each entry's owner epoch (#345 piece 1c) so the fencing token survives transfer.
+    /// Apply migration data by merging received entries into local storage as replica copies,
+    /// preserving each entry's owner epoch (#345 piece 1c) so the fencing token survives transfer. A
+    /// copy bypasses the owner-epoch high-water but keeps the per-key ordering (issue #1818, see
+    /// [StorageEngine#putReplica]).
     @Contract
     public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
-        entries.forEach(kv -> storage.putVersioned(kv.key(),
+        entries.forEach(kv -> storage.putReplica(kv.key(),
                                                    kv.value(),
                                                    kv.version(),
                                                    kv.epochIncarnation(),

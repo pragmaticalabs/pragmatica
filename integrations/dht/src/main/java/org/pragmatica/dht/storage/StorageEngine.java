@@ -87,6 +87,24 @@ public interface StorageEngine {
         return put(key, value).map(_ -> true);
     }
 
+    /// Store a COPY of an entry another replica already accepted — anti-entropy repair, migration and
+    /// the departure push (issue #1818). Identical to [#putVersioned(byte[], byte[], long, long, long, long)]
+    /// except that the owner-epoch high-water is NOT consulted: the fence rejects a deposed owner's NEW
+    /// write, and a copy is not a new write. Applying it here would refuse every key written before the
+    /// latest ownership-epoch advance to any node that does not yet hold it, so such keys could never be
+    /// re-replicated and die with their last holder. The per-key ordering still applies, so a copy
+    /// never overwrites a stored entry of a newer epoch or a newer version.
+    ///
+    /// @return `true` if written, `false` if the stored entry is newer.
+    default Promise<Boolean> putReplica(byte[] key,
+                                        byte[] value,
+                                        long version,
+                                        long epochIncarnation,
+                                        long epochTerm,
+                                        long epochCounter) {
+        return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter);
+    }
+
     /// Get approximate number of entries.
     long size();
     /// Clear all entries.

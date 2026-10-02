@@ -83,6 +83,25 @@ public final class MemoryStorageEngine implements StorageEngine {
             return DHTError.staleEpochWrite(epochIncarnation, epochTerm, epochCounter).promise();
         }
 
+        return Promise.success(storeVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter));
+    }
+
+    @Override
+    public Promise<Boolean> putReplica(byte[] key,
+                                       byte[] value,
+                                       long version,
+                                       long epochIncarnation,
+                                       long epochTerm,
+                                       long epochCounter) {
+        return Promise.success(storeVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter));
+    }
+
+    private boolean storeVersioned(byte[] key,
+                                   byte[] value,
+                                   long version,
+                                   long epochIncarnation,
+                                   long epochTerm,
+                                   long epochCounter) {
         var bkey = new ByteArrayKey(key);
         var clonedValue = value.clone();
         var written = new AtomicBoolean(true);
@@ -100,7 +119,7 @@ public final class MemoryStorageEngine implements StorageEngine {
             epochGate.advance(key, epochIncarnation, epochTerm, epochCounter);
         }
 
-        return Promise.success(written.get());
+        return written.get();
     }
 
     /// Decide the stored entry under the owner-epoch fence then the within-epoch HLC-version LWW
