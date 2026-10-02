@@ -44,6 +44,11 @@ import org.codehaus.plexus.archiver.jar.JarArchiver;
 @Contract
 @Mojo(name = "generate-blueprint", defaultPhase = LifecyclePhase.PACKAGE, requiresDependencyResolution = ResolutionScope.COMPILE)
 public class GenerateBlueprintMojo extends AbstractMojo {
+    /// `project.build.outputTimestamp`: when set, every jar entry carries this time and entries are ordered, so the same
+    /// sources build byte-identical jars (a rebuilt jar of an unchanged commit is then an idempotent re-push, #1778).
+    @Parameter(defaultValue = "${project.build.outputTimestamp}")
+    private String outputTimestamp;
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
 
@@ -695,6 +700,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
             mavenArchiver.setArchiver(archiver);
             mavenArchiver.setOutputFile(jarFile);
+            mavenArchiver.configureReproducibleBuild(outputTimestamp);
             var config = new MavenArchiveConfiguration();
 
             config.addManifestEntry("Blueprint-Id", id);

@@ -419,8 +419,9 @@ version from the pom, **refuses a SNAPSHOT** with a message before it asks for c
 and pushes the release version you set (for example `mvn versions:set -DnewVersion=1.0.0`, committed). The
 generated `deploy-test.sh` stamps a unique release version for every push instead, `<base>-<short git sha>` from
 a clean git checkout and `<base>-<UTC timestamp>` otherwise (`DEPLOY_STAMP` overrides it), and restores the pom
-afterwards. Rebuilding one commit can change the jar bytes, which the repository refuses under the same version
-(`409`): commit a change or set `DEPLOY_STAMP`. By hand, with a release version:
+afterwards. The generated pom pins `project.build.outputTimestamp`, so one commit builds byte-identical jars and
+running the script again on it is an idempotent re-push (`200 already-present`); if the sources changed under the same
+version the repository answers `409`: commit them, or set `DEPLOY_STAMP`. By hand, with a release version:
 
 ```bash
 aether -c <a-node-ip>:8080 artifacts push org.example:hello:1.0.0

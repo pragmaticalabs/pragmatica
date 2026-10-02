@@ -80,6 +80,11 @@ public class PackageSlicesMojo extends AbstractMojo {
     /// see [#addReferencedClasses].
     private static final Pattern INTERNAL_NAME = Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:/[A-Za-z_$][A-Za-z0-9_$]*)+");
 
+    /// `project.build.outputTimestamp`: when set, every jar entry carries this time and entries are ordered, so the same
+    /// sources build byte-identical jars (a rebuilt jar of an unchanged commit is then an idempotent re-push, #1778).
+    @Parameter(defaultValue = "${project.build.outputTimestamp}")
+    private String outputTimestamp;
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
 
@@ -421,6 +426,7 @@ public class PackageSlicesMojo extends AbstractMojo {
 
             mavenArchiver.setArchiver(archiver);
             mavenArchiver.setOutputFile(jarFile);
+            mavenArchiver.configureReproducibleBuild(outputTimestamp);
             // Read envelope version from Properties manifest
             var envelopeVersion = "1";
 

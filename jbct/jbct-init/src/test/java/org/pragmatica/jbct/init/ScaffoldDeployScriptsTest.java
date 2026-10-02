@@ -111,6 +111,13 @@ class ScaffoldDeployScriptsTest {
                                                            "blueprints deploy org.example:my-slice:1.4.2 --wait");
     }
 
+    @Test
+    void generatedPom_pinsAnOutputTimestamp_soTheSameSourcesBuildIdenticalJars() throws IOException {
+        assertThat(Files.readString(project.resolve("pom.xml")))
+            .as("reproducible builds: a rebuilt jar of an unchanged commit must be the idempotent re-push, not a 409")
+            .containsPattern("<project\\.build\\.outputTimestamp>\\d{4}-\\d{2}-\\d{2}T[0-9:]+Z</project\\.build\\.outputTimestamp>");
+    }
+
     private void stub(String name, String body) throws IOException {
         var file = bin.resolve(name);
 

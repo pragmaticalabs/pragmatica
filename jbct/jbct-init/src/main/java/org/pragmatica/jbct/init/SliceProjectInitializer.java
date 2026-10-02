@@ -397,6 +397,9 @@ public final class SliceProjectInitializer {
 
             <properties>
                 <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+                <!-- Reproducible builds: the same sources build byte-identical jars, so re-pushing one version to the
+                     write-once cluster repository is the idempotent 200, not a 409. Bump it to change the jar bytes. -->
+                <project.build.outputTimestamp>2025-01-01T00:00:00Z</project.build.outputTimestamp>
                 <maven.compiler.release>25</maven.compiler.release>
                 <pragmatica-lite.version>{{pragmaticaVersion}}</pragmatica-lite.version>
                 <aether.version>{{aetherVersion}}</aether.version>
@@ -673,8 +676,8 @@ public final class SliceProjectInitializer {
     /// The cluster's artifact repository is write-once and takes no SNAPSHOT (#1778), so a test deploy stamps a
     /// unique RELEASE version per push: `<base>-<short git sha>` from a clean git checkout (the version then names
     /// the commit), else `<base>-<UTC timestamp>`. `DEPLOY_STAMP` overrides the stamp. The pom is stamped for the
-    /// build and restored on exit. Rebuilding one commit can produce different jar bytes, which the store refuses
-    /// under the same version: commit a change or set `DEPLOY_STAMP`.
+    /// build and restored on exit. The generated pom pins `project.build.outputTimestamp` (and the slice tooling writes no
+    /// wall-clock stamps), so one commit builds byte-identical jars and a re-run is the idempotent re-push.
     private static final String DEPLOY_TEST_TEMPLATE = """
         #!/bin/bash
         # Deploy this slice to a test Aether cluster.
@@ -685,8 +688,10 @@ public final class SliceProjectInitializer {
         #
         # The cluster's artifact repository is write-once and takes no SNAPSHOT, so every push is stamped with a
         # unique release version: <base>-<short git sha> from a clean git checkout, otherwise <base>-<UTC timestamp>
-        # (override with DEPLOY_STAMP). The pom is restored afterwards. If you rebuild the same commit and the
-        # repository refuses it (409, different jar bytes under the same version), commit a change or set DEPLOY_STAMP.
+        # (override with DEPLOY_STAMP). The pom is restored afterwards. The generated pom pins
+        # project.build.outputTimestamp, so the same commit builds byte-identical jars and re-running this script on it
+        # is an idempotent re-push. If the repository still refuses a version (409, different jar bytes), the sources
+        # changed: commit them, or set DEPLOY_STAMP.
         set -e
 
         BASE_VERSION=$(mvn -q -N help:evaluate -Dexpression=project.version -DforceStdout)
