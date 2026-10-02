@@ -158,11 +158,13 @@ class PhantomSeedMembershipTest {
         assertThat(ring.nodes()).contains(GENUINE);
     }
 
-    /// The FSM holds one DEPARTING listener: record the edge, then prune the ring exactly as
-    /// `AetherNode.assembleNode` does.
+    /// The FSM holds one DEPARTING listener: prune the ring exactly as `AetherNode.assembleNode` does, THEN
+    /// record the edge. The record is what the test thread awaits, so it must come last: recorded first, the
+    /// test could assert the ring while `DHTNode.changeRing` (which diffs every partition's replica set
+    /// since #1823) was still pruning it.
     private void onEnteredDeparting(NodeId node) {
-        enteredDeparting.add(node);
         dhtTopology.onNodeDeparting(node);
+        enteredDeparting.add(node);
     }
 
     private ConsistentHashRing<NodeId> ringSeededWith(Set<NodeId> seeds) {
