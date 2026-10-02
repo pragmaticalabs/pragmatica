@@ -42,6 +42,7 @@ class ScaffoldDeployScriptsTest {
                     echo "$@" >> '%s'
                     case "$*" in
                         *help:evaluate*) echo "$STUB_VERSION" ;;
+                        *versions:set*) echo "<!-- stamped -->" >> pom.xml ;;
                     esac
                     """.formatted(mvnLog));
     }
