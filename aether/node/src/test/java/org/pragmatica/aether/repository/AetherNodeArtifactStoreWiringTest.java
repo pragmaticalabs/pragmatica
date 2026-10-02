@@ -19,6 +19,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AetherNodeArtifactStoreWiringTest {
     private static final Path NODE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "AetherNode.java");
 
+    private static final Path MAIN = Path.of("src", "main", "java", "org", "pragmatica", "aether", "Main.java");
+
+    /// The ARGUMENTS decide whether an operator's `[slice] artifact_archive_retention` / `artifact_max_versions` reach the
+    /// store: the node must pass the configuration it was started with, not a default. Source-level, like the rest of
+    /// this class (a node cannot be assembled without a cluster).
+    @Test
+    void aetherNode_passesItsOwnSliceConfig_andMainDerivesThatConfigFromTheLoadedOne() throws IOException {
+        var node = Files.readString(NODE).replaceAll("\\s+", " ");
+        var main = Files.readString(MAIN).replaceAll("\\s+", " ");
+
+        assertThat(node).as("the store is built from the node's configured slice settings")
+                        .contains("RepositoryFactory.artifactStore(dhtClient, artifactStorage, config.sliceConfig(), clusterNode, kvStore)");
+        assertThat(main).as("the node's slice settings come from the loaded configuration, the default only when none was loaded")
+                        .contains("aetherConfig.map(AetherConfig::slice) .or(SliceConfig.sliceConfig())");
+    }
+
     @Test
     void aetherNode_buildsItsArtifactStoreThroughTheRepositoryFactory_andNeverDirectly() throws IOException {
         var source = Files.readString(NODE);
