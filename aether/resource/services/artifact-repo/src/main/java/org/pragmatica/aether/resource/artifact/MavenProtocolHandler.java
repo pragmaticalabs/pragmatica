@@ -500,10 +500,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         return Result.all(GroupId.groupId(groupPath.toString()),
                           ArtifactId.artifactId(artifactIdStr),
                           Version.version(versionStr))
-                     .map((groupId, artifactId, version) -> toArtifactPath(groupId,
-                                                                           artifactId,
-                                                                           version,
-                                                                           fileName))
+                     .map((groupId, artifactId, version) -> toArtifactPath(groupId, artifactId, version, fileName))
                      .or(Option.none());
     }
 
