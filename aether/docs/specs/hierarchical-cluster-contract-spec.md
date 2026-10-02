@@ -61,9 +61,9 @@ Zone diversity requires an explicit workload placement policy; community zone co
 does not provide that guarantee.
 
 H06. Replayed activation does not allocate duplicate schedulers, listeners or worker runtimes.
-Reassignment stops the previous runtime before installing the replacement. Shutdown cancels
-all owned subscriptions and tasks. Initial membership is sampled; activation must not wait
-for a later unrelated SWIM edge.
+A directive naming a different community is refused at commit (H11); removal of a node's
+directive stops its runtime. Shutdown cancels all owned subscriptions and tasks. Initial
+membership is sampled; activation must not wait for a later unrelated SWIM edge.
 
 H07. Observation is not authorization. Any authenticated cluster member can exchange ping/pong
 observations independently of leadership. Authority-bearing piggybacks have their own sender,
@@ -82,6 +82,28 @@ H10. Correctness traffic has bounded queues isolated from bulk telemetry and rep
 freedom from connection-wide QUIC flow-control starvation.
 Steady-state operation and failure recovery must both fit the supported resource envelope.
 
+H11. A node's community assignment is final for the node's lifetime. The first committed
+`ActivationDirective` community of a NodeId is the only one it carries; a later write naming a
+different community for that NodeId is refused at commit. An identical rewrite is a no-op.
+[mechanism: an arm of the KV applier's committed-state fence (`KVStore.staleWrite`), a pure
+function of the committed and incoming values, so every replica refuses identically and a refused
+`LeaderTransaction` applies none of its mutations]. A writer-side "already assigned" check is not
+this guarantee: it runs before commit and a concurrent or other writer bypasses it.
+Removal of the directive at departure or retirement ends the lifetime; removal is terminal, and
+the NodeId is not re-admitted as a worker under a new assignment. Moving capacity between
+communities is make-before-break replacement: provision in the target community, wait for
+READY, then drain and terminate the old node (§6). Dissolving or merging a community replaces
+its nodes; no node is relabelled.
+[limit: removal-then-readmission] The applier arm sees only the stored directive. Once departure
+removes it, refusing a later directive for the same NodeId needs retained evidence (a
+retired-identity record or a boot-token fence). Which record carries it is open (#1840).
+
+H12. No node observes cluster-wide membership through SWIM. A core observes cores; a worker
+observes its own community and may probe cores (§9). The core learns a community's health from
+its governor's lease. Loss of that lease is recorded as one fact about the community and is not
+expanded into per-member verdicts: the core can establish that it lost contact, not that any
+member failed.
+
 ## 3. Facts and owners
 
 | Fact | Owner | Readers and enforcement |
@@ -90,7 +112,8 @@ Steady-state operation and failure recovery must both fit the supported resource
 | Source capability, location eligibility and quota | Cluster configuration | Capacity admission and provisioning |
 | Desired community placement | Core-authorized configuration operation | Community reconciler and management |
 | Actual node placement | Provisioning result plus authenticated admission | Reconciliation and diagnostics |
-| Community assignment | Core committed state | Worker runtime, governor membership, scoped projection |
+| Community assignment | Core committed state, write-once per node (H11) | Worker runtime, SWIM pool, governor membership, scoped projection |
+| Community reachability | Governor lease accepted by the core (§9) | Placement, invocation routing, events and alerts |
 | Governor owner and generation | Committed guarded acquisition | Every governor-authorized effect |
 | Raw metric observation | Original producer | Core collectors; intermediaries preserve identity |
 | Summary | Named aggregation scope and interval | Consumers validate coverage and overlap |
@@ -179,7 +202,8 @@ activation. Every affected resource enforces community identity, owner and gener
 write boundary; a metadata-only fence is insufficient.
 
 Activation owns one runtime handle containing all subscriptions and scheduled tasks. The handle
-is reused for an identical directive and replaced with orderly cancellation for reassignment.
+is reused for an identical directive and released with orderly cancellation when the directive
+is removed. A directive for another community is refused at commit (H11), so no handle is swapped.
 Committed authority is consulted for effects, while observations can continue without authority.
 
 ## 8. Isolation and reconnection
@@ -200,7 +224,82 @@ The inequality core_absence < community_absence is an operational margin, not an
 ownership proof. Asymmetric loss, scheduling pauses and delayed packets must be covered by
 effect fencing and tested explicitly.
 
-## 9. Metrics and bounded information flow
+## 9. Scoped SWIM membership
+
+Pools. The core pool holds installed cores and core candidates. Cores do not probe, gossip about
+or retain SWIM state for any worker, including governors. A community pool holds the members of
+one committed community. A worker may probe cores; a core answers but does not admit it to the
+core pool, and worker traffic cannot renew core reachability (H07). Pool membership is derived
+from committed assignment (H11), not from a filter applied to a wider pool. An ANNOUNCE or
+gossip entry naming a peer outside the receiver's pool is dropped. Per-node SWIM state is then
+about `K` on a core and `M` plus probed cores on a worker, independent of `N`.
+
+Seeds. A worker's pool seeds come from the committed roster of its community plus core
+addresses for the core-facing channel. Core seeds remain the configured core discovery seeds.
+
+Governor lease. Each community's governor holds a lease with the core. Ownership and generation
+are the committed guarded acquisition (H04, §7); renewing a lease is not an acquisition. A renewal
+is an authenticated report from the committed generation carrying liveness deltas for the
+community's members; the challenged report exchange of §8 is its rc4 carrier. The core tracks `G`
+leases, not `N` workers. A renewal is observation (H07) and confers no authority beyond the
+generation it names. A lost lease triggers governor re-acquisition inside the community through
+the same guarded acquisition; it does not by itself remove any member.
+
+Community unreachable. When the core accepts no renewal for a community within the
+community-absence window (§8), it records one fact: community X unreachable, with the last
+accepted generation and renewal time. It does not expand that fact into per-member NODE_FAILED
+events, alerts, departure decisions or KV cleanup. Verdicts name only subjects the observer can
+establish (#1835). The fact excludes the community from placement, fails invocations aimed at
+its endpoints on the call path, and emits one event and one alert keyed by community. An
+accepted renewal from the committed generation, or a successor acquisition, clears it. Operator
+recovery is restoring core-community connectivity; replacing the community's nodes is a core
+decision through the make-before-break workflow (§6).
+
+Authority. Communities have no quorum. A FAULTY verdict inside a community is an observation
+(H07) and an input to the core. Only a core-committed decision drains, removes or replaces a
+worker.
+
+Join. A worker obtains its committed assignment before it joins any pool: authenticated contact
+with a core over a non-SWIM channel, admission, committed directive, read of its own directive,
+then SWIM start with community seeds. A worker without a committed assignment is in no pool.
+Indirect probes need helpers inside the pool; the minimum community size of five (#1840)
+supplies them.
+
+[limit: rc4-baseline] At `release-1.0.0-rc4` (`399fff43c`) none of this section holds. One SWIM
+instance per process is narrowed by an eligibility predicate whose default admits every peer. The
+core scope includes governors. Every node starts SWIM at transport readiness and announces to
+the static core seeds before any directive exists. A worker's community is applied afterwards by
+`CommunityMembershipFilter`, which scans the KV snapshot on every SWIM edge: `N(N+1)/2` entries per
+join wave of `N` (#1843). The directive has no applier-side write-once arm (H11).
+
+Migration. #1840 removes the filter rather than optimising it, and re-points every consumer
+of cluster-wide SWIM liveness. These are the consumer classes, inventoried at `399fff43c`:
+
+1. Per-member death fan-out on the core: membership DEAD edge to NODE_FAILED and alert,
+   `WorkerLeaveDecision` to deployment cleanup, and invoker, HTTP, load-balancer and metrics
+   departure hooks. Target: the community-unreachable fact.
+2. Invocation peer choice: the core's endpoint accessibility filter requires membership
+   tracking. Target: committed endpoints, call-path failure and the community fact.
+3. Metrics and observation: collector producer eligibility, leader ping/pong to governors
+   feeding SWIM transport hints, eviction-hint suppression by local SWIM health. Target: lease
+   summary for community members; ping/pong evidence stays out of SWIM for workers.
+4. Operator surfaces: status, live-node and topology routes, CLI alive filter, and cluster
+   quiescence read SWIM or role-blind membership hints. Target: core rows from core SWIM,
+   worker rows from the lease summary.
+5. Core counters that include governors today: presence peak (cold-start latch), reconcile
+   triggers, SWIM-fed transport dial set and pre-voter election topology. Target: unchanged code
+   once the core pool is cores only; the latch thresholds are rechecked.
+6. Ownership checks on role-blind live sets: stream partition owner liveness, restored-worker
+   sweep, placement and drain availability inputs. Target: committed ownership and roster.
+7. Governor candidacy: the filter is also the only thing removing cores from the candidate set.
+   Target: candidates drawn from the community pool only.
+8. Join and start: SWIM start, seeds, announce, and admission introduced by SWIM descriptors.
+   Target: the join order above.
+
+Unchanged, core-only: DHT ring and live-peer filter, quorum-loss detector, core reaps and
+replacement, DHT bootstrap ownership, generation snapshot membership.
+
+## 10. Metrics and bounded information flow
 
 Ping/pong remains leader independent. Separate observation acceptance from authority-bearing
 piggyback processing. All cores receive sufficient control information for leader failover;
@@ -218,7 +317,7 @@ with instances throughout the cluster can require a larger catalog and more conn
 Enforce explicit metadata byte limits and report an unavailable projection when exceeded;
 do not claim a constant total connection bound for arbitrary application graphs.
 
-## 10. Verification and scale claims
+## 11. Verification and scale claims
 
 The acceptance matrix must drive the live production path, not only invoke consumer methods:
 
@@ -228,7 +327,7 @@ The acceptance matrix must drive the live production path, not only invoke consu
 | H-T02 | Duplicate decision after phase eviction; reordered decisions and carry-forward gap | No duplicate/out-of-order application; convergence |
 | H-T03 | Worker joins below core target; core joins above target | Roles unchanged |
 | H-T04 | Two governor candidates, restart, delayed refresh, partition/heal | One accepted authority; stale effects rejected |
-| H-T05 | Repeated activation and community reassignment | One active runtime; old listeners/tasks stopped |
+| H-T05 | Repeated activation; a directive naming another community | One active runtime; the other community refused at commit, directive unchanged |
 | H-T06 | New leader has no governor history for an isolated community | Assigned workers immediately unavailable; recovery waits the community-absence window |
 | H-T07 | Worker and follower pings with lower/higher terms | Pong returned; no unauthorized control effects |
 | H-T08 | Repeated/forwarded metrics and overlapping summaries | No freshness renewal or double counting |
@@ -236,6 +335,9 @@ The acceptance matrix must drive the live production path, not only invoke consu
 | H-T10 | Migration interrupted at every state | Resume without duplicate provisioning or premature retirement |
 | H-T11 | One-region outage, asymmetric loss, mass reconnect | Bounded queues, fenced effects, continuing control responsiveness |
 | H-T12 | 10K logical nodes plus real increasing-size clusters | Report CPU, memory, bytes, convergence and recovery bounds |
+| H-T13 | A whole community cut off from the core, then healed | One community-unreachable fact; zero per-member NODE_FAILED, departure or KV cleanup; cleared by renewal |
+| H-T14 | Worker join wave of `N`; cores observed for SWIM edges | Cores hold no worker SWIM state; per-edge work independent of `N` |
+| H-T15 | Departure, then the same NodeId admitted again | No second assignment committed for that NodeId |
 
 Synthetic topology tests establish algorithmic bounds only. In-JVM tests establish wiring and
 failure behavior, not WAN throughput. Real cluster measurements state node counts, workload
@@ -243,7 +345,7 @@ cardinality, hardware, network, warm-up, failure injection and percentile durati
 convert a 100x100 layout into a benchmark claim. Existing #591 results are not active-worker
 coordination evidence. No paid cloud resources are required or authorized by this specification.
 
-## 11. PR sequence and reconciliation
+## 12. PR sequence and reconciliation
 
 All PRs target `release-1.0.0-rc4`, remain unmerged for independent review, and declare dependencies.
 Dependent branches contain their prerequisites and identify the incremental commits explicitly.
@@ -350,10 +452,11 @@ leader can temporarily increase reconnect traffic. Application endpoint connecti
 can require `N * K` links and `N` worker connections per core. The two-uplink policy bounds control
 probe audiences; it does not cap total worker-to-core connections or core-hosted storage demand.
 
-Core SWIM membership is approximately `K + G`; worker membership is approximately `K + M`.
-A governor processes its own community's direct health observations and answers fenced core
-challenges. Ordinary workers do not relay global peer metrics. These bounds reduce observation
-fan-out without substituting silence for proof of an individual worker's death.
+Core SWIM membership is approximately `K`, and the core also holds `G` governor leases (§9);
+worker membership is approximately `K + M`. A governor processes its own community's direct
+health observations and renews its lease through fenced core challenges. Ordinary workers do not
+relay global peer metrics. These bounds reduce observation fan-out without substituting silence
+for proof of an individual worker's death.
 
 Complete metrics on every core still require at least order `K * N * B` delivered observation
 bytes per collection interval, regardless of batching. Batch limits bound individual messages,
