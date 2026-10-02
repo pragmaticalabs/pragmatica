@@ -133,7 +133,8 @@ curl -X PUT http://localhost:8080/repository/com/example/my-slice/1.0.0/my-slice
 ## Write-Once Coordinates, No SNAPSHOT, Archive Instead of Delete
 
 The built-in store holds **immutable coordinates only** (#1778). Every file of a coordinate is written once,
-so a stale replica can never make an artifact read wrong, and a removed artifact can never be resurrected.
+its content is bound once in consensus, and an archived version is never resurrected by a read, a repair or a re-put.
+The exceptions are listed under the known limits below.
 
 | Request | Answer |
 |---------|--------|
@@ -168,7 +169,8 @@ uploader proposes `(coordinate file -> size, MD5, SHA-1)` under `artifact-conten
 digest committed. An uploader whose digest lost gets `409` naming both digests and uploads nothing, so only the winner
 ever writes a file's metadata and a reader can never resolve a loser's bytes. A winner that died after binding and
 before writing leaves a bound coordinate without metadata; an identical re-put completes it, a different one is refused. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
-DHT's read rule), so a replica that missed the archive write cannot make an archived version resolve. The versions
+DHT's read rule), so a replica that missed the archive write cannot make an archived version resolve; a resolve also
+obeys the consensus archived flag, so losing the marker on every replica a read reaches does not either. The versions
 set is bounded: `[slice] artifact_max_versions` (default 10,000) caps the PRESENT versions of one artifact, because
 a dev loop that pushes a fresh version per push (the scaffold's `deploy-test.sh`) would otherwise grow one KV value
 without limit. The applier refuses a NEW version past the cap and the writer reports it (`409` naming the cap, before
@@ -185,8 +187,11 @@ Known limits, stated so they are not mistaken for guarantees:
 - **Mixed versions (known, [unverified]).** The merges are changes to the consensus applier; like the other applier
   fences they are not version gated. Before GA there is no mixed-version operation; the GA rolling-upgrade contract has
   to gate them together with the other applier changes.
-- **Coordinates stored before this change** have no consensus binding. Re-putting such a coordinate is still checked
-  against its stored metadata; pre-GA nothing migrates them.
+- **Coordinates stored before this change** have no consensus binding. Re-putting such a coordinate is checked
+  against its stored metadata only when that read finds it; a read that answers absent binds the new content, which then
+  overwrites. Pre-GA nothing migrates them.
+- **The version cap is per node.** `artifact_max_versions` travels in each publish command, so every replica decides a
+  command alike, but each node enforces its OWN configured cap: configure it identically on every node.
 - **Digest strength.** Content is compared by size, MD5 and SHA-1, the hashes the store already records.
 
 ## Configuration
