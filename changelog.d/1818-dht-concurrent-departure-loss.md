@@ -44,12 +44,14 @@
   `DhtDeparturePushTest.departingSenders_*`]
   A departure push is also accepted from a current replica, in the receiver's ring, of every entry's partition. A
   node that drains itself on quorum loss is in neither set, and it halts with its in-memory store, so without this
-  rule a last copy it held would be lost.
+  rule a last copy it held would be lost. An accepted push places copies only on partitions the receiver replicates,
+  before or after the departure. Any other entry is nacked, so the pusher keeps it at risk.
 - **A deposed owner's DHT write could survive its own refusal (owner ruling, the Dynamo stance).**
   - A put whose quorum was lost to owner-epoch fences now fails `DHTError.WriteIndeterminate`: transient, and "may
     have been applied". `PutResponse` gains `fenced`.
   - The coordinator compare-and-deletes its own accept (`StorageEngine.removeIfExactly`), so anti-entropy cannot
-    spread it.
+    spread it. This also applies when a fence refusal is followed by a lost or slow reply. Until anti-entropy
+    refills the key, the coordinator reads it as absent.
   - Each copy applied below the receiver's high-water is counted (`DHTNode.belowHighWaterCopyCount`) and logged at
     INFO with its partition.
   - ArtifactStore retries `WriteIndeterminate`. The guarantee is documented in `ownership-fence-spec.md` §7.1.
