@@ -41,7 +41,6 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,6 +68,8 @@ class QuicLaneFinishUnderLossTest {
     private final List<Object> receivedByAcceptor = new CopyOnWriteArrayList<>();
     private final List<Object> receivedByDialer = new CopyOnWriteArrayList<>();
     private final AtomicReference<QuicPeerConnection> acceptorSide = new AtomicReference<>();
+    private final AtomicReference<Option<Burst>> runningBurst = new AtomicReference<>(Option.empty());
+    private Option<LaneDiagnosis.Sockets> sockets = Option.empty();
     private QuicClusterServer server;
     private QuicClusterClient client;
     private UdpGate relay;
@@ -102,7 +103,10 @@ class QuicLaneFinishUnderLossTest {
         // By marker, not by count: a failed write that is delivered anyway must not stand in for an acknowledged one lost.
         var acked = ConcurrentHashMap.<String>newKeySet();
         var failed = new AtomicInteger();
+        var bytesPerWrite = codec.encode(LaneProbe.laneProbe(DIALER, LANE, "fin-0|" + padding)).length + 4L;
+        var burst = new Burst(acked, failed, LaneDiagnosis.receivedBytes(acceptorSide.get().connection()), bytesPerWrite);
 
+        runningBurst.set(Option.some(burst));
         IntStream.range(0, SENT)
                  .forEach(i -> burstWrite(standIn, i, padding, SENT / 2, acked, failed));
         awaitTrue(() -> acked.size() + failed.get() == SENT, "every write resolves");
@@ -119,9 +123,10 @@ class QuicLaneFinishUnderLossTest {
             fail("LOST delivered@20s=" + at + " delivered@35s=" + finMarkers().size() + " succeeded=" + acked.size()
                  + " failed=" + failed.get() + " missing=" + missing(acked) + " closes=" + closes
                  + " dialerStandIn.active=" + standIn.isActive() + " acceptorStandIn.active=" + acceptorStandIn.isActive()
-                 + " statsAt20s=" + statsAt + " statsAt35s=" + stats());
+                 + " statsAt20s=" + statsAt + " statsAt35s=" + stats() + " verdict=" + verdict(burst) + " acceptorPortSharers="
+                 + server.boundPort().map(LaneDiagnosis::portSharers).or("n/a") + " " + belowQuic());
         }
-        assertThat(lostBytes(dialerSide.connection())).as("arming: the relay made the dialer's QUIC stack lose bytes").isPositive();
+        assertThat(LaneDiagnosis.lostBytes(dialerSide.connection())).as("arming: the relay made the dialer's QUIC stack lose bytes").isPositive();
         assertThat(failed.get()).as("arming: the finish landed mid-burst, so the writes after it failed visibly").isPositive();
         assertThat(acceptorSide.get().stream(LANE).map(QuicStreamChannel::streamId))
             .as("arming: the acceptor moved the lane off the stand-in, so it finished it")
@@ -148,29 +153,29 @@ class QuicLaneFinishUnderLossTest {
         awaitTrue(() -> acceptorSide.get() != null
                         && java.util.Arrays.stream(StreamType.values()).allMatch(lane -> acceptorSide.get().stream(lane).isPresent()),
                   "the acceptor registered every lane the dialer opened");
+        sockets = Option.some(LaneDiagnosis.Sockets.attach(dialerSide.connection(), acceptorSide.get().connection(), relay.ports()));
     }
 
     private String stats() {
-        return "dialer{" + stats(dialerSide.connection()) + "} acceptor{" + stats(acceptorSide.get().connection()) + "}";
+        return LaneDiagnosis.stats(Option.option(dialerSide), Option.option(acceptorSide.get()));
     }
 
-    private static String stats(QuicChannel channel) {
-        try {
-            var st = channel.collectStats().get(5, TimeUnit.SECONDS);
+    /// #1727 — the burst in flight, so a timed-out wait during it (the pivot wait) reports where the acknowledged writes stopped.
+    private record Burst(Set<String> acked, AtomicInteger failed, long acceptorReceivedAtStart, long bytesPerWrite) {}
 
-            return "active=" + channel.isActive() + " sentB=" + st.sentBytes() + " recvB=" + st.recvBytes() + " lostB=" + st.lostBytes()
-                   + " retransB=" + st.streamRetransBytes();
-        } catch (Exception e) {
-            return "active=" + channel.isActive() + " stats-unavailable:" + e;
-        }
+    private String verdict(Burst burst) {
+        var got = finMarkers();
+        var missing = burst.acked().stream().filter(marker -> !got.contains(marker)).count();
+        var receivedSinceStart = LaneDiagnosis.receivedBytes(acceptorSide.get().connection()) - burst.acceptorReceivedAtStart();
+
+        return LaneDiagnosis.verdict(dialerSide.isActive() && acceptorSide.get().isActive(),
+                                     receivedSinceStart - got.size() * burst.bytesPerWrite(),
+                                     missing * burst.bytesPerWrite());
     }
 
-    private static long lostBytes(QuicChannel channel) {
-        try {
-            return channel.collectStats().get(5, TimeUnit.SECONDS).lostBytes();
-        } catch (Exception e) {
-            return -1;
-        }
+    private String summary(Burst burst) {
+        return "burst{" + verdict(burst) + " succeeded=" + burst.acked().size() + " failed=" + burst.failed().get()
+               + " delivered=" + finMarkers().size() + " missing=" + missing(burst.acked()) + "}";
     }
 
     private String missing(Set<String> acked) {
@@ -243,7 +248,7 @@ class QuicLaneFinishUnderLossTest {
         return opened;
     }
 
-    private static void awaitTrue(BooleanSupplier condition, String what) {
+    private void awaitTrue(BooleanSupplier condition, String what) {
         var deadline = System.nanoTime() + AWAIT.nanos();
 
         while (System.nanoTime() < deadline) {
@@ -252,6 +257,21 @@ class QuicLaneFinishUnderLossTest {
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
         }
-        fail("Timed out waiting for: " + what);
+        fail("Timed out waiting for: " + what + " — " + diagnosis());
+    }
+
+    /// #1727 — what a timed-out wait reports: the running burst's verdict, if any, then the stall dump. The pivot wait timed
+    /// out once (v1755, `eeb2be52c`) with nothing but its own name, which left that red unattributable.
+    private String diagnosis() {
+        return runningBurst.get().map(burst -> summary(burst) + " ").or("")
+               + LaneDiagnosis.stall(Option.option(dialerSide), Option.option(acceptorSide.get()),
+                                     Option.option(server).flatMap(QuicClusterServer::boundPort))
+               + " " + belowQuic();
+    }
+
+    /// The datagram sockets under both ends, and the relay between them (its threads can die; see [UdpGate#describe]).
+    private String belowQuic() {
+        return sockets.map(LaneDiagnosis.Sockets::describe).or("sockets{not attached}") + " "
+               + Option.option(relay).map(UdpGate::describe).or("relay{none}");
     }
 }

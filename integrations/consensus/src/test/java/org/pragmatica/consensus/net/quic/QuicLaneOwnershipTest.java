@@ -16,8 +16,6 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -32,7 +30,6 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,7 +43,6 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -73,6 +69,8 @@ class QuicLaneOwnershipTest {
     private final List<Object> receivedByAcceptor = new CopyOnWriteArrayList<>();
     private final List<Object> receivedByDialer = new CopyOnWriteArrayList<>();
     private final AtomicReference<QuicPeerConnection> acceptorSide = new AtomicReference<>();
+    private final AtomicReference<Option<DeliveryTrace>> runningBurst = new AtomicReference<>(Option.empty());
+    private Option<LaneDiagnosis.Sockets> sockets = Option.empty();
     private QuicClusterServer server;
     private QuicClusterClient client;
     private QuicPeerConnection dialerSide;
@@ -101,6 +99,7 @@ class QuicLaneOwnershipTest {
                            .fold(cause -> fail("dial: " + cause.message()), connection -> connection);
         awaitTrue(() -> acceptorSide.get() != null && everyLanePresent(acceptorSide.get()),
                   "the acceptor registered every lane the dialer opened");
+        sockets = Option.some(LaneDiagnosis.Sockets.attach(dialerSide.connection(), acceptorSide.get().connection()));
     }
 
     @AfterEach
@@ -360,7 +359,8 @@ class QuicLaneOwnershipTest {
             this.bytesPerWrite = codec.encode(LaneProbe.laneProbe(DIALER, LANE, prefix + "0|" + padding)).length + 4L;
             this.dialerStream = dialerStream;
             this.acceptorStream = acceptorStream;
-            this.acceptorReceivedAtStart = receivedBytes(acceptorSide.get().connection());
+            this.acceptorReceivedAtStart = LaneDiagnosis.receivedBytes(acceptorSide.get().connection());
+            runningBurst.set(Option.some(this));
             dialerStream.closeFuture().addListener(_ -> closes.add("dialer@" + elapsedMillis() + "ms"));
             acceptorStream.onPresent(stream -> stream.closeFuture().addListener(_ -> closes.add("acceptor@" + elapsedMillis() + "ms")));
         }
@@ -391,7 +391,7 @@ class QuicLaneOwnershipTest {
                  + indices(undelivered()) + " closes=" + closes + " dialerStream.active=" + dialerStream.isActive()
                  + " acceptorStream.active=" + acceptorStream.map(QuicStreamChannel::isActive).or(false)
                  + " stats@10s=" + statsAtTimeout + " stats@+15s=" + stats() + " acceptorPortSharers="
-                 + server.boundPort().map(PortSharers::describe).or("n/a"));
+                 + server.boundPort().map(LaneDiagnosis::portSharers).or("n/a") + " " + belowQuic());
         }
 
         /// Every write resolved and every acknowledged one was read.
@@ -416,20 +416,17 @@ class QuicLaneOwnershipTest {
         }
 
         private String verdict() {
-            if (!dialerSide.isActive() || !acceptorSide.get().isActive()) {
-                return "CONNECTION-CLOSED";
-            }
+            var receivedSinceStart = LaneDiagnosis.receivedBytes(acceptorSide.get().connection()) - acceptorReceivedAtStart;
 
-            var missingBytes = undelivered().size() * bytesPerWrite;
-            var receivedSinceStart = receivedBytes(acceptorSide.get().connection()) - acceptorReceivedAtStart;
-            var deliveredBytes = delivered().size() * bytesPerWrite;
-            var receivedBeyondDelivered = receivedSinceStart - deliveredBytes;
+            return LaneDiagnosis.verdict(dialerSide.isActive() && acceptorSide.get().isActive(),
+                                         receivedSinceStart - delivered().size() * bytesPerWrite,
+                                         undelivered().size() * bytesPerWrite);
+        }
 
-            return receivedBeyondDelivered >= missingBytes
-                   ? "RECEIVER-SIDE (acceptor QUIC received " + receivedBeyondDelivered + " B beyond what the app read >= "
-                     + missingBytes + " B undelivered)"
-                   : "SENDER-SIDE (acceptor QUIC received " + receivedBeyondDelivered + " B beyond what the app read < "
-                     + missingBytes + " B undelivered)";
+        /// The burst's state for a timed-out wait elsewhere in the test (the delivery check prints the same fields).
+        private String summary() {
+            return "burst{" + verdict() + " sent=" + sent + " succeeded=" + succeeded.get() + " failed=" + failed.get()
+                   + " pending=" + pending() + " undelivered-indices=" + indices(undelivered()) + " closes=" + closes + "}";
         }
 
         private Set<Integer> delivered() {
@@ -455,84 +452,11 @@ class QuicLaneOwnershipTest {
         }
 
         private String stats() {
-            return "dialer{" + stats(dialerSide.connection()) + "} acceptor{" + stats(acceptorSide.get().connection()) + "}";
+            return LaneDiagnosis.stats(Option.some(dialerSide), Option.option(acceptorSide.get()));
         }
 
         private long elapsedMillis() {
             return (System.nanoTime() - startNanos) / 1_000_000;
-        }
-
-        private static long receivedBytes(QuicChannel channel) {
-            try {
-                return channel.collectStats().get(5, TimeUnit.SECONDS).recvBytes();
-            } catch (Exception e) {
-                return -1;
-            }
-        }
-
-        private static String stats(QuicChannel channel) {
-            try {
-                var st = channel.collectStats().get(5, TimeUnit.SECONDS);
-
-                return "active=" + channel.isActive() + " sentB=" + st.sentBytes() + " recvB=" + st.recvBytes() + " lostB="
-                       + st.lostBytes() + " retransB=" + st.streamRetransBytes();
-            } catch (Exception e) {
-                return "active=" + channel.isActive() + " stats-unavailable:" + e;
-            }
-        }
-    }
-
-    /// #1727 — every UDP socket bound to a port, from Linux `/proc/net/udp{,6}`, each marked as this JVM's (its inode is
-    /// among this process's socket fds) or OTHER. v1677 reproduced #1727 as a foreign reuse-enabled socket taking over the
-    /// acceptor's port mid-burst (#1719), so a delivery shortfall names any intruder. Best-effort: "n/a" off Linux.
-    private static final class PortSharers {
-        private static final List<Path> TABLES = List.of(Path.of("/proc/net/udp"), Path.of("/proc/net/udp6"));
-
-        static String describe(int port) {
-            if (TABLES.stream().noneMatch(Files::isReadable)) {
-                return "n/a";
-            }
-
-            var own = ownSocketInodes();
-            var suffix = String.format(":%04X", port);
-
-            return TABLES.stream()
-                         .filter(Files::isReadable)
-                         .flatMap(PortSharers::entries)
-                         .filter(fields -> fields.length > 9 && fields[1].endsWith(suffix))
-                         .map(fields -> "inode " + fields[9] + (own.contains(fields[9]) ? " (this JVM)" : " (OTHER)"))
-                         .toList()
-                         .toString();
-        }
-
-        private static Stream<String[]> entries(Path table) {
-            try {
-                return Files.readAllLines(table)
-                            .stream()
-                            .skip(1)
-                            .map(line -> line.trim().split("\\s+"));
-            } catch (Exception e) {
-                return Stream.empty();
-            }
-        }
-
-        private static Set<String> ownSocketInodes() {
-            try (var fds = Files.list(Path.of("/proc/self/fd"))) {
-                return fds.map(PortSharers::link)
-                          .filter(target -> target.startsWith("socket:["))
-                          .map(target -> target.substring("socket:[".length(), target.length() - 1))
-                          .collect(Collectors.toSet());
-            } catch (Exception e) {
-                return Set.of();
-            }
-        }
-
-        private static String link(Path fd) {
-            try {
-                return Files.readSymbolicLink(fd).toString();
-            } catch (Exception e) {
-                return "";
-            }
         }
     }
 
@@ -602,7 +526,7 @@ class QuicLaneOwnershipTest {
                        .toList();
     }
 
-    private static void awaitTrue(BooleanSupplier condition, String what) {
+    private void awaitTrue(BooleanSupplier condition, String what) {
         var deadline = System.nanoTime() + AWAIT.nanos();
 
         while (System.nanoTime() < deadline) {
@@ -611,6 +535,19 @@ class QuicLaneOwnershipTest {
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
         }
-        fail("Timed out waiting for: " + what);
+        fail("Timed out waiting for: " + what + " — " + diagnosis());
+    }
+
+    /// #1727 — what a timed-out wait reports: the running burst's verdict, if any, then the stall dump, so an early wait
+    /// is as attributable as the delivery check.
+    private String diagnosis() {
+        return runningBurst.get().map(trace -> trace.summary() + " ").or("")
+               + LaneDiagnosis.stall(Option.option(dialerSide), Option.option(acceptorSide.get()),
+                                     Option.option(server).flatMap(QuicClusterServer::boundPort))
+               + " " + belowQuic();
+    }
+
+    private String belowQuic() {
+        return sockets.map(LaneDiagnosis.Sockets::describe).or("sockets{not attached}");
     }
 }
