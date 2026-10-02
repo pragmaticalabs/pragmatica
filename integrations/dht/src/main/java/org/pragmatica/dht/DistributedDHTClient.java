@@ -308,6 +308,8 @@ public final class DistributedDHTClient implements DHTClient {
         }
     }
 
+    /// Same `@Contract` void-mutator suppression as [#failCollector].
+    @SuppressWarnings("JBCT-RET-07")
     private static void recordExists(QuorumCollector<Boolean> collector,
                                      boolean exists,
                                      DHTMessage.Readiness readiness,

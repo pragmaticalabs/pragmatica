@@ -16,7 +16,6 @@
 package org.pragmatica.dht;
 
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +25,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -358,14 +358,19 @@ public final class DHTAntiEntropy {
     }
 
     private static boolean allStored(List<DHTMessage.KeyValue> pulled, List<DHTMessage.KeyValue> local) {
-        Map<String, Long> stored = new HashMap<>();
-
-        local.forEach(entry -> stored.put(Arrays.toString(entry.key()),
-                                          entry.version()));
+        var stored = local.stream()
+                          .collect(Collectors.toMap(DHTAntiEntropy::keyOf, DHTMessage.KeyValue::version, Math::max));
 
         return pulled.stream()
-                     .allMatch(entry -> stored.getOrDefault(Arrays.toString(entry.key()),
-                                                            Long.MIN_VALUE) >= entry.version());
+                     .allMatch(entry -> isStored(stored, entry));
+    }
+
+    private static boolean isStored(Map<String, Long> stored, DHTMessage.KeyValue entry) {
+        return stored.getOrDefault(keyOf(entry), Long.MIN_VALUE) >= entry.version();
+    }
+
+    private static String keyOf(DHTMessage.KeyValue entry) {
+        return Arrays.toString(entry.key());
     }
 
     private boolean isCurrent(CatchUpRound round) {
