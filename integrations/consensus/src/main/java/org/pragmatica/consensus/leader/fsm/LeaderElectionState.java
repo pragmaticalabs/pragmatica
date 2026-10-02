@@ -594,13 +594,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     /// This follower lost its leader on its own evidence. With the pre-vote enabled it asks the electorate
     /// first and stays in `Led` (#1748); the pre-vote does not apply to a leader that is this node itself or
-    /// no longer eligible (voted out — nothing for the electorate to vouch for), and is absent in local mode.
+    /// no longer eligible (voted out — nothing for the electorate to vouch for), or when this node is the whole electorate (nobody to ask; the verdict would dispatch re-entrantly from inside this handler), and is absent in local mode.
     private static void loseLeader(LeaderElectionContext ctx,
                                    Led led,
                                    TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
         ctx.preVote()
            .filter(_ -> !led.leader()
-                            .equals(ctx.self()) && ctx.isEligible(led.leader()))
+                            .equals(ctx.self())
+                        && ctx.isEligible(led.leader())
+                        && ctx.electorate()
+                              .size() > 1)
            .onPresent(preVote -> tx.handle(() -> preVote.suspect(led.leader())))
            .onEmpty(() -> tx.transitionTo(ctx.reElecting()));
     }

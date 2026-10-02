@@ -354,6 +354,35 @@ class LeaderPreVoteTest {
             assertThat(cluster.node(N3).proposals.get()).isZero();
             assertThat(cluster.requests).as("the lease trip did ask the electorate").isNotEmpty();
         }
+
+        /// A verdict that arrives after the leader came back into this follower's own view is discarded: the
+        /// round's majority described a leader the follower no longer suspects.
+        @Test
+        void doubtVerdict_forALeaderTheFollowerNoLongerSuspects_isDiscarded() {
+            cluster = new Cluster(true, Map.of());
+
+            cluster.node(N3).harness.dispatch(new LeaderElectionEvents.LeaderDoubtConfirmed(N1));
+            sleep(300);
+
+            assertThat(cluster.node(N3).isLedBy(N1)).as("N3 still sees N1, so the verdict is stale").isTrue();
+            assertThat(cluster.node(N3).proposals.get()).isZero();
+        }
+
+        /// Answers are paired with the round that asked: doubts carrying another round's number are not counted,
+        /// or a late answer from an earlier round could complete a majority the current round never formed.
+        @Test
+        void answersFromAnotherRound_areNotCounted() {
+            cluster = new Cluster(true, Map.of());
+            var n3 = cluster.node(N3);
+
+            cluster.lose(N3, N1);
+            n3.manager.leaderPreVoteResponse(new LeaderPreVoteResponse(N2, N1, 9_999L, false));
+            n3.manager.leaderPreVoteResponse(new LeaderPreVoteResponse(N4, N1, 9_999L, false));
+            sleep(SETTLE_MS / 2);
+
+            assertThat(n3.isLedBy(N1)).as("two stale doubts plus N3's own are not a majority of this round").isTrue();
+            assertThat(n3.proposals.get()).isZero();
+        }
     }
 
     @Nested
@@ -426,6 +455,54 @@ class LeaderPreVoteTest {
             assertThat(await(() -> ALL.stream().allMatch(id -> cluster.node(id).isReElecting()), 3_000))
                 .as("every node left its crossed pointer for an election")
                 .isTrue();
+        }
+
+        /// The voter set can change mid-round: an answer from a node that has since left the electorate no longer
+        /// counts, or a departed voter's doubt could complete a majority of the new electorate.
+        @Test
+        void doubtFromAVoterWhoLeftMidRound_isNotCounted() {
+            cluster = new Cluster(true, Map.of());
+            var n3 = cluster.node(N3);
+
+            ALL.stream().filter(id -> !id.equals(N3)).forEach(id -> cluster.cut(N3, id));
+            cluster.lose(N3, N1);
+            n3.manager.leaderPreVoteResponse(new LeaderPreVoteResponse(N2, N1, 1L, false));
+            n3.ctx.installVoters(List.of(N1, N3, N4, N5));
+            n3.manager.leaderPreVoteResponse(new LeaderPreVoteResponse(N4, N1, 1L, false));
+            sleep(SETTLE_MS / 4);
+
+            assertThat(n3.isLedBy(N1)).as("N3 + N4 is 2 of the 4 voters left, not a majority; N2's doubt left with N2").isTrue();
+            assertThat(n3.proposals.get()).isZero();
+        }
+
+        /// A node that is the whole electorate has nobody to ask: it re-elects directly instead of dispatching
+        /// the verdict from inside the handler that started the round.
+        @Test
+        void singleVoterElectorate_reElectsDirectly_withoutAskingAnyone() {
+            var requests = new CopyOnWriteArrayList<Object>();
+            var router = MessageRouter.mutable();
+
+            router.addRoute(Send.class, (Consumer<Send>) requests::add);
+            var h = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("single-voter", fsm -> {
+                var ctx = new LeaderElectionContext(fsm, N3, Option.none(), List.of(N3), router, RETRY, LONG, LONG, LONG,
+                                                    LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
+                                                    LeaderElectionContext.DEFAULT_JITTER_SOURCE,
+                                                    LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER, () -> true, Option::none,
+                                                    LONG, LONG, LONG, _ -> true, LONG);
+
+                ctx.enablePreVote(ROUND_TIMEOUT);
+                return ctx.dormant();
+            });
+
+            h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+            h.dispatch(new ClusterFsmEvent.NodeAdded(N3, List.of(N3, N1)));
+            h.dispatch(new ConsensusReady());
+            h.dispatch(new LeaderCommitted(N1, 1L));
+            h.dispatch(new ClusterFsmEvent.NodeGone(N1, List.of(N3)));
+
+            assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
+            assertThat(requests).isEmpty();
+            h.dispatch(new ClusterFsmEvent.Shutdown());
         }
 
         /// Without the pre-vote enabled (local mode, stubs) the edge is the old immediate one.

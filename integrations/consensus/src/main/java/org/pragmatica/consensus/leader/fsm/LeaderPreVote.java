@@ -251,7 +251,9 @@ public final class LeaderPreVote {
     /// voters vouch that a majority can no longer be reached; otherwise keep waiting for the timeout.
     private Runnable evaluate(Episode current, List<NodeId> voters) {
         var majority = voters.size() / 2 + 1;
-
+        // The voter set can change mid-round (reconfiguration): answers from nodes that left it do not count.
+        current.doubting.retainAll(voters);
+        current.vouching.retainAll(voters);
         if (current.doubting.size() >= majority) {
             return proceed(current);
         }
