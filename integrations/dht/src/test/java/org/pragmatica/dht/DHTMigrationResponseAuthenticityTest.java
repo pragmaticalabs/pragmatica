@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
@@ -119,6 +120,26 @@ class DHTMigrationResponseAuthenticityTest {
         assertThat(cluster.rejected()).isZero();
     }
 
+    /// #1818 round 4 (J2): a departure push places a copy only where it belongs. Entries for a partition this
+    /// receiver replicates in neither the pre- nor the post-departure ring are not stored — a stray copy on a
+    /// non-replica is what the #428 fallback can later resurrect — and the batch is nacked, so the pusher keeps
+    /// those entries at risk.
+    @Test
+    void departurePush_entryForAPartitionThisNodeDoesNotReplicate_isNotStored_andTheBatchIsNacked() {
+        var cluster = new Cluster();
+        var pusher = new NodeId("node-1");
+        var stray = cluster.entryNotReplicatedByReceiver(pusher, "stray");
+        var placed = cluster.entryForPostDepartureNewcomer(pusher, "placed");
+
+        cluster.departing(pusher);
+        cluster.receiver().antiEntropy()
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push", pusher, List.of(placed, stray), true));
+
+        assertThat(cluster.receiverHolds(stray.key())).as("the mis-addressed entry is not placed here").isFalse();
+        assertThat(cluster.receiverHolds(placed.key())).as("control: the entry this node newly owns is placed").isTrue();
+        assertThat(cluster.ackFor("push")).as("the pusher keeps the batch at risk").isFalse();
+    }
+
     @Test
     void departurePush_fromADepartingNode_isStoredAndAcked() {
         var cluster = new Cluster();
@@ -204,6 +225,32 @@ class DHTMigrationResponseAuthenticityTest {
             }
 
             throw new AssertionError("no key the receiver replicates");
+        }
+
+        /// An entry whose partition the receiver replicates neither with `pusher` in the ring nor without it.
+        DHTMessage.KeyValue entryNotReplicatedByReceiver(NodeId pusher, String prefix) {
+            return entryWhere(prefix, key -> !receiverReplicates(key, pusher, true) && !receiverReplicates(key, pusher, false));
+        }
+
+        /// An entry whose partition the receiver replicates only once `pusher` has left — a departure newcomer.
+        DHTMessage.KeyValue entryForPostDepartureNewcomer(NodeId pusher, String prefix) {
+            return entryWhere(prefix, key -> !receiverReplicates(key, pusher, true) && receiverReplicates(key, pusher, false));
+        }
+
+        private boolean receiverReplicates(byte[] key, NodeId pusher, boolean withPusher) {
+            return receiver().node().ring().nodesFor(key, 3, id -> withPusher || !id.equals(pusher)).contains(receiverId);
+        }
+
+        private DHTMessage.KeyValue entryWhere(String prefix, Predicate<byte[]> wanted) {
+            for (int i = 0; i < 20_000; i++) {
+                var key = (prefix + "-" + i).getBytes(StandardCharsets.UTF_8);
+
+                if (wanted.test(key)) {
+                    return new DHTMessage.KeyValue(key, VALUE, 1L, 0L, 0L, 0L);
+                }
+            }
+
+            throw new AssertionError("no key of the wanted placement");
         }
 
         /// An entry whose key lies in a partition other than `partition`.

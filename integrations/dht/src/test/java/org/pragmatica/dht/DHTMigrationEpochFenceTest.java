@@ -33,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -130,6 +131,7 @@ class DHTMigrationEpochFenceTest {
         assertThat(cluster.freshWriteAtPreRewriteEpochAccepted(newcomer, key)).as("control: the newcomer's fence is live")
                                                                              .isFalse();
 
+        cluster.markDeparting(holder.id());
         holder.rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
 
         assertThat(cluster.holds(newcomer, key)).as("the departure push stored its copy on the newcomer").isTrue();
@@ -206,6 +208,7 @@ class DHTMigrationEpochFenceTest {
         var reported = new AtomicReference<Integer>(0);
 
         cluster.writeAtPreRewriteEpoch(holder, key);
+        cluster.markDeparting(holder.id());
         holder.rebalancer()
               .pushOnDeparture(PUSH_BUDGET, Set.of(), (keysAtRisk, _) -> reported.set(keysAtRisk))
               .await();
@@ -336,6 +339,12 @@ class DHTMigrationEpochFenceTest {
     private static final class FencedCluster {
         private final Map<NodeId, Member> members = new LinkedHashMap<>();
         private final List<ProtocolMessage> delivered = new CopyOnWriteArrayList<>();
+        /// The nodes every member knows to be draining — what the leader's drain set tells the receivers.
+        private final Set<NodeId> departing = ConcurrentHashMap.newKeySet();
+
+        void markDeparting(NodeId id) {
+            departing.add(id);
+        }
 
         FencedCluster(List<String> names) {
             this(names, Set.of());
@@ -363,7 +372,7 @@ class DHTMigrationEpochFenceTest {
             return new Member(id,
                               node,
                               dhtRebalancer(node, network, CONFIG),
-                              dhtAntiEntropy(node, network, CONFIG, _ -> true),
+                              dhtAntiEntropy(node, network, CONFIG, departing::contains),
                               gate);
         }
 

@@ -94,6 +94,7 @@ class DHTDepartureStaleDrainSetTest {
                                                          .putLocalVersioned(key, V0, 1L, 0L, 1L, 1L).await());
         }
 
+        cluster.departing.addAll(coDeparting);
         var pushes = new ArrayList<Promise<Unit>>();
         drainers.forEach(d -> pushes.add(cluster.members.get(d).rebalancer()
                                                 .pushOnDeparture(TimeSpan.timeSpan(50).millis(), coDeparting,
@@ -175,6 +176,8 @@ class DHTDepartureStaleDrainSetTest {
         final Map<NodeId, Member> members = new LinkedHashMap<>();
         final List<ProtocolMessage> delivered = new CopyOnWriteArrayList<>();
         final List<Map.Entry<NodeId, ProtocolMessage>> queue = new CopyOnWriteArrayList<>();
+        /// What the leader's drain set tells every receiver: the set the drainers pushed with.
+        final Set<NodeId> departing = new HashSet<>();
         volatile boolean queueing = false;
 
         Cluster(List<String> names, Set<String> partialRefusers) {
@@ -188,7 +191,7 @@ class DHTDepartureStaleDrainSetTest {
                                         : memoryStorageEngine(gate);
                 var node = dhtNode(id, storage, ring, CONFIG);
                 DHTNetwork net = this::deliver;
-                members.put(id, new Member(id, node, dhtRebalancer(node, net, CONFIG), dhtAntiEntropy(node, net, CONFIG, _ -> true), gate));
+                members.put(id, new Member(id, node, dhtRebalancer(node, net, CONFIG), dhtAntiEntropy(node, net, CONFIG, departing::contains), gate));
             });
         }
 

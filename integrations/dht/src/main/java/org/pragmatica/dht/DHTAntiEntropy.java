@@ -355,13 +355,53 @@ public final class DHTAntiEntropy {
                                                                 .stream()
                                                                 .allMatch(entry -> replicaOfEntry(response.sender(),
                                                                                                   entry))) {
-            applyAndAcknowledge(response);
+            applyPlaced(response);
 
             return;
         }
 
         reject(response, "departure push from a node that is not departing");
         acknowledge(response, false);
+    }
+
+    /// An accepted departure push is applied only for partitions this node replicates — in the ring as it is
+    /// (pre-departure) or without the pusher and every node this node knows to be departing (post-departure;
+    /// removing nodes displaces no other) — #1818 J2.
+    /// A copy anywhere else is a stray the #428 fallback read can later serve, so those entries are dropped,
+    /// counted, and the batch is nacked: the pusher keeps them at risk rather than believing them delivered.
+    private void applyPlaced(DHTMessage.MigrationDataResponse response) {
+        var placed = response.entries()
+                             .stream()
+                             .filter(entry -> replicaHereAroundDeparture(response.sender(), entry))
+                             .toList();
+
+        if (placed.size() == response.entries().size()) {
+            applyAndAcknowledge(response);
+
+            return;
+        }
+
+        reject(response, (response.entries().size() - placed.size()) + " entries for partitions this node does not replicate");
+        applyMigrationEntries(withEntries(response, placed)).onSuccess(_ -> acknowledge(response, false));
+    }
+
+    private boolean replicaHereAroundDeparture(NodeId pusher, DHTMessage.KeyValue entry) {
+        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+
+        return replicaOfEntry(node.nodeId(), entry) || node.ring()
+                                                           .nodesFor(entry.key(),
+                                                                     replicationFactor,
+                                                                     candidate -> !candidate.equals(pusher)
+                                                                                  && !departingSenders.test(candidate))
+                                                           .contains(node.nodeId());
+    }
+
+    private static DHTMessage.MigrationDataResponse withEntries(DHTMessage.MigrationDataResponse response,
+                                                                List<DHTMessage.KeyValue> entries) {
+        return new DHTMessage.MigrationDataResponse(response.requestId(),
+                                                    response.sender(),
+                                                    entries,
+                                                    response.ackRequested());
     }
 
     private void acceptRebalancePush(DHTMessage.MigrationDataResponse response) {

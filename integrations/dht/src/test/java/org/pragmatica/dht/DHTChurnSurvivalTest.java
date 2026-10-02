@@ -25,11 +25,11 @@ import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
@@ -50,9 +50,6 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 ///     chunk to the node that newly becomes responsible, so it survives.
 class DHTChurnSurvivalTest {
     private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
-    /// Every pusher in this harness is a departing node; push authenticity is pinned in
-    /// `DHTMigrationResponseAuthenticityTest`.
-    private static final Predicate<NodeId> ANY_PUSHER_IS_DEPARTING = _ -> true;
     /// Keyspace of the production-shaped join pin. Large enough that an over-pulling round strands
     /// hundreds of keys (~90% of the keyspace at RF 3 on 5 nodes), small enough to stay in-JVM cheap.
     private static final int SEEDED_KEYS = 400;
@@ -89,6 +86,7 @@ class DHTChurnSurvivalTest {
         cluster.seedOnly(departing, uniqueKey, value("payload"));
 
         // The fix: the departing node pushes its held chunks to the new replicas before it leaves.
+        cluster.markDeparting(departing);
         cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
         cluster.remove(departing);
 
@@ -343,11 +341,13 @@ class DHTChurnSurvivalTest {
         var leaving = Set.of(shape.holder(), shape.coDeparting());
 
         cluster.seedOnly(shape.holder(), shape.key(), value("payload"));
+        cluster.markDeparting(shape.holder());
         cluster.member(shape.holder()).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
 
         assertThat(cluster.holds(shape.coDeparting(), shape.key())).as("control: the first push landed on the later drainer")
                                                                    .isTrue();
 
+        cluster.markDeparting(shape.coDeparting());
         cluster.member(shape.coDeparting()).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
         cluster.remove(shape.holder());
         cluster.remove(shape.coDeparting());
@@ -365,7 +365,9 @@ class DHTChurnSurvivalTest {
         var second = before.get(1);
 
         before.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+        cluster.markDeparting(first);
         cluster.member(first).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+        cluster.markDeparting(second);
         cluster.member(second).rebalancer().pushOnDeparture(Set.of(first, second), DeparturePushObserver.noop()).await();
         cluster.remove(first);
         cluster.remove(second);
@@ -381,6 +383,7 @@ class DHTChurnSurvivalTest {
     private void departTogetherWithPush(DhtCluster cluster, NodeId first, NodeId second) {
         var leaving = Set.of(first, second);
 
+        leaving.forEach(cluster::markDeparting);
         cluster.member(second).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
         cluster.member(first).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
         cluster.remove(first);
@@ -404,6 +407,7 @@ class DHTChurnSurvivalTest {
     }
 
     private void departWithPush(DhtCluster cluster, NodeId departing) {
+        cluster.markDeparting(departing);
         cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
         cluster.remove(departing);
     }
@@ -428,6 +432,12 @@ class DHTChurnSurvivalTest {
 
     private static final class DhtCluster {
         private final Map<NodeId, Member> members = new LinkedHashMap<>();
+        /// The nodes every member knows to be draining — what the leader's drain set tells the receivers.
+        private final Set<NodeId> departing = new HashSet<>();
+
+        void markDeparting(NodeId id) {
+            departing.add(id);
+        }
 
         void add(NodeId id) {
             members.values().forEach(existing -> existing.ring().addNode(id));
@@ -438,7 +448,7 @@ class DHTChurnSurvivalTest {
             var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
             var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, ANY_PUSHER_IS_DEPARTING);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
             var member = new Member(id,
                                     node,
                                     rebalancer,
@@ -482,7 +492,7 @@ class DHTChurnSurvivalTest {
             var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
             var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, ANY_PUSHER_IS_DEPARTING);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
             var existing = List.copyOf(members.keySet());
             var wholeCluster = new ArrayList<>(existing);
 
