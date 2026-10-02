@@ -372,7 +372,8 @@ public final class DHTAntiEntropy {
     private void applyPlaced(DHTMessage.MigrationDataResponse response) {
         var placed = response.entries()
                              .stream()
-                             .filter(entry -> replicaHereAroundDeparture(response.sender(), entry))
+                             .filter(entry -> replicaHereAroundDeparture(response.sender(),
+                                                                         entry))
                              .toList();
 
         if (placed.size() == response.entries().size()) {
@@ -381,7 +382,8 @@ public final class DHTAntiEntropy {
             return;
         }
 
-        reject(response, (response.entries().size() - placed.size()) + " entries for partitions this node does not replicate");
+        reject(response,
+               (response.entries().size() - placed.size()) + " entries for partitions this node does not replicate");
         applyMigrationEntries(withEntries(response, placed)).onSuccess(_ -> acknowledge(response, false));
     }
 
@@ -391,8 +393,7 @@ public final class DHTAntiEntropy {
         return replicaOfEntry(node.nodeId(), entry) || node.ring()
                                                            .nodesFor(entry.key(),
                                                                      replicationFactor,
-                                                                     candidate -> !candidate.equals(pusher)
-                                                                                  && !departingSenders.test(candidate))
+                                                                     candidate -> !candidate.equals(pusher) && !departingSenders.test(candidate))
                                                            .contains(node.nodeId());
     }
 
