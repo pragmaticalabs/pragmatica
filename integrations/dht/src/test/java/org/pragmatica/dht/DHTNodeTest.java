@@ -206,7 +206,7 @@ class DHTNodeTest {
 
         @Test
         void applyMigrationData_usesVersionedPut_doesNotPoisonStorage() {
-            node.applyMigrationData(List.of(new KeyValue(key("mk1"), value("migrated"), 50L, 0L, 0L, 0L)));
+            node.applyMigrationData(List.of(new KeyValue(key("mk1"), value("migrated"), 50L, 0L, 0L, 0L))).await();
 
             var captured = new AtomicReference<PutResponse>();
             node.handlePutRequest(new PutRequest("req-m1", NODE_ID, key("mk1"), value("updated"), 100L, 0L, 0L, 0L), captured::set);
@@ -244,7 +244,7 @@ class DHTNodeTest {
         void applyMigrationData_olderVersion_doesNotOverwrite() {
             node.putLocalVersioned(key("mdk2"), value("original"), 200L).await();
 
-            node.applyMigrationData(List.of(new KeyValue(key("mdk2"), value("stale"), 100L, 0L, 0L, 0L)));
+            node.applyMigrationData(List.of(new KeyValue(key("mdk2"), value("stale"), 100L, 0L, 0L, 0L))).await();
 
             node.getLocal(key("mdk2"))
                 .await()

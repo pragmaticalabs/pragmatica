@@ -161,4 +161,29 @@ class DHTTopologyListenerDepartingTest {
 
         assertThat(node.ring().nodes()).containsExactlyInAnyOrder(LOCAL, PEER_A, DEPARTING);
     }
+
+    /// #1818 round 3: the listener remembers who entered DEPARTING, even after the DEAD edge prunes it — its
+    /// departure push can land after the prune — and forgets it once it recovers or rejoins.
+    @Test
+    void isDeparting_fromTheDepartingEdge_throughRemoval_untilRecoveryOrRejoin() {
+        var node = threeNodeNode();
+        var listener = DHTTopologyListener.dhtTopologyListener(node);
+
+        assertThat(listener.isDeparting(DEPARTING)).isFalse();
+
+        listener.onNodeDeparting(DEPARTING);
+        listener.onNodeRemoved(nodeRemoved(DEPARTING));
+
+        assertThat(listener.isDeparting(DEPARTING)).as("still departing after the DEAD edge").isTrue();
+        assertThat(listener.isDeparting(PEER_A)).isFalse();
+
+        listener.onNodeRecovered(DEPARTING);
+
+        assertThat(listener.isDeparting(DEPARTING)).as("a recovery ends the departure").isFalse();
+
+        listener.onNodeDeparting(DEPARTING);
+        listener.onNodeJoined(nodeJoined(DEPARTING));
+
+        assertThat(listener.isDeparting(DEPARTING)).as("a rejoin ends the departure").isFalse();
+    }
 }

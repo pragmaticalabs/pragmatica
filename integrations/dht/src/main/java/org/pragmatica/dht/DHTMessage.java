@@ -62,8 +62,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
     }
 
-    /// Response to a put request.
-    record PutResponse(String requestId, NodeId sender, boolean success, boolean superseded) implements DHTMessage {}
+    /// Response to a put request. `fenced` (#1818, the owner's fence ruling) marks a refusal by the owner-epoch
+    /// fence: the writer's epoch is older than this replica's high-water. The writer's put may still have been
+    /// applied elsewhere, so a quorum lost to fenced refusals is indeterminate, not a definite failure.
+    record PutResponse(String requestId, NodeId sender, boolean success, boolean superseded, boolean fenced) implements DHTMessage {}
 
     /// Request to remove a value.
     record RemoveRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
@@ -103,13 +105,36 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// its held chunks reached a surviving replica before it halts. The two fire-and-forget senders
     /// (survivor-side rebalance and anti-entropy pull) leave it `false` — the receiver stays silent
     /// then, exactly as before; only the graceful-departure push sets it `true`.
-    record MigrationDataResponse(String requestId, NodeId sender, List<KeyValue> entries, boolean ackRequested) implements DHTMessage {}
+    ///
+    /// `leaving` is the set the departure push excluded when it chose this receiver: the pusher and every
+    /// co-departing node it knew of (issue #1818 L1). The receiver checks placement against the ring without
+    /// that set, so a co-drainer it has not yet heard of cannot make a legitimate newcomer look like a stray.
+    /// Empty on every other sender. `view` is the pusher's ring membership when it chose the receiver
+    /// (v1820 r5): a joiner the receiver knows but the pusher does not would otherwise push the receiver past
+    /// RF in its own view and make it refuse the copy. Empty means "the receiver's own ring".
+    record MigrationDataResponse(String requestId,
+                                 NodeId sender,
+                                 List<KeyValue> entries,
+                                 boolean ackRequested,
+                                 List<NodeId> leaving,
+                                 List<NodeId> view) implements DHTMessage {
+        /// A response carrying no departure view: every sender but the departure push.
+        public MigrationDataResponse(String requestId,
+                                     NodeId sender,
+                                     List<KeyValue> entries,
+                                     boolean ackRequested,
+                                     List<NodeId> leaving) {
+            this(requestId, sender, entries, ackRequested, leaving, List.of());
+        }
+    }
 
-    /// Acknowledgement that a [MigrationDataResponse] carrying `ackRequested=true` was applied by the
-    /// receiver (issue #427, D2). `requestId` echoes the response's correlation id so the departing
-    /// sender resolves the matching pending push. Additive to the internal cluster protocol
-    /// (rebuilt-together within the rc), mirroring the `PublishForwardResponse.retryable` precedent.
-    record MigrationDataAck(String requestId, NodeId sender) implements DHTMessage {}
+    /// Acknowledgement of a [MigrationDataResponse] carrying `ackRequested=true` (issue #427, D2).
+    /// `requestId` echoes the response's correlation id so the departing sender resolves the matching
+    /// pending push. `applied` is `true` only when every entry was stored or was already superseded by
+    /// a newer stored entry; `false` is a nack (issue #1818) — the sender counts the batch as not
+    /// delivered. Additive to the internal cluster protocol (rebuilt-together within the rc), mirroring
+    /// the `PublishForwardResponse.retryable` precedent.
+    record MigrationDataAck(String requestId, NodeId sender, boolean applied) implements DHTMessage {}
 
     /// Request to compute digest of keys in a partition range.
     record DigestRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}

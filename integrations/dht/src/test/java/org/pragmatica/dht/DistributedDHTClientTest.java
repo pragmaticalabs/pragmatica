@@ -183,7 +183,7 @@ class DistributedDHTClientTest {
             // Simulate success responses for remote nodes
             putRequests.forEach(m -> {
                 var req = (DHTMessage.PutRequest) m.message();
-                client.onPutResponse(new DHTMessage.PutResponse(req.requestId(), m.target(), true, false));
+                client.onPutResponse(new DHTMessage.PutResponse(req.requestId(), m.target(), true, false, false));
             });
 
             promise.await()
