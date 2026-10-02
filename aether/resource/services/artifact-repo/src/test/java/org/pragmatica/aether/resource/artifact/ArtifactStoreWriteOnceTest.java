@@ -459,6 +459,18 @@ class ArtifactStoreWriteOnceTest {
         }
 
         @Test
+        void deploy_refusedForWantOfRoom_leavesTheCoordinateUnbound() {
+            var small = bounded(1);
+
+            small.deploy(v1, CONTENT).await().onFailureRun(Assertions::fail);
+            assertThat(failureOf(small.deploy(v2, CONTENT))).isInstanceOf(ArtifactStoreError.VersionLimitReached.class);
+            now.addAndGet(7 * DAY);
+            small.archive(v1).await().onFailureRun(Assertions::fail);
+
+            small.deploy(v2, OTHER).await().onFailureRun(Assertions::fail);
+        }
+
+        @Test
         void deploy_stillAcceptsAFileOfAnExistingVersion_atTheBound() {
             var small = bounded(1);
 

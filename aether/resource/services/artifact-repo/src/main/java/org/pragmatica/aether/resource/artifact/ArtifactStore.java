@@ -691,11 +691,13 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// proposed wins. Only the winner writes chunks and metadata, so a reader can never resolve a loser's bytes, and
     /// a loser is refused with both digests before anything of it is uploaded. A winner that died after binding and
     /// before writing leaves a bound coordinate with no metadata; an identical re-put finds its own digest bound and
-    /// completes the write.
+    /// completes the write. The version bound is checked BEFORE binding, so a version refused for want of room does
+    /// not leave its coordinate bound to content that was never stored.
     private Promise<DeployResult> bindThenWrite(ArtifactFile file, byte[] content, String md5, String sha1) {
         var offered = new ArtifactContentValue(content.length, md5, sha1);
 
-        return versionIndex.bindContent(file, offered)
+        return versionIndex.requireCapacity(file.artifact())
+                           .flatMap(_ -> versionIndex.bindContent(file, offered))
                            .flatMap(bound -> writeIfBound(file, content, offered, bound));
     }
 
@@ -704,11 +706,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                ArtifactContentValue offered,
                                                ArtifactContentValue bound) {
         return bound.equals(offered)
-               ? versionIndex.requireCapacity(file.artifact())
-                             .flatMap(_ -> writeNew(file,
-                                                    content,
-                                                    offered.md5(),
-                                                    offered.sha1()))
+               ? writeNew(file, content, offered.md5(), offered.sha1())
                : new ArtifactStoreError.ContentConflict(file, bound.sha1(), offered.sha1()).promise();
     }
 

@@ -91,16 +91,18 @@ public final class KvArtifactVersionIndex implements ArtifactVersionIndex {
                                                         file.fileName());
 
         return cluster.apply(List.<KVCommand<AetherKey>> of(new Put<>(key, digest)))
-                      .map(_ -> boundDigest(key, digest));
+                      .flatMap(_ -> boundDigest(file, key));
     }
 
-    /// The committed binding after the apply: the first digest any node proposed, which is `digest` itself only for
-    /// the winner. The applier keeps the first value, so this read cannot see a later one.
-    private ArtifactContentValue boundDigest(ArtifactContentKey key, ArtifactContentValue offered) {
+    /// The committed binding after the apply: the first digest any node proposed, which is the offered one only for
+    /// the winner. The applier keeps the first value, so this read cannot see a later one. A binding that is not
+    /// visible after the apply FAILS the deploy: taking the offered digest as won would let a loser write its bytes.
+    private Promise<ArtifactContentValue> boundDigest(ArtifactFile file, ArtifactContentKey key) {
         return store.get(key)
                     .filter(ArtifactContentValue.class::isInstance)
                     .map(ArtifactContentValue.class::cast)
-                    .or(offered);
+                    .async(new ArtifactStore.ArtifactStoreError.DeployFailed(file,
+                                                                             "content binding not visible after commit"));
     }
 
     @Override

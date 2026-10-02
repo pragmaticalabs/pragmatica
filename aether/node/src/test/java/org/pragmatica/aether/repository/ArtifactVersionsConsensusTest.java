@@ -203,6 +203,22 @@ class ArtifactVersionsConsensusTest {
         assertThat(versionsOf(bounded)).containsExactly("2.0.0");
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void bindContent_fails_whenTheCommittedBindingIsNotVisibleAfterTheApply() {
+        var replica = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), Log.noopSerializer(), Log.noopDeserializer());
+        var cluster = (ClusterNode<KVCommand<AetherKey>>) mock(ClusterNode.class);
+
+        when(cluster.apply(anyList())).thenReturn(Promise.success(List.of()));
+
+        var index = KvArtifactVersionIndex.kvArtifactVersionIndex(cluster, replica, 10);
+        var bound = index.bindContent(org.pragmatica.aether.resource.artifact.ArtifactFile.primary(v1),
+                                      new AetherValue.ArtifactContentValue(7, "md5", "sha1"))
+                         .await();
+
+        assertThat(bound.isFailure()).as("a binding nobody can read is never taken as won").isTrue();
+    }
+
     private List<String> versionsOf(ArtifactVersionIndex index) {
         return index.versions(v1.groupId(), v1.artifactId())
                     .await()
