@@ -140,7 +140,7 @@ The exceptions are listed under the known limits below.
 |---------|--------|
 | `PUT` a coordinate that is not stored | `200`, `"status":"uploaded"` |
 | `PUT` the same content again | `200`, `"status":"already-present"`; nothing is uploaded or rewritten, and an interrupted first deploy is completed (the file and version registrations are re-asserted) |
-| `PUT` different content to a stored coordinate | `409`, naming the stored and the offered SHA-1; the stored content is kept. Publish the change under a new version |
+| `PUT` different content to a stored coordinate | `409`, naming the stored and the offered SHA-1 and SHA-256; the stored content is kept. Publish the change under a new version |
 | `PUT` a NEW version when the artifact already holds `artifact_max_versions` present versions | `409`, nothing uploaded; archive old versions or raise the cap |
 | `PUT` a `-SNAPSHOT` version (any file, including Maven's timestamped names) | `400`; nothing is written. SNAPSHOTs stay available through the Local repository (development, Forge) |
 | `PUT` to an archived version (identical content or not, any file) | `409`; an archived coordinate is never reused |
@@ -148,7 +148,7 @@ The exceptions are listed under the known limits below.
 | `GET maven-metadata.xml` | lists the versions that are stored and not archived |
 | `DELETE /repository/{groupPath}/{artifactId}/{version}` (`aether artifacts archive`) | `200`, `"status":"archived"`; `409` when the version has been stored for less than the retention period; `404` when nothing was ever stored; requires OPERATOR or ADMIN |
 
-The comparison is by content: size, MD5 and SHA-1 must all match.
+The comparison is by content: size, MD5, SHA-1 and SHA-256 must all match.
 
 **Archive, not delete.** Nothing is ever removed. Archiving writes an `archived` marker for the version and flags it
 in the versions list; every key is kept, so "absent" for an artifact means "never written". An archived version
@@ -165,7 +165,7 @@ adds, and the Rabia applier MERGES it into the committed set (a union that takes
 consensus log orders the writers, so two nodes publishing different versions of one artifact at the same instant
 both land, and a stale add can never un-archive a version. The artifact bytes and the per-version metadata stay in
 the DHT. The binding of a coordinate to its content is decided in consensus too: before anything is uploaded, an
-uploader proposes `(coordinate file -> size, MD5, SHA-1)` under `artifact-content/...`, and the applier keeps the FIRST
+uploader proposes `(coordinate file -> size, MD5, SHA-1, SHA-256)` under `artifact-content/...`, and the applier keeps the FIRST
 digest committed. An uploader whose digest lost gets `409` naming both digests and uploads nothing, so only the winner
 ever writes a file's metadata and a reader can never resolve a loser's bytes. A winner that died after binding and
 before writing leaves a bound coordinate without metadata; an identical re-put completes it, a different one is refused. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
@@ -192,7 +192,7 @@ Known limits, stated so they are not mistaken for guarantees:
   overwrites. Pre-GA nothing migrates them.
 - **The version cap is per node.** `artifact_max_versions` travels in each publish command, so every replica decides a
   command alike, but each node enforces its OWN configured cap: configure it identically on every node.
-- **Digest strength.** Content is compared by size, MD5 and SHA-1, the hashes the store already records.
+- **Digest strength.** Content is compared by size, MD5, SHA-1 and SHA-256, so a collision of the two older digests alone does not pass. The integrity check on resolve still verifies SHA-1 only.
 
 ## Configuration
 
@@ -300,7 +300,7 @@ The repository implements automatic integrity verification:
 ### On Deploy
 
 When an artifact is deployed:
-1. MD5 and SHA-1 hashes are computed
+1. MD5, SHA-1 and SHA-256 hashes are computed
 2. Hashes stored in artifact metadata
 3. Chunk count and total size recorded
 

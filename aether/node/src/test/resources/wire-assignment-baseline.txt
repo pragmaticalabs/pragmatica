@@ -188,7 +188,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AlertThresholdValue (metri
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ApiKeyAuditValue (keyId:java.lang.String,action:java.lang.String,timestamp:long,operatorHint:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ApiKeyValue (keyId:java.lang.String,keyHash:java.lang.String,createdAt:long,expiresAt:long,status:java.lang.String,revokedAt:long,gracePeriodMs:long,authorizationRole:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AppBlueprintValue (blueprint:org.pragmatica.aether.slice.blueprint.ExpandedBlueprint,registerOnly:boolean)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactContentValue (size:long,md5:java.lang.String,sha1:java.lang.String)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactContentValue (size:long,md5:java.lang.String,sha1:java.lang.String,sha256:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactVersionEntry (version:java.lang.String,archived:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactVersionsValue (entries:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactVersionEntry>,maxLive:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AutoHealStateValue (enabled:boolean,reason:java.lang.String,updatedAt:long)

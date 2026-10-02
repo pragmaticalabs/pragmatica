@@ -3963,9 +3963,9 @@ Upload an artifact file to the repository. Maximum upload size: 64 MB.
 **Content-Type**: Binary content (e.g., `application/java-archive`).
 
 **Write-once and idempotent (#1778)**: a coordinate is written once. Both a fresh upload and an upload of
-IDENTICAL content (size, MD5 and SHA-1 all match) return HTTP 200 OK with a JSON body; clients distinguish the two
+IDENTICAL content (size, MD5, SHA-1 and SHA-256 all match) return HTTP 200 OK with a JSON body; clients distinguish the two
 via the `status` field. An upload that differs from the stored content is refused with `409 Conflict` naming the
-stored and the offered SHA-1 (the stored content is kept); a `-SNAPSHOT` version is refused with `400` (SNAPSHOTs stay
+stored and the offered SHA-1 and SHA-256 (the stored content is kept); a `-SNAPSHOT` version is refused with `400` (SNAPSHOTs stay
 available through the Local repository); an upload to an archived version is refused with `409`. A transient DHT
 failure answers `503` with `Retry-After`; a failed existence check never deploys.
 
