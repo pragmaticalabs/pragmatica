@@ -76,7 +76,7 @@ route prefixes, not a versioned scheme the code does not implement.
 | **Metrics** | `/api/metrics` | snapshot, per-node, per-slice, transport, timeouts |
 | **Scaling** | `/api/scale` | set scaling config |
 | **Deploy** | `/api/deploy` | start (canary/blue-green/rolling), promote, rollback, complete |
-| **Artifacts** | `/repository` | upload, download, list, info, delete (metrics under `/api/artifacts/metrics`) |
+| **Artifacts** | `/repository` | upload (write-once, release versions only), download, list, info, archive (`DELETE`; metrics under `/api/artifacts/metrics`) |
 | **Alerts** | `/api/alerts` | thresholds, active alerts, history |
 | **Controller** | `/api/controller` | config, status, scaling decisions |
 | **Observability** | `/api/observability` | per-method depth and config, get/set/delete |

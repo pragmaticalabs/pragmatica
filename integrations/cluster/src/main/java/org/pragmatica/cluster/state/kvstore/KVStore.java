@@ -255,11 +255,27 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             return Option.option(storage.get(put.key()));
         }
 
-        var oldValue = Option.option(storage.put(put.key(), put.value()));
+        var stored = merged(put.key(), put.value());
+        var oldValue = Option.option(storage.put(put.key(), stored));
 
-        publish(new ValuePut<>(put, oldValue));
+        publish(new ValuePut<>(stored == put.value()
+                               ? put
+                               : new Put<>(put.key(), stored),
+                               oldValue));
 
         return oldValue;
+    }
+
+    /// Grow-only merge (#1778): a [GrowOnlyMergeable] value written over a committed value of the same class
+    /// is merged into it, so concurrent writers fold instead of overwriting one another. Anything else is
+    /// stored as written. Reads only committed storage and the incoming value, like every arm above.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private V merged(K key, V incoming) {
+        var committed = storage.get(key);
+
+        return incoming instanceof GrowOnlyMergeable mergeable && committed != null && committed.getClass() == incoming.getClass()
+               ? (V) mergeable.mergeInto((GrowOnlyMergeable) committed)
+               : incoming;
     }
 
     /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):

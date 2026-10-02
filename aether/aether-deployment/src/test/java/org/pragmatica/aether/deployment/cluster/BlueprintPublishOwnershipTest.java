@@ -623,7 +623,7 @@ class BlueprintPublishOwnershipTest {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Unit> delete(ArtifactFile file) {
+            @Override public Promise<Unit> archive(Artifact artifact) {
                 return Promise.unitPromise();
             }
 

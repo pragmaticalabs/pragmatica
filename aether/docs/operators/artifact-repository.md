@@ -96,7 +96,8 @@ mvn clean install
 
 ### Production Deployment
 
-For production, push artifacts to the cluster repository:
+For production, push artifacts to the cluster repository. The built-in store takes **release versions only**
+and writes each coordinate once (see below), so build the version you intend to keep:
 
 ```bash
 # First, install to local Maven repo
@@ -129,6 +130,68 @@ curl -X PUT http://localhost:8080/repository/com/example/my-slice/1.0.0/my-slice
   --data-binary @target/my-slice-1.0.0.jar
 ```
 
+## Write-Once Coordinates, No SNAPSHOT, Archive Instead of Delete
+
+The built-in store holds **immutable coordinates only** (#1778). Every file of a coordinate is written once,
+its content is bound once in consensus, and an archived version is never resurrected by a read, a repair or a re-put.
+The exceptions are listed under the known limits below.
+
+| Request | Answer |
+|---------|--------|
+| `PUT` a coordinate that is not stored | `200`, `"status":"uploaded"` |
+| `PUT` the same content again | `200`, `"status":"already-present"`; nothing is uploaded or rewritten, and an interrupted first deploy is completed (the file and version registrations are re-asserted) |
+| `PUT` different content to a stored coordinate | `409`, naming exactly what differs (size and/or each digest, stored and offered); the stored content is kept. Publish the change under a new version |
+| `PUT` a NEW version when the artifact already holds `artifact_max_versions` present versions | `409`, nothing uploaded; archive old versions or raise the cap |
+| `PUT` a `-SNAPSHOT` version (any file, including Maven's timestamped names) | `400`; nothing is written. SNAPSHOTs stay available through the Local repository (development, Forge) |
+| `PUT` to an archived version (identical content or not, any file) | `409`; an archived coordinate is never reused |
+| `GET` an archived file (or its `.sha1`/`.md5` sidecar) | `410 Gone`. `404` still means "never written" |
+| `GET maven-metadata.xml` | lists the versions that are stored and not archived |
+| `DELETE /repository/{groupPath}/{artifactId}/{version}` (`aether artifacts archive`) | `200`, `"status":"archived"`; `409` when the version has been stored for less than the retention period; `404` when nothing was ever stored; requires OPERATOR or ADMIN |
+
+The comparison is by content: size, MD5, SHA-1 and SHA-256 must all match.
+
+**Archive, not delete.** Nothing is ever removed. Archiving writes an `archived` marker for the version and flags it
+in the versions list; every key is kept, so "absent" for an artifact means "never written". An archived version
+stops resolving (`410`; the built-in repository answers "not in store" so other repositories can still serve it) and
+is delisted. Archiving is allowed only once the version has been stored for at least the **minimum retention
+period**, default **7 days**, set with `artifact_archive_retention` in the `[slice]` section (`"7d"`, `"36h"`, ...).
+Archiving twice is a no-op. The chunk bytes of an archived version are retained: nothing reclaims them yet.
+
+**State order and what it guarantees.** An artifact is `never-written`, then `present`, then `archived`, and the
+store only ever moves up that order. The metadata key is written once; the archive marker is a key of its own that is
+written once and never rewritten or removed; and the **versions of each artifact live in the consensus KV plane**
+(`artifact-versions/{groupId}:{artifactId}`), not in the DHT. A publish or an archive is one `Put` of the entry it
+adds, and the Rabia applier MERGES it into the committed set (a union that takes the higher state per version). The
+consensus log orders the writers, so two nodes publishing different versions of one artifact at the same instant
+both land, and a stale add can never un-archive a version. The artifact bytes and the per-version metadata stay in
+the DHT. The binding of a coordinate to its content is decided in consensus too: before anything is uploaded, an
+uploader proposes `(coordinate file -> size, MD5, SHA-1, SHA-256)` under `artifact-content/...`, and the applier keeps the FIRST
+digest committed. An uploader whose digest lost gets `409` naming both digests and uploads nothing, so only the winner
+ever writes a file's metadata and a reader can never resolve a loser's bytes. A winner that died after binding and
+before writing leaves a bound coordinate without metadata; an identical re-put completes it, a different one is refused. The first proposer's deploy time is kept with the binding, so completing a write (or rewriting metadata a read could not find) never changes a file's recorded deploy time: the metadata is write-once too. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
+DHT's read rule), so a replica that missed the archive write cannot make an archived version resolve; a resolve also
+obeys the consensus archived flag, so losing the marker on every replica a read reaches does not either. The versions
+set is bounded: `[slice] artifact_max_versions` (default 10,000) caps the PRESENT versions of one artifact, because
+a dev loop that pushes a fresh version per push (the scaffold's `deploy-test.sh`) would otherwise grow one KV value
+without limit. The applier refuses a NEW version past the cap and the writer reports it (`409` naming the cap, before
+anything is uploaded); it never drops a present version, never un-archives one, and an archive is always accepted and
+frees room. Archived entries are kept FOREVER (owner ruling, #1778): one small KV entry per archived version for the life of
+the cluster, never compacted, so the archived guard never rests on the DHT marker alone. Revisit only if a real cluster
+shows the size matters. The versions
+index is part of the cluster state that a KV backup carries, because the DHT keys it indexes survive a restart.
+
+Known limits, stated so they are not mistaken for guarantees:
+
+- **The per-version file list** (in the DHT) can lose an entry when two nodes add files to one version at once. It
+  only dates the version for the retention check, and a missing entry makes that check stricter, never looser.
+- **Mixed versions (known, [unverified]).** The merges are changes to the consensus applier; like the other applier
+  fences they are not version gated. Before GA there is no mixed-version operation; the GA rolling-upgrade contract has
+  to gate them together with the other applier changes.
+- **Metadata format.** The metadata format changed; no compatibility with pre-#1778 stores (pre-GA).
+- **The version cap is per node.** `artifact_max_versions` travels in each publish command, so every replica decides a
+  command alike, but each node enforces its OWN configured cap: configure it identically on every node.
+- **Digest strength.** Content is compared by size, MD5, SHA-1 and SHA-256, so a collision of the two older digests alone does not pass. The integrity check on resolve still verifies SHA-1 only.
+
 ## Configuration
 
 Configure repository sources in `aether.toml`:
@@ -143,6 +206,10 @@ repositories = ["local"]
 
 # Hybrid - try local first, then cluster
 # repositories = ["local", "builtin"]
+
+# Minimum time a version must have been stored in the built-in artifact store before it may be archived
+# (default 7 days)
+# artifact_archive_retention = "7d"
 ```
 
 ### Repository Types
@@ -180,8 +247,10 @@ aether artifacts info <groupId:artifactId:version>
 ### Manage Artifacts
 
 ```bash
-# Remove artifact from cluster
-aether artifacts delete <groupId:artifactId:version>
+# Archive a version: it stops resolving and is delisted, its keys are kept.
+# Allowed once the version has been stored for the minimum retention period (default 7 days).
+# `aether artifacts delete` is accepted as an alias.
+aether artifacts archive <groupId:artifactId:version>
 ```
 
 ### Metrics
@@ -229,7 +298,7 @@ The repository implements automatic integrity verification:
 ### On Deploy
 
 When an artifact is deployed:
-1. MD5 and SHA-1 hashes are computed
+1. MD5, SHA-1 and SHA-256 hashes are computed
 2. Hashes stored in artifact metadata
 3. Chunk count and total size recorded
 
@@ -271,23 +340,26 @@ Every file of a Maven coordinate is its own entry — the jar, the pom and each 
 (`-sources.jar`, `-javadoc.jar`, …) are keyed separately, so they never collide:
 
 ```
-# Metadata of one file (hashes, size, chunk ids); {file} is [{classifier}.]{extension}
+# Metadata of one file (hashes, size, chunk ids); {file} is the EXACT file name (identity is never parsed)
 artifacts/{groupId}/{artifactId}/{version}/{file}/meta
-#   e.g. …/1.0.0/jar/meta, …/1.0.0/pom/meta, …/1.0.0/sources.jar/meta
+#   e.g. …/1.0.0/lib-1.0.0.jar/meta, …/1.0.0/lib-1.0.0.pom/meta, …/1.0.0/lib-1.0.0.jar.asc/meta
 
-# Files deployed for a version (a version is listed while any of them exists)
+# Files deployed for a version: a grow-only set, used to date the version for the archive retention check
 artifacts/{groupId}/{artifactId}/{version}/files
 
-# Version list per artifact
-artifacts/{groupId}/{artifactId}/versions
+# Archive marker for a version (#1778): present = archived; value = archive time in epoch millis.
+# Written once, never rewritten or removed.
+artifacts/{groupId}/{artifactId}/{version}/archived
+
 ```
+
+The versions of an artifact are not a DHT key: they are the consensus KV entry `artifact-versions/{groupId}:{artifactId}`,
+a grow-only set whose entries carry the archived flag.
 
 Chunk content is not keyed by coordinate: each 64KB chunk is stored in the node's `artifacts`
 storage instance under its content hash (`BlockId`), and the file's `meta` entry lists the chunk
-ids in order. Identical chunks are shared between files; deleting a file removes its `meta` entry
-and file-list entry but does not release its chunks (see the artifact-repo changelog for #281).
-A timestamped SNAPSHOT deploy (`lib-1.0.0-20260914.010203-1-sources.jar` under `1.0.0-SNAPSHOT/`)
-keys under the directory's version, so the plain `lib-1.0.0-SNAPSHOT-sources.jar` name reads it.
+ids in order. Identical chunks are shared between files; archiving a version keeps its `meta` entries and does
+not release its chunks.
 
 ### Example
 
@@ -330,12 +402,12 @@ Chunk replication is controlled by `DHTConfig`:
 - No throttling on artifact operations
 - External access should go through rate-limited API gateway
 
-### No Retention Policies
+### Retention
 
-- Artifacts remain until manually deleted
-- No automatic cleanup of old versions
-- No garbage collection of unreferenced chunks
-- Manual management via CLI required
+- Artifacts remain until an operator archives them; archiving is allowed only after the minimum retention period
+  (default 7 days, `artifact_archive_retention` in `[slice]`)
+- No automatic cleanup of old versions: archiving is always an explicit request
+- No garbage collection of unreferenced or archived chunks
 
 ### Memory-Only Storage
 
@@ -349,12 +421,12 @@ Current implementation uses in-memory storage:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  CLI / ManagementServer                                         │
-│  └─ aether artifacts push/deploy/list/delete                     │
+│  └─ aether artifacts push/deploy/list/archive                    │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  ArtifactStore                                                   │
-│  └─ deploy(), resolve(), exists(), delete()                      │
+│  └─ deploy(), resolve(), exists(), archive()                     │
 │  └─ Chunk splitting, hash computation                            │
 └─────────────────────────────────────────────────────────────────┘
                               ↓

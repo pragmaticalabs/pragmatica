@@ -29,6 +29,7 @@ import org.pragmatica.storage.StorageError;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.http.HttpMethod.DELETE;
 import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.HttpMethod.POST;
 import static org.pragmatica.http.HttpMethod.PUT;
@@ -156,6 +157,12 @@ public final class MavenProtocolRoutes implements RouteHandler {
             return true;
         }
 
+        if (method == DELETE) {
+            handleArchive(response, path);
+
+            return true;
+        }
+
         return false;
     }
 
@@ -185,6 +192,22 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
         warnUnauthenticatedPush(admission, path);
         handlePut(response, path, content);
+    }
+
+    /// `DELETE /repository/<groupPath>/<artifactId>/<version>` archives the version (#1778). Archiving
+    /// changes what the cluster will resolve, so it takes the same OPERATOR-or-ADMIN admission as a push.
+    @Contract
+    private void handleArchive(ResponseWriter response, String path) {
+        var admission = admitPush();
+
+        if (admission == PushAdmission.DENIED) {
+            rejectUnauthorizedPush(response, path);
+
+            return;
+        }
+
+        warnUnauthenticatedPush(admission, path);
+        handleDelete(response, path);
     }
 
     /// Defense-in-depth authorization for artifact publication (#282, #520). Artifact PUT/POST place
@@ -246,7 +269,8 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
     private void rejectUnauthorizedPush(ResponseWriter response, String path) {
         response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
-        response.error(HttpStatus.UNAUTHORIZED, "Artifact publication requires OPERATOR or ADMIN authentication");
+        response.error(HttpStatus.UNAUTHORIZED,
+                       "Artifact publication and archiving require OPERATOR or ADMIN authentication");
     }
 
     @Contract
@@ -266,6 +290,17 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
         node.mavenProtocolHandler()
             .handlePut(uri, content)
+            .timeout(requestTimeout)
+            .onSuccess(r -> sendProtocolResponse(response, r))
+            .onFailure(cause -> sendFailureResponse(response, cause));
+    }
+
+    @Contract
+    private void handleDelete(ResponseWriter response, String uri) {
+        var node = nodeSupplier.get();
+
+        node.mavenProtocolHandler()
+            .handleDelete(uri)
             .timeout(requestTimeout)
             .onSuccess(r -> sendProtocolResponse(response, r))
             .onFailure(cause -> sendFailureResponse(response, cause));

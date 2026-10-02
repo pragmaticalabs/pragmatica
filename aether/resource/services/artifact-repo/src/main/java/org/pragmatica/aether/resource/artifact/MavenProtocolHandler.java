@@ -9,8 +9,6 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Locale;
-import java.util.regex.Pattern;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -30,6 +28,9 @@ import org.slf4j.LoggerFactory;
 public interface MavenProtocolHandler {
     Promise<MavenResponse> handleGet(String path);
     Promise<MavenResponse> handlePut(String path, byte[] content);
+    /// Archives the version named by `/repository/<groupPath>/<artifactId>/<version>` (#1778). The store
+    /// never deletes: the version stops resolving and is delisted, its keys are kept.
+    Promise<MavenResponse> handleDelete(String path);
 
     record MavenResponse(int statusCode, String contentType, byte[] content) {
         public static MavenResponse ok(byte[] content, String contentType) {
@@ -46,6 +47,19 @@ public interface MavenProtocolHandler {
 
         public static MavenResponse notFound(String message) {
             return new MavenResponse(404, "text/plain", message.getBytes(StandardCharsets.UTF_8));
+        }
+
+        /// The request is well-formed but contradicts the store's state: a coordinate already holds different
+        /// content, the version is archived, or it is too young to archive. Retrying the same request cannot
+        /// succeed, unlike [#unavailable].
+        public static MavenResponse conflict(String message) {
+            return new MavenResponse(409, "text/plain", message.getBytes(StandardCharsets.UTF_8));
+        }
+
+        /// The artifact existed and was archived: unavailable on purpose, distinct from [#notFound]
+        /// ("never written").
+        public static MavenResponse gone(String message) {
+            return new MavenResponse(410, "text/plain", message.getBytes(StandardCharsets.UTF_8));
         }
 
         public static MavenResponse badRequest(String message) {
@@ -73,9 +87,10 @@ public interface MavenProtocolHandler {
     }
 
     sealed interface ParsedPath {
-        record ArtifactPath(Artifact artifact, String classifier, String extension) implements ParsedPath {
+        /// `fileName` is the exact path segment: the store keys the file by it, never by a parsed reading of it.
+        record ArtifactPath(Artifact artifact, String fileName) implements ParsedPath {
             ArtifactFile file() {
-                return ArtifactFile.artifactFile(artifact, classifier, extension);
+                return ArtifactFile.named(artifact, fileName);
             }
         }
 
@@ -157,32 +172,37 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         };
     }
 
+    /// FER: a failed read is reported, not dropped: it becomes the status the caller acts on (503 asks it to
+    /// retry); nothing is retried or compensated here.
     private Promise<MavenResponse> handleGetArtifact(ParsedPath.ArtifactPath ap) {
         return store.resolve(ap.file())
                     .map(content -> MavenResponse.ok(content,
-                                                     contentTypeFor(ap.extension())))
-                    .recover(cause -> {
-                                 if (cause instanceof ArtifactStore.ArtifactStoreError.NotFound) {
-                                 return MavenResponse.notFound("Artifact not found: " + ap.file().asString());
-                             }
+                                                     contentTypeFor(ap.fileName())))
+                    .recover(cause -> getFailureResponse(ap, cause));
+    }
 
-                                 return failureResponse("GET",
-                                                        ap.file(),
-                                                        cause);
-                             });
+    /// Absent is 404 ("never written"); archived is 410 ("was written, retired on purpose").
+    private static MavenResponse getFailureResponse(ParsedPath.ArtifactPath ap, Cause cause) {
+        return switch (cause) {
+            case ArtifactStore.ArtifactStoreError.NotFound _ -> MavenResponse.notFound("Artifact not found: " + ap.file().asString());
+            case ArtifactStore.ArtifactStoreError.Archived archived -> MavenResponse.gone(archived.message());
+            default -> failureResponse("GET",
+                                       ap.file().asString(),
+                                       cause);
+        };
     }
 
     /// Transient causes answer 503 (retry), everything else 500 (defect). Every 5xx is WARN-logged
     /// with its cause: the response body is routinely discarded by clients (`curl -o /dev/null`),
     /// and a 500 that left no log line once cost a diagnosis its only evidence.
-    private static MavenResponse failureResponse(String operation, ArtifactFile file, Cause cause) {
+    private static MavenResponse failureResponse(String operation, String subject, Cause cause) {
         if (isTransientFailure(cause)) {
-            log.warn("{} {} unavailable (answering 503, retryable): {}", operation, file.asString(), cause.message());
+            log.warn("{} {} unavailable (answering 503, retryable): {}", operation, subject, cause.message());
 
             return MavenResponse.unavailable(cause.message());
         }
 
-        log.warn("{} {} failed (answering 500): {}", operation, file.asString(), cause.message());
+        log.warn("{} {} failed (answering 500): {}", operation, subject, cause.message());
 
         return MavenResponse.serverError(cause.message());
     }
@@ -218,10 +238,18 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                                  return MavenResponse.ok(checksum.getBytes(StandardCharsets.UTF_8),
                                                          "text/plain");
                              })
-                        .recover(cause -> MavenResponse.notFound("Artifact not found"));
+                        .recover(MavenProtocolHandlerImpl::checksumFailureResponse);
         }
 
         return Promise.success(MavenResponse.badRequest("Invalid checksum path"));
+    }
+
+    /// A sidecar of an archived file is as gone as the file (410, #1778); every other failure keeps answering 404,
+    /// as it always has.
+    private static MavenResponse checksumFailureResponse(Cause cause) {
+        return cause instanceof ArtifactStore.ArtifactStoreError.Archived archived
+               ? MavenResponse.gone(archived.message())
+               : MavenResponse.notFound("Artifact not found");
     }
 
     @Override
@@ -249,53 +277,118 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         };
     }
 
-    /// Idempotent PUT semantics: if the artifact already exists in the store, return
-    /// `{"status":"already-present", ...}` with the existing size/md5/sha1 from KV metadata.
-    /// Otherwise call `store.deploy` and return `{"status":"uploaded", ...}` with the
-    /// metrics computed from the deploy result. Both paths emit HTTP 200 OK with a
-    /// JSON body so clients can rely on the exit code + status field for idempotence
-    /// instead of grepping error strings.
+    /// Write-once PUT (#1778); the decisions live in `ArtifactStore.deploy`, which this maps to HTTP:
     ///
-    /// Single DHT round-trip for the existence check: `metadata()` returns
-    /// `Option.none()` when the meta key is absent, otherwise the parsed record. We
-    /// deliberately do NOT call `resolveWithMetadata` here — that reads all chunks and
-    /// verifies SHA1 integrity, which is needed for GET semantics but is wasteful for
-    /// a duplicate-PUT response. Race: two concurrent PUTs both see `none` and both
-    /// call `deploy`; the second overwrites the metadata key. This is acceptable —
-    /// each client's "uploaded" semantics still hold (the PUT they sent did write
-    /// content to the store) and `ArtifactStore.deploy` is idempotent at the chunk
-    /// level (content-addressed BlockIds).
+    ///   - new coordinate: 200 `{"status":"uploaded", ...}`;
+    ///   - same content already stored (idempotent re-put): 200 `{"status":"already-present", ...}`;
+    ///   - different content already stored: 409 naming both SHA-1 digests, stored content kept;
+    ///   - archived version: 409, coordinates of an archived version are never reused;
+    ///   - SNAPSHOT version: 400, the built-in store holds immutable coordinates only;
+    ///   - the existence check or the write fails transiently: 503 + Retry-After (a failed check never
+    ///     deploys, #1795); any other failure: 500.
     ///
-    /// The existence check is also the write-once guard (#1778): a re-push of an existing file answers
-    /// "already-present" and keeps the stored bytes, even when the new content differs. So a FAILED
-    /// check is NOT "absent" — deploying past it would let churn replace stored content. The failure
-    /// takes the same exit as any other: transient -> 503 + Retry-After (no deploy), else 500.
+    /// The body is JSON so clients can rely on the exit code + status field instead of grepping error strings.
+    ///
+    /// FER: a refused or failed PUT is reported, not dropped: it becomes the status above; nothing is retried
+    /// or compensated here.
     private Promise<MavenResponse> handlePutArtifact(ParsedPath.ArtifactPath ap, byte[] content) {
-        return store.metadata(ap.file())
-                    .flatMap(metaOpt -> metaOpt.map(meta -> buildAlreadyPresentResponse(ap.artifact(),
-                                                                                        meta))
-                                               .or(() -> deployAndBuildResponse(ap.file(),
-                                                                                content)))
-                    .recover(cause -> failureResponse("PUT",
-                                                      ap.file(),
-                                                      cause));
+        return store.deploy(ap.file(),
+                            content)
+                    .map(this::buildPushResponse)
+                    .recover(cause -> putFailureResponse(ap.file(),
+                                                         cause));
     }
 
-    private Promise<MavenResponse> buildAlreadyPresentResponse(Artifact artifact, ArtifactStore.ArtifactMetadata meta) {
-        return Promise.success(MavenResponse.json(renderPushJson("already-present",
-                                                                 artifact,
-                                                                 meta.size(),
-                                                                 meta.md5(),
-                                                                 meta.sha1())));
+    private MavenResponse buildPushResponse(ArtifactStore.DeployResult result) {
+        return MavenResponse.json(renderPushJson(result.alreadyPresent()
+                                                 ? "already-present"
+                                                 : "uploaded",
+                                                 result.artifact(),
+                                                 result.size(),
+                                                 result.md5(),
+                                                 result.sha1()));
     }
 
-    private Promise<MavenResponse> deployAndBuildResponse(ArtifactFile file, byte[] content) {
-        return store.deploy(file, content)
-                    .map(result -> MavenResponse.json(renderPushJson("uploaded",
-                                                                     result.artifact(),
-                                                                     result.size(),
-                                                                     result.md5(),
-                                                                     result.sha1())));
+    /// Refusals are the caller's to act on, so they are logged at INFO and carry the store's own message.
+    private static MavenResponse putFailureResponse(ArtifactFile file, Cause cause) {
+        return switch (cause) {
+            case ArtifactStore.ArtifactStoreError.ContentConflict conflict -> refusal(file,
+                                                                                      MavenResponse.conflict(conflict.message()));
+            case ArtifactStore.ArtifactStoreError.Archived archived -> refusal(file,
+                                                                               MavenResponse.conflict(archived.message()));
+            case ArtifactStore.ArtifactStoreError.VersionLimitReached full -> refusal(file,
+                                                                                      MavenResponse.conflict(full.message()));
+            case ArtifactStore.ArtifactStoreError.SnapshotRefused refused -> refusal(file,
+                                                                                     MavenResponse.badRequest(refused.message()));
+            default -> failureResponse("PUT", file.asString(), cause);
+        };
+    }
+
+    private static MavenResponse refusal(ArtifactFile file, MavenResponse response) {
+        log.info("PUT {} refused (answering {}): {}",
+                 file.asString(),
+                 response.statusCode(),
+                 new String(response.content(), StandardCharsets.UTF_8));
+
+        return response;
+    }
+
+    @Override
+    public Promise<MavenResponse> handleDelete(String path) {
+        log.debug("DELETE {}", path);
+        if (!path.startsWith(REPOSITORY_PREFIX)) {
+            return Promise.success(MavenResponse.badRequest("Invalid path"));
+        }
+
+        return parseVersionPath(path.substring(REPOSITORY_PREFIX.length())).fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
+                                                                                 this::archiveVersion);
+    }
+
+    /// FER: a refused or failed archive is reported, not dropped: it becomes a status the caller acts on;
+    /// nothing is retried or compensated here.
+    private Promise<MavenResponse> archiveVersion(Artifact artifact) {
+        return store.archive(artifact)
+                    .map(_ -> MavenResponse.json(renderArchiveJson(artifact)))
+                    .recover(cause -> archiveFailureResponse(artifact, cause));
+    }
+
+    /// Nothing stored is 404; a version younger than the retention period is 409.
+    private static MavenResponse archiveFailureResponse(Artifact artifact, Cause cause) {
+        return switch (cause) {
+            case ArtifactStore.ArtifactStoreError.VersionNotFound missing -> MavenResponse.notFound(missing.message());
+            case ArtifactStore.ArtifactStoreError.RetentionNotElapsed young -> MavenResponse.conflict(young.message());
+            default -> failureResponse("DELETE", artifact.asString(), cause);
+        };
+    }
+
+    /// `<groupPath>/<artifactId>/<version>`: the group is every segment before the last two, the same
+    /// reading as `GET`/`PUT` coordinates.
+    private Option<Artifact> parseVersionPath(String path) {
+        var parts = path.split("/");
+
+        if (parts.length < 3) return Option.none();
+
+        var groupPath = String.join(".",
+                                    List.of(parts).subList(0, parts.length - 2));
+
+        return Result.all(GroupId.groupId(groupPath),
+                          ArtifactId.artifactId(parts[parts.length - 2]),
+                          Version.version(parts[parts.length - 1]))
+                     .map(Artifact::new)
+                     .option();
+    }
+
+    private byte[] renderArchiveJson(Artifact artifact) {
+        var sb = new StringBuilder(96);
+
+        sb.append('{');
+        appendJsonField(sb, "status", "archived");
+        sb.append(',');
+        appendJsonField(sb, "coords", artifact.asString());
+        sb.append('}');
+
+        return sb.toString()
+                 .getBytes(StandardCharsets.UTF_8);
     }
 
     /// Hand-rolled JSON renderer: the artifact-repo module deliberately has no Jackson
@@ -390,6 +483,10 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                      .or(Option.none());
     }
 
+    /// The version segment must be written canonically (`Version#withQualifier`): the store keys a file by its exact
+    /// name, while a coordinate resolves its primary file as `<artifactId>-<canonical version>.jar`. A non-canonical
+    /// segment (`1.0.0.Final`, read as `1.0.0-Final`) would store a jar that its own coordinate never finds, so the
+    /// path does not parse and answers 400.
     private Option<ParsedPath> parseArtifactPath(String[] parts) {
         if (parts.length < 4) return Option.none();
 
@@ -404,88 +501,34 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             groupPath.append(parts[i]);
         }
 
-        var extension = extractExtension(fileName);
-        var classifier = extractClassifier(fileName, artifactIdStr, versionStr);
-
         return Result.all(GroupId.groupId(groupPath.toString()),
                           ArtifactId.artifactId(artifactIdStr),
                           Version.version(versionStr))
                      .map((groupId, artifactId, version) -> toArtifactPath(groupId,
                                                                            artifactId,
                                                                            version,
-                                                                           classifier,
-                                                                           extension))
+                                                                           versionStr,
+                                                                           fileName))
                      .or(Option.none());
     }
 
     private Option<ParsedPath> toArtifactPath(GroupId groupId,
                                               ArtifactId artifactId,
                                               Version version,
-                                              String classifier,
-                                              String extension) {
+                                              String versionStr,
+                                              String fileName) {
         var artifact = new Artifact(groupId, artifactId, version);
 
-        return Option.some(new ParsedPath.ArtifactPath(artifact, classifier, extension));
-    }
-
-    private String extractExtension(String fileName) {
-        var lastDot = fileName.lastIndexOf('.');
-
-        return lastDot > 0
-               ? fileName.substring(lastDot + 1)
-               : "";
-    }
-
-    /// The classifier is what follows the file's `<artifactId>-<version>` stem. Maven 3 deploys every
-    /// SNAPSHOT under a unique timestamped stem — `<artifactId>-<base>-<yyyyMMdd.HHmmss>-<n>` inside
-    /// the `<base>-SNAPSHOT` directory — so that stem is accepted too; before, a timestamped
-    /// `-sources.jar` read as unclassified and collided with the jar (#281 round 2).
-    private String extractClassifier(String fileName, String artifactId, String version) {
-        var stemEnd = stemLength(fileName, artifactId, version);
-
-        if (stemEnd < 0) return "";
-
-        var remainder = fileName.substring(stemEnd);
-
-        if (remainder.startsWith("-")) {
-            var dotIndex = remainder.indexOf('.');
-
-            return dotIndex > 1
-                   ? remainder.substring(1, dotIndex)
-                   : "";
-        }
-
-        return "";
+        return version.withQualifier()
+                      .equals(versionStr)
+               ? Option.some(new ParsedPath.ArtifactPath(artifact, fileName))
+               : Option.none();
     }
 
     /// `<latest>` is the highest version by [VersionOrder], `<release>` the highest non-SNAPSHOT
     /// one (falling back to `<latest>` when every version is a snapshot); `<versions>` lists them
     /// ascending. The versions list is stored in deploy order, so "last deployed" used to be
     /// reported as latest (#281).
-    private static final Pattern TIMESTAMP_SUFFIX = Pattern.compile("^-\\d{8}\\.\\d{6}-\\d+");
-    private static final String SNAPSHOT_SUFFIX = "-SNAPSHOT";
-
-    /// Length of the `<artifactId>-<version>` stem, or of the timestamped SNAPSHOT stem
-    /// `<artifactId>-<base>-<yyyyMMdd.HHmmss>-<n>` when the version is a snapshot; -1 if neither.
-    private static int stemLength(String fileName, String artifactId, String version) {
-        var plain = artifactId + "-" + version;
-
-        if (fileName.startsWith(plain)) return plain.length();
-
-        if (!version.toUpperCase(Locale.ROOT).endsWith(SNAPSHOT_SUFFIX)) return -1;
-
-        var base = artifactId + "-" + version.substring(0,
-                                                        version.length() - SNAPSHOT_SUFFIX.length());
-
-        if (!fileName.startsWith(base)) return -1;
-
-        var matcher = TIMESTAMP_SUFFIX.matcher(fileName.substring(base.length()));
-
-        return matcher.find()
-               ? base.length() + matcher.end()
-               : -1;
-    }
-
     private String generateMavenMetadata(GroupId groupId, ArtifactId artifactId, List<Version> unordered) {
         var versions = unordered.stream().sorted(VersionOrder.INSTANCE).toList();
         var latest = versions.getLast();
@@ -523,8 +566,9 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                 .replace("'", "&apos;");
     }
 
-    private String contentTypeFor(String extension) {
-        return switch (extension) {
+    /// Content type is the one thing read from the file name's tail; identity never is.
+    private String contentTypeFor(String fileName) {
+        return switch (fileName.substring(fileName.lastIndexOf('.') + 1)) {
             case "jar" -> "application/java-archive";
             case "pom" -> "application/xml";
             case "xml" -> "application/xml";

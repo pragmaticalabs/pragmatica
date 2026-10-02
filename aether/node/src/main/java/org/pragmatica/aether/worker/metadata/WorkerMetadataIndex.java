@@ -260,7 +260,7 @@ public final class WorkerMetadataIndex {
             case AetherKey.EntityKeyspaceRegistrationKey entry -> Set.of(node(entry.node()),
                                                                          "entity:" + entry.keyspace());
             case AetherKey.EntityCheckpointKey entry -> Set.of("entity:" + entry.keyspace());
-            case AetherKey.DeploymentOutcomeKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.ClusterConfigKey _, AetherKey.ClusterIncarnationKey _, AetherKey.StreamPartitionRecoveryKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.CommunityPlacementAvailabilityKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _ -> Set.of();
+            case AetherKey.DeploymentOutcomeKey _, AetherKey.ArtifactVersionsKey _, AetherKey.ArtifactContentKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.ClusterConfigKey _, AetherKey.ClusterIncarnationKey _, AetherKey.StreamPartitionRecoveryKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.CommunityPlacementAvailabilityKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _ -> Set.of();
             case AetherKey.LogLevelKey _, AetherKey.ObservabilityConfigKey _, AetherKey.AlertThresholdKey _, AetherKey.SchemaVersionKey _, AetherKey.SchemaMigrationLockKey _, AetherKey.GossipKeyRotationKey _, AetherKey.StreamConfigKey _, AetherKey.ApiKeyKey _, AetherKey.DhtPartitionOwnershipKey _, AetherKey.StreamPartitionOwnershipKey _, AetherKey.SpokesmanKey _, AetherKey.ClusterPhaseKey _, AetherKey.BackupRestoreKey _, AetherKey.StreamRegistryKey _ -> Set.of(GLOBAL);
         };
     }

@@ -578,7 +578,14 @@ public interface SystemTags {
         pin(table, 1743, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
-        // ---- 2114..16383 RESERVED ----
+        // built-in artifact store versions index in consensus (#1778)
+        pin(table, 2114, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactVersionsKey");
+        pin(table, 2115, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionsValue");
+        pin(table, 2116, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionEntry");
+        // first-committed content digest per artifact file (#1778)
+        pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
+        pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // ---- 2119..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

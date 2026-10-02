@@ -194,33 +194,6 @@ class ArtifactStoreTest {
         }
     }
 
-    @Nested
-    class DeleteTests {
-        @Test
-        void delete_deployedArtifact_removesMetadata() {
-            var artifact = Artifact.artifact("org.example:delete-test:1.0.0").unwrap();
-            var content = "content to deploy and delete".getBytes(StandardCharsets.UTF_8);
-
-            store.deploy(artifact, content)
-                 .await()
-                 .onFailureRun(Assertions::fail);
-
-            store.delete(artifact)
-                 .await()
-                 .onFailureRun(Assertions::fail);
-
-            store.exists(artifact)
-                 .await()
-                 .onFailureRun(Assertions::fail)
-                 .onSuccess(exists -> assertThat(exists).isFalse());
-
-            store.resolve(artifact)
-                 .await()
-                 .onSuccessRun(Assertions::fail)
-                 .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class));
-        }
-    }
-
     /// #281 — the metadata key is a STORAGE FORMAT: one key per file, the primary jar included, and
     /// the pre-#281 GAV-only key is never written or read. A renamed segment must redden this.
     @Nested
@@ -235,13 +208,12 @@ class ArtifactStoreTest {
             store.deploy(ArtifactFile.artifactFile(artifact, "sources", "jar"), content).await().onFailureRun(Assertions::fail);
 
             assertThat(dhtStorage.keySet()).containsExactlyInAnyOrder(
-                "artifacts/org.example/keyed/1.0.0-rc4/jar/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/pom/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/sources.jar/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/files",
-                "artifacts/org.example/keyed/versions");
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4.jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4.pom/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4-sources.jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/files");
             assertThat(new String(dhtStorage.get("artifacts/org.example/keyed/1.0.0-rc4/files"), StandardCharsets.UTF_8))
-                .isEqualTo("jar,pom,sources.jar");
+                .isEqualTo("keyed-1.0.0-rc4-sources.jar,keyed-1.0.0-rc4.jar,keyed-1.0.0-rc4.pom");
         }
 
         @Test
@@ -251,108 +223,13 @@ class ArtifactStoreTest {
 
             store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
             // Move the primary's metadata to the pre-#281 key: the store must not find it there.
-            var meta = dhtStorage.remove("artifacts/org.example/legacy/1.0.0/jar/meta");
+            var meta = dhtStorage.remove("artifacts/org.example/legacy/1.0.0/legacy-1.0.0.jar/meta");
             dhtStorage.put("artifacts/org.example/legacy/1.0.0/meta", meta);
 
             store.exists(artifact)
                  .await()
                  .onFailureRun(Assertions::fail)
                  .onSuccess(exists -> assertThat(exists).as("no legacy read fallback").isFalse());
-        }
-    }
-
-    /// #281 round 2 (CTO ruling): a version is listed while ANY of its files exists; deleting the
-    /// last remaining file — primary or not — delists it.
-    @Nested
-    class FileDeleteTests {
-        private final Artifact artifact = Artifact.artifact("org.example:files:1.0.0").unwrap();
-        private final ArtifactFile pom = ArtifactFile.artifactFile(artifact, "", "pom");
-        private final byte[] content = "file content".getBytes(StandardCharsets.UTF_8);
-
-        private void deploy(ArtifactFile file) {
-            store.deploy(file, content).await().onFailureRun(Assertions::fail);
-        }
-
-        private void delete(ArtifactFile file) {
-            store.delete(file).await().onFailureRun(Assertions::fail);
-        }
-
-        private boolean exists(ArtifactFile file) {
-            return store.exists(file).await().onFailureRun(Assertions::fail).unwrap();
-        }
-
-        private List<Version> versions() {
-            return store.versions(artifact.groupId(), artifact.artifactId()).await().onFailureRun(Assertions::fail).unwrap();
-        }
-
-        @Test
-        void deletePrimaryWhileSidecarRemains_keepsTheVersionListed() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(ArtifactFile.primary(artifact));
-
-            assertThat(exists(ArtifactFile.primary(artifact))).isFalse();
-            assertThat(exists(pom)).as("the pom is its own entry").isTrue();
-            assertThat(versions()).as("a file of the version still exists").containsExactly(artifact.version());
-        }
-
-        @Test
-        void deleteSidecarWhilePrimaryRemains_keepsTheVersionListed() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(pom);
-
-            assertThat(exists(pom)).isFalse();
-            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
-            assertThat(versions()).containsExactly(artifact.version());
-        }
-
-        @Test
-        void deleteLastRemainingFile_delistsTheVersion_whateverTheFile() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(ArtifactFile.primary(artifact));
-            delete(pom);
-
-            assertThat(versions()).as("no file of the version is left").isEmpty();
-            assertThat(dhtStorage.keySet()).as("the version's file list is gone with its last file")
-                                           .doesNotContain("artifacts/org.example/files/1.0.0/files");
-        }
-
-        @Test
-        void pomOnlyVersion_isDelistedWithItsPom() {
-            deploy(pom);
-
-            assertThat(versions()).containsExactly(artifact.version());
-
-            delete(pom);
-
-            assertThat(versions()).isEmpty();
-        }
-
-        @Test
-        void deleteOneVersion_leavesTheOthersListed() {
-            var other = Artifact.artifact("org.example:files:2.0.0").unwrap();
-
-            deploy(ArtifactFile.primary(artifact));
-            deploy(ArtifactFile.primary(other));
-
-            delete(ArtifactFile.primary(artifact));
-
-            assertThat(versions()).containsExactly(other.version());
-        }
-
-        @Test
-        void deleteOfANeverDeployedFile_isANoOp() {
-            deploy(ArtifactFile.primary(artifact));
-
-            delete(pom);
-
-            assertThat(versions()).containsExactly(artifact.version());
-            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
         }
     }
 
@@ -623,9 +500,9 @@ class ArtifactStoreTest {
                       .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class));
 
             // Option.empty() is a legitimate not-found: each get is a single quorum read,
-            // NEVER retried. With one resolve get against a missing key, exactly one get
-            // is issued (no retry burst).
-            assertThat(flakyGetDht.getsAfterArm()).isEqualTo(1);
+            // NEVER retried. A resolve of a missing key issues exactly two gets, the metadata read and
+            // the archive-marker read that runs beside it (#1778) — no retry burst.
+            assertThat(flakyGetDht.getsAfterArm()).isEqualTo(2);
         }
     }
 
@@ -638,16 +515,28 @@ class ArtifactStoreTest {
         private final AtomicInteger gets = new AtomicInteger();
         private final AtomicInteger refusalsLeft = new AtomicInteger();
 
+        /// Only the metadata read is counted: the archive-marker read (#1778) runs beside it and has its own retry.
+        private void countIfMetadata(byte[] key) {
+            if (new String(key, StandardCharsets.UTF_8).endsWith("/meta")) {
+                gets.incrementAndGet();
+            }
+        }
+
         /// Answers `NotCaughtUp` while `refusalsLeft` is positive, then delegates.
         private DHTClient catchingUp() {
+            return catchingUp(_ -> true);
+        }
+
+        /// As [#catchingUp()], refusing only the keys `refused` selects.
+        private DHTClient catchingUp(java.util.function.Predicate<String> refused) {
             var delegate = testDht();
 
             return new DHTClient() {
                 @Override
                 public Promise<Option<byte[]>> get(byte[] key) {
-                    gets.incrementAndGet();
+                    countIfMetadata(key);
 
-                    return refusalsLeft.getAndDecrement() > 0
+                    return refused.test(new String(key, StandardCharsets.UTF_8)) && refusalsLeft.getAndDecrement() > 0
                            ? DHTError.notCaughtUp(2, 0).promise()
                            : delegate.get(key);
                 }
@@ -700,7 +589,23 @@ class ArtifactStoreTest {
                                                                 .await()
                                                                 .onSuccessRun(Assertions::fail)
                                                                 .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
-            assertThat(gets.get()).as("the bounded retry re-issued the read").isEqualTo(3);
+            assertThat(gets.get()).as("the bounded retry re-issued the metadata read").isEqualTo(3);
+        }
+
+        @Test
+        void resolveWithMetadata_archiveMarkerNotCaughtUpThroughout_failsNotCaughtUp_neverServesTheBytes() {
+            // The metadata is readable; only the archive-marker read meets replicas still catching up. "Not known to
+            // be archived" is not "live": the resolve must fail with the refusal, never serve the bytes.
+            var artifact = Artifact.artifact("org.example:marker-catching-up:1.0.0").unwrap();
+            var store = storeOver(catchingUp(key -> key.endsWith("/archived")), "marker-catching-up-artifacts");
+
+            store.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
+            refusalsLeft.set(Integer.MAX_VALUE);
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
         }
     }
 
@@ -712,7 +617,7 @@ class ArtifactStoreTest {
         void resolveWithMetadata_absentKey_notFoundNamesTheDhtKeyHex() {
             var artifact = Artifact.artifact("org.example:absent:1.0.0").unwrap();
             var keyHex = java.util.HexFormat.of()
-                                            .formatHex("artifacts/org.example/absent/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+                                            .formatHex("artifacts/org.example/absent/1.0.0/absent-1.0.0.jar/meta".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await()
@@ -741,7 +646,7 @@ class ArtifactStoreTest {
         @Test
         void resolveWithMetadata_unparseableMetadata_isNotNotFound() {
             var artifact = Artifact.artifact("org.example:garbled:1.0.0").unwrap();
-            dhtStorage.put("artifacts/org.example/garbled/1.0.0/jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
+            dhtStorage.put("artifacts/org.example/garbled/1.0.0/garbled-1.0.0.jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await()
@@ -805,7 +710,7 @@ class ArtifactStoreTest {
             var store = new ArtifactStoreImpl(hangingDht, storage, new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())), FAST_BASE, FAST_PER_CHUNK, FAST_CEILING, lines::add);
             var artifact = Artifact.artifact("org.example:hang-meta:1.0.0").unwrap();
             var keyHex = java.util.HexFormat.of()
-                                            .formatHex("artifacts/org.example/hang-meta/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+                                            .formatHex("artifacts/org.example/hang-meta/1.0.0/hang-meta-1.0.0.jar/meta".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await(timeSpan(10).seconds())

@@ -74,6 +74,7 @@ public final class ConfigValidator {
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
         streamingErrors(config.streaming(), errors);
+        archiveRetentionErrors(config.slice(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
         }
@@ -114,6 +115,19 @@ public final class ConfigValidator {
             errors.add("Storage maintenance interval must be at least " + MIN_STORAGE_MAINTENANCE_INTERVAL.millis()
                       + "ms (a pass that iterates all lifecycles must not run back to back). Got: " + interval.millis()
                       + "ms");
+        }
+    }
+
+    /// `[slice] artifact_archive_retention` is the minimum age before a version may be archived (#1778). Zero or
+    /// negative would let a version be archived the moment it is stored, and an unparseable value is carried here
+    /// as a negative sentinel, so both are reported rather than defaulted.
+    private static void archiveRetentionErrors(SliceConfig slice, List<String> errors) {
+        if (slice.artifactArchiveRetention().millis() <= 0) {
+            errors.add("slice.artifact_archive_retention must be a positive duration such as \"7d\" or \"36h\"");
+        }
+
+        if (slice.artifactMaxVersions() < 1) {
+            errors.add("slice.artifact_max_versions must be at least 1. Got: " + slice.artifactMaxVersions());
         }
     }
 

@@ -270,7 +270,6 @@ dependency.1.external=false
 config.file=slices/OrderService.toml
 
 # Metadata
-generated.timestamp=2024-01-15T10:30:00Z
 processor.version=0.4.8
 ```
 

@@ -245,7 +245,7 @@ class MavenProtocolHandlerTest {
             }
 
             @Override
-            public Promise<Unit> delete(ArtifactFile file) {
+            public Promise<Unit> archive(Artifact artifact) {
                 return Promise.success(Unit.unit());
             }
 
@@ -260,7 +260,7 @@ class MavenProtocolHandlerTest {
         return new ArtifactStore() {
             @Override
             public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
-                return Promise.success(new DeployResult(file.artifact(), content.length, "fresh-md5", "fresh-sha1"));
+                return Promise.success(new DeployResult(file.artifact(), 42L, "existing-md5", "existing-sha1", true));
             }
 
             @Override
@@ -280,7 +280,7 @@ class MavenProtocolHandlerTest {
 
             @Override
             public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
-                var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", 0L, java.util.List.of("blk"));
+                var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", "existing-sha256", 0L, java.util.List.of("blk"));
                 return Promise.success(Option.some(meta));
             }
 
@@ -292,7 +292,7 @@ class MavenProtocolHandlerTest {
             }
 
             @Override
-            public Promise<Unit> delete(ArtifactFile file) {
+            public Promise<Unit> archive(Artifact artifact) {
                 return Promise.success(Unit.unit());
             }
 
