@@ -62,8 +62,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
     }
 
-    /// Response to a put request.
-    record PutResponse(String requestId, NodeId sender, boolean success, boolean superseded) implements DHTMessage {}
+    /// Response to a put request. `fenced` (#1818, the owner's fence ruling) marks a refusal by the owner-epoch
+    /// fence: the writer's epoch is older than this replica's high-water. The writer's put may still have been
+    /// applied elsewhere, so a quorum lost to fenced refusals is indeterminate, not a definite failure.
+    record PutResponse(String requestId, NodeId sender, boolean success, boolean superseded, boolean fenced) implements DHTMessage {}
 
     /// Request to remove a value.
     record RemoveRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {

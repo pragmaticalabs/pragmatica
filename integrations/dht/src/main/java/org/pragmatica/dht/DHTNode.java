@@ -16,6 +16,7 @@
 package org.pragmatica.dht;
 
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 
@@ -43,6 +44,7 @@ public final class DHTNode {
     private final ConsistentHashRing<NodeId> ring;
     private final DHTConfig config;
     private final HlcClock hlcClock;
+    private final AtomicLong belowHighWaterCopies = new AtomicLong();
 
     private DHTNode(NodeId nodeId,
                     StorageEngine storage,
@@ -210,11 +212,13 @@ public final class DHTNode {
                .onSuccess(written -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                                                        nodeId,
                                                                                        true,
-                                                                                       !written)))
-               .onFailure(_ -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
-                                                                                 nodeId,
-                                                                                 false,
-                                                                                 false)));
+                                                                                       !written,
+                                                                                       false)))
+               .onFailure(cause -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                                                     nodeId,
+                                                                                     false,
+                                                                                     false,
+                                                                                     cause instanceof DHTError.StaleEpochWrite)));
     }
 
     /// Handle a remove request (for message routing integration).
@@ -323,12 +327,36 @@ public final class DHTNode {
     }
 
     private Promise<Boolean> applyReplica(DHTMessage.KeyValue kv) {
+        var belowHighWater = storage.belowHighWater(kv.key(), kv.epochIncarnation(), kv.epochTerm(), kv.epochCounter());
+
         return storage.putReplica(kv.key(),
                                   kv.value(),
                                   kv.version(),
                                   kv.epochIncarnation(),
                                   kv.epochTerm(),
-                                  kv.epochCounter());
+                                  kv.epochCounter())
+                      .onSuccess(written -> noteBelowHighWater(kv, written && belowHighWater));
+    }
+
+    /// Copies applied below this node's owner-epoch high-water since start (#1818, the owner's fence ruling):
+    /// each is a write the fence would have refused as fresh. Most are pre-rewrite data being re-replicated,
+    /// which is what the bypass exists for; a deposed owner's write spreading would also land here.
+    public long belowHighWaterCopyCount() {
+        return belowHighWaterCopies.get();
+    }
+
+    @Contract
+    private void noteBelowHighWater(DHTMessage.KeyValue kv, boolean appliedBelowHighWater) {
+        if (!appliedBelowHighWater) {
+            return;
+        }
+
+        belowHighWaterCopies.incrementAndGet();
+        log.info("Applied a copy below this node's owner-epoch high-water: partition {}, epoch {}:{}:{}",
+                 ring.partitionFor(kv.key()).value(),
+                 kv.epochIncarnation(),
+                 kv.epochTerm(),
+                 kv.epochCounter());
     }
 
     /// Compute a CRC32 digest over sorted key-value entries.

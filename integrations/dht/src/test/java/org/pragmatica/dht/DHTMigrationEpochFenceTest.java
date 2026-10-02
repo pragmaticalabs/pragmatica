@@ -83,6 +83,26 @@ class DHTMigrationEpochFenceTest {
         assertThat(cluster.holds(joiner, key)).as("the joiner's pull stored the holder's copy").isTrue();
     }
 
+    /// G3d: a copy applied below the receiver's high-water is counted (and logged at INFO with its partition).
+    /// A copy at or above it is not.
+    @Test
+    void copiesAppliedBelowTheHighWater_areCounted_andOthersAreNot() {
+        var cluster = new FencedCluster(List.of("holder", "joiner"));
+        var joiner = cluster.member("joiner");
+
+        cluster.writeAtPreRewriteEpoch(cluster.member("holder"), key("below"));
+        cluster.advanceEveryHighWaterPastTheKey();
+        joiner.antiEntropy().synchronizeNow();
+
+        assertThat(joiner.node().belowHighWaterCopyCount()).as("the pre-rewrite copy").isEqualTo(1);
+
+        cluster.member("holder").node().putLocalVersioned(key("current"), VALUE, 200L, 0L, POST_REWRITE_TERM, POST_REWRITE_COUNTER).await();
+        joiner.antiEntropy().synchronizeNow();
+
+        assertThat(cluster.holds(joiner, key("current"))).as("control: the current copy arrived").isTrue();
+        assertThat(joiner.node().belowHighWaterCopyCount()).as("a current-epoch copy is not counted").isEqualTo(1);
+    }
+
     /// The control for the pull test: the same exchange with no ownership rewrite. It passes with or
     /// without the fix, so the rewrite is the only variable the pull test's red depends on.
     @Test

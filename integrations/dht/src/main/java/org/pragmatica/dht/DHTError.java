@@ -69,6 +69,36 @@ public sealed interface DHTError extends Cause {
         }
     }
 
+    /// One replica's fence refused one write slot: the writer's owner epoch is older than that replica's
+    /// high-water (#1818, the owner's fence ruling).
+    static DHTError replicaFenced(NodeId replica) {
+        return new ReplicaFenced(replica);
+    }
+
+    record ReplicaFenced(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " refused the write: the writer's owner epoch is stale";
+        }
+    }
+
+    /// A write that did not reach its quorum because owner-epoch fences refused it (#1818, the owner's fence
+    /// ruling — the Dynamo stance). It is NOT a definite failure: replicas whose high-water lagged may have
+    /// applied it, and a copy of it can still take effect on keys the new owner never rewrites (until #1777
+    /// track 3). The coordinator rolls back its own accept; callers must treat the outcome as unknown and
+    /// retry — a retry is stamped with the owner epoch as it stands by then.
+    static DHTError writeIndeterminate(int required, int achieved, int fenced) {
+        return new WriteIndeterminate(required, achieved, fenced);
+    }
+
+    record WriteIndeterminate(int required, int achieved, int fenced) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Write outcome indeterminate: required " + required + " acks, got " + achieved + ", " + fenced
+                   + " refused by owner-epoch fences; it may have been applied";
+        }
+    }
+
     record QuorumNotReached(int required, int achieved) implements DHTError, Cause.Transient {
         @Override
         public String message() {

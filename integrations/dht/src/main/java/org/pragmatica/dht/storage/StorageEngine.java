@@ -108,6 +108,27 @@ public interface StorageEngine {
         return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter);
     }
 
+    /// Remove `key` only while its stored entry is exactly the given version and owner epoch — a writer rolling
+    /// back its OWN accept after the put lost its quorum to owner-epoch fences (#1818, the owner's fence
+    /// ruling). An entry since superseded, or never stored, is left alone. An engine without the capability
+    /// removes nothing, which leaves the accept in place (the residual #1777 track 3 closes).
+    ///
+    /// @return `true` if the exact entry was removed.
+    default Promise<Boolean> removeIfExactly(byte[] key,
+                                             long version,
+                                             long epochIncarnation,
+                                             long epochTerm,
+                                             long epochCounter) {
+        return Promise.success(false);
+    }
+
+    /// Whether an entry stamped with this owner epoch is older than this store's high-water — a copy applied
+    /// with it is one the fence would have refused as a fresh write (#1818, visibility). An engine without a
+    /// fence has no high-water: `false`.
+    default boolean belowHighWater(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        return false;
+    }
+
     /// Get approximate number of entries.
     long size();
     /// Clear all entries.

@@ -25,6 +25,7 @@ import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.Partition;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -94,6 +95,48 @@ public final class MemoryStorageEngine implements StorageEngine {
                                        long epochTerm,
                                        long epochCounter) {
         return Promise.success(storeVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter, false));
+    }
+
+    @Override
+    public Promise<Boolean> removeIfExactly(byte[] key,
+                                            long version,
+                                            long epochIncarnation,
+                                            long epochTerm,
+                                            long epochCounter) {
+        var removed = new AtomicBoolean(false);
+
+        data.computeIfPresent(new ByteArrayKey(key),
+                              (_, existing) -> keepUnlessExactly(existing,
+                                                                 version,
+                                                                 epochIncarnation,
+                                                                 epochTerm,
+                                                                 epochCounter,
+                                                                 removed));
+
+        return Promise.success(removed.get());
+    }
+
+    @Override
+    public boolean belowHighWater(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        return epochGate.isStale(key, epochIncarnation, epochTerm, epochCounter);
+    }
+
+    /// The `computeIfPresent` remapping for [#removeIfExactly]: `null` removes the entry, per the JDK contract.
+    @NullReturn
+    private static VersionedEntry keepUnlessExactly(VersionedEntry existing,
+                                                    long version,
+                                                    long epochIncarnation,
+                                                    long epochTerm,
+                                                    long epochCounter,
+                                                    AtomicBoolean removed) {
+        if (existing.version() != version || existing.epochIncarnation() != epochIncarnation
+            || existing.epochTerm() != epochTerm || existing.epochCounter() != epochCounter) {
+            return existing;
+        }
+
+        removed.set(true);
+
+        return null;
     }
 
     private boolean storeVersioned(byte[] key,

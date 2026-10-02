@@ -738,8 +738,11 @@ class ArtifactStoreImpl implements ArtifactStore {
         SharedScheduler.schedule(() -> dhtPutWithRetry(key, value, nextAttempt).onResult(result::resolve), backoff);
     }
 
+    /// `WriteIndeterminate` (#1818, the owner's fence ruling) is a put that lost its quorum to owner-epoch fences
+    /// and may have been applied: retried like an unreachable quorum, stamped with the owner epoch current by then.
     private static boolean isTransientDhtFailure(Cause cause) {
-        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached;
+        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached
+               || cause instanceof DHTError.WriteIndeterminate;
     }
 
     /// Bounded retry for the DHT READ/resolve path. Mirrors `dhtPutWithRetry` but guards

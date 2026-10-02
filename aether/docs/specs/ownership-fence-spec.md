@@ -240,6 +240,31 @@ notification on reject).
 - **Liveness.** A genuinely-current owner is never spuriously fenced (its epoch equals the high-water).
   Bounded unavailability is the handover interval (seconds), as today.
 
+### 7.1 DHT copies and indeterminate writes (#1818, owner ruling 2026-10-02 — the Dynamo stance)
+
+What the DHT data plane guarantees per operation, and the mechanism behind each guarantee:
+
+- **Fresh write (`DHTClient.put`), current owner.** Applied once a write quorum of replicas accepts it.
+  *Mechanism:* each replica's `putVersioned` checks the presented epoch against its own high-water.
+- **Fresh write, deposed owner (presented epoch below some replicas' high-water).** Refused by every
+  replica that has seen the new epoch. If too few accept, the write is **INDETERMINATE**
+  (`DHTError.WriteIndeterminate`, transient), never a definite failure. It *may have been applied*: on the
+  coordinator, and on any other replica whose high-water lagged. The coordinator compare-and-deletes its
+  OWN accept (`StorageEngine.removeIfExactly`), only while the stored entry is still exactly the one it
+  wrote. Every caller retries, and the retry is stamped with the epoch current by then. The callers are
+  `ArtifactStore`'s metadata and chunk writes (through `DhtStorageTier`), the encryption-marker write, the
+  DHT cache, and the idempotency store.
+- **Replica copy (anti-entropy pull, departure push, survivor rebalance).** Applied **without** the
+  high-water check, keeping per-key epoch and HLC ordering. A copy never overwrites a stored entry of a
+  newer epoch or version, and never advances the high-water. Without this, every key written before an
+  ownership rewrite could never be re-replicated (#1818, run 7). Each copy applied below the receiver's
+  high-water is counted (`DHTNode.belowHighWaterCopyCount`) and logged at INFO with its partition.
+
+**What is NOT guaranteed (residual, until #1777 track 3's per-key versions).** A deposed owner's write that
+another *lagging* replica also accepted is not rolled back. Anti-entropy copies bypass the high-water, so it
+can spread and take effect, but only on keys the new owner never rewrites. A key the new owner writes
+again is safe: per-key epoch ordering keeps the newer entry everywhere.
+
 ---
 
 ## 8. Error Model
@@ -247,6 +272,7 @@ notification on reject).
 | Surface | `Cause` | Caller action |
 |---|---|---|
 | Fenced KV put | `StaleEpoch(key, presented, current)` | re-resolve owner; retry against current owner/epoch |
+| DHT put losing its quorum to fences | `DHTError.WriteIndeterminate(required, achieved, fenced)` | treat as "may have been applied"; retry (§7.1) |
 | Stream append | `StaleEpochAppend(stream, partition, presented, current)` | same |
 | Owner read (deposed) | `NotCurrentOwner(redirectTo)` | route to the resolved current owner |
 

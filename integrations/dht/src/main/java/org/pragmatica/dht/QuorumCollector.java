@@ -38,6 +38,8 @@ public final class QuorumCollector<T> {
     private final Promise<T> promise;
     private final AtomicInteger successCount = new AtomicInteger(0);
     private final AtomicInteger failureCount = new AtomicInteger(0);
+    /// Slots refused by an owner-epoch fence (#1818, the owner's fence ruling).
+    private final AtomicInteger fenced = new AtomicInteger(0);
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
     /// Grace mode (see [#graceCollector]): a decisive value completes the read at once; R non-decisive
@@ -178,15 +180,27 @@ public final class QuorumCollector<T> {
     /// immediately rather than letting the promise stall to the per-op timeout.
     @Contract
     public void onFailure(Cause cause) {
+        if (cause instanceof DHTError.StaleEpochWrite || cause instanceof DHTError.ReplicaFenced) {
+            fenced.incrementAndGet();
+        }
+
         var failures = failureCount.incrementAndGet();
 
         if (total - failures < quorum) {
-            promise.fail(DHTError.quorumNotReached(quorum, successCount.get()));
+            promise.fail(quorumFailure());
         } else if (graceMode && allAnswered(successCount.get(), failures)) {
             promise.succeed(bestValue.get());
         }
 
         settleIfAllReplied(successCount.get(), failures);
+    }
+
+    /// A quorum lost to owner-epoch fences is indeterminate, not a definite failure (#1818, the owner's fence
+    /// ruling): a replica whose high-water lagged may have applied the write.
+    private Cause quorumFailure() {
+        return fenced.get() > 0
+               ? DHTError.writeIndeterminate(quorum, successCount.get(), fenced.get())
+               : DHTError.quorumNotReached(quorum, successCount.get());
     }
 
     private void settleIfAllReplied(int successes, int failures) {
