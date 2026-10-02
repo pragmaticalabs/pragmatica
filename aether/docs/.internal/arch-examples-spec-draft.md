@@ -139,20 +139,23 @@ instances of the same subscriber group split the load.
 
 ### 3.4 Saga — **effort L** · **gated on #345 facade (spec §7, §13 Ph4)** · example-first
 
-**Shape.** Targets the specced-but-unimplemented `Saga<C>` facade (`durable-entity-primitive-spec.md`
-§7.7). Order saga with three steps + compensations (spec §7.10): `reserve-inventory` (IDEMPOTENT),
-`charge-payment` (**RUN_ONCE** — a second charge moves real money), `confirm-order` (IDEMPOTENT).
+**Shape.** Targets the specced-but-unimplemented `Saga<S, D>` facade (`durable-entity-primitive-spec.md`
+§7.7). Order saga with three steps + compensations (spec §7.10): `reserve-inventory`,
+`charge-payment` (a second charge moves real money; recovery capability per spec §7.4), `confirm-order`.
+Spec §7.10 is now the R1–R5 example (accumulating state, `StepContext`, an approval wait); align this
+example to it when the facade lands.
 HTTP `POST /orders/{id}/place` → `saga.run(id, ctx)`.
 
 **Acceptance assertions (these define the facade's done-definition, spec §13 acceptance line).**
 - Happy path → `SagaResult.Succeeded`, all three `StepRecord`s present.
 - Forward failure at step 2 → compensations run in reverse; terminal `SagaResult.Compensated`.
-- **RUN_ONCE crash windows (spec §7.4.1, §7.11 A1–A2; corrected 2026-10-02, #1827):** kill the owner
-  (A1) after the `StepAttempt(id,1)` marker commits but before the charge reaches the payment slice, and
-  (A2) after the charge succeeds but before its `ChargeId` commits. Assert in both: no re-charge by the
-  runtime, and **never** a step-2 completion recorded from the marker alone. The earlier expectation here
-  ("finds the marker … proceeds to step 3") is withdrawn: in A1 it confirms an unpaid order. The expected
-  recovery outcome is **PENDING RULING 1** (spec §14 S6); the dedup key's delivery is **PENDING RULING 2**.
+- **Crash windows (spec §7.4, §7.11 A1–A2; corrected 2026-10-02, #1827):** kill the owner (A1) after
+  the step-2 attempt marker commits but before the charge reaches the payment slice, and (A2) after the
+  charge succeeds but before its `ChargeId` commits. Assert per the declared recovery capability (spec
+  §7.4): one charge downstream, the original `ChargeId` recovered (`Replayable`/`Lookup`), or the saga
+  parked in `NeedsReconciliation` (`Neither`) — and **never** a step completion recorded from the marker
+  alone. The earlier expectation here ("finds the marker … proceeds to step 3") is withdrawn: in A1 it
+  confirmed an unpaid order. The payment slice receives `StepContext.operationId` as its dedup key.
 - Compensation failure → terminal `PartiallyCompensated`, queryable via `status(id)` (spec §7.5).
 
 **Surfaces:** entity fence/single-writer (primary), HTTP, crash recovery (primary), `@Sql`(○ ledger).
@@ -245,8 +248,9 @@ HotStream (§3.7) and CQRS (§3.1) ship k6 first; others get k6 as a follow-on. 
 Assertions must name the **per-operation** guarantee, not a system label:
 - Competing consumers = **at-least-once + dedup on a stable key**, never "exactly-once" unqualified
   (§3.3, §3.4 downstream dedup on `(sagaId, stepIndex)`, spec §7.4/§10).
-- Saga `RUN_ONCE` = **at-most-once invocation** of `forward`; end-to-end once-only requires the
-  downstream to dedup (spec §7.4). Do not assert "exactly-once".
+- Saga steps: the runtime re-invokes, queries or parks per the declared capability (spec §7.4); a
+  single effect downstream is earned by the downstream deduping on `operationId`. Do not assert
+  "exactly-once".
 - Entity/workflow reads default to **BOUNDED_STALE**; only assert linearizability where the example
   explicitly requests `LINEARIZABLE` (spec §8.1).
 - Saga/Workflow crash recovery on the #345 fence alone = **HA/handover-durable**, *not*
