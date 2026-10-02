@@ -42,5 +42,18 @@
   Everything else is dropped with a WARN and counted.
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTMigrationResponseAuthenticityTest.java`,
   `DhtDeparturePushTest.departingSenders_*`]
-  [unverified: a node that self-drains on quorum loss is in neither set, so its pushes are refused. It cannot reach a
-  quorum to push to anyway.]
+  A departure push is also accepted from a current replica, in the receiver's ring, of every entry's partition. A
+  node that drains itself on quorum loss is in neither set, and it halts with its in-memory store, so without this
+  rule a last copy it held would be lost.
+- **A deposed owner's DHT write could survive its own refusal (owner ruling, the Dynamo stance).**
+  - A put whose quorum was lost to owner-epoch fences now fails `DHTError.WriteIndeterminate`: transient, and "may
+    have been applied". `PutResponse` gains `fenced`.
+  - The coordinator compare-and-deletes its own accept (`StorageEngine.removeIfExactly`), so anti-entropy cannot
+    spread it.
+  - Each copy applied below the receiver's high-water is counted (`DHTNode.belowHighWaterCopyCount`) and logged at
+    INFO with its partition.
+  - ArtifactStore retries `WriteIndeterminate`. The guarantee is documented in `ownership-fence-spec.md` §7.1.
+  [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTDeposedWriterRollbackTest.java`,
+  `ArtifactStoreTest$WriteIndeterminateTests`]
+  [unverified: another lagging replica that also accepted the deposed write can still spread it, on keys the new
+  owner never rewrites. This closes with #1777 track 3.]
