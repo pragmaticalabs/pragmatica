@@ -24,10 +24,14 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 
 /// #926 round 2 — pins the COMPOSITION on the confirmed-departure edge.
@@ -159,5 +163,25 @@ class NodeDepartureNotifierTest {
         assertThat(f.events()).hasSize(1);
         assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
         assertThat(f.alerts().getActiveNodeHealthAlerts().getFirst().severity()).isEqualTo(AlertEvent.Severity.CRITICAL);
+    }
+
+    /// #1835: a death with no reachability evidence is "never joined", not "failed". The operator still sees
+    /// it (WARNING operator-warning event) but there is NO `NodeFailed` event and NO CRITICAL node-health alert.
+    /// The fixture's aggregator and alert manager are the real ones, so routing it through
+    /// [`NodeDepartureNotifier#onConfirmedDeparture`] instead turns this red.
+    @Test
+    void neverJoined_raisesWarningOnly_noNodeFailedNoCriticalAlert() {
+        var f = Fixture.create();
+        f.notifier().onNeverJoined(DEAD);
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(f.events()).hasSize(1));
+        var event = f.events().getFirst();
+        assertThat(event).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(event.severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(event.details()).containsEntry("code", OperatorWarningCode.NODE_NEVER_JOINED.code());
+        assertThat(event.details()).containsEntry("subject", DEAD.id());
+        assertThat(f.events()).noneMatch(e -> e instanceof ClusterEvent.NodeFailed);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
     }
 }

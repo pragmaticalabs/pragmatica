@@ -6,6 +6,11 @@ package org.pragmatica.aether.api;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// The two things a confirmed member death must reach, bound together so neither can be dropped
@@ -22,7 +27,14 @@ import org.pragmatica.lang.Contract;
 /// surfaces respond, so deleting either call turns it red. That does not pin the FSM-to-lambda wire —
 /// only a booted node does that — but it removes the gap the probe found, which is that the two calls
 /// were individually deletable with no signal at all.
+///
+/// #1835: this pair is reserved for a subject whose identity was established — the FSM's `everReachable`
+/// latch, read at the DEAD edge. A death with no such evidence goes to [`#onNeverJoined`] instead, a
+/// non-CRITICAL operator warning, so a configured core that never came up stays visible without being
+/// reported as a failure.
 public record NodeDepartureNotifier(ClusterEventAggregator aggregator, AlertManager alertManager, NodeId self) {
+    private static final Logger LOG = LoggerFactory.getLogger(NodeDepartureNotifier.class);
+
     public static NodeDepartureNotifier nodeDepartureNotifier(ClusterEventAggregator aggregator,
                                                               AlertManager alertManager,
                                                               NodeId self) {
@@ -41,5 +53,20 @@ public record NodeDepartureNotifier(ClusterEventAggregator aggregator, AlertMana
     public void onConfirmedDeparture(NodeId departed) {
         aggregator.onConfirmedDeparture(departed);
         alertManager.onNodeFailed(departed, self);
+    }
+
+    /// A configured member died on this node's view without ever being observed reachable (#1835). Raises
+    /// the WARNING-level `node-never-joined` operator warning only: no `NODE_FAILED` event and no node-health
+    /// alert, because nothing established that the subject was ever up. Like the pair above it is per-observer
+    /// and ungated by leadership.
+    @Contract
+    public void onNeverJoined(NodeId departed) {
+        OperatorWarnings.raise(LOG,
+                               aggregator::onOperatorWarning,
+                               OperatorWarningCode.NODE_NEVER_JOINED,
+                               departed.id(),
+                               "Node {} died without this node (observer {}) ever observing it reachable — it never joined",
+                               departed.id(),
+                               self.id());
     }
 }
