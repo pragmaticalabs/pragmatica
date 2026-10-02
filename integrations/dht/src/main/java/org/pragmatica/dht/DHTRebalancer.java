@@ -253,7 +253,8 @@ public final class DHTRebalancer {
                                                           node.nodeId(),
                                                           batch.getValue(),
                                                           true,
-                                                          List.copyOf(leaving)));
+                                                          List.copyOf(leaving),
+                                                          List.copyOf(node.ring().nodes())));
 
         return ackPromise;
     }

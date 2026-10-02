@@ -71,7 +71,8 @@ class DHTMessageEpochCodecTest {
         var codec = codec();
         var leaving = List.of(new NodeId("pusher"), new NodeId("co-drainer"));
         var entry = new DHTMessage.KeyValue(bytes("mk"), bytes("mv"), 99L, 0L, 12L, 5L);
-        var original = new DHTMessage.MigrationDataResponse("push-1", new NodeId("pusher"), List.of(entry), true, leaving);
+        var view = List.of(new NodeId("pusher"), new NodeId("co-drainer"), new NodeId("newcomer"));
+        var original = new DHTMessage.MigrationDataResponse("push-1", new NodeId("pusher"), List.of(entry), true, leaving, view);
         var buf = Unpooled.buffer();
 
         try {
@@ -79,6 +80,7 @@ class DHTMessageEpochCodecTest {
             DHTMessage.MigrationDataResponse decoded = codec.read(buf);
 
             assertThat(decoded.leaving()).containsExactlyElementsOf(leaving);
+            assertThat(decoded.view()).containsExactlyElementsOf(view);
             assertThat(decoded.ackRequested()).isTrue();
             assertThat(decoded.entries()).hasSize(1);
         } finally {

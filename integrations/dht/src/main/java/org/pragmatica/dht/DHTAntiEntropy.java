@@ -384,25 +384,35 @@ public final class DHTAntiEntropy {
         applyMigrationEntries(withEntries(response, placed)).onSuccess(_ -> acknowledge(response, false));
     }
 
-    /// The post-departure view excludes the pusher, the pusher's carried leaving set, and this node's own
-    /// departing set (#1818 L1). Why the union is sound: the pusher chose this node as within RF of the ring
-    /// without ITS set. Removing nodes from a ring only moves the remaining nodes EARLIER in each walk, so
-    /// excluding a superset of that set can only move this node earlier, and it stays within RF. Its own
-    /// knowledge can therefore never turn a legitimate newcomer into a stray, which is what lost copies when
-    /// this node had not yet heard of a co-drainer the pusher excluded (v1820 r4: nothing retries the nack).
-    /// The argument assumes both rings hold the same members; a joiner known here but not to the pusher can
-    /// still push this node past RF; that case is outside this argument and is refused as before.
+    /// The post-departure view keeps only the nodes the pusher's ring held (its carried `view`) and excludes
+    /// the pusher, the pusher's carried leaving set, and this node's own departing set (#1818 L1, N1).
+    /// Why that is sound: the pusher chose this node as within RF of ITS ring without ITS leaving set. This
+    /// node's view is a subset of that ring: it drops every joiner the pusher had not heard of, and it
+    /// excludes a superset of the leaving set. Removing nodes from a ring only moves the remaining nodes
+    /// EARLIER in each walk, so this node can only move earlier, and it stays within RF. Its own knowledge can
+    /// therefore never turn a legitimate newcomer into a stray. Two shapes did exactly that before: a co-drainer
+    /// this node had not yet heard of (v1820 r4), and a joiner known here but not to the pusher, i.e. joins
+    /// concurrent with drains as in a fleet replacement (v1820 r5). Nothing retries the nack, so each lost the copy.
+    /// A member the pusher knows and this node does not is simply absent here, which is another removal.
     private boolean replicaHereAroundDeparture(DHTMessage.MigrationDataResponse response, DHTMessage.KeyValue entry) {
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
         var pusherLeaving = Set.copyOf(response.leaving());
+        var pusherView = Set.copyOf(response.view());
 
         return replicaOfEntry(node.nodeId(), entry) || node.ring()
                                                            .nodesFor(entry.key(),
                                                                      replicationFactor,
-                                                                     candidate -> !leftInDepartureView(candidate,
-                                                                                                       response.sender(),
-                                                                                                       pusherLeaving))
+                                                                     candidate -> inPusherView(candidate, pusherView) && !leftInDepartureView(candidate,
+                                                                                                                                              response.sender(),
+                                                                                                                                              pusherLeaving))
                                                            .contains(node.nodeId());
+    }
+
+    /// A node the pusher's ring did not hold — a joiner it had not yet heard of — is outside the view it chose
+    /// this receiver in, and is dropped from it the same way a leaving node is (v1820 r5): removing nodes only
+    /// moves this receiver earlier, so the pusher's choice stays within RF. An empty view is the receiver's ring.
+    private static boolean inPusherView(NodeId candidate, Set<NodeId> pusherView) {
+        return pusherView.isEmpty() || pusherView.contains(candidate);
     }
 
     private boolean leftInDepartureView(NodeId candidate, NodeId pusher, Set<NodeId> pusherLeaving) {
@@ -415,7 +425,8 @@ public final class DHTAntiEntropy {
                                                     response.sender(),
                                                     entries,
                                                     response.ackRequested(),
-                                                    response.leaving());
+                                                    response.leaving(),
+                                                    response.view());
     }
 
     private void acceptRebalancePush(DHTMessage.MigrationDataResponse response) {

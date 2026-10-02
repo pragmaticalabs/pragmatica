@@ -109,12 +109,24 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// `leaving` is the set the departure push excluded when it chose this receiver: the pusher and every
     /// co-departing node it knew of (issue #1818 L1). The receiver checks placement against the ring without
     /// that set, so a co-drainer it has not yet heard of cannot make a legitimate newcomer look like a stray.
-    /// Empty on every other sender.
+    /// Empty on every other sender. `view` is the pusher's ring membership when it chose the receiver
+    /// (v1820 r5): a joiner the receiver knows but the pusher does not would otherwise push the receiver past
+    /// RF in its own view and make it refuse the copy. Empty means "the receiver's own ring".
     record MigrationDataResponse(String requestId,
                                  NodeId sender,
                                  List<KeyValue> entries,
                                  boolean ackRequested,
-                                 List<NodeId> leaving) implements DHTMessage {}
+                                 List<NodeId> leaving,
+                                 List<NodeId> view) implements DHTMessage {
+        /// A response carrying no departure view: every sender but the departure push.
+        public MigrationDataResponse(String requestId,
+                                     NodeId sender,
+                                     List<KeyValue> entries,
+                                     boolean ackRequested,
+                                     List<NodeId> leaving) {
+            this(requestId, sender, entries, ackRequested, leaving, List.of());
+        }
+    }
 
     /// Acknowledgement of a [MigrationDataResponse] carrying `ackRequested=true` (issue #427, D2).
     /// `requestId` echoes the response's correlation id so the departing sender resolves the matching
