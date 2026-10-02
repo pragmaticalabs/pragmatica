@@ -107,13 +107,24 @@ class ClusterEventOwnerFailoverTest {
         assertThat(landed.values()).as("no tag landed twice as read").allMatch(count -> count == 1L);
         // An event the owner ACKED and then lost before replicating it (EVENTUAL, min-sync 1) counts as delivered
         // but is not in the log. That is the stream's acknowledgement contract, not a redelivery loss, so the log
-        // may hold fewer than were delivered, never more.
-        assertThat((long) landed.size()).as("the log holds no more than was delivered").isLessThanOrEqualTo(delivered);
+        // may hold fewer than were delivered. A held event is one whose publish outcome is UNKNOWN: it may already
+        // have landed and not yet been settled, so the log may also hold up to `delivered + held`, never more
+        // (#1824: CI reds reconciled exactly to delivered + held = accepted, with every tag landed once).
+        assertThat((long) landed.size()).as("the log holds no more than delivered + held").isLessThanOrEqualTo(delivered + held);
         // #1653, the retry drivers. Since #1555 re-places the dead owner, a retry count above zero pins "held events
         // are re-sent, by AetherNode's 1 s tick OR the new owner's ownership-put drain", not the tick alone. The tick
         // and the drain are pinned separately in the assembly by ClusterEventRedeliveryWiringTest, and behaviourally
         // by the Ember mutation arms (NO-TICK, NO-DRAIN-ROUTE) on a head without #1555.
         assertThat(sum(producers, "retried")).as("held events were re-sent, by the 1 s tick or the new owner's drain").isPositive();
+        // The relaxed bound above must not hide a redelivery stall: held events are re-sent and SETTLE, and then every
+        // tag sent is in the log exactly once (#1824).
+        await().atMost(LANDING)
+               .pollInterval(Duration.ofSeconds(2))
+               .until(() -> sum(producers, "held") == 0L);
+        var settled = landedTags();
+
+        assertThat(settled.values()).as("after the held events settled, no tag landed twice as read").allMatch(count -> count == 1L);
+        assertThat(settled.keySet()).as("after the held events settled, every sent tag landed").containsAll(phase.sent());
     }
 
     /// The full #1640 property, now that #1555 re-places a dead owner: events raised across the owner's death and then
