@@ -217,11 +217,13 @@ public final class MembershipFsm {
     private volatile Consumer<NodeId> onNeverJoinedDeath = ignored -> {};
 
     /// Reachable-death listener (#1835) invoked ONCE per fresh edge into DEAD for a member whose
-    /// [`MemberTracking#everReachable`] latch was set AT THAT EDGE — this node's FSM saw first-hand
-    /// reachability evidence (QUIC handshake, SWIM ALIVE, governor / worker-admission health) before the
-    /// death. This is the only identity-established subject a "failed" verdict is about, so it is the edge
-    /// the user-facing NODE_FAILED event and CRITICAL alert ride. ADDITIVE to [`#onConfirmedDeparture`],
-    /// which still fires for every DEAD path. The latch is read inside the per-member monitor at the edge
+    /// [`MemberTracking#everReachable`] latch was set AT THAT EDGE — this node's FSM saw reachability
+    /// evidence (QUIC handshake, SWIM ALIVE, governor / worker-admission health) before the death. SWIM ALIVE
+    /// includes gossip-relayed ALIVE (`SwimProtocol.notifyAlive` / `applyNewAliveMember`), so the evidence is
+    /// not necessarily first-hand. This is the only identity-established subject a "failed" verdict is
+    /// about, so it is the edge the user-facing NODE_FAILED event and CRITICAL alert ride.
+    /// ADDITIVE to [`#onConfirmedDeparture`], which still fires for every DEAD path.
+    /// The latch is read inside the per-member monitor at the edge
     /// and carried into the emission, so a later retirement of the tracking cannot change the verdict.
     /// Default no-op. Reset to the no-op by passing `null` to [`#onReachableDeath`].
     private volatile Consumer<NodeId> onReachableDeath = ignored -> {};
