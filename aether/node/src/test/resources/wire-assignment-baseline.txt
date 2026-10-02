@@ -305,6 +305,8 @@ SHAPE org.pragmatica.consensus.net.NetworkMessage$HelloRefused (sender:org.pragm
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest (sender:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse (target:org.pragmatica.consensus.NodeId,snapshot:byte[])
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KeepAlive (sender:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteRequest (sender:org.pragmatica.consensus.NodeId,leader:org.pragmatica.consensus.NodeId,round:long)
+SHAPE org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteResponse (sender:org.pragmatica.consensus.NodeId,leader:org.pragmatica.consensus.NodeId,round:long,leaderHealthy:boolean)
 SHAPE org.pragmatica.consensus.net.NodeInfo (id:org.pragmatica.consensus.NodeId,address:org.pragmatica.net.tcp.NodeAddress,labels:java.util.Map<java.lang.String, java.lang.String>,resolvedAddress:org.pragmatica.net.tcp.NodeAddress)
 SHAPE org.pragmatica.consensus.rabia.ClusterConfig (members:java.util.List<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.consensus.rabia.CorrelationId (id:java.lang.String)
@@ -662,6 +664,8 @@ TAG  org.pragmatica.consensus.net.NetworkMessage$HelloRefused 1705
 TAG  org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest 40
 TAG  org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse 41
 TAG  org.pragmatica.consensus.net.NetworkMessage$KeepAlive 39
+TAG  org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteRequest 1721
+TAG  org.pragmatica.consensus.net.NetworkMessage$LeaderPreVoteResponse 1722
 TAG  org.pragmatica.consensus.net.NodeInfo 42
 TAG  org.pragmatica.consensus.rabia.ClusterConfig 24
 TAG  org.pragmatica.consensus.rabia.CorrelationId 25
