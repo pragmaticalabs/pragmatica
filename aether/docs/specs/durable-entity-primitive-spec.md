@@ -122,7 +122,7 @@ code, §10).
   DurableEntity<K,S,C extends Mutator<S>>  — fenced, keyed, single-writer, durable, partition-placed
         │                                    (SHIPPED; C = the keyspace's sealed command hierarchy)
         ├──►  PersistentWorkflow<S,E>   = entity whose update() applies an FSM transition   (PLANNED, #353; was #190)
-        └──►  Saga<S,D>                  = entity that orchestrates steps + compensation     (PLANNED, #354)
+        └──►  Saga<I,S,O,D>              = entity that orchestrates steps + compensation     (PLANNED, #354)
 ```
 
 Each layer is independently useful: the fence fixes a latent split-brain bug today (#345); the entity
@@ -838,20 +838,36 @@ public sealed interface OnDeadline<S> {
 
 public sealed interface SagaStepKind<S> permits SagaStep, WaitStep {}
 
-/** Built once per slice load inside the slice factory (§7.9), never in a static field. */
-public final class SagaDefinition<S, D extends SagaData> {
-    /** clockSafetyMargin: required, no default — see the key-retention rule in §7.4 (v1828 B1). */
-    public static <S, D extends SagaData> Builder<S, D> builder(String name, int definitionVersion,
-                                                                Duration clockSafetyMargin) { ... }
+/**
+ * Built once per slice load inside the slice factory (§7.9), never in a static field.
+ * I — the start input (contract);  S — the accumulating state (PRIVATE);  O — the output (contract);
+ * D — the data root: step results and signal payloads (contract, §7.9).        (owner decision D9)
+ */
+public final class SagaDefinition<I, S, O, D extends SagaData> {
+    /**
+     * clockSafetyMargin: required, no default — see the key-retention rule in §7.4 (v1828 B1).
+     * init:   PURE I -> S, applied once at creation, on the owner, under the binding.
+     * finish: PURE S -> O, applied when the saga completes; its result is the Succeeded outcome.
+     */
+    public static <I, S, O, D extends SagaData> Builder<I, S, O, D> builder(String name, int definitionVersion,
+                                                                            Duration clockSafetyMargin,
+                                                                            Fn1<S, I> init,
+                                                                            Fn1<O, S> finish) { ... }
 
-    public static final class Builder<S, D extends SagaData> {
-        public <R extends D> Builder<S, D> step(SagaStep<S, R> step) { ... }
-        public <P extends D> Builder<S, D> await(WaitStep<S, P> wait) { ... }
+    public static final class Builder<I, S, O, D extends SagaData> {
+        public <R extends D> Builder<I, S, O, D> step(SagaStep<S, R> step) { ... }
+        public <P extends D> Builder<I, S, O, D> await(WaitStep<S, P> wait) { ... }
         /** Fails (typed) on duplicate step/wait names, an empty definition, or a wait as the last step. */
-        public Result<SagaDefinition<S, D>> build() { ... }
+        public Result<SagaDefinition<I, S, O, D>> build() { ... }
     }
 }
 ```
+
+**Input, state and output are separate (owner decision D9).** `run` takes an `I`; the pure `init` turns it
+into the first `S`; the steps fold into `S` as ruled (R3); the pure `finish` turns the final `S` into an `O`.
+`I`, `O`, the signal payloads and the receipts form the **contract** — they cross the instance boundary to
+and from callers that are not bound to its version. `S` never crosses it, so it is **private** and evolves
+freely under pin-at-creation (§7.9).
 
 `SagaData` is a marker the saga's **data root** extends: the author declares one sealed interface
 `D extends SagaData` that permits every step result `R` and every signal payload `P` (§7.9 explains why:
@@ -1158,18 +1174,21 @@ bound to.
 ### 7.7 The `Saga` façade interface
 
 ```java
-/** PLANNED (#354). A saga over accumulating state S; D is the saga's data root (§7.3, §7.9). */
-public interface Saga<S, D extends SagaData> {
+/**
+ * PLANNED (#354). A saga taking I, accumulating PRIVATE state S, producing O; D is the data root
+ * (§7.3, §7.9). Nothing on this interface exposes S: callers see only contract types (D9).
+ */
+public interface Saga<I, S, O, D extends SagaData> {
     /**
-     * Create an instance (binding the version per §7.9) and drive it until it completes, compensates,
-     * parks (Waiting / NeedsReconciliation) or the caller's deadline expires. Calling run() for an
-     * instance that already exists is not a restart: it returns its current outcome.
+     * Create an instance (binding the version per §7.9; init: I -> S on the owner) and drive it until it
+     * completes, compensates, parks (Waiting / NeedsReconciliation) or the caller's deadline expires.
+     * Calling run() for an instance that already exists is not a restart: it returns its current outcome.
      */
-    Promise<SagaOutcome<S>> run(String sagaId, S initial);
+    Promise<SagaOutcome<O>> run(String sagaId, I input);
 
-    /** Committed state, BOUNDED_STALE by default (§8.1). */
-    Promise<Option<SagaInstance<S>>> status(String sagaId);
-    Promise<Option<SagaInstance<S>>> status(String sagaId, ReadConsistency consistency);
+    /** Committed status, BOUNDED_STALE by default (§8.1): phase and reason, the output once completed — never S. */
+    Promise<Option<SagaStatus<O>>> status(String sagaId);
+    Promise<Option<SagaStatus<O>>> status(String sagaId, ReadConsistency consistency);
 
     /**
      * Deliver a signal to a wait step of ONE incarnation (§7.8). The incarnation comes from run()/status().
@@ -1179,7 +1198,7 @@ public interface Saga<S, D extends SagaData> {
                                                  P payload);
 
     /** Operator resolution of a parked instance (NeedsReconciliation or Waiting; table below). Fenced. */
-    Promise<SagaOutcome<S>> resolve(SagaInstanceId instance, Resolution<D> resolution);
+    Promise<SagaOutcome<O>> resolve(SagaInstanceId instance, Resolution<D> resolution);
 
     /** Delete a TERMINAL instance of ONE incarnation; refused (typed) otherwise. */
     Promise<Unit> delete(SagaInstanceId instance);
@@ -1206,22 +1225,33 @@ public sealed interface Resolution<D extends SagaData> {
     record Abandon<D extends SagaData>(String reason)           implements Resolution<D> {}
 }
 
-/** Every outcome names the incarnation it is about (E9): it is the address for signal/resolve/delete. */
-public sealed interface SagaOutcome<S> {
+/**
+ * Every outcome names the incarnation it is about (E9): it is the address for signal/resolve/delete.
+ * Only Succeeded carries a payload, the O that finish produced (D9). The others carry no state: S is
+ * private, and an unfinished or unwound saga has no O [author choice: the non-success shapes].
+ */
+public sealed interface SagaOutcome<O> {
     SagaInstanceId instance();
-    record Succeeded<S>(SagaInstanceId instance, S state)          implements SagaOutcome<S> {}
-    record Compensated<S>(SagaInstanceId instance, S state)        implements SagaOutcome<S> {}
-    record PartiallyCompensated<S>(SagaInstanceId instance, S state,
-                                   List<CompensationFailure> failures) implements SagaOutcome<S> {}
-    record Failed<S>(SagaInstanceId instance, S state, String causeType) implements SagaOutcome<S> {}
+    record Succeeded<O>(SagaInstanceId instance, O output)         implements SagaOutcome<O> {}
+    record Compensated<O>(SagaInstanceId instance)                 implements SagaOutcome<O> {}
+    record PartiallyCompensated<O>(SagaInstanceId instance,
+                                   List<CompensationFailure> failures) implements SagaOutcome<O> {}
+    record Failed<O>(SagaInstanceId instance, String causeType)   implements SagaOutcome<O> {}
     /** Not terminal: the instance is parked and its run continues later (signal, deadline or operator). */
-    record Waiting<S>(SagaInstanceId instance, S state, String waitName, Instant deadlineAt) implements SagaOutcome<S> {}
-    record NeedsReconciliation<S>(SagaInstanceId instance, S state, Reconcile reason) implements SagaOutcome<S> {}
+    record Waiting<O>(SagaInstanceId instance, String waitName, Instant deadlineAt) implements SagaOutcome<O> {}
+    record NeedsReconciliation<O>(SagaInstanceId instance, Reconcile reason) implements SagaOutcome<O> {}
 }
+
+/** What status() returns to callers: the contract-safe view of an instance (D9). */
+public record SagaStatus<O>(SagaInstanceId instance, String phase, Option<Reconcile> reason,
+                            Option<String> waitName, Option<Instant> deadlineAt, Option<O> output) {}
 ```
 
+`S` and the full `SagaInstance` are visible to operators through the management API, whose JSON surface
+decodes them through the bound version (§7.9, decode-site table) — never to callers through `Saga`.
+
 **Where a sender gets the incarnation (E9).** From the `SagaOutcome` that `run` returned
-(`outcome.instance()`), from `status(sagaId)` (`SagaInstance.id()`), or from the management listing, which
+(`outcome.instance()`), from `status(sagaId)` (`SagaStatus.instance()`), or from the management listing, which
 shows it for every instance. A sender that knows only a business `sagaId` reads `status` first; a signal
 addressed to an incarnation that has since been replaced is refused `IncarnationReplaced` (§7.8), never
 redirected.
@@ -1383,7 +1413,8 @@ injected ones:
 @Retention(RUNTIME) @Target(PARAMETER)
 public @interface OrderSaga {}
 
-static Result<OrderPlacement> orderPlacement(@OrderSaga SagaRegistry<OrderSagaState, OrderSagaData> sagas,
+static Result<OrderPlacement> orderPlacement(@OrderSaga SagaRegistry<OrderSagaInput, OrderSagaState,
+                                                                       OrderSagaResult, OrderSagaData> sagas,
                                              InventorySlice inventory,
                                              PaymentSlice payment,
                                              ShippingSlice shipping) {
@@ -1398,9 +1429,9 @@ fails to build or register fails the slice load with its typed cause — loudly,
 
 ```java
 /** PLANNED (#354). The resource a saga qualifier provisions. */
-public interface SagaRegistry<S, D extends SagaData> {
+public interface SagaRegistry<I, S, O, D extends SagaData> {
     /** Bind a definition for THIS slice version. Fails typed on a name/version conflict or codec gap. */
-    Result<Saga<S, D>> register(SagaDefinition<S, D> definition);
+    Result<Saga<I, S, O, D>> register(SagaDefinition<I, S, O, D> definition);
 }
 ```
 
@@ -1429,7 +1460,7 @@ public record VersionBinding(String definitionName, int definitionVersion,
                              Map<String, String> dependencyVersions,  // artifactBase -> version: the FULL resolved closure (D7c)
                              String stateFingerprint,                 // private types: S + runtime records (D8 refined)
                              String stateShapeHash,                   // named SHAPE lines behind it, for the swap guard
-                             String contractFingerprint,              // boundary types: run input, P, receipts, outcome (D8 refined)
+                             String contractFingerprint,              // boundary types: I, O, D's closure (D8 refined, D9)
                              String contractShapeHash) {}             // named SHAPE lines behind it, for the swap guard
 ```
 
@@ -1503,9 +1534,9 @@ version — nothing is decoded with it: registration of that definition fails lo
 version, and every decode site re-checks the registry entry's fingerprint against the binding as a
 backstop, failing with the same typed error instead of decoding.
 
-**(3) Inbound contract.** Some bytes reach an instance from callers that are **not** bound to its version:
-the `run` request (its initial state), signal payloads (§7.8), operator receipts in a `Resolution`, entity
-commands forwarded from other nodes (#596), and the `SagaOutcome`/`status` payload returned to those callers.
+**(3) Inbound contract.** Some bytes reach an instance from callers that are **not** bound to its version,
+or go back to them: the `run` input `I`, signal payloads (§7.8), operator receipts in a `Resolution`, entity
+commands forwarded from other nodes (#596), and the output `O` in `SagaOutcome`/`SagaStatus` (D9).
 These form the definition's **contract**, and its fingerprint is recorded in the binding separately from
 the private-state fingerprint. A caller may address an instance only if its contract fingerprint **equals**
 the bound version's:
@@ -1522,15 +1553,14 @@ the bound version's:
 - **A changed contract** therefore does not break existing instances: callers keep using the old contract to
   reach old instances until those drain, while new instances bind to the version whose contract new callers
   present. The alternative is a new keyspace or an explicit migration.
-- *Consequence, stated:* because `run` takes the initial `S` and `SagaOutcome` returns `S`, a change to `S`
-  is also a contract change. Different `S` versions coexist in one keyspace as (1) says, but each caller can
-  address only the instances whose contract it shares. An author who wants `S` to evolve without touching
-  the contract has to keep `S` off the boundary (a separate input and output type) — **[author note: the
-  current `Saga` API puts `S` on the boundary; changing that is an API decision for #354]**.
+- **`S` is not in the contract (owner decision D9).** `run` takes `I`, outcomes carry `O`, and `status`
+  exposes no `S`, so a change to `S` alone — with `I`, `O`, `D` unchanged — is an ordinary rollout: new
+  instances bind to the new version, old ones finish on theirs, and every caller keeps working.
 
 **The two fingerprints.** `stateFingerprint` covers `S` and every runtime record type of the instance;
-`contractFingerprint` covers the inbound and outbound boundary types above: the `run` input, every signal
-payload `P`, every result type in `D` that a `Resolution` can carry, and `SagaOutcome`'s payload.
+`contractFingerprint` covers the boundary types above: `I`, `O`, and the data root `D`'s sealed closure
+(signal payloads `P`, and the result types `R` a `Resolution` can carry as a receipt). Step results are
+therefore contract types too — an operator or caller may supply one — while `S` is not.
 
 **How a fingerprint is computed.** A fingerprint covers a SET of types and every type reachable through
 their components. It is the SHA-256 of the sorted lines that describe those types in the wire baseline's
@@ -1568,8 +1598,13 @@ SHAPE lines, which the hash deliberately omits, so the runtime keeps them:
   `ContractFingerprintMismatch` for the contract (3) — naming the moved components. Equal fingerprints
   with equal named-shape hashes need no lookup.
 
-The fingerprint and swap guard apply to **(2) and (3) only**. They are not a coexistence gate on private
-state: (1) needs none.
+**Scope.** The fingerprint and swap guard apply to **(2) and (3) only**; they are not a coexistence gate
+on private state, which (1) needs none of. Within that scope the swap guard protects every pair that reads
+the same bytes across builds: on the **contract types**, a caller and the instances it addresses (3); and,
+for a rebuild under an unchanged version id, the rebuild and the private records its predecessor wrote
+(2) — there a moved name would make the rebuild read existing records under the wrong meaning. It is
+never applied between two different versions' private types: under pin-at-creation they never read each
+other's bytes.
 
 Today the TAG/ENUM/SHAPE derivation covers the node's `@Codec` types; producing the same lines for a
 slice's generated codecs is #354 implementation work.
@@ -1627,12 +1662,25 @@ today's rollback, which deallocates the new version in the same batch as the rou
 State, data root and a definition whose step B consumes step A's folded result:
 
 ```java
+/** Contract: what callers send and get back (D9). */
+public record OrderSagaInput(String orderId, String customerId, List<LineItem> items, BigDecimal total) {}
+public record OrderSagaResult(String orderId, ChargeId charge, Shipment shipment) {}
+
+/** Private: free to change between versions (D9). */
 public record OrderSagaState(String orderId, String customerId, List<LineItem> items, BigDecimal total,
                              Option<ReservationId> reservation, Option<ChargeId> charge,
-                             Option<Approval> approval) {
+                             Option<Approval> approval, Option<Shipment> shipment) {
+    static OrderSagaState start(OrderSagaInput in) {                   // init: I -> S, pure
+        return new OrderSagaState(in.orderId(), in.customerId(), in.items(), in.total(),
+                                  Option.none(), Option.none(), Option.none(), Option.none());
+    }
+    OrderSagaResult result() {                                          // finish: S -> O, pure
+        return new OrderSagaResult(orderId, charge.unwrap(), shipment.unwrap());  // both present on success
+    }
     OrderSagaState withReservation(ReservationId r) { ... }   // pure "with" copies
     OrderSagaState withCharge(ChargeId c)           { ... }
     OrderSagaState withApproval(Approval a)         { ... }
+    OrderSagaState withShipment(Shipment sh)        { ... }
 }
 
 public sealed interface OrderSagaData extends SagaData {
@@ -1642,10 +1690,12 @@ public sealed interface OrderSagaData extends SagaData {
     record Shipment(String trackingId)           implements OrderSagaData {}
 }
 
-static Result<SagaDefinition<OrderSagaState, OrderSagaData>> orderSaga(InventorySlice inventory,
-                                                                        PaymentSlice payment,
-                                                                        ShippingSlice shipping) {
-    return SagaDefinition.<OrderSagaState, OrderSagaData>builder("order-saga", 1, Duration.ofMinutes(5))
+static Result<SagaDefinition<OrderSagaInput, OrderSagaState, OrderSagaResult, OrderSagaData>>
+        orderSaga(InventorySlice inventory, PaymentSlice payment, ShippingSlice shipping) {
+    return SagaDefinition.<OrderSagaInput, OrderSagaState, OrderSagaResult, OrderSagaData>builder(
+               "order-saga", 1, Duration.ofMinutes(5),
+               OrderSagaState::start,                       // init
+               OrderSagaState::result)                      // finish
         // A: reserve. Inventory dedups on the key and answers a repeat with the original reservation.
         .step(new SagaStep<OrderSagaState, ReservationId>(
             "reserve-inventory",
@@ -1679,7 +1729,7 @@ static Result<SagaDefinition<OrderSagaState, OrderSagaData>> orderSaga(Inventory
         .step(new SagaStep<OrderSagaState, Shipment>(
             "ship",
             (ctx, s) -> shipping.dispatch(s.orderId(), s.reservation().unwrap()),
-            (s, shipment) -> s,
+            OrderSagaState::withShipment,
             new StepRecovery.Neither<>(),
             (ctx, s, shipment) -> shipping.recall(shipment),
             new StepRecovery.Neither<>(),
@@ -1734,7 +1784,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint), on a step with no earlier attempts and the default budget, (a) for 300 s, then restore it; (b) for 600 s | the call is never made against another version; (a) retried with backoff and succeeds, no park (300 s < 381 s); (b) parks `NeedsReconciliation(BoundVersionUnavailable)` when the 20th attempt fails, at 381–476 s (R4a, D7a, E4) | a dependent call served by a non-bound version; a park in (a); no park in (b) |
-| A9 | **Coexistence by binding** (D8 refined; rename ruling; swap guard) | (a) v1 and v2 with DIFFERENT `S` share a keyspace: create instances on both, then exercise every decode site (owner takeover, replica `status`, checkpoint restore, listing, `resolve`, a deadline fire, a signal); (b) rebuild v1's version id with a changed component type and deploy it while v1 instances are live; (c) a caller whose contract fingerprint differs signals, resolves and `run`s against v1 instances; (d) a caller or rebuild differing only by a pure rename of a component; (e) a caller or rebuild differing only by a same-typed name swap | (a) both coexist; every decode uses the instance's binding; (b) registration fails loudly with `BoundVersionFingerprintMismatch`, nothing decoded with the drifted build; (c) each request refused with `ContractFingerprintMismatch` before its payload is decoded, `run` binding only to a version with the caller's contract; (d) accepted; (e) refused — `BoundVersionFingerprintMismatch` for the rebuild, `ContractFingerprintMismatch` for the caller — naming the moved components | a payload decoded by a version other than the instance's binding; a decode with a drifted build; a request decoded despite a contract mismatch; a pure rename refused; a same-typed swap accepted |
+| A9 | **Coexistence by binding** (D8 refined, D9; rename ruling; swap guard) | (a) v2 changes only `S` (`I`, `O`, `D` unchanged): roll it out while v1 instances are live, then exercise every decode site on both (owner takeover, replica `status`, checkpoint restore, listing, `resolve`, a deadline fire, a signal) and call `run`/`signal`/`status` from v1 and v2 callers; (b) rebuild v1's version id with a changed component type and deploy it while v1 instances are live; (c) a caller whose contract fingerprint differs (a changed `I`, `O` or `D` type) signals, resolves and `run`s against v1 instances; (d) a caller or rebuild differing only by a pure rename of a component; (e) a same-typed name swap in a contract type (caller) and in a private type (rebuild) | (a) a normal rollout: both versions coexist, every decode uses the instance's binding, and no request sees a contract mismatch — callers of either version reach instances of both; (b) registration fails loudly with `BoundVersionFingerprintMismatch`, nothing decoded with the drifted build; (c) each request refused with `ContractFingerprintMismatch` before its payload is decoded, `run` binding only to a version with the caller's contract; (d) accepted; (e) refused — `ContractFingerprintMismatch` for the caller, `BoundVersionFingerprintMismatch` for the rebuild — naming the moved components | a payload decoded by a version other than the instance's binding; a contract mismatch reported for an `S`-only change; a decode with a drifted build; a request decoded despite a contract mismatch; a pure rename refused; a same-typed swap accepted |
 | A10 | **Recovery past the key window** (v1828 B1, N3) | for a `Replayable` and a `Lookup` step: a first attempt ends `Sent`, later re-invokes keep failing `Sent`, then resume once `now − origin ≥ keyRetention − clockSafetyMargin`, where origin is the FIRST attempt's `at`; repeat with the first attempt's evidence unrecorded (crash) | no re-invocation and no lookup after that point, although the LATEST attempt is still inside the window; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1, E3, E7) | an invocation or lookup issued once the earliest possibly-sent attempt is past the window |
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
@@ -2017,7 +2067,9 @@ version in any live binding (§7.4, §7.9). Round 2 of the #1828 review is fully
 attempts and defaults 20 / 10 min / 200 ms→30 s; a reply-classification mapping per step; failing
 deadline fires park `DeadlineTransitionFailed`; persisted attempt evidence; `SagaOutcome` and `delete`
 carry the incarnation. D8 (owner, on v1828 N1, refined in round 4): per-binding decoding, drift guard,
-contract fingerprints; renames exempt from fingerprints; A9 rewritten.
+contract fingerprints; renames exempt from fingerprints, with a swap guard; A9 rewritten. D9 (owner):
+separate input and output — `Saga<I, S, O, D>`, `run(I)`, pure `init`/`finish`; the contract is `I`, `O`
+and `D`'s closure, and `S` is private (§7.3, §7.7, §7.9).
 
 **S1 — signals scope for v1. RESOLVED (2026-07-04); saga half SUPERSEDED by S10 (2026-10-02)** — saga
 `WAIT_SIGNAL` is specified in rc4 (§7.8); the workflow half stands. Original text: **signal injection IS
@@ -2082,6 +2134,7 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 | v0.8.0 changelog-row typo | G4 |
 | CTO-confirmed: the 381 s arithmetic with upward-only jitter, the `StepRefusal` marker, `maxFireAttempts` = 5 | — |
 | Renames exempt from the codec fingerprint (CTO ruling): it hashes type identity, component types and positions, TAG and ENUM content — not component names | — |
+| **D9 (owner): separate input and output.** `Saga<I, S, O, D>`: `run(I)`, pure `init` I→S, pure `finish` S→O; contract = `I`, `O`, `D`'s closure (signal payloads, receipts); `S` private and absent from `SagaOutcome`/`SagaStatus`; the "S on the boundary" limitation removed; §7.10 example and A9(a) updated | — |
 | **Swap guard (CTO):** equal fingerprints are compatible only if no shared component name moves position within a type; named SHAPE lines kept in a content-addressed shape registry, binding and request envelope carry the named-shape hash; A9(e) | — |
 | **D8 refined (owner):** private state coexists freely, every decode site dispatches on the binding (sites enumerated); drift guard `BoundVersionFingerprintMismatch`; inbound contract fingerprint carried in the envelope and checked before decode, `ContractFingerprintMismatch`; `VersionBinding` carries `stateFingerprint` + `contractFingerprint`; `IncompatibleDurableCodec` retired; A9 rewritten (different `S` coexists, drift refused, contract mismatch refused, pure rename accepted) | G1 |
 
