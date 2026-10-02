@@ -56,8 +56,9 @@
   [verified: `DHTCatchUpGateTest.roundWaitingOnAPhantom_isRestartedWhenTheRingPrunesIt`, red without the drop]
   **Interaction with #1830** (the phantom bound): with U, a phantom does not make the gate wrong at any point in
   the window, however long the phantom lasts. What the window still costs is time. A phantom among a partition's
-  co-replicas never answers, so a round there cannot decide until the phantom is pruned. That is a counted wait (the
-  stuck gauge), never an empty partition. #1830 shortens that wait. Interim finding (i-phantom): SWIM prunes a
+  co-replicas never answers, so a round there waits out its timeout (5 s) and then decides on the anchors that did
+  answer. When the phantoms are the round's only anchors besides this node, it cannot decide until they are pruned.
+  That is a counted wait (the stuck gauge), never an empty partition. #1830 shortens both waits. Interim finding (i-phantom): SWIM prunes a
   phantom at least 75 s after boot, and after 3 min 40 s in run 7.
   [unverified: code-only — a phantom is never pruned if the node stays in COLD_BOOT; its partitions then wait.]
   **A partition whose old holders were ALL removed is served from what remains**: the union of what its live
