@@ -173,8 +173,9 @@ set is bounded: `[slice] artifact_max_versions` (default 10,000) caps the PRESEN
 a dev loop that pushes a fresh version per push (the scaffold's `deploy-test.sh`) would otherwise grow one KV value
 without limit. The applier refuses a NEW version past the cap and the writer reports it (`409` naming the cap, before
 anything is uploaded); it never drops a present version, never un-archives one, and an archive is always accepted and
-frees room. Archived entries are kept, one per version ever archived, so a long-lived dev cluster still accumulates
-them until an owner decision on compacting them. The versions
+frees room. Archived entries are kept FOREVER (owner ruling, #1778): one small KV entry per archived version for the life of
+the cluster, never compacted, so the archived guard never rests on the DHT marker alone. Revisit only if a real cluster
+shows the size matters. The versions
 index is part of the cluster state that a KV backup carries, because the DHT keys it indexes survive a restart.
 
 Known limits, stated so they are not mistaken for guarantees:
