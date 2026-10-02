@@ -25,6 +25,7 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
@@ -313,14 +314,24 @@ public final class DHTNode {
     /// preserving each entry's owner epoch (#345 piece 1c) so the fencing token survives transfer. A
     /// copy bypasses the owner-epoch high-water but keeps the per-key ordering (issue #1818, see
     /// [StorageEngine#putReplica]).
-    @Contract
-    public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
-        entries.forEach(kv -> storage.putReplica(kv.key(),
-                                                 kv.value(),
-                                                 kv.version(),
-                                                 kv.epochIncarnation(),
-                                                 kv.epochTerm(),
-                                                 kv.epochCounter()));
+    ///
+    /// @return `true` when every entry was stored or was already superseded by a newer stored entry;
+    ///         `false` when any entry failed to store — the outcome an honest ack reports (issue #1818).
+    public Promise<Boolean> applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
+        return Promise.allOf(entries.stream()
+                                    .map(this::applyReplica)
+                                    .toList())
+                      .map(outcomes -> outcomes.stream()
+                                               .allMatch(Result::isSuccess));
+    }
+
+    private Promise<Boolean> applyReplica(DHTMessage.KeyValue kv) {
+        return storage.putReplica(kv.key(),
+                                  kv.value(),
+                                  kv.version(),
+                                  kv.epochIncarnation(),
+                                  kv.epochTerm(),
+                                  kv.epochCounter());
     }
 
     /// Compute a CRC32 digest over sorted key-value entries.

@@ -105,11 +105,13 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// then, exactly as before; only the graceful-departure push sets it `true`.
     record MigrationDataResponse(String requestId, NodeId sender, List<KeyValue> entries, boolean ackRequested) implements DHTMessage {}
 
-    /// Acknowledgement that a [MigrationDataResponse] carrying `ackRequested=true` was applied by the
-    /// receiver (issue #427, D2). `requestId` echoes the response's correlation id so the departing
-    /// sender resolves the matching pending push. Additive to the internal cluster protocol
-    /// (rebuilt-together within the rc), mirroring the `PublishForwardResponse.retryable` precedent.
-    record MigrationDataAck(String requestId, NodeId sender) implements DHTMessage {}
+    /// Acknowledgement of a [MigrationDataResponse] carrying `ackRequested=true` (issue #427, D2).
+    /// `requestId` echoes the response's correlation id so the departing sender resolves the matching
+    /// pending push. `applied` is `true` only when every entry was stored or was already superseded by
+    /// a newer stored entry; `false` is a nack (issue #1818) — the sender counts the batch as not
+    /// delivered. Additive to the internal cluster protocol (rebuilt-together within the rc), mirroring
+    /// the `PublishForwardResponse.retryable` precedent.
+    record MigrationDataAck(String requestId, NodeId sender, boolean applied) implements DHTMessage {}
 
     /// Request to compute digest of keys in a partition range.
     record DigestRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}

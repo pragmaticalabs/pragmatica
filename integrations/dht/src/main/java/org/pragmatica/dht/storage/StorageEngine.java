@@ -93,9 +93,12 @@ public interface StorageEngine {
     /// write, and a copy is not a new write. Applying it here would refuse every key written before the
     /// latest ownership-epoch advance to any node that does not yet hold it, so such keys could never be
     /// re-replicated and die with their last holder. The per-key ordering still applies, so a copy
-    /// never overwrites a stored entry of a newer epoch or a newer version.
+    /// never overwrites a stored entry of a newer epoch or a newer version. A copy never advances the
+    /// high-water either: its authority is committed ownership state, which reaches every node on its
+    /// own, and a copy's epoch is evidence of nothing the node has not been told directly.
     ///
-    /// @return `true` if written, `false` if the stored entry is newer.
+    /// @return `true` if written, `false` if the stored entry is newer, or a failed promise if the
+    ///         engine could not store it.
     default Promise<Boolean> putReplica(byte[] key,
                                         byte[] value,
                                         long version,

@@ -83,7 +83,7 @@ public final class MemoryStorageEngine implements StorageEngine {
             return DHTError.staleEpochWrite(epochIncarnation, epochTerm, epochCounter).promise();
         }
 
-        return Promise.success(storeVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter));
+        return Promise.success(storeVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter, true));
     }
 
     @Override
@@ -93,7 +93,7 @@ public final class MemoryStorageEngine implements StorageEngine {
                                        long epochIncarnation,
                                        long epochTerm,
                                        long epochCounter) {
-        return Promise.success(storeVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter));
+        return Promise.success(storeVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter, false));
     }
 
     private boolean storeVersioned(byte[] key,
@@ -101,7 +101,8 @@ public final class MemoryStorageEngine implements StorageEngine {
                                    long version,
                                    long epochIncarnation,
                                    long epochTerm,
-                                   long epochCounter) {
+                                   long epochCounter,
+                                   boolean advanceHighWater) {
         var bkey = new ByteArrayKey(key);
         var clonedValue = value.clone();
         var written = new AtomicBoolean(true);
@@ -115,7 +116,7 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                             epochCounter,
                                                             written,
                                                             epochGate.epochOrderingEnabled()));
-        if (written.get()) {
+        if (written.get() && advanceHighWater) {
             epochGate.advance(key, epochIncarnation, epochTerm, epochCounter);
         }
 

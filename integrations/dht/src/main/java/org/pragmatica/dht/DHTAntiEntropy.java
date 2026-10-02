@@ -26,6 +26,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.IdGenerator;
@@ -264,25 +265,38 @@ public final class DHTAntiEntropy {
 
     /// Handle migration data response: merge received entries into local storage, then acknowledge
     /// when the sender requested it (issue #427). The ack is sent only for `ackRequested` responses —
-    /// the departing-node push — so the fire-and-forget anti-entropy pull path is unchanged.
+    /// the departing-node push — so the fire-and-forget anti-entropy pull path is unchanged. The ack is
+    /// honest (issue #1818): it carries whether every entry was applied, so a batch the receiver failed
+    /// to store is nacked and the departing sender counts it as not delivered.
     @Contract
     public void onMigrationDataResponse(DHTMessage.MigrationDataResponse response) {
-        applyMigrationEntries(response);
-        if (response.ackRequested()) {
-            network.send(response.sender(),
-                         new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId()));
-        }
+        applyMigrationEntries(response).onSuccess(applied -> acknowledge(response, applied));
     }
 
-    private void applyMigrationEntries(DHTMessage.MigrationDataResponse response) {
+    private Promise<Boolean> applyMigrationEntries(DHTMessage.MigrationDataResponse response) {
         if (response.entries().isEmpty()) {
-            return;
+            return Promise.success(true);
         }
 
         log.info("Received {} entries from {} for repair",
                  response.entries().size(),
                  response.sender().id());
-        node.applyMigrationData(response.entries());
+
+        return node.applyMigrationData(response.entries());
+    }
+
+    private void acknowledge(DHTMessage.MigrationDataResponse response, boolean applied) {
+        if (!response.ackRequested()) {
+            return;
+        }
+
+        if (!applied) {
+            log.warn("Nacking {} migrated entries from {}: not every entry could be stored",
+                     response.entries().size(),
+                     response.sender().id());
+        }
+
+        network.send(response.sender(), new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied));
     }
 
     private void requestMigrationData(NodeId peer, int partitionIndex) {

@@ -20,7 +20,12 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.dht.storage.OwnerEpochGate;
+import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -28,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,6 +60,9 @@ class DHTMigrationEpochFenceTest {
     private static final long PRE_REWRITE_COUNTER = 1L;
     private static final long POST_REWRITE_TERM = 2L;
     private static final long POST_REWRITE_COUNTER = 2L;
+    private static final long NEWER_TERM = 3L;
+    private static final long NEWER_COUNTER = 3L;
+    private static final TimeSpan PUSH_BUDGET = TimeSpan.timeSpan(2).seconds();
     private static final byte[] VALUE = "artifact-meta".getBytes(StandardCharsets.UTF_8);
 
     @Test
@@ -106,6 +115,103 @@ class DHTMigrationEpochFenceTest {
         assertThat(cluster.holds(newcomer, key)).as("the departure push stored its copy on the newcomer").isTrue();
     }
 
+    /// The high-water's authority is committed KV (`DhtPartitionOwnership` notifications), never a copy:
+    /// a copy carrying a newer epoch than the receiver has seen must not raise the receiver's fence.
+    @Test
+    void migratedCopy_doesNotAdvanceTheReceiversHighWater() {
+        var cluster = new FencedCluster(List.of("holder", "joiner"));
+        var holder = cluster.member("holder");
+        var joiner = cluster.member("joiner");
+        var key = key("no-advance");
+
+        cluster.advanceEveryHighWaterPastTheKey();
+        holder.node().putLocalVersioned(key, VALUE, 100L, 0L, NEWER_TERM, NEWER_COUNTER).await();
+
+        joiner.antiEntropy().synchronizeNow();
+
+        assertThat(cluster.holds(joiner, key)).as("control: the joiner stored the copy").isTrue();
+        assertThat(cluster.freshWriteAccepted(joiner, key, POST_REWRITE_TERM, POST_REWRITE_COUNTER))
+            .as("a fresh write at the committed epoch is still accepted: the copy did not move the fence")
+            .isTrue();
+    }
+
+    @Test
+    void migratedOlderEpochCopy_neverOverwritesANewerStoredEntry() {
+        var cluster = new FencedCluster(List.of("holder", "joiner"));
+        var holder = cluster.member("holder");
+        var joiner = cluster.member("joiner");
+        var key = key("ordering");
+        var newer = "newer".getBytes(StandardCharsets.UTF_8);
+
+        cluster.writeAtPreRewriteEpoch(holder, key);
+        cluster.advanceEveryHighWaterPastTheKey();
+        joiner.node().putLocalVersioned(key, newer, 1L, 0L, POST_REWRITE_TERM, POST_REWRITE_COUNTER).await();
+
+        joiner.antiEntropy().synchronizeNow();
+
+        assertThat(joiner.node().getLocal(key).await().or(Option.<byte[]>none()).or(new byte[0]))
+            .as("the older-epoch copy, though its HLC version is higher, did not replace the newer entry")
+            .isEqualTo(newer);
+    }
+
+    @Test
+    void freshClientPut_atAStaleEpoch_isStillRejected() {
+        var cluster = new FencedCluster(List.of("holder", "joiner"));
+        var joiner = cluster.member("joiner");
+        var response = new AtomicReference<DHTMessage.PutResponse>();
+
+        cluster.advanceEveryHighWaterPastTheKey();
+        joiner.node()
+              .handlePutRequest(new DHTMessage.PutRequest("put-1",
+                                                          cluster.member("holder").id(),
+                                                          key("stale-put"),
+                                                          VALUE,
+                                                          100L,
+                                                          0L,
+                                                          PRE_REWRITE_TERM,
+                                                          PRE_REWRITE_COUNTER),
+                                response::set);
+
+        assertThat(response.get().success()).as("a deposed owner's new write is still fenced").isFalse();
+        assertThat(cluster.holds(joiner, key("stale-put"))).isFalse();
+    }
+
+    /// The honest ack: a receiver that fails to apply the pushed chunk must not acknowledge it, so the
+    /// departing node reports the chunk at risk instead of halting believing it delivered.
+    @Test
+    void departurePush_toAReceiverThatFailsToApply_reportsTheChunkAtRisk() {
+        var cluster = new FencedCluster(List.of("holder", "a", "b", "newcomer"), Set.of("newcomer"));
+        var holder = cluster.member("holder");
+        var key = cluster.keyWhoseDepartureNewcomerIs(holder.id(), new NodeId("newcomer"));
+        var reported = new AtomicReference<Integer>(0);
+
+        cluster.writeAtPreRewriteEpoch(holder, key);
+        holder.rebalancer()
+              .pushOnDeparture(PUSH_BUDGET, Set.of(), (keysAtRisk, _) -> reported.set(keysAtRisk))
+              .await();
+
+        assertThat(reported.get()).as("the chunk the newcomer failed to store is reported at risk").isEqualTo(1);
+    }
+
+    /// Receiver side of the honest ack: the ack names whether the batch was stored. The healthy receiver
+    /// is the positive control, so a `false` on the failing one is the nack and not a broken probe.
+    @Test
+    void ackRequestedBatch_isNackedByAReceiverThatFailsToApply_andAckedByOneThatStores() {
+        var cluster = new FencedCluster(List.of("holder", "failing", "healthy"), Set.of("failing"));
+        var entry = new DHTMessage.KeyValue(key("ack"), VALUE, 100L, 0L, PRE_REWRITE_TERM, PRE_REWRITE_COUNTER);
+        var sender = cluster.member("holder").id();
+
+        cluster.member("failing")
+               .antiEntropy()
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push-f", sender, List.of(entry), true));
+        cluster.member("healthy")
+               .antiEntropy()
+               .onMigrationDataResponse(new DHTMessage.MigrationDataResponse("push-h", sender, List.of(entry), true));
+
+        assertThat(cluster.ackFor("push-h")).as("control: a stored batch is acked").isTrue();
+        assertThat(cluster.ackFor("push-f")).as("a batch that failed to store is nacked").isFalse();
+    }
+
     private static byte[] key(String prefix) {
         return ("artifacts/" + prefix + "/meta").getBytes(StandardCharsets.UTF_8);
     }
@@ -142,22 +248,96 @@ class DHTMigrationEpochFenceTest {
         }
     }
 
+    /// Storage that fails every replica copy, as an engine with a full disk or a rejecting fence would.
+    private static StorageEngine refusingCopies(StorageEngine delegate) {
+        return new StorageEngine() {
+            @Override
+            public Promise<Option<byte[]>> get(byte[] key) {
+                return delegate.get(key);
+            }
+
+            @Override
+            public Promise<Unit> put(byte[] key, byte[] value) {
+                return delegate.put(key, value);
+            }
+
+            @Override
+            public Promise<Boolean> remove(byte[] key) {
+                return delegate.remove(key);
+            }
+
+            @Override
+            public Promise<Boolean> exists(byte[] key) {
+                return delegate.exists(key);
+            }
+
+            @Override
+            public Promise<Boolean> putReplica(byte[] key,
+                                               byte[] value,
+                                               long version,
+                                               long epochIncarnation,
+                                               long epochTerm,
+                                               long epochCounter) {
+                return Causes.cause("copy refused").promise();
+            }
+
+            @Override
+            public long size() {
+                return delegate.size();
+            }
+
+            @Override
+            public Promise<Unit> clear() {
+                return delegate.clear();
+            }
+
+            @Override
+            public Promise<Unit> shutdown() {
+                return delegate.shutdown();
+            }
+
+            @Override
+            public Promise<List<byte[]>> keys() {
+                return delegate.keys();
+            }
+
+            @Override
+            public Promise<List<DHTMessage.KeyValue>> entries() {
+                return delegate.entries();
+            }
+
+            @Override
+            public Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition partition) {
+                return delegate.entriesForPartition(ring, partition);
+            }
+        };
+    }
+
     private static final class FencedCluster {
         private final Map<NodeId, Member> members = new LinkedHashMap<>();
+        private final List<ProtocolMessage> delivered = new CopyOnWriteArrayList<>();
 
         FencedCluster(List<String> names) {
-            var ids = names.stream().map(NodeId::new).toList();
-
-            ids.forEach(id -> members.put(id, member(id, ids)));
+            this(names, Set.of());
         }
 
-        private Member member(NodeId id, List<NodeId> ids) {
+        /// `failingApply` names members whose storage refuses every copy — a receiver that cannot apply.
+        FencedCluster(List<String> names, Set<String> failingApply) {
+            var ids = names.stream().map(NodeId::new).toList();
+
+            ids.forEach(id -> members.put(id, member(id, ids, failingApply.contains(id.id()))));
+        }
+
+        private Member member(NodeId id, List<NodeId> ids, boolean failingApply) {
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
 
             ids.forEach(ring::addNode);
 
             var gate = new HighWaterGate();
-            var node = dhtNode(id, memoryStorageEngine(gate), ring, CONFIG);
+            var storage = failingApply
+                          ? refusingCopies(memoryStorageEngine(gate))
+                          : memoryStorageEngine(gate);
+            var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
 
             return new Member(id,
@@ -180,12 +360,16 @@ class DHTMigrationEpochFenceTest {
             members.values().forEach(member -> member.gate().advance(new byte[0], 0L, POST_REWRITE_TERM, POST_REWRITE_COUNTER));
         }
 
-        /// Probes the fence with a FRESH write on a scratch key, so the probe stores nothing under `key`.
         boolean freshWriteAtPreRewriteEpochAccepted(Member member, byte[] key) {
+            return freshWriteAccepted(member, key, PRE_REWRITE_TERM, PRE_REWRITE_COUNTER);
+        }
+
+        /// Probes the fence with a FRESH write on a scratch key, so the probe stores nothing under `key`.
+        boolean freshWriteAccepted(Member member, byte[] key, long term, long counter) {
             var probe = (new String(key, StandardCharsets.UTF_8) + "/probe").getBytes(StandardCharsets.UTF_8);
 
             return member.node()
-                         .putLocalVersioned(probe, VALUE, 100L, 0L, PRE_REWRITE_TERM, PRE_REWRITE_COUNTER)
+                         .putLocalVersioned(probe, VALUE, 100L, 0L, term, counter)
                          .await()
                          .isSuccess();
         }
@@ -211,7 +395,18 @@ class DHTMigrationEpochFenceTest {
         }
 
         private void deliver(NodeId target, ProtocolMessage message) {
+            delivered.add(message);
             Option.option(members.get(target)).onPresent(member -> route(member, message));
+        }
+
+        boolean ackFor(String requestId) {
+            return delivered.stream()
+                            .filter(DHTMessage.MigrationDataAck.class::isInstance)
+                            .map(DHTMessage.MigrationDataAck.class::cast)
+                            .filter(ack -> ack.requestId().equals(requestId))
+                            .findFirst()
+                            .orElseThrow()
+                            .applied();
         }
 
         private void route(Member member, ProtocolMessage message) {

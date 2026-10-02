@@ -151,11 +151,17 @@ public final class DHTRebalancer {
     }
 
     /// Resolve the pending departure push matching an incoming ack's correlation id (issue #427, D2).
-    /// A late ack that arrives after the budget expired simply finds no pending entry — harmless.
+    /// A late ack that arrives after the budget expired simply finds no pending entry — harmless. A
+    /// nack (issue #1818) settles the wait but leaves the batch pending, so [#reportIncomplete] counts
+    /// its chunks at risk exactly as it counts an ack that never came.
     @Contract
     public void onMigrationDataAck(DHTMessage.MigrationDataAck ack) {
-        Option.option(pendingPushes.remove(ack.requestId())).onPresent(pending -> pending.ackPromise()
-                                                                                         .succeed(Unit.unit()));
+        var settled = ack.applied()
+                      ? pendingPushes.remove(ack.requestId())
+                      : pendingPushes.get(ack.requestId());
+
+        Option.option(settled).onPresent(pending -> pending.ackPromise()
+                                                           .succeed(Unit.unit()));
     }
 
     private Promise<Unit> dispatchDeparturePush(List<DHTMessage.KeyValue> entries,
@@ -243,11 +249,15 @@ public final class DHTRebalancer {
         return ackPromise;
     }
 
+    /// Settles when every batch is acked or nacked, or the budget expires; either way the batches still
+    /// pending — nacked or unanswered — are reported. Recovery is FER: an expired budget degrades
+    /// forward to that report, because the push must never gate the halt (D4).
     private Promise<Unit> awaitAcks(List<Promise<Unit>> acks, TimeSpan budget, DeparturePushObserver observer) {
         return Promise.allOf(acks)
                       .timeout(budget)
                       .mapToUnit()
-                      .recover(_ -> reportIncomplete(observer));
+                      .recover(_ -> Unit.unit())
+                      .map(_ -> reportIncomplete(observer));
     }
 
     private Unit reportIncomplete(DeparturePushObserver observer) {
