@@ -251,7 +251,8 @@ create_range_recording_acks() {
 # used to be flattened into StorageFailed/ForwardRefused; those two stay OFF this list on purpose.
 # `OwnerTransitioning` (EntityError.OwnerTransitioning) is a committed owner that has just unloaded the
 # keyspace's slice during a CDM rebalance and has not yet been re-minted away (run 8): it clears by itself.
-# A genuinely unknown keyspace still answers the terminal `UnknownKeyspace`/`ForwardRefused`, OFF the list.
+# The same type now also covers a committed owner whose partition ring is not held yet (was a terminal
+# PartitionNotHeld over the forward wire, #1805). A genuinely unknown keyspace still answers the terminal `UnknownKeyspace`/`ForwardRefused`, OFF the list.
 # Refusals that mean "retry", never "no" (#1501). Each is a `Cause.Transient` in the product and
 # clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it
 # may serve reads (EntityLogError.java). An EXPLICIT allow-list, so an unknown failure type is never

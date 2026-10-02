@@ -605,6 +605,46 @@ class EntityOwnerForwardTest {
         assertThat(transport.calls).as("the receiving side must never re-enter the forwarding decision").isEmpty();
     }
 
+    /// #1805 shape: the COMMITTED owner does not hold the partition's ring yet (materialize pending or
+    /// refused), so what it says over the forward wire must be the transient not-ready, not the terminal
+    /// "not held" that a genuinely foreign node says. Paired with the test above, where the receiver is NOT
+    /// the committed owner and the answer stays `PartitionNotHeld` — the owner check is what separates them.
+    @Test
+    void forwardedOps_onTheCommittedOwnerThatDoesNotHoldThePartition_answerTheTransientCause() {
+        substrate.holds = false;
+
+        var owner = entityAs(SELF, SELF, Option.some(transport));
+        var target = (EntityForwardRegistry.ForwardTarget) owner;
+        var key = "k1".getBytes(StandardCharsets.UTF_8);
+
+        assertNotReadyTransient(target.getForwarded(key).await());
+        assertNotReadyTransient(target.applyForwarded(key, "Add:5".getBytes(StandardCharsets.UTF_8)).await());
+    }
+
+    private static <T> void assertNotReadyTransient(Result<T> result) {
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityError.OwnerTransitioning.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("committed owner");
+        });
+    }
+
+    /// The sender keeps a `PartitionNotHeld` that crossed the wire terminal: a node that said it from a
+    /// foreign position was not mid-handover, so only the owner-side decision above may make it transient.
+    @Test
+    void create_ownerRefusesAsPartitionNotHeld_staysTerminal() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("PartitionNotHeld", "partition 6 not held"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardRefused.class);
+            assertThat(cause.isTransient()).isFalse();
+        });
+    }
+
     /// The owner side of the hop: present state answers as bytes, a missing key as an explicit empty
     /// Option — decoded with the same serializer the entity commits with.
     @Test
