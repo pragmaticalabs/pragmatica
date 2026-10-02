@@ -244,7 +244,9 @@ public final class DHTAntiEntropy {
     }
 
     /// The current co-replicas plus every recorded previous holder still in the ring — the nodes that may
-    /// hold this partition's data (#1777, ruling C1). Self is never a source.
+    /// hold this partition's data (#1777, ruling C1). Self is never a source, and neither is a node the
+    /// transport does not consider live: a dead source never answers, and a round waits for every source,
+    /// so it would never decide (the same liveness view the read path filters its targets by).
     private Set<NodeId> catchUpSources(Partition partition, List<NodeId> coReplicas) {
         var members = node.ring().nodes();
         var sources = new HashSet<>(coReplicas);
@@ -254,8 +256,18 @@ public final class DHTAntiEntropy {
             .filter(members::contains)
             .forEach(sources::add);
         sources.remove(node.nodeId());
+        retainLive(sources);
 
         return Set.copyOf(sources);
+    }
+
+    /// An empty live set means the adapter has no liveness view (non-cluster paths): every source stays.
+    private void retainLive(Set<NodeId> sources) {
+        var live = network.livePeers();
+
+        if (!live.isEmpty()) {
+            sources.retainAll(live);
+        }
     }
 
     private void sendCatchUpDigests(CatchUpRound round, byte[] localDigest) {

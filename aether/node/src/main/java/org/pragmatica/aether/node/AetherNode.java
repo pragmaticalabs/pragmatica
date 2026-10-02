@@ -654,6 +654,13 @@ public interface AetherNode extends ManageableNode {
               .filter(peer -> "core".equalsIgnoreCase(peer.labels().getOrDefault(NodeInfo.LABEL_ROLE, "core")))
               .forEach(peer -> dhtRing.addNode(peer.id()));
         var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
+
+        // #1777 track 2: the store starts empty, so every partition this core owns starts catching up — it
+        // refuses rather than answers "absent" until anti-entropy has filled it from the nodes that may hold
+        // its data (the 1 s catch-up tick armed below with the node's other periodic work).
+        if (!configuredWorker(config)) {
+            dhtNode.beginCatchUp();
+        }
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(),
@@ -5265,6 +5272,10 @@ public interface AetherNode extends ManageableNode {
         // join-time round in DHTTopologyListener is the fast path, this cycle is its retry.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
                                                                       config.timeouts().dht().antiEntropyInterval()));
+        // #1777 track 2: fills the partitions this node is a replica of but not yet authoritative for —
+        // at boot, and after every ring change — within about a tick of their sources answering.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::catchUpNow,
+                                                                      DHTAntiEntropy.CATCH_UP_INTERVAL));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
         // last-sealed offset so the WAL does not grow unbounded. Records <= that offset are already in
         // cold segments whose refs are in the metadata snapshot on disk (served post-restart by the tiered

@@ -251,6 +251,26 @@ class DHTCatchUpGateTest {
         assertThat(newcomer.previousHolders(partition)).containsExactlyInAnyOrderElementsOf(before);
     }
 
+    /// T15: a co-replica the transport reports dead is not a catch-up source. It would never answer, and a
+    /// round waits for every source, so it would keep the partition catching up until the ring prunes it.
+    @Test
+    void deadCoReplica_doesNotBlockTheCatchUp() {
+        var cluster = Cluster.of(5);
+        var joiner = new NodeId("node-5");
+        var key = cluster.keyGainedBy(joiner, "t15");
+
+        cluster.seedOnReplicas(key);
+        cluster.joinWithoutCatchUp(joiner);
+
+        var dead = cluster.replicasOf(key).stream().filter(id -> !id.equals(joiner)).findFirst().orElseThrow();
+
+        cluster.kill(dead);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+
+        assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).isEqualTo(Readiness.SERVING);
+        assertThat(cluster.holds(joiner, key)).isTrue();
+    }
+
     /// T2b: when quorum becomes unreachable because replicas refused as catching up, the read fails with
     /// the transient [DHTError.NotCaughtUp] — never "absent", and distinguishable from an unreachable quorum.
     @Test
@@ -366,6 +386,7 @@ class DHTCatchUpGateTest {
     private static final class Cluster {
         private final Map<NodeId, Member> members = new LinkedHashMap<>();
         private final Set<NodeId> silenced = new HashSet<>();
+        private final Set<NodeId> dead = new HashSet<>();
         private int catchUpTraffic;
 
         /// `size` nodes formed and serving: every node knows every other.
@@ -397,7 +418,7 @@ class DHTCatchUpGateTest {
             ringMembers.forEach(ring::addNode);
 
             var node = dhtNode(id, memoryStorageEngine(), ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = network();
             var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
             var listener = dhtTopologyListener(node, dhtRebalancer(node, network, CONFIG), antiEntropy);
 
@@ -406,6 +427,21 @@ class DHTCatchUpGateTest {
 
         Member member(NodeId id) {
             return members.get(id);
+        }
+
+        /// Delivers synchronously; reports as live every member not killed (no view at all until one is).
+        private DHTNetwork network() {
+            return new DHTNetwork() {
+                @Override
+                public void send(NodeId target, ProtocolMessage message) {
+                    deliver(target, message);
+                }
+
+                @Override
+                public Set<NodeId> livePeers() {
+                    return Cluster.this.livePeers();
+                }
+            };
         }
 
         /// The existing members learn of `joiner` through their listeners; the joiner itself boots knowing the
@@ -431,7 +467,7 @@ class DHTCatchUpGateTest {
             ids.forEach(ring::addNode);
 
             var node = dhtNode(joiner, new RefusingCopies(memoryStorageEngine()), ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = network();
             var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
 
             members.put(joiner,
@@ -488,6 +524,24 @@ class DHTCatchUpGateTest {
 
         void silence(NodeId id) {
             silenced.add(id);
+        }
+
+        /// Silenced, and reported dead by every node's liveness view.
+        void kill(NodeId id) {
+            silenced.add(id);
+            dead.add(id);
+        }
+
+        private Set<NodeId> livePeers() {
+            if (dead.isEmpty()) {
+                return Set.of();
+            }
+
+            var live = new HashSet<>(members.keySet());
+
+            live.removeAll(dead);
+
+            return live;
         }
 
         void clearTraffic() {
