@@ -12,7 +12,9 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpRequest;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -31,6 +33,7 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceDefect;
 import org.pragmatica.aether.slice.SliceState;
@@ -79,6 +82,7 @@ class AutoRollbackOnAllInstancesFailedTest {
     private static final int FIRST_CANDIDATE_BASE = 2000;
     private static final int LAST_CANDIDATE_BASE = 2800;
     private static final int CANDIDATE_STEP = 100;
+    private static final int START_ATTEMPTS = 5;
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan REQUEST = TimeSpan.timeSpan(10).seconds();
     private static final int MAX_PROBE_ROUNDS = 120;
@@ -239,9 +243,7 @@ class AutoRollbackOnAllInstancesFailedTest {
     }
 
     private void startDeployed(String prefix) {
-        basePort = freeBasePort();
-        cluster = EmberCluster.emberCluster(NODES, basePort, basePort + MGMT_OFFSET, basePort + APP_OFFSET, prefix);
-        LifecycleAwait.settled("start auto-rollback cluster", cluster, cluster.start());
+        startOnFreeBlock(prefix);
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
                .until(() -> cluster.currentLeader().isPresent());
         applyBlueprint();
@@ -249,6 +251,35 @@ class AutoRollbackOnAllInstancesFailedTest {
                .until(() -> cluster.allNodes()
                                    .stream()
                                    .allMatch(this::hostsActiveInstance));
+    }
+
+    /// The probe (see [#blockIsFree]) releases every port before the cluster binds it, and CI runs a module-parallel
+    /// reactor, so another process can take one in between. A start that fails on a bind collision is stopped and
+    /// retried on a fresh block, a bounded number of times; any other failure is reported at once.
+    private void startOnFreeBlock(String prefix) {
+        var attempted = new HashSet<Integer>();
+
+        for (int attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
+            basePort = freeBasePort(attempted);
+            attempted.add(basePort);
+            cluster = EmberCluster.emberCluster(NODES, basePort, basePort + MGMT_OFFSET, basePort + APP_OFFSET, prefix);
+            var starting = cluster.start();
+            var outcome = starting.await(LifecycleAwait.LIFECYCLE_BOUND).fold(Cause::message, _ -> "started");
+
+            if ("started".equals(outcome)) {
+                return;
+            }
+            if (!isBindCollision(outcome) || attempt == START_ATTEMPTS) {
+                LifecycleAwait.settled("start auto-rollback cluster", cluster, starting);
+                return;
+            }
+            LifecycleAwait.bestEffort("stop the cluster that lost a port between probe and bind", cluster, cluster.stop());
+            cluster = null;
+        }
+    }
+
+    private static boolean isBindCollision(String startFailure) {
+        return startFailure.contains("Address already in use") || startFailure.contains("BindException");
     }
 
     private void applyBlueprint() {
@@ -515,9 +546,9 @@ class AutoRollbackOnAllInstancesFailedTest {
         }
     }
 
-    private static int freeBasePort() {
+    private static int freeBasePort(Set<Integer> excluded) {
         for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
+            if (!excluded.contains(base) && blockIsFree(base)) {
                 return base;
             }
         }
@@ -526,8 +557,9 @@ class AutoRollbackOnAllInstancesFailedTest {
 
     private static boolean blockIsFree(int base) {
         for (int slot = 0; slot < SLOTS; slot++) {
-            if (!(udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
-                  && tcpFree(base + APP_OFFSET + slot))) {
+            if (!(udpFree(base + slot) && tcpFree(base + slot)
+                  && udpFree(base + slot + CoreSwimHealthDetector.SWIM_PORT_OFFSET)
+                  && tcpFree(base + MGMT_OFFSET + slot) && tcpFree(base + APP_OFFSET + slot))) {
                 return false;
             }
         }
