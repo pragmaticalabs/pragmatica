@@ -220,6 +220,60 @@ class EmberTestPortsTest {
         assertThat(EmberTestPorts.isBindCollision("Cluster startup failed: quorum not reached")).isFalse();
     }
 
+    /// Every candidate busy is not a failure: the scan backs off and takes the base once a holder lets go (a base in TCP
+    /// TIME_WAIT frees itself within a minute).
+    @Test
+    @Timeout(60)
+    void freeBase_everyCandidateBusy_waitsAndReturnsTheBaseOnceItIsReleased() throws Exception {
+        var onlyBase = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST, 50, 3, 40, 80);
+        var holder = takeTcp(onlyBase.first() + onlyBase.mgmtOffset());
+
+        taken.add(holder);
+        var releaser = Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(3_000);
+                holder.close();
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        });
+        var startedAt = System.nanoTime();
+        var base = EmberTestPorts.freeBase(onlyBase);
+        var waitedMs = (System.nanoTime() - startedAt) / 1_000_000;
+
+        releaser.join();
+        assertThat(base).isEqualTo(onlyBase.first());
+        assertThat(waitedMs).as("it waited for the release instead of failing at once").isGreaterThanOrEqualTo(2_000);
+    }
+
+    /// Control for the test above: with the holder never letting go the scan does fail, after its bound.
+    @Test
+    @Timeout(60)
+    void freeBase_everyCandidateStaysBusy_failsOnlyAfterTheWaitBound() {
+        var onlyBase = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST, 50, 3, 40, 80);
+
+        taken.add(takeTcp(onlyBase.first() + onlyBase.mgmtOffset()));
+        var startedAt = System.nanoTime();
+
+        assertThatThrownBy(() -> EmberTestPorts.freeBase(onlyBase, Set.of(), 3_000)).hasMessageContaining("no free port block");
+        assertThat((System.nanoTime() - startedAt) / 1_000_000).isGreaterThanOrEqualTo(3_000);
+    }
+
+    @Test
+    void hold_bindsThePortsOnAFreeBlock_andReleasesThemOnClose() {
+        var tcp = EmberTestPorts.Hold.tcp(BLOCK.mgmtOffset());
+        var udp = EmberTestPorts.Hold.udp(EmberTestPorts.SWIM_PORT_OFFSET);
+        int base;
+
+        try (var held = EmberTestPorts.hold(BLOCK, new java.util.HashSet<>(), List.of(tcp, udp))) {
+            base = held.base();
+            assertThatThrownBy(() -> takeTcp(base + tcp.offset()).close()).as("the TCP port is held").isInstanceOf(AssertionError.class);
+            assertThatThrownBy(() -> takeUdp(base + udp.offset()).close()).as("the UDP port is held").isInstanceOf(AssertionError.class);
+        }
+        taken.add(takeTcp(base + tcp.offset()));
+        takeUdp(base + udp.offset()).close();
+    }
+
     private static DatagramSocket takeUdp(int port) {
         try {
             return new DatagramSocket(port);

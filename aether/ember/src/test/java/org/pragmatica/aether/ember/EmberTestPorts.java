@@ -9,6 +9,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -43,15 +44,18 @@ final class EmberTestPorts {
     /// `port + CoreSwimHealthDetector.SWIM_PORT_OFFSET`), so the probe cannot drift from the bind (#1698's CI flake).
     static final int SWIM_PORT_OFFSET = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     static final int START_ATTEMPTS = 5;
+    /// Longer than TCP TIME_WAIT (60 s) on Linux, so a pool whose every base is dirty becomes free again within it.
+    static final long EXHAUSTION_WAIT_MS = 90_000L;
+    static final long RESCAN_MS = 2_000L;
     /// The one probed pool every Ember test that scans for a free block draws from. Below the Linux ephemeral floor
     /// (32768): a base inside 32768-60999 can be taken by any concurrent module's outbound connection between probe and
     /// bind. Tests in this module run one after another, so they share it; a block still held or in TIME_WAIT from the
-    /// test before is skipped by the probe. The step is half a block: candidates are alternatives that never coexist, and
+    /// test before is skipped by the probe. The step is a quarter of a block (50): candidates are alternatives that never coexist, and
     /// the probe binds every port of a candidate, so a running cluster's ports rule out the overlapping candidates.
     /// Registered as one scan row in TEST_PORT_ALLOCATION.md.
     static final int POOL_FIRST = 1030;
     static final int POOL_LAST = 1830;
-    static final int POOL_STEP = 100;
+    static final int POOL_STEP = 50;
 
     /// `reservedOffsets`: further ports (TCP and UDP) the test uses at `base + offset`, e.g. a dead seed's address.
     record Block(int first,
@@ -76,13 +80,96 @@ final class EmberTestPorts {
     /// As [#freeBase(Block)], skipping `excluded` bases (#1707 review: a base that lost a bind is not retried, even if
     /// the port that collided has since been released).
     static int freeBase(Block block, Set<Integer> excluded) {
-        for (int base = block.first(); base <= block.last(); base += block.step()) {
-            if (!excluded.contains(base) && isFree(block, base)) {
-                return base;
+        return freeBase(block, excluded, EXHAUSTION_WAIT_MS);
+    }
+
+    /// As above. When EVERY candidate is busy (a port still held, or a TCP port in TIME_WAIT: the probe binds without
+    /// `SO_REUSEADDR`) the scan backs off and repeats until `waitMs` has passed, which must exceed TIME_WAIT's 60 s, and
+    /// only then fails: a pool shared by sequential tests runs dry for a moment, which is not a failure of the test.
+    static int freeBase(Block block, Set<Integer> excluded, long waitMs) {
+        var deadline = System.nanoTime() + waitMs * 1_000_000L;
+
+        while (true) {
+            for (int base = block.first(); base <= block.last(); base += block.step()) {
+                if (!excluded.contains(base) && isFree(block, base)) {
+                    return base;
+                }
+            }
+
+            if (System.nanoTime() >= deadline) {
+                return fail("no free port block between " + block.first() + " and " + block.last() + " after " + waitMs + " ms");
+            }
+
+            log.warn("Every port block between {} and {} is busy (held, or TCP TIME_WAIT); rescanning in {} ms",
+                     block.first(),
+                     block.last(),
+                     RESCAN_MS);
+            sleep(RESCAN_MS);
+        }
+    }
+
+    /// One port a test occupies on purpose, at `base + offset`.
+    record Hold(int offset, boolean udp) {
+        static Hold tcp(int offset) {
+            return new Hold(offset, false);
+        }
+
+        static Hold udp(int offset) {
+            return new Hold(offset, true);
+        }
+    }
+
+    /// The sockets a test holds on purpose, on a block that was free when they were bound.
+    record Held(int base, List<AutoCloseable> sockets) implements AutoCloseable {
+        @Override
+        public void close() {
+            sockets.forEach(socket -> {
+                try {
+                    socket.close();
+                } catch (Exception e) {
+                    log.warn("closing a held test socket failed: {}", e.getMessage());
+                }
+            });
+        }
+    }
+
+    /// Binds `holds` on a free block. A test that occupies a port itself races the probe like any other bind, so a bind
+    /// that fails is retried on a fresh block (the failed base is added to `attempted`), a bounded number of times.
+    static Held hold(Block block, Set<Integer> attempted, List<Hold> holds) {
+        for (int attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
+            var base = freeBase(block, attempted);
+            var opened = new ArrayList<AutoCloseable>();
+
+            attempted.add(base);
+            try {
+                for (var hold : holds) {
+                    var port = base + hold.offset();
+
+                    // The wildcard address and the JDK's default options, as the tests took these ports before: it
+                    // collides with the node's bind on any interface.
+                    opened.add(hold.udp() ? new DatagramSocket(port) : new ServerSocket(port));
+                }
+                return new Held(base, List.copyOf(opened));
+            } catch (IOException e) {
+                new Held(base, opened).close();
+                log.warn("Test port hold on base {} lost a port between probe and bind (attempt {}/{}): {}",
+                         base,
+                         attempt,
+                         START_ATTEMPTS,
+                         e.getMessage());
             }
         }
 
-        return fail("no free port block between " + block.first() + " and " + block.last());
+        return fail("every one of " + START_ATTEMPTS + " port holds lost a port between probe and bind");
+    }
+
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("interrupted while waiting for a free port block");
+        }
     }
 
     /// A started cluster on a free block. `clusterAt` builds the (unstarted) cluster for a base port.

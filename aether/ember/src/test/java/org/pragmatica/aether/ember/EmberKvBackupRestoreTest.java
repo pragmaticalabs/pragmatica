@@ -6,10 +6,6 @@ package org.pragmatica.aether.ember;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -65,9 +61,12 @@ class EmberKvBackupRestoreTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
-    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
-    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
+                                                                                EmberTestPorts.POOL_LAST,
+                                                                                EmberTestPorts.POOL_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan APPLY_BOUND = TimeSpan.timeSpan(15).seconds();
@@ -196,13 +195,21 @@ class EmberKvBackupRestoreTest {
 
     // --- helpers ---
     private void startCluster(Path remote, Set<String> heldBack) {
-        var basePort = freeBasePort();
+        // Probed through the shared EmberTestPorts: it also probes each node's SWIM UDP port, which this class's own
+        // loop did not, and a start that loses a port between the probe and the bind retries on a fresh block.
+        cluster = EmberTestPorts.startedCluster(PORTS, basePort -> {
+                                                    var attempt = emberCluster(CLUSTER_SIZE,
+                                                                               basePort,
+                                                                               basePort + MGMT_OFFSET,
+                                                                               basePort + APP_HTTP_OFFSET,
+                                                                               PREFIX);
 
-        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, PREFIX);
-        cluster.withKvBackup(temp.resolve("nodes"), remote.toString(), RestoreMode.AUTO);
-        assertThat(cluster.start(heldBack)
-                          .await(START_BOUND)
-                          .fold(Cause::message, _ -> "started")).isEqualTo("started");
+                                                    attempt.withKvBackup(temp.resolve("nodes"), remote.toString(), RestoreMode.AUTO);
+                                                    return attempt;
+                                                },
+                                                attempt -> attempt.start(heldBack),
+                                                EmberCluster::stop,
+                                                START_BOUND);
         awaitTrue("a leader is elected", () -> cluster.currentLeader()
                                                       .isPresent());
     }
@@ -310,50 +317,5 @@ class EmberKvBackupRestoreTest {
 
             throw new AssertionError(e);
         }
-    }
-
-    /// The first candidate base whose whole block binds free right now (same helper as
-    /// `EmberBootstrapAdminKeyAuthTest`, on a disjoint candidate range).
-    private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
-    }
-
-    private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!udpFree(base + slot) || !tcpFree(base + slot) || !tcpFree(base + MGMT_OFFSET + slot)
-                || !tcpFree(base + APP_HTTP_OFFSET + slot)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
     }
 }

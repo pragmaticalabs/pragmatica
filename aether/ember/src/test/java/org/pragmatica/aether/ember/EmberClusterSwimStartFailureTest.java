@@ -7,6 +7,8 @@ package org.pragmatica.aether.ember;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.ServerSocket;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -47,9 +49,6 @@ class EmberClusterSwimStartFailureTest {
     private static final long RECLAIM_WAIT_MS = 5_000;
 
     private EmberCluster cluster;
-    private final int basePort = EmberTestPorts.freeBase(PORTS);
-    private final int baseMgmtPort = basePort + PORTS.mgmtOffset();
-    private final int baseAppHttpPort = basePort + PORTS.appOffset();
 
     /// By the time this runs `abortStart` has stopped every node; a green result here is evidence
     /// that the second stop is idempotent, as in the sibling test.
@@ -65,10 +64,18 @@ class EmberClusterSwimStartFailureTest {
     @Test
     @Timeout(150)
     void start_settlesWithTheBindFailure_whenOneNodeCannotBindItsSwimPort() throws IOException {
-        // Slots are assigned in node order: node 1 -> basePort; its SWIM listener is that + offset.
-        var node1SwimPort = basePort + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
+        // Slots are assigned in node order: node 1 -> basePort; its SWIM listener is that + offset. The test binds that
+        // port on purpose; that bind races the probe, so it is retried on a fresh block. The cluster's start is NOT
+        // retried: its bind failure is the behaviour under test.
+        int basePort;
 
-        try (var heldSwim = new DatagramSocket(node1SwimPort)) {
+        try (var held = EmberTestPorts.hold(PORTS,
+                                            new HashSet<>(),
+                                            List.of(EmberTestPorts.Hold.udp(CoreSwimHealthDetector.SWIM_PORT_OFFSET)))) {
+            basePort = held.base();
+            var baseMgmtPort = basePort + PORTS.mgmtOffset();
+            var baseAppHttpPort = basePort + PORTS.appOffset();
+
             cluster = emberCluster(3, basePort, baseMgmtPort, baseAppHttpPort, NODE_PREFIX);
             var startedAt = System.nanoTime();
             var outcome = cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started");
@@ -91,7 +98,7 @@ class EmberClusterSwimStartFailureTest {
         // Every node was stopped as part of the abort: node 1's management port and the survivors'
         // are reclaimable, and so is node 1's QUIC (UDP) port.
         for (int slot = 0; slot < 3; slot++) {
-            assertReclaimableTcp(baseMgmtPort + slot);
+            assertReclaimableTcp(basePort + PORTS.mgmtOffset() + slot);
         }
         assertReclaimableUdp(basePort);
     }
