@@ -1228,7 +1228,7 @@ public sealed interface Resolution<D extends SagaData> {
 /**
  * Every outcome names the incarnation it is about (E9): it is the address for signal/resolve/delete.
  * Only Succeeded carries a payload, the O that finish produced (D9). The others carry no state: S is
- * private, and an unfinished or unwound saga has no O [author choice: the non-success shapes].
+ * private, and an unfinished or unwound saga has no O (accepted default, CTO-confirmed 2026-10-02).
  */
 public sealed interface SagaOutcome<O> {
     SagaInstanceId instance();
@@ -1242,7 +1242,7 @@ public sealed interface SagaOutcome<O> {
     record NeedsReconciliation<O>(SagaInstanceId instance, Reconcile reason) implements SagaOutcome<O> {}
 }
 
-/** What status() returns to callers: the contract-safe view of an instance (D9). */
+/** What status() returns to callers: the contract-safe view of an instance (D9; shape CTO-confirmed as default). */
 public record SagaStatus<O>(SagaInstanceId instance, String phase, Option<Reconcile> reason,
                             Option<String> waitName, Option<Instant> deadlineAt, Option<O> output) {}
 ```
@@ -1603,8 +1603,8 @@ SHAPE lines, which the hash deliberately omits, so the runtime keeps them (mecha
 on private state, which (1) needs none of. Within that scope the swap guard protects every pair that reads
 the same bytes across builds: on the **contract types**, a caller and the instances it addresses (3); and,
 for a rebuild under an unchanged version id, the rebuild and the private records its predecessor wrote
-(2) — there a moved name would make the rebuild read existing records under the wrong meaning. It is
-never applied between two different versions' private types: under pin-at-creation they never read each
+(2) — there a moved name would make the rebuild read existing records under the wrong meaning (drift
+scope CTO-confirmed 2026-10-02). It is never applied between two different versions' private types: under pin-at-creation they never read each
 other's bytes.
 
 Today the TAG/ENUM/SHAPE derivation covers the node's `@Codec` types; producing the same lines for a
