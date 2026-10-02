@@ -7,4 +7,4 @@
   the SWIM window); a split that never completes is an honest FAIL naming who still sees whom, and the heal still runs.
 - **The majority-unreadable failure now prints the last read's HTTP status and body** instead of "the leader may be down": a
   forwarding error means the answering node could not reach the CURRENT leader.
-  [verified: `aether/tests/integration/test/test-s05-isolation.sh` C1, I1-I5, O1-O2, M1-M2. No cloud run.]
+  [verified: `aether/tests/integration/test/test-s05-isolation.sh` C1, I1-I7, O1-O2, M1-M2 and the updated test-partition-heal-on-failure.sh. No cloud run.]

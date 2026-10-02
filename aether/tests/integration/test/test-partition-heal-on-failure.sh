@@ -9,8 +9,8 @@
 #   H5  ORDER: in H1 (and in H1b, where the first heal FAILS) each minority heal precedes S06's start.
 #       Without it the in-step heal is unpinned: run_test masks a step failure and the EXIT cleanup
 #       heals later, so deleting the in-step heals (or `|| return 1` on the first) left H1-H4 green.
-#   S1  every majority read FAILS: S05 fails as leader-unreachable (loud), never a violation, never a pass.
-#   S5  one good read, then the leader dies (every read fails): fails as leader-unreachable, no PASS.
+#   S1  every majority read FAILS: S05 fails as majority-unreadable (loud), never a violation, never a pass.
+#   S5  one good read, then the leader dies (every read fails): fails as majority-unreadable, no PASS.
 #   S6  too few successful reads across the window (S05_MIN_OK_READS above what the window yields): inconclusive.
 #   S2  the first two reads fail, later ones succeed: S05 passes (a failed read is unknown, retried).
 #   S3  a SUCCESSFUL read reports leaderId=none: that is the violation.
@@ -61,7 +61,7 @@ node_mgmt_endpoint() { echo http://majority; }
 cluster_quorate() { echo "${STUB_QUORATE:-true}"; }
 pick_non_leader() { printf 'node-2\nnode-3\n'; }
 # Membership vanishes once any partition was injected (CTM replaced the nodes).
-cloud_running_cores() { [ -f "$WORK/partitioned" ] || printf 'core-2\ncore-3\n'; }
+cloud_running_cores() { [ -f "$WORK/partitioned" ] || printf 'core-1\ncore-2\ncore-3\ncore-4\ncore-5\n'; }
 cloud_partition_node() {
     echo "partition $1" >> "$CALLS"; touch "$WORK/partitioned"
     if [ "${STUB_DIE_ON:-}" = "$1" ]; then exit 9; fi
@@ -69,22 +69,31 @@ cloud_partition_node() {
 }
 cloud_heal_partition() { echo "heal $1" >> "$CALLS"; [ "${STUB_HEAL_FAIL:-}" = "$1" ] && return 1; return 0; }
 STUB
-echo 'kv_lifecycle_state() { echo READY; }' > "$WORK/lib/topology.sh"
+# the REAL membership parser (the S05 isolation gate reads minority state through it), extracted from lib/topology.sh
+{ echo 'kv_lifecycle_state() { echo READY; }'; sed -n '/^membership_node_state() {/,/^}/p' "${SCRIPT_DIR}/../lib/topology.sh"; } > "$WORK/lib/topology.sh"
 # Stub curl = the majority node's mgmt API. STUB_CURL: ok (default) | fail | flaky (first 2 reads fail)
 # | none (successful read, leaderId=none) | pinned_minority (only http://majority answers correctly).
 cat > "$WORK/bin/curl" <<'CURLSTUB'
 #!/bin/bash
-n=$(( $(cat "$CALLS.curl" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS.curl"
 url="${*: -1}"; echo "curl $url" >> "$CALLS"
+# The isolation gate's reads (membership of every majority node, the leader's topology) always report the partition IN FORCE:
+# STUB_CURL below shapes only the S05 monitor's /nodes/status reads, which is what these cases are about.
+case "$url" in
+    */cluster/membership) echo "{\"nodeId\":\"x\",\"members\":[{\"nodeId\":\"core-1\",\"state\":\"Member\"},{\"nodeId\":\"core-2\",\"state\":\"Dead\"},{\"nodeId\":\"core-3\",\"state\":\"Dead\"}]}"; exit 0 ;;
+    */cluster/topology) echo "{\"nodeDetails\":[{\"nodeId\":\"core-1\",\"health\":\"CONNECTED\"}]}"; exit 0 ;;
+esac
+n=$(( $(cat "$CALLS.curl" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS.curl"   # counts the S05 monitor's reads only
+out=""; w=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; [ "$prev" = "-w" ] && w="$a"; prev="$a"; done
+emit() { if [ -n "$out" ]; then printf '%s' "$1" > "$out"; [ -n "$w" ] && printf 200; else echo "$1"; fi; }
 case "${STUB_CURL:-ok}" in
-    fail) exit 7 ;;
-    flaky) [ "$n" -le 2 ] && exit 7 ;;
-    dies) [ "$n" -ge 2 ] && exit 7 ;;
-    none) echo "{\"cluster\":{\"leaderId\":null,\"quorate\":true}}"; exit 0 ;;
+    fail) [ -n "$w" ] && printf 000; exit 7 ;;
+    flaky) [ "$n" -le 2 ] && { [ -n "$w" ] && printf 000; exit 7; } ;;
+    dies) [ "$n" -ge 2 ] && { [ -n "$w" ] && printf 000; exit 7; } ;;
+    none) emit "{\"cluster\":{\"leaderId\":null,\"quorate\":true}}"; exit 0 ;;
 esac
 case "$url" in
-    http://majority/*) echo "{\"cluster\":{\"leaderId\":\"node-1\",\"quorate\":${STUB_QUORATE:-true}}}" ;;
-    *) echo "{\"cluster\":{\"leaderId\":null,\"quorate\":false}}" ;;   # a partitioned/pinned node's view
+    http://majority/*) emit "{\"cluster\":{\"leaderId\":\"node-1\",\"quorate\":${STUB_QUORATE:-true}}}" ;;
+    *) emit "{\"cluster\":{\"leaderId\":null,\"quorate\":false}}" ;;   # a partitioned/pinned node's view
 esac
 CURLSTUB
 chmod +x "$WORK/bin/curl"
@@ -141,16 +150,16 @@ else fail "H5b order: $(tr '\n' '|' < "$WORK/calls.h1b")"; fi
 
 # S1-S4: the S05 monitor's read discipline (cloud mode, window 3s)
 run s1 CLOUD_MODE=true STUB_CURL=fail CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
-if grep -q 'S05 leader-unreachable' "$WORK/out.s1" && ! grep -q 'S05 violation' "$WORK/out.s1" && ! grep -q 'PASS S05' "$WORK/out.s1" \
-   && grep -qx 'heal core-2' "$WORK/calls.s1"; then ok "S1 all reads failing is leader-unreachable (not a violation, not a pass) and still heals"
+if grep -q 'S05 majority-unreadable' "$WORK/out.s1" && ! grep -q 'S05 violation' "$WORK/out.s1" && ! grep -q 'PASS S05' "$WORK/out.s1" \
+   && grep -qx 'heal core-2' "$WORK/calls.s1"; then ok "S1 all reads failing is majority-unreadable (not a violation, not a pass) and still heals"
 else fail "S1 out: $(grep -c 'S05' "$WORK/out.s1") S05 lines: $(grep 'S05' "$WORK/out.s1" | head -2 | cut -c1-90 | tr '\n' '|')"; fi
 run s2 CLOUD_MODE=true STUB_CURL=flaky CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
-if grep -q 'PASS S05: majority stayed quorate' "$WORK/out.s2" && ! grep -q 'S05 violation\|S05 inconclusive\|S05 leader-unreachable' "$WORK/out.s2"; then
+if grep -q 'PASS S05: majority stayed quorate' "$WORK/out.s2" && ! grep -q 'S05 violation\|S05 inconclusive\|S05 majority-unreadable' "$WORK/out.s2"; then
     ok "S2 two failed reads then successes: S05 passes (failed read = unknown)"
 else fail "S2 out: $(grep 'S05' "$WORK/out.s2" | head -2 | cut -c1-90 | tr '\n' '|')"; fi
 run s5 CLOUD_MODE=true STUB_CURL=dies CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
-if grep -q 'S05 leader-unreachable.*(1 successful before)' "$WORK/out.s5" && ! grep -q 'PASS S05' "$WORK/out.s5" && ! grep -q 'S05 violation' "$WORK/out.s5"; then
-    ok "S5 one good read then a dead leader fails as leader-unreachable (no PASS)"
+if grep -q 'S05 majority-unreadable.*(1 successful before)' "$WORK/out.s5" && ! grep -q 'PASS S05' "$WORK/out.s5" && ! grep -q 'S05 violation' "$WORK/out.s5"; then
+    ok "S5 one good read then a dead leader fails as majority-unreadable (no PASS)"
 else fail "S5 out: $(grep 'S05' "$WORK/out.s5" | head -2 | cut -c1-110 | tr '\n' '|')"; fi
 run s6 CLOUD_MODE=true S05_MIN_OK_READS=1000 CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
 if grep -q 'S05 inconclusive: only' "$WORK/out.s6" && ! grep -q 'PASS S05' "$WORK/out.s6"; then

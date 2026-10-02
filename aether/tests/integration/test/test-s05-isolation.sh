@@ -4,7 +4,7 @@
 # firewall, so for a window the "2-vs-3 partition" was a half-cut node that still held links to a quorum; it won an election and
 # deposed the healthy leader (product #1748). The harness was exposing that, and also measuring firewall statefulness.
 #   C1  both partitions are applied CONCURRENTLY (both start before either finishes), and one failing is a loud FAIL
-#   I1-I5  the S05 clock starts only after ISOLATION: every majority node's own membership shows both minority nodes gone and the
+#   I1-I7  the S05 clock starts only after ISOLATION: every majority node's own membership shows both minority nodes gone and the
 #       leader has no live link to either; an asymmetric cut, a live link or an unreadable read is NOT isolation, and a split
 #       that never completes is an honest FAIL naming who still sees whom
 #   O1-O2  order in the test function: apply both -> confirm isolation -> monitor; no isolation = no monitoring, but the heal still runs
@@ -133,6 +133,18 @@ run_case i5 "$log_stub$ISO"'; echo "RC=$?"'
 if grep -q 'RC=1' "$WORK/out.i5" && grep -q 'node-4->node-2=?' "$WORK/out.i5"; then
     ok "I5 an unreadable majority node is unknown, never isolation: FAIL after the budget, node-4 reported '?'"
 else fail "I5 out=$(head -c 300 "$WORK/out.i5")"; fi
+
+setup_isolated i6
+run_case i6 "$log_stub"'membership_node_state() { return 127; }
+'"$ISO"'; echo "RC=$?"'
+if grep -q 'RC=1' "$WORK/out.i6" && grep -q 'node-3->node-2=?' "$WORK/out.i6" && ! grep -q 'isolation confirmed' "$WORK/out.i6"; then
+    ok "I6 a missing/failing membership parser reads as UNKNOWN ('?'), never as 'the node is gone': no vacuous isolation"
+else fail "I6 out=$(head -c 300 "$WORK/out.i6")"; fi
+
+run_case i7 "$log_stub"'_s05_wait_isolated 6 node-1 "node-2 node-5" ""; echo "RC=$?"'
+if grep -q 'RC=1' "$WORK/out.i7" && grep -q 'no majority nodes could be enumerated' "$WORK/out.i7"; then
+    ok "I7 an empty majority list cannot confirm isolation: FAIL, not a vacuous pass"
+else fail "I7 out=$(head -c 300 "$WORK/out.i7")"; fi
 
 # ---- O: ordering in the test function ------------------------------------------------------------------------------------
 O_STUB='kv_lifecycle_state() { echo READY; }; container_for_node() { echo "c-$1"; }

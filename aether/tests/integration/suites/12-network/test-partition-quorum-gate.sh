@@ -380,7 +380,8 @@ _s05_member_state() {
     body=$(curl -sk -m 5 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/membership" 2>/dev/null) || { printf '?'; return 0; }
     [ -n "$body" ] || { printf '?'; return 0; }
     printf '%s' "$body" | grep -qF '"members"' || { printf '?'; return 0; }
-    membership_node_state "$body" "$node"
+    # A missing/failing parser must read as UNKNOWN, never as "the node is gone" (an absent entry is a normal empty answer, rc 0).
+    membership_node_state "$body" "$node" || printf '?'
 }
 
 # The LEADER's transport view of one node (topology nodeDetails[].health): CONNECTED when a live QUIC link is observed right
@@ -401,6 +402,10 @@ _s05_link_health() {
 _s05_wait_isolated() {
     local budget="$1" leader="$2" minority="$3" majority="$4"
     local deadline=$(( SECONDS + budget )) m x ep st health pending lead_ep
+    if [ -z "$(printf '%s' "$majority" | tr -d '[:space:]')" ]; then
+        log_fail "S05: no majority nodes could be enumerated, so isolation cannot be confirmed — refusing to time the window against an unverified split"
+        return 1
+    fi
     lead_ep=$(node_mgmt_endpoint "$leader")
     while :; do
         pending=""
@@ -517,7 +522,8 @@ test_partition_does_not_destabilize_majority() {
     # violation, or success. A `return 1` between partition and heal used to skip it, leaking
     # the partition (two Hetzner firewalls at 5c1a726b7) into the next test. Healing is
     # idempotent, so healing a node whose disconnect never landed is harmless.
-    local rc=0
+    local rc=0 majority
+    majority=$(_s05_majority_ids "$m1" "$m2")   # enumerated BEFORE the partition changes what the cluster reports
     # (1) Both partitions are applied BEFORE the S05 clock starts, concurrently (applied one after the other they landed ~20 s
     # apart in run 7, so for that window the "2-vs-3 partition" was a 1-vs-4 plus a half-cut node). (2) The clock then starts only
     # when every majority node shows both minority nodes gone; established QUIC links outlive a provider firewall, so
@@ -525,7 +531,7 @@ test_partition_does_not_destabilize_majority() {
     # an S05 violation, but one the harness can no longer cause.
     if ! _s05_partition_both "$c1" "$c2"; then
         rc=1
-    elif ! _s05_wait_isolated "$ISOLATION_WAIT_S" "$leader" "$m1 $m2" "$(_s05_majority_ids "$m1" "$m2")"; then
+    elif ! _s05_wait_isolated "$ISOLATION_WAIT_S" "$leader" "$m1 $m2" "$majority"; then
         rc=1
     elif ! monitor_majority_during_partition "$leader"; then
         rc=1
