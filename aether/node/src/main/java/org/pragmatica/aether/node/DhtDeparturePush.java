@@ -4,10 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTRebalancer;
+import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -29,6 +32,15 @@ public sealed interface DhtDeparturePush {
                                                     ClusterSyncCollector drainCommands,
                                                     Supplier<DeparturePushObserver> observer) {
         return () -> rebalancer.pushOnDeparture(drainCommands.commandedDrainNodes(), observer.get());
+    }
+
+    /// The RECEIVING side (#1818 round 3): the senders a departure push is accepted from. A node is departing
+    /// if the leader's latest drain set names it, or this node's membership saw it enter DEPARTING. Both are
+    /// read per push, so a drain commanded after the push was built is still honoured. A push from any
+    /// other node is refused and nacked, so its sender keeps the batch at risk.
+    static Predicate<NodeId> departingSenders(ClusterSyncCollector drainCommands, DHTTopologyListener topology) {
+        return sender -> drainCommands.commandedDrainNodes()
+                                      .contains(sender) || topology.isDeparting(sender);
     }
 
     record unused() implements DhtDeparturePush {}

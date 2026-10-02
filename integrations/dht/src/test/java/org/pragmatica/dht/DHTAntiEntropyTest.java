@@ -237,13 +237,18 @@ class DHTAntiEntropyTest {
     @Nested
     class MigrationDataResponseHandling {
         @Test
-        void onMigrationDataResponse_appliesEntries_toLocalStorage() {
+        /// A survivor-rebalance push from a co-replica of the entries' partitions is applied. (Before #1818
+        /// round 3 this fixture fed a batch from a node outside the ring and expected it stored — the
+        /// injection hole, specified as behaviour; `DHTMigrationResponseAuthenticityTest` pins the refusal.)
+        void onMigrationDataResponse_fromACoReplica_appliesEntries_toLocalStorage() {
             var storage = memoryStorageEngine();
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             ring.addNode(LOCAL);
-            var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
+            ring.addNode(PEER);
+            var config = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
+            var node = dhtNode(LOCAL, storage, ring, config);
             var network = new CapturingNetwork();
-            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+            var antiEntropy = dhtAntiEntropy(node, network, config);
 
             var entries = List.of(
                 new DHTMessage.KeyValue(key("repaired-k1"), value("repaired-v1"), 100L, 0L, 0L, 0L),
@@ -279,13 +284,13 @@ class DHTAntiEntropyTest {
         }
 
         @Test
-        void onMigrationDataResponse_ackRequested_appliesEntriesAndSendsAck() {
+        void onMigrationDataResponse_ackRequested_fromADepartingNode_appliesEntriesAndSendsAck() {
             var storage = memoryStorageEngine();
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
             var network = new CapturingNetwork();
-            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE, PEER::equals);
 
             var entries = List.of(new DHTMessage.KeyValue(key("pushed-k1"), value("pushed-v1"), 100L, 0L, 0L, 0L));
 
@@ -311,9 +316,11 @@ class DHTAntiEntropyTest {
             var storage = memoryStorageEngine();
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             ring.addNode(LOCAL);
-            var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
+            ring.addNode(PEER);
+            var config = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
+            var node = dhtNode(LOCAL, storage, ring, config);
             var network = new CapturingNetwork();
-            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+            var antiEntropy = dhtAntiEntropy(node, network, config);
 
             var entries = List.of(new DHTMessage.KeyValue(key("pull-k1"), value("pull-v1"), 100L, 0L, 0L, 0L));
 

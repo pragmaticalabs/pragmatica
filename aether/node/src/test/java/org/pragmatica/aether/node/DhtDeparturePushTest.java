@@ -27,6 +27,7 @@ import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.DHTRebalancer;
+import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -75,6 +76,33 @@ class DhtDeparturePushTest {
 
         assertThat(vacatedSlots).as("control: both drainers held the key, so two slots open").hasSize(2);
         assertThat(pushedTo).as("the push reached every node that newly owns the key").containsExactlyInAnyOrderElementsOf(vacatedSlots);
+    }
+
+    /// #1818 round 3, the receiving side: a departure push is accepted from a node the leader's drain ping
+    /// named, or that this node's membership saw enter DEPARTING — and from no one else.
+    @Test
+    void departingSenders_areTheDrainSetAndTheMembershipDeparting_andNoOneElse() {
+        var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+        RING_MEMBERS.forEach(ring::addNode);
+        var node = DHTNode.dhtNode(SELF, memoryStorageEngine(), ring, CONFIG);
+        var topology = DHTTopologyListener.dhtTopologyListener(node);
+        var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new SilentClusterNetwork());
+        var membershipDeparting = new NodeId("node-3");
+        var bystander = new NodeId("node-4");
+
+        collector.setMetricsProducerEligibility(_ -> true);
+        collector.setPingAuthority(LEADER::equals, LEADER::equals);
+
+        var accepts = DhtDeparturePush.departingSenders(collector, topology);
+
+        assertThat(accepts.test(CO_DRAINER)).as("nothing commanded yet").isFalse();
+
+        collector.onClusterSyncPing(drainPing(Set.of(CO_DRAINER)));
+        topology.onNodeDeparting(membershipDeparting);
+
+        assertThat(accepts.test(CO_DRAINER)).as("named by the leader's drain set").isTrue();
+        assertThat(accepts.test(membershipDeparting)).as("seen entering DEPARTING").isTrue();
+        assertThat(accepts.test(bystander)).isFalse();
     }
 
     private static byte[] keyHeldByBoth(ConsistentHashRing<NodeId> ring) {

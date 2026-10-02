@@ -188,7 +188,7 @@ class DHTDepartureStaleDrainSetTest {
                                         : memoryStorageEngine(gate);
                 var node = dhtNode(id, storage, ring, CONFIG);
                 DHTNetwork net = this::deliver;
-                members.put(id, new Member(id, node, dhtRebalancer(node, net, CONFIG), dhtAntiEntropy(node, net, CONFIG), gate));
+                members.put(id, new Member(id, node, dhtRebalancer(node, net, CONFIG), dhtAntiEntropy(node, net, CONFIG, _ -> true), gate));
             });
         }
 

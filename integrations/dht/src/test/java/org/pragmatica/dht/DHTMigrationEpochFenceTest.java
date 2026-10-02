@@ -343,7 +343,7 @@ class DHTMigrationEpochFenceTest {
             return new Member(id,
                               node,
                               dhtRebalancer(node, network, CONFIG),
-                              dhtAntiEntropy(node, network, CONFIG),
+                              dhtAntiEntropy(node, network, CONFIG, _ -> true),
                               gate);
         }
 

@@ -29,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
@@ -49,6 +50,9 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 ///     chunk to the node that newly becomes responsible, so it survives.
 class DHTChurnSurvivalTest {
     private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
+    /// Every pusher in this harness is a departing node; push authenticity is pinned in
+    /// `DHTMigrationResponseAuthenticityTest`.
+    private static final Predicate<NodeId> ANY_PUSHER_IS_DEPARTING = _ -> true;
     /// Keyspace of the production-shaped join pin. Large enough that an over-pulling round strands
     /// hundreds of keys (~90% of the keyspace at RF 3 on 5 nodes), small enough to stay in-JVM cheap.
     private static final int SEEDED_KEYS = 400;
@@ -434,7 +438,7 @@ class DHTChurnSurvivalTest {
             var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
             var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, ANY_PUSHER_IS_DEPARTING);
             var member = new Member(id,
                                     node,
                                     rebalancer,
@@ -478,7 +482,7 @@ class DHTChurnSurvivalTest {
             var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
             var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, ANY_PUSHER_IS_DEPARTING);
             var existing = List.copyOf(members.keySet());
             var wholeCluster = new ArrayList<>(existing);
 

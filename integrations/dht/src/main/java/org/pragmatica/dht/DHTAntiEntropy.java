@@ -20,7 +20,9 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -47,22 +49,37 @@ public final class DHTAntiEntropy {
     /// the monotonic time it was registered so an unanswered one can be expired.
     record PendingDigest(NodeId peer, int partitionIndex, byte[] localDigest, long createdAtNanos) {}
 
+    /// A pull this node sent: only an answer from `peer`, carrying entries of `partitionIndex`, is applied.
+    private record PendingPull(NodeId peer, int partitionIndex, long createdAtNanos) {}
+
     private final DHTNode node;
     private final DHTNetwork network;
     private final DHTConfig config;
     private final TimeSpan antiEntropyInterval;
+    /// Which senders may push a departure batch (`ackRequested`) here: the nodes the leader commanded to
+    /// drain, or that the membership has seen depart. Strict by default — no sender.
+    private final Predicate<NodeId> departingSenders;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     /// Pending digest comparisons indexed by correlation ID.
     private final ConcurrentHashMap<String, PendingDigest> pendingDigests = new ConcurrentHashMap<>();
+    /// Pulls in flight, by correlation id.
+    private final ConcurrentHashMap<String, PendingPull> pendingPulls = new ConcurrentHashMap<>();
+    /// Migration batches dropped as unauthentic — counted, never silent.
+    private final AtomicLong rejectedResponses = new AtomicLong();
 
-    private DHTAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config, TimeSpan antiEntropyInterval) {
+    private DHTAntiEntropy(DHTNode node,
+                           DHTNetwork network,
+                           DHTConfig config,
+                           TimeSpan antiEntropyInterval,
+                           Predicate<NodeId> departingSenders) {
         this.node = node;
         this.network = network;
         this.config = config;
         this.antiEntropyInterval = antiEntropyInterval;
+        this.departingSenders = departingSenders;
     }
 
     /// Create an anti-entropy process for the given node with default interval.
@@ -71,7 +88,20 @@ public final class DHTAntiEntropy {
     /// @param network cluster network for sending digest requests
     /// @param config  DHT configuration
     public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DHTAntiEntropy(node, network, config, DEFAULT_ANTI_ENTROPY_INTERVAL);
+        return new DHTAntiEntropy(node, network, config, DEFAULT_ANTI_ENTROPY_INTERVAL, _ -> false);
+    }
+
+    /// Create an anti-entropy process that accepts departure pushes from `departingSenders`.
+    ///
+    /// @param node             local DHT node with storage and ring
+    /// @param network          cluster network for sending digest requests
+    /// @param config           DHT configuration
+    /// @param departingSenders the nodes a departure push (`ackRequested`) is accepted from
+    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node,
+                                                DHTNetwork network,
+                                                DHTConfig config,
+                                                Predicate<NodeId> departingSenders) {
+        return new DHTAntiEntropy(node, network, config, DEFAULT_ANTI_ENTROPY_INTERVAL, departingSenders);
     }
 
     /// Create an anti-entropy process for the given node with configurable interval.
@@ -84,7 +114,7 @@ public final class DHTAntiEntropy {
                                                 DHTNetwork network,
                                                 DHTConfig config,
                                                 TimeSpan antiEntropyInterval) {
-        return new DHTAntiEntropy(node, network, config, antiEntropyInterval);
+        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, _ -> false);
     }
 
     /// Start the periodic anti-entropy process.
@@ -216,6 +246,7 @@ public final class DHTAntiEntropy {
         var deadline = System.nanoTime() - antiEntropyInterval.nanos();
 
         pendingDigests.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
+        pendingPulls.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
     }
 
     /// Handle a digest response from a remote peer.
@@ -268,9 +299,96 @@ public final class DHTAntiEntropy {
     /// the departing-node push — so the fire-and-forget anti-entropy pull path is unchanged. The ack is
     /// honest (issue #1818): it carries whether every entry was applied, so a batch the receiver failed
     /// to store is nacked and the departing sender counts it as not delivered.
+    ///
+    /// Only an AUTHENTIC batch is applied (#1818 round 3); anything else is dropped with a WARN and counted:
+    ///   - a pull answer must match a pull this node sent — its correlation id, from the node asked, with
+    ///     every entry in the partition asked for;
+    ///   - an unsolicited departure push (`ackRequested`) must come from a departing node, and is nacked
+    ///     otherwise so the pusher keeps the batch at risk;
+    ///   - an unsolicited survivor-rebalance push must come from a co-replica, in this node's ring, of
+    ///     every entry's partition — the authority `DHTRebalancer` pushes under.
     @Contract
     public void onMigrationDataResponse(DHTMessage.MigrationDataResponse response) {
+        Option.option(pendingPulls.get(response.requestId()))
+              .onPresent(pull -> onPullAnswer(pull, response))
+              .onEmpty(() -> onUnsolicited(response));
+    }
+
+    /// Batches dropped as unauthentic since start (#1818 round 3).
+    long rejectedResponseCount() {
+        return rejectedResponses.get();
+    }
+
+    private void onPullAnswer(PendingPull pull, DHTMessage.MigrationDataResponse response) {
+        if (!pull.peer().equals(response.sender())) {
+            reject(response, "answer to a pull sent to " + pull.peer().id());
+
+            return;
+        }
+
+        pendingPulls.remove(response.requestId());
+
+        if (!allInPartition(response.entries(), pull.partitionIndex())) {
+            reject(response, "entries outside the requested partition " + pull.partitionIndex());
+
+            return;
+        }
+
+        applyAndAcknowledge(response);
+    }
+
+    private void onUnsolicited(DHTMessage.MigrationDataResponse response) {
+        if (response.ackRequested()) {
+            acceptDeparturePush(response);
+        } else {
+            acceptRebalancePush(response);
+        }
+    }
+
+    private void acceptDeparturePush(DHTMessage.MigrationDataResponse response) {
+        if (departingSenders.test(response.sender())) {
+            applyAndAcknowledge(response);
+
+            return;
+        }
+
+        reject(response, "departure push from a node that is not departing");
+        acknowledge(response, false);
+    }
+
+    private void acceptRebalancePush(DHTMessage.MigrationDataResponse response) {
+        if (response.entries().stream().allMatch(entry -> coReplicaOfEntry(response.sender(), entry))) {
+            applyAndAcknowledge(response);
+        } else {
+            reject(response, "unsolicited batch from a node that is not a co-replica of its partitions");
+        }
+    }
+
+    /// Whether both `sender` and this node replicate the entry's partition in this node's ring.
+    private boolean coReplicaOfEntry(NodeId sender, DHTMessage.KeyValue entry) {
+        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicas = node.ring()
+                           .nodesFor(entry.key(), replicationFactor);
+
+        return replicas.contains(sender) && replicas.contains(node.nodeId());
+    }
+
+    private boolean allInPartition(List<DHTMessage.KeyValue> entries, int partitionIndex) {
+        return entries.stream()
+                      .allMatch(entry -> node.ring().partitionFor(entry.key()).value() == partitionIndex);
+    }
+
+    private void applyAndAcknowledge(DHTMessage.MigrationDataResponse response) {
         applyMigrationEntries(response).onSuccess(applied -> acknowledge(response, applied));
+    }
+
+    private void reject(DHTMessage.MigrationDataResponse response, String reason) {
+        rejectedResponses.incrementAndGet();
+        log.warn("Rejected {} migrated entries from {} (request {}): {}",
+                 response.entries().size(),
+                 response.sender().id(),
+                 response.requestId(),
+                 reason);
     }
 
     private Promise<Boolean> applyMigrationEntries(DHTMessage.MigrationDataResponse response) {
@@ -303,10 +421,11 @@ public final class DHTAntiEntropy {
     private void requestMigrationData(NodeId peer, int partitionIndex) {
         var correlationId = IdGenerator.generate();
 
+        pendingPulls.put(correlationId, new PendingPull(peer, partitionIndex, System.nanoTime()));
         sendLoudly(peer,
                    new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
                    "migration request",
-                   () -> {});
+                   () -> pendingPulls.remove(correlationId));
     }
 
     /// Get the count of pending digest comparisons (for testing).
