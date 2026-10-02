@@ -248,19 +248,36 @@ public interface ArtifactStore {
 
         /// A coordinate is written once (#1778): the stored content and the offered content differ. Names
         /// both SHA-1 and SHA-256 digests so the operator can tell which of the two is the one they meant.
-        record ContentConflict(ArtifactFile file,
-                               String storedSha1,
-                               String offeredSha1,
-                               String storedSha256,
-                               String offeredSha256) implements ArtifactStoreError {
+        record ContentConflict(ArtifactFile file, ArtifactContentValue stored, ArtifactContentValue offered) implements ArtifactStoreError {
             @Override
             public String message() {
                 return "Artifact " + file.asString()
-                     + " is already stored with different content (stored sha1=" + storedSha1
-                     + ", offered sha1=" + offeredSha1
-                     + ", stored sha256=" + storedSha256
-                     + ", offered sha256=" + offeredSha256
+                     + " is already stored with different content (" + differences()
                      + "); a coordinate is written once, publish the new content under a new version";
+            }
+
+            /// Only what actually differs, stored first: a conflict that names the same digest twice says nothing.
+            private String differences() {
+                var parts = new ArrayList<String>();
+
+                addIfDifferent(parts,
+                               "size",
+                               String.valueOf(stored.size()),
+                               String.valueOf(offered.size()));
+                addIfDifferent(parts, "md5", stored.md5(), offered.md5());
+                addIfDifferent(parts, "sha1", stored.sha1(), offered.sha1());
+                addIfDifferent(parts, "sha256", stored.sha256(), offered.sha256());
+
+                return String.join(", ", parts);
+            }
+
+            private static void addIfDifferent(List<String> parts,
+                                               String name,
+                                               String storedValue,
+                                               String offeredValue) {
+                if (!storedValue.equals(offeredValue)) {
+                    parts.add(name + ": stored=" + storedValue + ", offered=" + offeredValue);
+                }
             }
         }
 
@@ -602,7 +619,11 @@ class ArtifactStoreImpl implements ArtifactStore {
         log.info("Deploying artifact: {} ({} bytes)", file.asString(), content.length);
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
-        var digest = new ArtifactContentValue(content.length, md5, sha1, computeHash(content, "SHA-256"));
+        var digest = new ArtifactContentValue(content.length,
+                                              md5,
+                                              sha1,
+                                              computeHash(content, "SHA-256"),
+                                              clock.getAsLong());
         // Aggregate timeout on the FULL deploy pipeline (checks + chunk fan-out + metadata + list writes —
         // each issues its own DHT operations). A single failing-to-quorum DHT write (e.g. when a peer's QUIC
         // channel is unwritable due to backpressure and `writeIfWritable` silently drops) blocks the chain
@@ -668,10 +689,12 @@ class ArtifactStoreImpl implements ArtifactStore {
         return sameContent(stored, offered)
                ? reassertRegistration(file, stored)
                : new ArtifactStoreError.ContentConflict(file,
-                                                        stored.sha1(),
-                                                        offered.sha1(),
-                                                        stored.sha256(),
-                                                        offered.sha256()).promise();
+                                                        new ArtifactContentValue(stored.size(),
+                                                                                 stored.md5(),
+                                                                                 stored.sha1(),
+                                                                                 stored.sha256(),
+                                                                                 stored.deployedAt()),
+                                                        offered).promise();
     }
 
     /// Size, MD5, SHA-1 AND SHA-256 must all match: a collision of the two old digests is not enough to pass.
@@ -710,13 +733,9 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                byte[] content,
                                                ArtifactContentValue offered,
                                                ArtifactContentValue bound) {
-        return bound.equals(offered)
-               ? writeNew(file, content, offered)
-               : new ArtifactStoreError.ContentConflict(file,
-                                                        bound.sha1(),
-                                                        offered.sha1(),
-                                                        bound.sha256(),
-                                                        offered.sha256()).promise();
+        return bound.sameDigest(offered)
+               ? writeNew(file, content, bound)
+               : new ArtifactStoreError.ContentConflict(file, bound, offered).promise();
     }
 
     private Promise<DeployResult> writeNew(ArtifactFile file, byte[] content, ArtifactContentValue digest) {
@@ -917,7 +936,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                                             digest.md5(),
                                             digest.sha1(),
                                             digest.sha256(),
-                                            clock.getAsLong(),
+                                            digest.deployedAt(),
                                             hexIds);
 
         return dhtPutWithRetry(metaKey(file),

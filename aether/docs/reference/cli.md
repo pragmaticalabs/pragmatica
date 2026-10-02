@@ -578,7 +578,7 @@ aether artifacts archive com.example:my-slice:1.0.0
 ```
 
 The built-in store writes each coordinate once. `deploy` and `push` of identical content again are a no-op
-(`already-present`); different content for a stored coordinate is refused (`409`, naming both SHA-1 and SHA-256 digests) and a
+(`already-present`); different content for a stored coordinate is refused (`409`, naming what differs between the stored and the offered content) and a
 `-SNAPSHOT` version is refused (`400`), so publish release versions. Archiving a version younger than the retention
 period is refused (`409`); archived artifacts answer `410` on download. See
 [Artifact Repository](../operators/artifact-repository.md).

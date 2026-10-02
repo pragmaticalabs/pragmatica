@@ -140,7 +140,7 @@ The exceptions are listed under the known limits below.
 |---------|--------|
 | `PUT` a coordinate that is not stored | `200`, `"status":"uploaded"` |
 | `PUT` the same content again | `200`, `"status":"already-present"`; nothing is uploaded or rewritten, and an interrupted first deploy is completed (the file and version registrations are re-asserted) |
-| `PUT` different content to a stored coordinate | `409`, naming the stored and the offered SHA-1 and SHA-256; the stored content is kept. Publish the change under a new version |
+| `PUT` different content to a stored coordinate | `409`, naming exactly what differs (size and/or each digest, stored and offered); the stored content is kept. Publish the change under a new version |
 | `PUT` a NEW version when the artifact already holds `artifact_max_versions` present versions | `409`, nothing uploaded; archive old versions or raise the cap |
 | `PUT` a `-SNAPSHOT` version (any file, including Maven's timestamped names) | `400`; nothing is written. SNAPSHOTs stay available through the Local repository (development, Forge) |
 | `PUT` to an archived version (identical content or not, any file) | `409`; an archived coordinate is never reused |
@@ -168,7 +168,7 @@ the DHT. The binding of a coordinate to its content is decided in consensus too:
 uploader proposes `(coordinate file -> size, MD5, SHA-1, SHA-256)` under `artifact-content/...`, and the applier keeps the FIRST
 digest committed. An uploader whose digest lost gets `409` naming both digests and uploads nothing, so only the winner
 ever writes a file's metadata and a reader can never resolve a loser's bytes. A winner that died after binding and
-before writing leaves a bound coordinate without metadata; an identical re-put completes it, a different one is refused. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
+before writing leaves a bound coordinate without metadata; an identical re-put completes it, a different one is refused. The first proposer's deploy time is kept with the binding, so completing a write (or rewriting metadata a read could not find) never changes a file's recorded deploy time: the metadata is write-once too. Reads of an artifact resolve to the highest state any answering replica holds ("present beats absent" is the
 DHT's read rule), so a replica that missed the archive write cannot make an archived version resolve; a resolve also
 obeys the consensus archived flag, so losing the marker on every replica a read reaches does not either. The versions
 set is bounded: `[slice] artifact_max_versions` (default 10,000) caps the PRESENT versions of one artifact, because

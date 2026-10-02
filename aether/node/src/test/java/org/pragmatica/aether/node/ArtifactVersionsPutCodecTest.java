@@ -53,7 +53,7 @@ class ArtifactVersionsPutCodecTest {
 
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
         var key = AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:lib").unwrap(), "1.0.0", "sources.jar");
-        var value = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex");
+        var value = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L);
         var buf = Unpooled.buffer();
 
         codec.write(buf, new KVCommand.Put<AetherKey, AetherValue>(key, value));

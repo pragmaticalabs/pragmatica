@@ -48,7 +48,17 @@ public sealed interface AetherValue {
     /// The digest (size, MD5, SHA-1, SHA-256) of the content bound to one file of one coordinate, keyed by `AetherKey.ArtifactContentKey`
     /// (#1778). The applier keeps the FIRST committed value ([GrowOnlyMergeable]: a later write merges into the
     /// committed one and yields it unchanged), so the binding is decided once, by the consensus log.
-    record ArtifactContentValue(long size, String md5, String sha1, String sha256) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+        /// Whether `other` describes the same CONTENT: size, MD5, SHA-1 and SHA-256, not the deploy time. The deploy
+        /// time is the FIRST proposer's, kept with the binding so that completing an interrupted write rewrites the
+        /// file's metadata with its original time instead of a new one.
+        public boolean sameDigest(ArtifactContentValue other) {
+            return size == other.size
+                   && md5.equals(other.md5)
+                   && sha1.equals(other.sha1)
+                   && sha256.equals(other.sha256);
+        }
+
         @Override
         public ArtifactContentValue mergeInto(ArtifactContentValue committed) {
             return committed;

@@ -60,7 +60,7 @@ class MavenProtocolHandlerWriteOnceTest {
         var refused = put(JAR_PATH, OTHER);
 
         assertThat(refused.statusCode()).isEqualTo(409);
-        assertThat(body(refused)).contains("stored sha1=" + sha1Of(CONTENT)).contains("offered sha1=" + sha1Of(OTHER));
+        assertThat(body(refused)).contains("sha1: stored=" + sha1Of(CONTENT) + ", offered=" + sha1Of(OTHER));
         assertThat(get(JAR_PATH).content()).as("the stored content is kept").isEqualTo(CONTENT);
     }
 

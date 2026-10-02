@@ -138,9 +138,12 @@ class ArtifactStoreWriteOnceTest {
 
             var conflict = (ArtifactStoreError.ContentConflict) cause;
 
-            assertThat(conflict.storedSha1()).isEqualTo(first.sha1());
-            assertThat(conflict.offeredSha1()).isNotEqualTo(first.sha1()).hasSize(40);
-            assertThat(conflict.message()).contains(conflict.storedSha1()).contains(conflict.offeredSha1());
+            assertThat(conflict.stored().sha1()).isEqualTo(first.sha1());
+            assertThat(conflict.offered().sha1()).isNotEqualTo(first.sha1()).hasSize(40);
+            assertThat(conflict.message()).contains("size: stored=" + CONTENT.length + ", offered=" + OTHER.length)
+                                          .contains("md5: stored=" + digest("MD5", CONTENT) + ", offered=" + digest("MD5", OTHER))
+                                          .contains("sha1: stored=" + first.sha1() + ", offered=" + digest("SHA-1", OTHER))
+                                          .contains("sha256: stored=" + digest("SHA-256", CONTENT) + ", offered=" + digest("SHA-256", OTHER));
         }
 
         @Test
@@ -173,14 +176,14 @@ class ArtifactStoreWriteOnceTest {
         @Test
         void deploy_refusesALoser_whenAnotherDigestIsAlreadyBoundToTheCoordinate_andUploadsNothing() {
             // Another uploader's digest was committed first; its metadata has not landed yet.
-            index.bindContent(ArtifactFile.primary(v1), new ArtifactContentValue(OTHER.length, "other-md5", "other-sha1", "other-sha256"))
+            index.bindContent(ArtifactFile.primary(v1), new ArtifactContentValue(OTHER.length, "other-md5", "other-sha1", "other-sha256", 0L))
                  .await()
                  .onFailureRun(Assertions::fail);
 
             var cause = failureOf(store.deploy(v1, CONTENT));
 
             assertThat(cause).isInstanceOf(ArtifactStoreError.ContentConflict.class);
-            assertThat(((ArtifactStoreError.ContentConflict) cause).storedSha1()).isEqualTo("other-sha1");
+            assertThat(((ArtifactStoreError.ContentConflict) cause).stored().sha1()).isEqualTo("other-sha1");
             assertThat(dht.puts).as("a loser uploads nothing and writes no metadata").isEmpty();
         }
 
@@ -188,14 +191,18 @@ class ArtifactStoreWriteOnceTest {
         void deploy_refusesAnOfferWhoseMd5AndSha1MatchTheBinding_butWhoseSha256Differs() {
             // A collision of the two old digests: same size, same MD5, same SHA-1, a different SHA-256.
             index.bindContent(ArtifactFile.primary(v1),
-                              new ArtifactContentValue(CONTENT.length, digest("MD5", CONTENT), digest("SHA-1", CONTENT), "a-different-sha256"))
+                              new ArtifactContentValue(CONTENT.length, digest("MD5", CONTENT), digest("SHA-1", CONTENT), "a-different-sha256", 0L))
                  .await()
                  .onFailureRun(Assertions::fail);
 
             var cause = failureOf(store.deploy(v1, CONTENT));
 
             assertThat(cause).isInstanceOf(ArtifactStoreError.ContentConflict.class);
-            assertThat(cause.message()).contains("stored sha256=a-different-sha256").contains("offered sha256=" + digest("SHA-256", CONTENT));
+            assertThat(cause.message()).as("names ONLY what differs, never the same digest twice")
+                                       .contains("sha256: stored=a-different-sha256, offered=" + digest("SHA-256", CONTENT))
+                                       .doesNotContain("md5:")
+                                       .doesNotContain("sha1:")
+                                       .doesNotContain("size:");
             assertThat(dht.puts).as("nothing of the loser is uploaded").isEmpty();
         }
 
@@ -217,6 +224,35 @@ class ArtifactStoreWriteOnceTest {
             } catch (java.security.NoSuchAlgorithmException e) {
                 throw new IllegalStateException(e);
             }
+        }
+
+        @Test
+        void deploy_namesOnlyTheSizeWhenOnlyTheSizeDiffers() {
+            index.bindContent(ArtifactFile.primary(v1),
+                              new ArtifactContentValue(CONTENT.length + 1, digest("MD5", CONTENT), digest("SHA-1", CONTENT), digest("SHA-256", CONTENT), 0L))
+                 .await()
+                 .onFailureRun(Assertions::fail);
+
+            assertThat(failureOf(store.deploy(v1, CONTENT)).message()).contains("size: stored=" + (CONTENT.length + 1) + ", offered=" + CONTENT.length)
+                                                                      .doesNotContain("md5:")
+                                                                      .doesNotContain("sha1:")
+                                                                      .doesNotContain("sha256:");
+        }
+
+        @Test
+        void deploy_keepsTheOriginalDeployTime_whenAnIdenticalRePutRewritesMissingMetadata() {
+            var key = "artifacts/org.example/lib/1.0.0/jar/meta";
+
+            deploy(v1, CONTENT);
+            var original = new String(dht.union().get(key), StandardCharsets.UTF_8).split(":")[5];
+            dht.replicas.getFirst().remove(key);
+            now.addAndGet(DAY);
+
+            deploy(v1, CONTENT);
+
+            assertThat(new String(dht.union().get(key), StandardCharsets.UTF_8).split(":")[5])
+                .as("write-once means the metadata is immutable too: the rewrite keeps the first deploy time")
+                .isEqualTo(original);
         }
 
         @Test

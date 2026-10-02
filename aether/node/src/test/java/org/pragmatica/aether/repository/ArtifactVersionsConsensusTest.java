@@ -213,7 +213,7 @@ class ArtifactVersionsConsensusTest {
 
         var index = KvArtifactVersionIndex.kvArtifactVersionIndex(cluster, replica, 10);
         var bound = index.bindContent(org.pragmatica.aether.resource.artifact.ArtifactFile.primary(v1),
-                                      new AetherValue.ArtifactContentValue(7, "md5", "sha1", "sha256"))
+                                      new AetherValue.ArtifactContentValue(7, "md5", "sha1", "sha256", 0L))
                          .await();
 
         assertThat(bound.isFailure()).as("a binding nobody can read is never taken as won").isTrue();
