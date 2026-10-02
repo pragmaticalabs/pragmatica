@@ -25,6 +25,11 @@ public interface RepositoryFactory {
                      .toList();
     }
 
+    /// The archive policy the built-in artifact store runs under: `[slice] artifact_archive_retention` (#1778).
+    static ArtifactStore.ArchivePolicy archivePolicy(SliceConfig config) {
+        return ArtifactStore.ArchivePolicy.archivePolicy(config.artifactArchiveRetention());
+    }
+
     static RepositoryFactory repositoryFactory(ArtifactStore artifactStore) {
         return type -> switch (type) {
             case RepositoryType.Local _ -> localRepository();

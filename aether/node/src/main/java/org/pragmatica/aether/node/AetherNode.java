@@ -1894,8 +1894,7 @@ public interface AetherNode extends ManageableNode {
                                     .instance();
         var artifactStore = ArtifactStore.artifactStore(dhtClient,
                                                         artifactStorage,
-                                                        ArtifactStore.ArchivePolicy.archivePolicy(config.sliceConfig()
-                                                                                                        .artifactArchiveRetention()));
+                                                        RepositoryFactory.archivePolicy(config.sliceConfig()));
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);
