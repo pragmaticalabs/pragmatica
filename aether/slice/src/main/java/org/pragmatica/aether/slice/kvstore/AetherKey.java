@@ -111,6 +111,40 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The content bound to one file of one coordinate in the built-in artifact store (#1778): the FIRST digest
+    /// proposed for the file is the one the Rabia applier keeps, so two uploaders racing to publish different bytes
+    /// to the same new coordinate are decided by the consensus log, and only the winner may write the file's
+    /// metadata. Never rewritten or removed.
+    record ArtifactContentKey(ArtifactBase artifactBase, String version, String file) implements ClusterStateKey {
+        private static final String PREFIX = "artifact-content/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase.asString() + "/" + version + "/" + file;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ArtifactContentKey artifactContentKey(ArtifactBase artifactBase, String version, String file) {
+            return new ArtifactContentKey(artifactBase, version, file);
+        }
+
+        public static Result<ArtifactContentKey> artifactContentKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ARTIFACT_CONTENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var parts = key.substring(PREFIX.length()).split("/", 3);
+
+            return parts.length != 3
+                   ? ARTIFACT_CONTENT_KEY_FORMAT_ERROR.apply(key).result()
+                   : ArtifactBase.artifactBase(parts[0]).map(base -> new ArtifactContentKey(base, parts[1], parts[2]));
+        }
+    }
+
     record AppBlueprintKey(BlueprintId blueprintId) implements ClusterStateKey {
         private static final String PREFIX = "app-blueprint/";
 
@@ -1363,6 +1397,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
 
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
+
+    Fn1<Cause, String> ARTIFACT_CONTENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-content key format: %s");
 
     Fn1<Cause, String> ARTIFACT_VERSIONS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-versions key format: %s");
 

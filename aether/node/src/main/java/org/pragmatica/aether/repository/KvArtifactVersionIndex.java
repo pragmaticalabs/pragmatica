@@ -11,10 +11,13 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.resource.artifact.ArtifactFile;
 import org.pragmatica.aether.resource.artifact.ArtifactVersionIndex;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactVersionsKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionsValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -53,6 +56,25 @@ public final class KvArtifactVersionIndex implements ArtifactVersionIndex {
     public Promise<Unit> archive(Artifact artifact) {
         return submit(artifact,
                       ArtifactVersionsValue.archived(artifact.version().withQualifier()));
+    }
+
+    @Override
+    public Promise<ArtifactContentValue> bindContent(ArtifactFile file, ArtifactContentValue digest) {
+        var key = ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase(file.artifact()),
+                                                        file.artifact().version().withQualifier(),
+                                                        file.fileName());
+
+        return cluster.apply(List.<KVCommand<AetherKey>> of(new Put<>(key, digest)))
+                      .map(_ -> boundDigest(key, digest));
+    }
+
+    /// The committed binding after the apply: the first digest any node proposed, which is `digest` itself only for
+    /// the winner. The applier keeps the first value, so this read cannot see a later one.
+    private ArtifactContentValue boundDigest(ArtifactContentKey key, ArtifactContentValue offered) {
+        return store.get(key)
+                    .filter(ArtifactContentValue.class::isInstance)
+                    .map(ArtifactContentValue.class::cast)
+                    .or(offered);
     }
 
     @Override

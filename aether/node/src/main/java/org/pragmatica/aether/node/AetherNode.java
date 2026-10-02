@@ -1895,11 +1895,11 @@ public interface AetherNode extends ManageableNode {
                                     .instance();
         // #1778: the versions of each artifact are kept in consensus, where concurrent publishes are folded by the
         // applier; the bytes and per-version metadata stay in the DHT.
-        var artifactStore = ArtifactStore.artifactStore(dhtClient,
-                                                        artifactStorage,
-                                                        RepositoryFactory.archivePolicy(config.sliceConfig()),
-                                                        KvArtifactVersionIndex.kvArtifactVersionIndex(clusterNode,
-                                                                                                      kvStore));
+        var artifactStore = RepositoryFactory.artifactStore(dhtClient,
+                                                            artifactStorage,
+                                                            config.sliceConfig(),
+                                                            clusterNode,
+                                                            kvStore);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);

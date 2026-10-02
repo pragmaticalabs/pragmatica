@@ -13,6 +13,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.resource.artifact.ArtifactStore.ArchivePolicy;
 import org.pragmatica.aether.resource.artifact.ArtifactStore.ArtifactStoreError;
 import org.pragmatica.aether.resource.artifact.ArtifactStore.DeployResult;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -73,6 +74,12 @@ class ArtifactStoreWriteOnceTest {
             return failing
                    ? DHTError.NO_AVAILABLE_NODES.promise()
                    : delegate.archive(artifact);
+        }
+
+        @Override
+        public Promise<org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue> bindContent(ArtifactFile file,
+                                                                                                         org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue digest) {
+            return delegate.bindContent(file, digest);
         }
 
         @Override
@@ -151,6 +158,28 @@ class ArtifactStoreWriteOnceTest {
             assertThat(dht.union().get("artifacts/org.example/lib/1.0.0/jar/meta")).as("not rewritten")
                                                                                    .isEqualTo(metaBefore);
             assertThat(listedVersions()).containsExactly("1.0.0");
+        }
+
+        @Test
+        void deploy_refusesALoser_whenAnotherDigestIsAlreadyBoundToTheCoordinate_andUploadsNothing() {
+            // Another uploader's digest was committed first; its metadata has not landed yet.
+            index.bindContent(ArtifactFile.primary(v1), new ArtifactContentValue(OTHER.length, "other-md5", "other-sha1"))
+                 .await()
+                 .onFailureRun(Assertions::fail);
+
+            var cause = failureOf(store.deploy(v1, CONTENT));
+
+            assertThat(cause).isInstanceOf(ArtifactStoreError.ContentConflict.class);
+            assertThat(((ArtifactStoreError.ContentConflict) cause).storedSha1()).isEqualTo("other-sha1");
+            assertThat(dht.puts).as("a loser uploads nothing and writes no metadata").isEmpty();
+        }
+
+        @Test
+        void deploy_completesTheWrite_whenItsOwnDigestWasBoundByAnInterruptedEarlierAttempt() {
+            var first = deploy(v1, CONTENT);
+
+            assertThat(first.alreadyPresent()).isFalse();
+            assertThat(store.resolve(v1).await().onFailureRun(Assertions::fail).unwrap()).isEqualTo(CONTENT);
         }
 
         @Test

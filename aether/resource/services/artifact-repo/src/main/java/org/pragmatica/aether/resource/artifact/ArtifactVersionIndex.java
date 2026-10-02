@@ -12,13 +12,14 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionsValue;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 
-/// The versions of each artifact in the built-in store, as a grow-only set whose entries carry the archived flag
-/// (#1778). The artifact bytes and per-version metadata live in the DHT; this index lives wherever writers can be
+/// The coordinate index of the built-in store (#1778): the versions of each artifact, as a grow-only set whose
+/// entries carry the archived flag, and the first content digest bound to each file. The artifact bytes and per-version metadata live in the DHT; this index lives wherever writers can be
 /// ordered. In a cluster that is the consensus KV plane, where the applier folds concurrent writers
 /// ([ArtifactVersionsValue#mergeInto]), so concurrent publishes never lose a version. Both operations are
 /// idempotent and only move an entry up `absent < present < archived`; there is no remove.
@@ -27,6 +28,11 @@ public interface ArtifactVersionIndex {
     Promise<Unit> publish(Artifact artifact);
     /// Flags the artifact's version archived, adding it if absent.
     Promise<Unit> archive(Artifact artifact);
+    /// Binds `digest` to the file's coordinate unless a digest is already bound, and answers the digest that IS bound:
+    /// the FIRST one proposed, decided once for every node. Never rewritten or removed. A caller whose digest is not
+    /// the answer lost the race for this coordinate and must not write its content.
+    Promise<ArtifactContentValue> bindContent(ArtifactFile file, ArtifactContentValue digest);
+
     /// The versions that are present and not archived.
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
 
@@ -34,6 +40,7 @@ public interface ArtifactVersionIndex {
     /// cluster node wires the consensus-backed one.
     static ArtifactVersionIndex inMemory() {
         var sets = new ConcurrentHashMap<ArtifactBase, ArtifactVersionsValue>();
+        var bindings = new ConcurrentHashMap<String, ArtifactContentValue>();
 
         return new ArtifactVersionIndex() {
             @Override
@@ -48,6 +55,11 @@ public interface ArtifactVersionIndex {
                 return write(sets,
                              artifact,
                              ArtifactVersionsValue.archived(artifact.version().withQualifier()));
+            }
+
+            @Override
+            public Promise<ArtifactContentValue> bindContent(ArtifactFile file, ArtifactContentValue digest) {
+                return Promise.success(bindings.computeIfAbsent(file.asString(), _ -> digest));
             }
 
             @Override

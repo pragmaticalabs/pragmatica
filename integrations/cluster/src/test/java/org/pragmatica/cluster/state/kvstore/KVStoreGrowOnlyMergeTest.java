@@ -43,6 +43,14 @@ class KVStoreGrowOnlyMergeTest {
 
     private record Plain(String value) {}
 
+    /// A first-write-wins binding: merging into a committed value yields the committed value.
+    private record Binding(String digest) implements GrowOnlyMergeable<Binding> {
+        @Override
+        public Binding mergeInto(Binding committed) {
+            return committed;
+        }
+    }
+
     private static final SetKey KEY = new SetKey("names");
 
     private KVStore<StructuredKey, Object> store;
@@ -79,6 +87,17 @@ class KVStoreGrowOnlyMergeTest {
         put(KEY, Names.of("a"));
 
         assertThat(store.get(KEY).or((Object) null)).isEqualTo(Names.of("a", "b"));
+    }
+
+    @Test
+    void put_keepsTheFirstCommittedBinding_whateverIsProposedLater() {
+        var key = new SetKey("binding");
+
+        put(key, new Binding("first"));
+        put(key, new Binding("second"));
+        put(key, new Binding("first"));
+
+        assertThat(store.get(key).or((Object) null)).isEqualTo(new Binding("first"));
     }
 
     @Test

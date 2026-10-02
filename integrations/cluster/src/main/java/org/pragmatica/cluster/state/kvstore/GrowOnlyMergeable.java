@@ -1,12 +1,14 @@
 package org.pragmatica.cluster.state.kvstore;
 
-/// Marker for a value that only ever GROWS and is therefore merged into the committed value by the Rabia
-/// applier ([KVStore]) instead of replacing it (#1778).
+/// Marker for a value that is merged into the committed value by the Rabia applier ([KVStore]) instead of
+/// replacing it (#1778). Two shapes use it: a set that only grows (union), and a first-write-wins binding
+/// (the merge returns the committed value).
 ///
 /// When a `Put` whose new AND existing committed value are both `GrowOnlyMergeable` of the same class, the
 /// applier stores `incoming.mergeInto(committed)` rather than the incoming value. The merge must be
-/// COMMUTATIVE, ASSOCIATIVE and IDEMPOTENT (a union with a per-entry maximum is the model), so every
-/// interleaving of concurrent writers converges on the same value and re-applying a command changes nothing.
+/// ASSOCIATIVE and IDEMPOTENT, so re-applying a command changes nothing. A union with a per-entry maximum is also
+/// commutative, so every interleaving converges on one value; a first-wins binding is not commutative and does not
+/// need to be, because every replica applies the same log in the same order and so keeps the same first value.
 /// A first write (no committed value, or one of another class) is stored as it is.
 ///
 /// **Why the SUBSTRATE merges, not the writer:** a writer-side read-merge-write is the lost-update race

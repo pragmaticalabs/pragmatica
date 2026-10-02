@@ -20,6 +20,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTConfig.DhtRetryPolicy;
 import org.pragmatica.dht.DHTError;
@@ -588,7 +589,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                                                     content.length,
                                                                                     md5,
                                                                                     sha1))
-                                                      .or(() -> writeNew(file, content, md5, sha1)))
+                                                      .or(() -> bindThenWrite(file, content, md5, sha1)))
                              .timeout(DEPLOY_TIMEOUT);
     }
 
@@ -654,6 +655,23 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                       stored.md5(),
                                                       stored.sha1(),
                                                       true));
+    }
+
+    /// The coordinate-to-content binding is decided ONCE, by the index (consensus in a cluster): the first digest
+    /// proposed wins. Only the winner writes chunks and metadata, so a reader can never resolve a loser's bytes, and
+    /// a loser is refused with both digests before anything of it is uploaded. A winner that died after binding and
+    /// before writing leaves a bound coordinate with no metadata; an identical re-put finds its own digest bound and
+    /// completes the write.
+    private Promise<DeployResult> bindThenWrite(ArtifactFile file, byte[] content, String md5, String sha1) {
+        var offered = new ArtifactContentValue(content.length, md5, sha1);
+
+        return versionIndex.bindContent(file, offered).flatMap(bound -> writeIfBound(file, content, offered, bound));
+    }
+
+    private Promise<DeployResult> writeIfBound(ArtifactFile file, byte[] content, ArtifactContentValue offered, ArtifactContentValue bound) {
+        return bound.equals(offered)
+               ? writeNew(file, content, offered.md5(), offered.sha1())
+               : new ArtifactStoreError.ContentConflict(file, bound.sha1(), offered.sha1()).promise();
     }
 
     private Promise<DeployResult> writeNew(ArtifactFile file, byte[] content, String md5, String sha1) {

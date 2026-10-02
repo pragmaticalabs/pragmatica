@@ -573,7 +573,10 @@ public interface SystemTags {
         pin(table, 2114, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactVersionsKey");
         pin(table, 2115, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionsValue");
         pin(table, 2116, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionEntry");
-        // ---- 2117..16383 RESERVED ----
+        // first-committed content digest per artifact file (#1778)
+        pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
+        pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // ---- 2119..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

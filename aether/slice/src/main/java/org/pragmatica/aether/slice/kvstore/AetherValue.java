@@ -45,6 +45,16 @@ import static org.pragmatica.lang.Option.none;
 @CodecFor(ExecutionMode.class)
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
+    /// The digest of the content bound to one file of one coordinate, keyed by `AetherKey.ArtifactContentKey`
+    /// (#1778). The applier keeps the FIRST committed value ([GrowOnlyMergeable]: a later write merges into the
+    /// committed one and yields it unchanged), so the binding is decided once, by the consensus log.
+    record ArtifactContentValue(long size, String md5, String sha1) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+        @Override
+        public ArtifactContentValue mergeInto(ArtifactContentValue committed) {
+            return committed;
+        }
+    }
+
     /// One version of an artifact and whether it was archived (#1778).
     record ArtifactVersionEntry(String version, boolean archived) {}
 

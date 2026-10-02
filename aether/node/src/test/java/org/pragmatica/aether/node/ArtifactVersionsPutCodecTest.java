@@ -46,6 +46,24 @@ class ArtifactVersionsPutCodecTest {
     }
 
     @Test
+    void contentBinding_hasPinnedTags_andRoundTripsThroughTheNodeCodec() {
+        assertThat(SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey")).isEqualTo(2117);
+        assertThat(SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue")).isEqualTo(2118);
+
+        var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        var key = AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:lib").unwrap(), "1.0.0", "sources.jar");
+        var value = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex");
+        var buf = Unpooled.buffer();
+
+        codec.write(buf, new KVCommand.Put<AetherKey, AetherValue>(key, value));
+        KVCommand.Put<?, ?> decoded = codec.read(buf);
+
+        assertThat(decoded.key()).isEqualTo(key);
+        assertThat(decoded.value()).isEqualTo(value);
+        assertThat(AetherKey.ArtifactContentKey.artifactContentKey(key.asString()).unwrap()).isEqualTo(key);
+    }
+
+    @Test
     void versionsKey_parsesItsOwnStringForm() {
         var key = ArtifactVersionsKey.artifactVersionsKey(ArtifactBase.artifactBase("org.example:lib").unwrap());
 

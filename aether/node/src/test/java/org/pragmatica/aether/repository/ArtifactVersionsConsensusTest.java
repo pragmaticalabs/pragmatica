@@ -107,12 +107,46 @@ class ArtifactVersionsConsensusTest {
         var second = storeB.deploy(v2, CONTENT);
 
         waitForPending(2);
+        log.applyImmediately();
         log.flush();
         await(first, second);
 
         for (var store : List.of(storeA, storeB)) {
             assertThat(store.versions(v1.groupId(), v1.artifactId()).await().unwrap().stream().map(v -> v.withQualifier()).sorted().toList())
                 .containsExactly("1.0.0", "2.0.0");
+        }
+    }
+
+    @Test
+    void twoUploadersOfDifferentBytes_toOneNewCoordinate_exactlyOneWins_andReadersSeeTheWinnersBytes() {
+        var storage = StorageInstance.storageInstance("binding-artifacts", List.of(MemoryTier.memoryTier(16 * 1024 * 1024)));
+        var dht = new MapDht();
+        var storeA = ArtifactStore.artifactStore(dht, storage, ArchivePolicy.DEFAULT, nodes.get(0));
+        var storeB = ArtifactStore.artifactStore(dht, storage, ArchivePolicy.DEFAULT, nodes.get(1));
+        var bytesA = "bytes from uploader A".getBytes(StandardCharsets.UTF_8);
+        var bytesB = "different bytes from uploader B".getBytes(StandardCharsets.UTF_8);
+
+        var a = storeA.deploy(v1, bytesA);
+        var b = storeB.deploy(v1, bytesB);
+
+        waitForPending(2);
+        log.applyImmediately();
+        log.flush();
+
+        var outcomeA = a.await(timeSpan(5).seconds());
+        var outcomeB = b.await(timeSpan(5).seconds());
+
+        assertThat(outcomeA.isSuccess() ^ outcomeB.isSuccess()).as("exactly one uploader wins").isTrue();
+
+        var winnerBytes = outcomeA.isSuccess() ? bytesA : bytesB;
+        var loser = outcomeA.isSuccess() ? outcomeB : outcomeA;
+
+        loser.onSuccessRun(Assertions::fail)
+             .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStore.ArtifactStoreError.ContentConflict.class));
+
+        for (var store : List.of(storeA, storeB)) {
+            assertThat(store.resolve(v1).await().onFailureRun(Assertions::fail).unwrap()).as("readers always see the winner's bytes")
+                                                                                         .isEqualTo(winnerBytes);
         }
     }
 
@@ -153,6 +187,7 @@ class ArtifactVersionsConsensusTest {
     private static final class Log {
         private final List<KVStore<AetherKey, AetherValue>> replicas = new ArrayList<>();
         private final List<Held> held = new ArrayList<>();
+        private boolean autoApply;
 
         private record Held(List<KVCommand<AetherKey>> commands, Promise<List<Object>> done) {}
 
@@ -172,7 +207,16 @@ class ArtifactVersionsConsensusTest {
 
             held.add(new Held(commands, done));
 
+            if (autoApply) {
+                flush();
+            }
+
             return done;
+        }
+
+        /// From now on a command applies as soon as it is submitted: the interleaving of interest is over.
+        synchronized void applyImmediately() {
+            autoApply = true;
         }
 
         synchronized int pending() {
