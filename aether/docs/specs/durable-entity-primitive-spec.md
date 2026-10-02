@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.7.1
+**Version:** 0.8.0
 **Status:** Draft. **§5 (`DurableEntity`) is reconciled with the shipped named-command API**
 (`DurableEntity<K, S, C extends Mutator<S>>`). **§6 (workflow) and §7 (saga) are PLANNED façades with no
 production code** (#353, #354; milestone v1.0.0-rc5). **§7 was reopened by #1827 and its five contract
@@ -491,10 +491,13 @@ locally by any node holding the partition's log and forwarded to the owner only 
 
 > **Status: PLANNED — no production code** (#353, milestone v1.0.0-rc5). Verified at
 > `release-1.0.0-rc4` `564d2d3df`: no `PersistentWorkflow`, `WorkflowCause` or workflow signal route
-> exists in production Java. Everything in §6 is design intent. **[author choice, to confirm]** The
-> #1827 rulings were given for sagas; this spec applies the same definition registration and version
-> binding (§7.9: registration through the slice factory, pin at creation, drain-then-retire, rollback of
-> new starts only) to long-lived workflow instances, which share the exposure §7.11.1 records.
+> exists in production Java. Everything in §6 is design intent. **Owner decision D4 (2026-10-02):** §7.9's
+> definition registration and version-binding rules apply to workflows too — registration through the
+> slice factory, pin at creation (definition + artifact + dependency versions), all bound work and
+> dependent calls routed by the binding, loud failure on missing bound code, bidirectional codec
+> compatibility (D5), drain-then-retire with reconcile-only retention (D3), rollback of new starts only.
+> **This is added scope for #353**: the workflow façade carries the same rollout-side work as #354, and its
+> acceptance needs the A4–A9 rows of §7.11 restated for workflow instances.
 
 ### 6.1 Decision — keep `PersistentWorkflow` as a distinct public facade
 
@@ -847,17 +850,40 @@ cannot tell apart from the marker:
 and no value of `R`. A `StepRecord` is committed only with an `R` that came from the forward, a `Lookup`,
 or an operator (`resolve`, §7.7).
 
-The same unresolved state arises **without a crash** when a forward's promise fails ambiguously — a
-timeout, a transport failure, or any cause that is `Cause.Transient` — because the effect may still have
-been applied. Only a **definite** refusal (a non-transient failure the downstream returned) counts as
-"the step failed"; every ambiguous outcome takes the recovery path below **[author choice: the ruling
-speaks of recovery; the timeout case is the same ambiguity reached without a crash]**.
+The same unresolved state arises **without a crash** when a forward's promise fails after its request may
+have reached the downstream. **Owner decision D1 (v1828 B2): failures are classified by whether the
+request was SENT, not by retryability** — `Cause.Transient` is the wrong axis (a never-sent request to a
+missing endpoint is `Transient`; an unclassified failure after a write is not).
+
+The invoker tags every failure it produces (implementation with #354):
+
+```java
+/** Carried by every SliceInvoker failure (and by any resource client a step uses that adopts it). */
+public sealed interface DeliveryEvidence {
+    /** Refused before the request left this node: no endpoints, circuit open, serialization error. */
+    record NotSent()  implements DeliveryEvidence {}
+    /** The request may have reached the downstream: timeout, connection reset after write, or anything unclassified. */
+    record Sent()     implements DeliveryEvidence {}
+}
+```
+
+- **`NotSent` is definite:** the step took no effect. Whether the runtime retries a `NotSent` failure
+  before treating it as the step's failure is the retry-budget question still pending (v1828 B3).
+- **`Sent` is ambiguous:** the step takes the R1 recovery path below (re-invoke, look up, or park), within
+  the key-retention window.
+- **No tag means `Sent`.** A failure from a resource that does not carry the evidence — author code, a
+  third-party client — is treated as possibly delivered. Being unclassified never makes a failure definite.
+- **[author choice] An ANSWERED refusal is definite.** A failure decoded from the downstream's own reply
+  (a declined card, a typed business refusal returned by the remote slice) proves the request arrived
+  and was refused. D1 names two tags; without this third reading such a refusal would carry `Sent` and
+  re-invoke or park a step whose outcome is known. Proposed tag: `Answered()`, definite like `NotSent`;
+  the runtime treats it as the step's failure and compensates.
 
 | Declared capability | Recovery action for an in-flight step | What it earns, and the condition it rests on |
 |---|---|---|
 | `Replayable` | within the key-retention window (below): re-invoke `forward` with the **same** `operationId` (`attempt` + 1, same persisted `S`); commit the returned `R`, fold, continue. Past the window: as `Neither` | the effect is applied at most once **and** the receipt is recovered — **iff** the downstream dedups on `operationId` and answers a repeat with the original result. The runtime cannot check that; the declaration is the author's assertion about the downstream. |
 | `Lookup` | within the key-retention window (below): call `outcome(ctx, S)`. `some(R)` → commit `R` as the step's result. `none()` → invoke `forward` (same `operationId`). Past the window: as `Neither` | the receipt is recovered when the operation happened; a `none()` is "safe to invoke" **iff** the query is ordered against the operation — no earlier attempt carrying this `operationId` can still be applied after the query answers `none()` (e.g. the downstream records the key durably before acting, or rejects late arrivals). A query that can race an in-flight earlier attempt makes `Lookup` unsound; such a downstream must be declared `Neither`. A lookup that itself fails ambiguously is retried, never treated as `none()`. |
-| `Neither` | no invocation. The step enters **`OutcomeUnknown`** and the saga parks in **`NeedsReconciliation`** (§7.6) | nothing is guessed. The operator resolves it (§7.7) as **succeeded-with-receipt** (supplies `R`), **failed** (no effect), or **compensate** (§7.7). The parked instance keeps its version pin (§7.9) and is counted by the retirement gate. |
+| `Neither` | no invocation. The step enters **`OutcomeUnknown`** and the saga parks in **`NeedsReconciliation`** (§7.6) | nothing is guessed. The operator resolves it (§7.7) as **succeeded-with-receipt** (supplies `R`), **failed** (no effect), **compensate**, or — as last resort — **abandon** (§7.7, D3). The parked instance keeps its version pin (§7.9) and is counted by the retirement gate. |
 
 **Key-retention window (v1828 B1, CTO ruling T1).** A downstream remembers an operation key for a
 bounded time (a payment provider's idempotency-key window, a search index's retention). Re-invoking or
@@ -904,12 +930,21 @@ compensation is not a failed one, so the no-retry rule above does not decide it.
 compensation with the same `compensationId`; `Lookup` queries and invokes only on a sound `none()`;
 `Neither` records `CompensationOutcomeUnknown` and parks the saga in `NeedsReconciliation` (operator:
 compensated, or failed → counts toward `PartiallyCompensated`). Wait steps have no compensation — they
-have no external effect; their folded payload is part of the `S` that earlier compensations receive.
+have no external effect; their folded payload is part of the snapshot `S_j` of every later step `j`, and so reaches that step's compensation (D2).
 
-**Compensation input.** `compensation(ctx, S, R)`: `R` is the step's own committed result (always present
-— a step without a `StepRecord` is never compensated, except through the operator's **compensate**
-resolution with an operator-supplied `R`, §7.7); `S` is the persisted state at the moment compensation
-starts **[author choice: the ruling writes `compensation(StepContext, …, R)`]**.
+**Compensation input — owner decision D2: a snapshot as of the step.** Compensation of step `j` receives
+`(ctx, S_j, R_j)`: `R_j` is the step's own committed result, and `S_j` is the state **right after step
+`j`'s fold** — not the current state, which may include later steps that were already undone. The runtime
+persists `S_j` with each `StepRecord` (it is written in the same append as the fold, §7.3) and keeps it
+until the instance is terminal; at the terminal transition the snapshots are dropped and only the final
+`S` and the results remain. A step without a `StepRecord` is never compensated, except through the
+operator's **compensate** resolution, which supplies `R_j`; the runtime then computes
+`S_j = fold(S_{j−1}, R_j)` before compensating.
+
+*Storage bound:* a non-terminal instance holds at most one encoded `S` per completed forward step, i.e.
+`≤ (forward steps in the definition) × (max encoded size of S)` in addition to its results and current
+state. A definition with many steps and a large `S` should keep `S` small — it is the cost of D2's
+exactness, paid only while the instance is live.
 
 ### 7.6 Persisted shape — `SagaInstance` and the ledger
 
@@ -924,7 +959,9 @@ public record SagaInstance<S>(SagaInstanceId id,
                               List<StepRecord> completed,       // in step order
                               SagaPhase phase) {}
 
-public record StepRecord(int index, String name, byte[] encodedResult, String resultType, Instant at) {}
+/** stateAfter: S_j, the encoded state right after this step's fold (D2); dropped at the terminal state. */
+public record StepRecord(int index, String name, byte[] encodedResult, String resultType,
+                         Option<byte[]> stateAfter, Instant at) {}
 
 public sealed interface SagaPhase {
     /** Executing; inFlight is the attempt marker of the step being invoked, if any. */
@@ -1000,8 +1037,8 @@ public interface Saga<S, D extends SagaData> {
     <P extends D> Promise<SignalAccepted> signal(SagaInstanceId instance, String waitName, String signalId,
                                                  P payload);
 
-    /** Operator resolution of a NeedsReconciliation instance. Fenced like any write. */
-    Promise<SagaOutcome<S>> resolve(String sagaId, Resolution<D> resolution);
+    /** Operator resolution of a parked instance (NeedsReconciliation or Waiting; table below). Fenced. */
+    Promise<SagaOutcome<S>> resolve(SagaInstanceId instance, Resolution<D> resolution);
 
     /** Delete a TERMINAL instance; refused (typed) otherwise. */
     Promise<Unit> delete(String sagaId);
@@ -1013,13 +1050,19 @@ public sealed interface Resolution<D extends SagaData> {
     /** The effect did not happen. The step counts as definitely failed: compensate steps below it. */
     record Failed<D extends SagaData>(String reason)            implements Resolution<D> {}
     /**
-     * The effect happened and must be undone: record the operator-supplied receipt, then compensate
-     * this step AND every step below it, in reverse. [author choice: how "compensate" differs from
-     * "failed" — the ruling names the three options without defining the third.]
+     * Undo. For OutcomeUnknown: the effect happened — record the operator-supplied receipt, then compensate
+     * this step AND every step below it, in reverse ([author choice] on how it differs from Failed).
+     * For ForceRetired: compensate every completed step from the suspended point.
      */
-    record Compensate<D extends SagaData>(D result)             implements Resolution<D> {}
+    record Compensate<D extends SagaData>(Option<D> result)     implements Resolution<D> {}
+    /** For a Waiting instance: stop waiting and compensate from the current point (D3 "cancel"). */
+    record Cancel<D extends SagaData>(String reason)            implements Resolution<D> {}
+    /** For BoundVersionUnavailable: the bound code is reachable again — resume from the suspended phase. */
+    record Resume<D extends SagaData>()                         implements Resolution<D> {}
     /** For CompensationOutcomeUnknown: the compensation did / did not take effect. */
     record CompensationResolved<D extends SagaData>(boolean effective) implements Resolution<D> {}
+    /** Last resort, always accepted on a parked instance: mark Failed(OperatorAbandoned), compensate nothing. */
+    record Abandon<D extends SagaData>(String reason)           implements Resolution<D> {}
 }
 
 public sealed interface SagaOutcome<S> {
@@ -1035,9 +1078,28 @@ public sealed interface SagaOutcome<S> {
 
 The operator surface follows the §6.6 management-triad pattern (PLANNED with #354):
 `GET /api/sagas/{type}?phase=NeedsReconciliation`, `POST /api/sagas/{type}/{id}/resolve`,
-`POST /api/sagas/{type}/{id}/signal`, with CLI and docs counterparts. `resolve` is accepted only in
-`NeedsReconciliation`, and only with the resolution kinds that match its `Reconcile` reason; anything else
-is refused with a typed `SagaError.ResolutionNotApplicable`.
+`POST /api/sagas/{type}/{id}/signal`, with CLI and docs counterparts.
+
+**Resolution table — owner decision D3 (v1828 B5, B7).** `resolve` is accepted on a **parked** instance —
+`NeedsReconciliation` or `Waiting` — and only with the kinds its row lists; anything else is refused with
+a typed `SagaError.ResolutionNotApplicable`. Every resolution resumes from the persisted suspended phase
+(§7.6), so nothing a resolution needs lives only in a node's memory. The bound code is still loaded for
+every row, because a version with bound work is never unloaded (§7.9, "reconcile-only").
+
+| Parked as | Accepted resolutions | Effect |
+|---|---|---|
+| `NeedsReconciliation(OutcomeUnknown(i))` | `SucceededWithReceipt(R)` · `Failed` · `Compensate(some(R))` · `Abandon` | fold `R` and continue · compensate steps `< i` · record `R`, compensate steps `≤ i` · terminal `Failed(OperatorAbandoned)` |
+| `NeedsReconciliation(CompensationOutcomeUnknown(j))` | `CompensationResolved(effective)` · `Abandon` | record step `j`'s compensation as done or failed and continue the reverse sequence · `Failed(OperatorAbandoned)` |
+| `NeedsReconciliation(ForceRetired)` | `Compensate(none())` · `Abandon` | compensate every completed step from the suspended point, on the retained code · `Failed(OperatorAbandoned)` |
+| `NeedsReconciliation(BoundVersionUnavailable)` | `Resume` · `Abandon` | continue the suspended phase once the bound code answers again (refused while it does not) · `Failed(OperatorAbandoned)` |
+| `Waiting(w)` | `Cancel` · `Abandon` | cancel the deadline timer, then compensate every completed step from the current point · `Failed(OperatorAbandoned)` |
+
+`Abandon` marks the instance terminal `Failed` with cause `OperatorAbandoned` and compensates nothing; it
+is explicit, recorded with the operator and reason, and is the last resort on every parked instance
+**[author choice: "always available" is read as "on every parked instance"; abandoning a Running or
+Compensating instance mid-invocation would race the in-flight call]**. This table replaces the earlier
+"`resolve` is accepted only in `NeedsReconciliation`", which contradicted §7.8's operator action on a
+waiting instance.
 
 **Error surface.** `SagaError` (sealed, extends `Cause`), named per #432's entity-centric convention:
 `SagaNotFound`, `SagaAlreadyTerminated(phase)`, `ResolutionNotApplicable(phase, resolution)`,
@@ -1126,8 +1188,9 @@ timer (idempotent cancel); if that cancel is lost, the guard still makes the eve
 
 **Interaction with compensation.** A wait is never entered while `Compensating`. A deadline `Compensate()`
 moves the instance to `Compensating` in the fire's own transition; any later fire for that wait fails the
-guard. Whether an **operator** resolution may act on a `Waiting` instance is an owner decision pending
-under v1828 B5. Signals are never applied to a compensating or terminal instance.
+guard. An operator may `Cancel` or `Abandon` a waiting instance (§7.7, D3); `Cancel` cancels the
+deadline timer and moves the instance to `Compensating` in one transition, and the guard makes any fire
+that still arrives a no-op. Signals are never applied to a compensating or terminal instance.
 
 **Composition with the state fold (R3).** The consumed payload `P` folds into `S` through the wait step's
 pure `fold`, exactly like a step result; later steps and compensations see it only through `S`.
@@ -1219,14 +1282,22 @@ across the per-key executor hop, as `submitWithDeadline` already does for the re
 **Missing bound code fails loudly.** If the bound slice version, definition, or a bound dependency
 version has no live endpoint, nothing falls back to the latest version: the invocation is not made, the
 instance parks in `NeedsReconciliation(BoundVersionUnavailable)`, and the cause is `SagaError.BoundVersionUnavailable`.
-Because no invocation was made, this is not an `OutcomeUnknown`.
+Because no invocation was made, this is not an `OutcomeUnknown`. Under D3 a version with bound work is never
+unloaded, so this arises from lost capacity, not from retirement, and is resolved by `Resume` or `Abandon`
+(§7.7). *Whether a momentary absence (a restart blip) parks at once or is first retried is an owner decision
+still pending (v1828 should-fix).*
 
-**Shared keyspace — coexistence by declared compatibility.** v1 and v2 may host the same saga keyspace
-at once only if their `codecFingerprint`s are declared compatible (the definition declares the
-fingerprints it can read, **[author choice: the declaration's exact form is #354 implementation
-detail]**). Otherwise the rollout is **refused at deploy** with `IncompatibleDurableCodec`, through the
-same pre-flight path that already refuses a deploy over a missing config section (#1067) — never at first
-read. This applies to keyspaces backing sagas and workflows; whether plain `DurableEntity` keyspaces take
+**Shared keyspace — bidirectional codec compatibility (owner decision D5).** v1 and v2 may host the same
+saga keyspace at once only if each can read the other's records: **v2 reads every v1 record and v1 reads
+every v2 record.** In practice that admits additive changes to `S`, the data root `D` and the saga's
+command records — new **optional** fields only; no removed, renamed or retyped field, and no new variant
+an older version would have to decode. One direction is not enough: a replica or owner still running v1
+meets v2 records in the shared log, and a record it cannot apply freezes the partition (#701, §7.11.1).
+The deploy pre-flight compares the two versions' codec schemas and refuses anything else with
+`IncompatibleDurableCodec`, through the same path that already refuses a deploy over a missing config
+section (#1067) — never at first read. **A change that cannot meet this is not an in-place rollout:** it
+needs a new keyspace or an explicit migration. *Requirement on the codec, not verified for the shipped
+one:* decoding must skip unknown optional fields, or v1 cannot read v2's additive records. This applies to keyspaces backing sagas and workflows; whether plain `DurableEntity` keyspaces take
 the same gate is a follow-up (§7.11.1 shows they have the same exposure).
 
 #### Retirement — drain, then retire (R4b)
@@ -1246,9 +1317,12 @@ enters **DRAINING** instead of being deallocated:
   version still bound by live work in that keyspace (ACTIVE or DRAINING), and the deployment keeps a
   draining version allocated on at least `replication_factor` of the keyspace's hosting nodes, so an
   owner failure always has an eligible successor.
-- **Operator force-retire** is the only way to retire with a non-zero count. It moves every bound
-  instance to `NeedsReconciliation(ForceRetired)` in fenced writes **before** the code is unloaded —
-  never a silent drop — and the operator resolves each (§7.7).
+- **Operator force-retire — retain code until resolved (owner decision D3).** Force-retire stops new
+  starts and normal execution: every bound instance moves to `NeedsReconciliation(ForceRetired)` in fenced
+  writes — never a silent drop. The version is **not** unloaded: it stays loaded in a **reconcile-only**
+  state, in which it runs only what a resolution asks for (compensations after `Compensate`), and it is
+  counted like a draining version for ownership eligibility. Retirement completes when the count of
+  bound, unresolved instances reaches 0. So no resolution ever needs code that is gone.
 
 #### Rollback (R4b)
 
@@ -1339,7 +1413,7 @@ here.)
 
 **Crash on `ship` (Neither):** the instance parks in `NeedsReconciliation(OutcomeUnknown(3, …))`. The
 operator checks the courier and resolves `SucceededWithReceipt(new Shipment("…"))`,
-`Failed("never dispatched")` (refund B, release A), or `Compensate(new Shipment("…"))` (recall, refund,
+`Failed("never dispatched")` (refund B, release A), or `Compensate(some(new Shipment("…")))` (recall, refund,
 release).
 
 **Step B after recovery reads A's result from `S`, and A's compensation receives A's own `R`:** if
@@ -1361,15 +1435,18 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A4 | **v2 promotion with active v1 work** | instances created under v1 with pending steps, timers and waits; roll out v2 through a canary/split and complete | v1 instances keep running on v1 — their steps, timers, compensations **and dependent slice calls** — while new starts bind to v2; on completion v1 goes DRAINING with a live count, not deallocated (R4a, R4b) | a v1-bound invocation or dependent call served by v2 code; v1 deallocated while its count is > 0 |
 | A5 | **v1 owner failure** | as A4 with v1 DRAINING; kill the owner of a partition holding v1-bound instances | ownership moves to a node hosting every live bound version; v1 instances resume there from persisted state, no replay (R4b) | v1-bound work stranded with no eligible owner; any `BoundVersionUnavailable` while v1 is DRAINING |
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
-| A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` before unload (R4b) | v1 unloaded with a non-zero count and no force-retire; a bound instance with no `NeedsReconciliation` record after force-retire |
+| A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint) and drive a step that calls it | the call is not made against any other version; instance parks `NeedsReconciliation(BoundVersionUnavailable)` (R4a) | a dependent call served by a non-bound version |
-| A9 | **Incompatible codec coexistence** | deploy v2 whose saga codec fingerprint v1 does not declare compatible, into a live keyspace | rollout refused at deploy with `IncompatibleDurableCodec` (R4a) | a deploy accepted with incompatible codecs; a refusal surfacing only at first read |
+| A9 | **Codec compatibility, both directions** (D5) | (a) deploy v2 adding an optional field to `S`; (b) deploy v2 removing or retyping a field, or adding a command variant | (a) accepted; v1 and v2 each read the other's records in the shared log. (b) refused at deploy with `IncompatibleDurableCodec` (R4a, D5) | a deploy accepted that either version cannot read; a refusal surfacing only at first read; a v1 replica freezing on a v2 record after an accepted deploy |
 | A10 | **Recovery past the key window** (v1828 B1) | park a `Replayable` and a `Lookup` step after the marker commits, then resume once `now − attempt.at ≥ keyRetention − clockSafetyMargin` | no re-invocation and no lookup; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1) | an invocation or lookup issued past the window |
+| A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite ([author choice] `Answered`) | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
+| A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
+| A13 | **Resolution table** (D3) | park one instance per row of §7.7's table and apply each accepted resolution, then each unlisted one | each accepted resolution has the row's effect, resumed from the persisted suspended phase; each unlisted one is refused `ResolutionNotApplicable`; `Abandon` works on every row | a resolution applied outside its row; a resolution needing unloaded code |
 | W1 | **Signal before the wait** | deliver the `approval` signal while the saga is still on step B | buffered and acknowledged; consumed on entering the wait, payload folded into `S`, no deadline scheduled (R5) | the signal lost; a deadline timer armed despite a buffered signal |
 | W2 | **Duplicate signal** | deliver the same `(waitName, signalId)` twice, once buffered and once after consumption; then a different `signalId` | both duplicates are no-ops answered with the original `SignalAccepted`; the different id is refused `WaitAlreadySignalled` (R5) | payload folded more than once |
 | W3 | **Deadline expiry** | let the wait's deadline pass with no signal, once per `OnDeadline`; then send a late signal | `ContinueWith`: default folded, saga continues; `Compensate`: compensation of completed steps in reverse; the late signal refused `WaitExpired` (R5) | both the deadline and a signal applied to one wait; a fire earlier than `deadlineAt` by the firing owner's clock |
 | W4 | **Owner failure while parked** | kill the owner of a `Waiting` instance, then signal it, and separately let a deadline fire after the handover | the new owner holds the same `Waiting` state and re-armed timer; the signal or deadline is applied once; no author code ran during takeover (R5, state-based recovery) | the deadline lost across handover; any step re-invoked during takeover |
-| W5 | **Retirement attempted while parked** | retire the version a `Waiting` instance is bound to | blocked, the waiting instance counted; force-retire parks it `NeedsReconciliation(ForceRetired)` and cancels its deadline (R4b, R5) | the bound version unloaded while the instance is still `Waiting` |
+| W5 | **Retirement attempted while parked** | retire the version a `Waiting` instance is bound to | blocked, the waiting instance counted; force-retire parks it `NeedsReconciliation(ForceRetired)` with `Waiting` as its suspended phase, and the version stays loaded reconcile-only until it is resolved (R4b, R5, D3) | the bound version unloaded while the instance is unresolved |
 | W6 | **Signal during compensation / after terminal** | signal an instance that is `Compensating`, one parked from `Compensating`, and one that is `Completed` — including an exact duplicate of a signal the `Completed` instance consumed | refused `SignalRejected(Compensating)` twice and `SignalRejected(Terminated(Completed))`, the duplicate included (incarnation check first, T4); compensation is not interrupted (R5) | a signal folded into a compensating or terminal instance; `SignalAccepted` returned for a terminal incarnation |
 | W7 | **Signal to a replaced incarnation** (v1828 B8) | `delete` a terminal instance, `run` the same `sagaId` again, then retry a signal addressed to the old incarnation | refused `SignalRejected(IncarnationReplaced)`; the new instance's state is unchanged (T4) | an old-incarnation signal folded into, or buffered on, the new instance |
 | W8 | **Crash between arming and `Waiting`** (v1828 B6) | kill the owner after the deadline `scheduleTimer` lands and before `Waiting` commits; separately, make a `DeadlineFired` transition fail | the stray fire is a no-op; recovery re-enters the wait with one live timer. The failing fire stays pending and re-fires each tick, ERROR-logged with its attempt count, until the transition commits (T2) | a wait with no live deadline timer; a failed deadline fire consumed |
@@ -1624,6 +1701,14 @@ persisted shape, state-based recovery, fold of the payload into `S` — **and de
 through the slice factory carrying codecs, dependencies and the R4 binding. Normative: §7.8, §7.9.
 Supersedes S1's "saga signals are v2".
 
+**S6–S10 follow-up — owner decisions on the #1828 review (2026-10-02).** D1: ambiguity is classified by
+whether the request was sent (`NotSent` definite, `Sent` ambiguous; §7.4). D2: compensation of step `j`
+receives the snapshot `S_j` (§7.5). D3: code is retained until every bound instance is resolved
+(reconcile-only), with the per-reason resolution table and `Abandon` as last resort (§7.7, §7.9). D4: §7.9
+applies to workflows (§6; added #353 scope). D5: codec compatibility is bidirectional; anything else needs
+a new keyspace or a migration (§7.9). Still pending: retry budget (v1828 B3), dependency-pin scope and its
+retirement gate (B4), operation-key encoding, and whether a momentary endpoint absence parks at once.
+
 **S1 — signals scope for v1. RESOLVED (2026-07-04); saga half SUPERSEDED by S10 (2026-10-02)** — saga
 `WAIT_SIGNAL` is specified in rc4 (§7.8); the workflow half stands. Original text: **signal injection IS
 v1** (book requirement).
@@ -1672,6 +1757,20 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.8.0 (2026-10-02)
+
+**Owner decisions D1–D5 on the #1828 review.**
+
+| What | Decision | v1828 | Where |
+|---|---|---|---|
+| Failures tagged `NotSent` (definite) / `Sent` (ambiguous, R1 path); untagged = `Sent`; [author choice] `Answered` refusal is definite | D1 | B2 | §7.4, §7.11 A11 |
+| Compensation of step `j` receives the snapshot `S_j`; snapshots kept until terminal; storage bound stated | D2 | author-choice item 2 | §7.5, §7.6, §7.11 A12 |
+| Retain code until resolved: force-retire → reconcile-only; resolution table per reason incl. `Waiting` → `Cancel`, `Abandon` always on parked instances; `resolve` takes the incarnation | D3 | B5, B7 | §7.7, §7.8, §7.9, §7.11 A7, A13, W5 |
+| §7.9 binding rules apply to workflows; added #353 scope | D4 | author-choice item 4 | §6 |
+| Bidirectional codec compatibility (additive optional fields); else new keyspace or migration | D5 | author-choice item 5 | §7.9, §7.11 A9 |
 
 ---
 
