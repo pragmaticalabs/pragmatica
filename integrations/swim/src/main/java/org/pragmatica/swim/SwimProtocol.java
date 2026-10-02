@@ -177,6 +177,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         faultyStampedAtMs.keySet().removeIf(peer -> !inMembershipScope(peer));
         lastEmittedHealth.keySet().removeIf(peer -> !inMembershipScope(peer));
         transportHints.keySet().removeIf(peer -> !inMembershipScope(peer));
+        coldBootSuppressedFaulty.keySet().removeIf(peer -> !inMembershipScope(peer));
+        refutedIdentities.removeIf(peer -> !inMembershipScope(peer));
         tombstones.keySet().removeIf(peer -> !inMembershipScope(peer));
         pendingProbes.values().removeIf(probe -> !inMembershipScope(probe.targetId()));
         pendingRelays.values().removeIf(relay -> !inMembershipScope(relay.targetId()));
@@ -361,6 +363,19 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// a never-healthy peer is emitted as `UnknownObserved` instead of `FaultyObserved`
     /// (spec §4.2 "Behavior contract: Cold-boot mode").
     private final Set<NodeId> everSeenHealthy = ConcurrentHashMap.newKeySet();
+    /// Never-HEALTHY peers whose FAULTY edge the cold-boot rule turned into `UnknownObserved`,
+    /// mapped to that edge's first-hand flag (#1830). The suppression defers a verdict; it must not
+    /// drop it. Once [#isBooting] reports `false`, [#reevaluateColdBootSuppressedFaulty] replays the
+    /// edge for a peer that is still FAULTY and still never-HEALTHY. Without the replay the peer sat
+    /// FAULTY until the residency sweep, which (window now closed) tombstoned it, and the real
+    /// FAULTY → Departed waited out the tombstone TTL and a fresh probe cycle — 3 min 40 s in run 7.
+    private final Map<NodeId, Boolean> coldBootSuppressedFaulty = new ConcurrentHashMap<>();
+    /// Peers whose identity a transport dial refuted (#1830): the dialed address answered with a
+    /// different NodeId, so the seeded identity is not there. Consulted only by the cold-boot
+    /// suppression, which shields never-HEALTHY peers alone — so a refutation cannot touch a peer
+    /// SWIM has seen HEALTHY, and the live-transport veto in [#emitFaultyOrUnknown] still holds a
+    /// connected one. Retracted when a link to the identity comes up (`PeerReachable`).
+    private final Set<NodeId> refutedIdentities = ConcurrentHashMap.newKeySet();
     /// Per-peer last-emitted observation health, used to enforce edge-triggered
     /// emission (P5 idempotent edge transitions): same-state re-entries do NOT
     /// produce a new observation.
@@ -641,10 +656,33 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         switch (hint) {
-            case TransportObservation.PeerReachable _ -> retractLinkLostHint(peer);
+            case TransportObservation.PeerReachable _ -> applyReachableHint(peer);
             case TransportObservation.PeerResponsive _ -> retractPeerUnresponsiveHint(peer);
             case TransportObservation.PeerUnreachable unreachable -> applyUnreachableHint(peer, unreachable.origin());
+            case TransportObservation.IdentityRefuted refuted -> applyIdentityRefutation(peer, refuted.claimant());
         }
+    }
+
+    /// A link to `peer` was established under its verified identity: retract the transport's own
+    /// `LINK_LOST` hint ([#retractLinkLostHint]) and any identity refutation (#1830) — the identity
+    /// answered, so the refutation no longer describes it.
+    private void applyReachableHint(NodeId peer) {
+        retractLinkLostHint(peer);
+        refutedIdentities.remove(peer);
+    }
+
+    /// Apply a transport `IdentityRefuted` observation (#1830): a dial to `peer`'s address was answered
+    /// by `claimant`. Only `peer` is refuted — `claimant` is a live node at that address and is never
+    /// touched. The refutation lifts the cold-boot suppression for `peer` (which only ever shields a
+    /// never-HEALTHY peer), and a FAULTY edge already suppressed is replayed now rather than at window
+    /// close.
+    private void applyIdentityRefutation(NodeId peer, NodeId claimant) {
+        refutedIdentities.add(peer);
+        LOG.warn("SWIM identity refutation (#1830): a dial to peer {} was answered by {} — a never-HEALTHY {} is no longer cold-boot suppressed",
+                 peer.id(),
+                 claimant.id(),
+                 peer.id());
+        reevaluateSuppressedFaulty(peer);
     }
 
     /// Retract a `LINK_LOST` hint for `peer` when the transport reports the link re-established
@@ -810,6 +848,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         pruneMembershipScope();
         refreshSelfAlive();
         expireSuspectMembers();
+        reevaluateColdBootSuppressedFaulty();
         cleanupFaultyMembers();
         selectNextProbeTarget().onPresent(this::probeTarget);
     }
@@ -1111,6 +1150,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         memberFirstSeenAt.remove(peer);
         lastProbedAt.remove(peer);
         faultyStampedAtMs.remove(peer);
+        coldBootSuppressedFaulty.remove(peer);
+        refutedIdentities.remove(peer);
         // Emission-free hygiene (formerly done by the sweep-time DepartedObserved
         // emission, which is gone — the pair fires at the FAULTY edge): drop the
         // last-emitted marker so a genuinely re-joining id re-fires fresh edges.
@@ -2689,7 +2730,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// - In `COLD_BOOT` phase (`isBooting=true`), preserve the per-peer
     ///   `everSeenHealthy` gate: a peer that has never been observed HEALTHY emits
     ///   `UnknownObserved` so noisy bootstrap-time SWIM transitions do not flood
-    ///   the membership FSM with unactionable FAULTY edges.
+    ///   the membership FSM with unactionable FAULTY edges. The verdict is deferred, not dropped:
+    ///   it is replayed once the gate closes ([#reevaluateColdBootSuppressedFaulty], #1830), and a
+    ///   peer whose identity a transport dial refuted ([#refutedIdentities]) is not shielded at all.
     /// - In `NORMAL` and `RECOVERING` phases (`isBooting=false`), emit
     ///   `FaultyObserved` regardless of `everSeenHealthy` — EXCEPT when the never-HEALTHY
     ///   peer still has a LIVE transport connection (gate RCA fix, 2026-06-11): then the
@@ -2719,8 +2762,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void emitFaultyOrUnknown(NodeId peer, long incarnation, boolean firstHand) {
         var booting = isBooting.getAsBoolean();
 
-        if (booting && !everSeenHealthy.contains(peer)) {
+        if (booting && !everSeenHealthy.contains(peer) && !refutedIdentities.contains(peer)) {
             logColdBootSuppression(peer);
+            coldBootSuppressedFaulty.put(peer, firstHand);
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
 
             return;
@@ -2836,6 +2880,47 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void logColdBootSuppression(NodeId peer) {
         LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
                  peer.id());
+    }
+
+    /// Replay the FAULTY edges the cold-boot rule deferred, once the rule no longer applies (#1830).
+    /// Runs on every tick BEFORE the residency sweep, so a suppressed peer whose window has closed is
+    /// departed rather than swept-and-tombstoned. This bounds a never-HEALTHY phantom seed at the later
+    /// of its first FAULTY edge and the close of the cold-boot window, instead of that plus the residency,
+    /// the tombstone TTL and a fresh probe cycle. The formation safety the suppression exists for is
+    /// kept: a peer that proved itself HEALTHY meanwhile has nothing replayed, and the replay goes
+    /// through [#emitFaultyOrUnknown], so the live-transport veto still holds a connected peer.
+    private void reevaluateColdBootSuppressedFaulty() {
+        if (coldBootSuppressedFaulty.isEmpty() || isBooting.getAsBoolean()) {
+            return;
+        }
+
+        coldBootSuppressedFaulty.keySet().forEach(this::reevaluateSuppressedFaulty);
+    }
+
+    /// One-shot: whoever removes the deferral (the tick or a refutation) replays it, whatever the
+    /// outcome. A peer no longer FAULTY (refuted back to ALIVE, or swept) or since observed HEALTHY has
+    /// nothing to replay.
+    private void reevaluateSuppressedFaulty(NodeId peer) {
+        option(coldBootSuppressedFaulty.remove(peer)).onPresent(firstHand -> replayIfStillSuppressed(peer, firstHand));
+    }
+
+    private void replayIfStillSuppressed(NodeId peer, boolean firstHand) {
+        option(members.get(peer)).filter(this::isNeverHealthyFaulty)
+              .onPresent(member -> replayFaultyEdge(member, firstHand));
+    }
+
+    private boolean isNeverHealthyFaulty(SwimMember member) {
+        return member.state() == MemberState.FAULTY && !everSeenHealthy.contains(member.nodeId());
+    }
+
+    /// The deferred edge, taken now: residency restarts at the edge whose broadcast actually fires
+    /// (H8), and the FAULTY-edge tombstone the suppression skipped is set.
+    private void replayFaultyEdge(SwimMember member, boolean firstHand) {
+        LOG.info("SWIM cold-boot suppression lifted (#1830): replaying the deferred FAULTY edge for never-HEALTHY peer {}",
+                 member.nodeId().id());
+        faultyStampedAtMs.put(member.nodeId(), System.currentTimeMillis());
+        tombstoneOnFaultyEdge(member.nodeId(), member.incarnation());
+        emitFaultyOrUnknown(member.nodeId(), member.incarnation(), firstHand);
     }
 
     /// Forward SWIM's FAULTY edge to the cluster-wide `TransportObservation` stream
