@@ -143,7 +143,7 @@ serves any durable-single-writer need; workflow and saga are convenience facades
 | Runtime→slice invocation (dispatch) | ✅ exists | `SliceInvoker.java:95-96` |
 | Timer fire on the owner | ✅ **SHIPPED** (#351): applied in-process by the entity, not through `SliceInvoker` | `EntityTimerDriver.java:17-28` |
 | Durable KV store (replicated, quorum) | ✅ exists, **in-memory — not restart-durable** (→ #349). No longer the entity's state store: since #345 I3 entity state lives on a fenced, fsync-durable, replicated stream log (§4.4). | `DHTClient.java:39-76`; `MemoryStorageEngine.java:71-75` |
-| Stream-path epoch fence on the entity log append | ✅ **SHIPPED** (v0.6.0 status update): a deposed owner's append is refused `StaleEpochAppend` → `EntityLogError.StaleOwnerAppend` | `StreamEntityLogSubstrate.java:268-288` |
+| Stream-path epoch fence on the entity log append | ✅ **SHIPPED** (v0.6.0 status update): a deposed owner's append is refused `StaleEpochAppend` → `EntityLogError.StaleOwnerAppend` | `StreamEntityLogSubstrate.java:267-286` |
 
 **Reading (v0.2 snapshot, superseded):** at v0.2 the remaining net-new pieces were the stream-path epoch
 fence, the per-key serialization queue, durable timers and the entity core. All four have since shipped
@@ -1229,12 +1229,12 @@ deadline is therefore built so that every interleaving of those two appends with
    contract's lateness.
 4. **Recovery re-arms idempotently.** An owner taking over a partition calls `scheduleTimer` with the
    persisted token and delay `max(0, deadlineAt − now)` for each `Waiting` instance. If the timer is still
-   pending, the shipped already-pending check appends nothing (`PartitionFencedDurableEntity.java:299-311`);
+   pending, the shipped already-pending check appends nothing (`PartitionFencedDurableEntity.java:299-309`);
    if it was lost, it is re-created. Either way exactly one live timer guards the wait.
 5. **A fire that fails is not consumed.** Shipped timers consume a fire whose preparation fails
    deterministically — undecodable command, absent key, a throwing mutator, an unencodable result — and
    then never retry it (`PartitionFencedDurableEntity.java:709-711` chooses consume-by-cancel;
-   `:792-800` settles it). For a saga deadline that loses the deadline for good. **Required for #354:** a
+   `:794-801` settles it). For a saga deadline that loses the deadline for good. **Required for #354:** a
    `DeadlineFired` whose transition does not commit leaves the timer pending; it is re-fired on every tick
    until the transition commits, each failure logged at ERROR with its attempt count and visible on the
    instance's status — the same visible-retry treatment the shipped code already gives a consume append
@@ -1542,8 +1542,8 @@ Evidence that informed R4; it records today's code, which the R4 contract (§7.9
   the routing key in one batch, so the new version is deallocated by the same path
   (`DeploymentManagerImpl.java:374-396`). A slice-target change when no rolling update is active for
   the base (`ClusterDeploymentState.java:1555-1570`, guarded by `!activeRoutings.contains`), slice-target
-  removal (`ClusterDeploymentState.java:395-400`) and blueprint removal
-  (`ClusterDeploymentState.java:1047-1061`) deallocate the same way. None reads entity state or pending timers.
+  removal (`ClusterDeploymentState.java:396-401`) and blueprint removal
+  (`ClusterDeploymentState.java:1047-1060`) deallocate the same way. None reads entity state or pending timers.
 - **Two versions on one node share a keyspace without isolation.** Resources are cached per slice scope
   `groupId:artifactId:version` (`SpiResourceProvider.java:184-186, 502`; `SliceLoadingContext.java:439-441`),
   so each version provisions its own entity instance for the same keyspace, while the node registries are
@@ -1680,7 +1680,7 @@ Status column updated in v0.6.0 for the pieces whose shipped state was verified 
 |---|---|---|
 | **0 — Persistent backing** (epic #349, sibling) | **PARTIAL** (v0.6.0) | the entity log is fsync'd to a per-partition WAL before ack and replicated at the keyspace's factors (`guarantees.md` §6, "crash-durable, not none"); #349's broader persistence work remains open |
 | **1a — KV-path ownership fence** (#345) | **IMPLEMENTED** | `staleEpochWrite` + `EpochBearing` in `KVStore` Rabia applier; covers DHT + governor writes |
-| **1b — Stream-path epoch fence** (#345) | **SHIPPED** (v0.6.0) | a deposed owner's entity-log append is refused: the stream raises `StaleEpochAppend`, which the entity layer sees as `EntityLogError.StaleOwnerAppend` (`StreamEntityLogSubstrate.java:268-288`) |
+| **1b — Stream-path epoch fence** (#345) | **SHIPPED** (v0.6.0) | a deposed owner's entity-log append is refused: the stream raises `StaleEpochAppend`, which the entity layer sees as `EntityLogError.StaleOwnerAppend` (`StreamEntityLogSubstrate.java:267-286`) |
 | 2 — Per-key serialization queue | **SHIPPED** (v0.6.0) | `PerKeySerialExecutor`, used by `PartitionFencedDurableEntity` |
 | 3 — Durable per-instance timers | **SHIPPED** (#351, closed) | a timer is a record in the entity's fenced log; owner-stamped instant |
 | 4 — `DurableEntity` core | **SHIPPED** (#345 I1–I4) | fenced-log `PartitionFencedDurableEntity`, named-command API (§5.1), owner forwarding (#596) |
@@ -1698,7 +1698,7 @@ Per-slice cron stays on `ScheduledTaskManager` (independent). **Two foundations 
 | Capability | Current | Target | Tag | Anchor |
 |---|---|---|---|---|
 | KV-path per-key fence | `staleEpochWrite` + `EpochBearing` **live in Rabia applier** | extend entity write to carry `ownerEpoch` as `EpochBearing` value | **REUSE** | `KVStore.java:87-127`; `EpochBearing.java` |
-| Stream-path epoch fence | v0.2: no epoch-CAS on stream append | stream-path epoch check (#345 piece 1b) | **DONE** (v0.6.0) | `StreamEntityLogSubstrate.java:268-288` |
+| Stream-path epoch fence | v0.2: no epoch-CAS on stream append | stream-path epoch check (#345 piece 1b) | **DONE** (v0.6.0) | `StreamEntityLogSubstrate.java:267-286` |
 | `StateMachineDefinition` | exists, unused, in-memory | consume in the workflow facade (C=Unit for pure FSMs) | **REUSE** | `StateMachineDefinition.java:24` |
 | Resource SPI | exists, mechanical | register `DurableEntity`/`PersistentWorkflow`/`Saga` types | **REUSE** | `SpiResourceProvider.java:45` |
 | Per-key serialization | v0.2: none | owner-side per-key queue | **DONE** (v0.6.0) | `PerKeySerialExecutor.java` |
