@@ -147,19 +147,23 @@ HTTP `POST /orders/{id}/place` → `saga.run(id, ctx)`.
 **Acceptance assertions (these define the facade's done-definition, spec §13 acceptance line).**
 - Happy path → `SagaResult.Succeeded`, all three `StepRecord`s present.
 - Forward failure at step 2 → compensations run in reverse; terminal `SagaResult.Compensated`.
-- **RUN_ONCE crash-window (spec §7.10):** kill the owner after `charge-payment` succeeds but before
-  ledger commit; new owner recovers, finds the `StepAttempt(id,1)` marker, does **not** re-charge,
-  proceeds to step 3. Assert exactly one charge downstream (dedup on `(sagaId, stepIndex)`).
+- **RUN_ONCE crash windows (spec §7.4.1, §7.11 A1–A2; corrected 2026-10-02, #1827):** kill the owner
+  (A1) after the `StepAttempt(id,1)` marker commits but before the charge reaches the payment slice, and
+  (A2) after the charge succeeds but before its `ChargeId` commits. Assert in both: no re-charge by the
+  runtime, and **never** a step-2 completion recorded from the marker alone. The earlier expectation here
+  ("finds the marker … proceeds to step 3") is withdrawn: in A1 it confirms an unpaid order. The expected
+  recovery outcome is **PENDING RULING 1** (spec §14 S6); the dedup key's delivery is **PENDING RULING 2**.
 - Compensation failure → terminal `PartiallyCompensated`, queryable via `status(id)` (spec §7.5).
 
 **Surfaces:** entity fence/single-writer (primary), HTTP, crash recovery (primary), `@Sql`(○ ledger).
-**Gating:** requires #345 fence stream-path (piece 1b, MISSING) + per-key serialization + saga facade.
+**Gating:** requires the saga facade (#354) and the #1827 rulings (spec §14 S6–S10). The #345 stream-path
+fence (piece 1b) and per-key serialization have since shipped (spec §11, v0.6.0).
 Restart-durable recovery additionally needs #349; on the #345 fence alone the example proves
 **HA/owner-handover** recovery, not full-cluster-restart durability (spec §4.4). Frame accordingly.
 
 ### 3.5 Workflow — **effort M** · **gated on #345 facade (spec §6, §13 Ph3)** · example-first
 
-**Shape.** Targets `PersistentWorkflow<S,E>` (spec §6.2). `OrderProcess` FSM (spec §6.4): states
+**Shape.** Targets the PLANNED `PersistentWorkflow<S,E>` façade (spec §6.2; #353, no code yet). `OrderProcess` FSM (spec §6.4): states
 `Pending/Confirmed/Shipped/Cancelled`, events `Confirm/Ship/Cancel`, built on the verified
 `StateMachineDefinition` builder (`C = Unit`, spec §6.4). HTTP routes per transition +
 **signal injection** (`POST /api/workflows/{type}/{id}/signal`, spec §6.6 — the management triad).
@@ -170,8 +174,8 @@ Restart-durable recovery additionally needs #349; on the #345 fence alone the ex
 - Signal injection routes to `dispatch` on the owner and is fenced like any write (spec §6.6).
 - **Owner-handover:** kill the partition owner mid-workflow; in-flight `dispatch` retries transparently;
   the deposed owner cannot commit after handover (fence assertion, spec §8).
-- Durable one-shot timer fires the scheduled event after owner handover (spec §4.5) — *if* piece 3
-  (durable timers) is in scope for the phase; otherwise deferred.
+- Durable one-shot timer fires the scheduled event after owner handover (spec §4.5). Entity timers
+  shipped with #351; the workflow façade's `scheduleTimer` rides them once #353 lands.
 
 **Surfaces:** entity fence/single-writer (primary), HTTP, crash recovery. **Same #345/#349 gating as
 §3.4.**
