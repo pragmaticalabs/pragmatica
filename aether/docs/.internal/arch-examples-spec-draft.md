@@ -147,8 +147,8 @@ example to it when the facade lands.
 HTTP `POST /orders/{id}/place` → `saga.run(id, ctx)`.
 
 **Acceptance assertions (these define the facade's done-definition, spec §13 acceptance line).**
-- Happy path → `SagaResult.Succeeded`, all three `StepRecord`s present.
-- Forward failure at step 2 → compensations run in reverse; terminal `SagaResult.Compensated`.
+- Happy path → `SagaOutcome.Succeeded`, all three `StepRecord`s present (spec §7.7).
+- Forward failure at step 2 → compensations run in reverse; terminal `SagaOutcome.Compensated`.
 - **Crash windows (spec §7.4, §7.11 A1–A2; corrected 2026-10-02, #1827):** kill the owner (A1) after
   the step-2 attempt marker commits but before the charge reaches the payment slice, and (A2) after the
   charge succeeds but before its `ChargeId` commits. Assert per the declared recovery capability (spec

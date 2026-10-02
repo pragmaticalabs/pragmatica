@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.7.0
+**Version:** 0.7.1
 **Status:** Draft. **§5 (`DurableEntity`) is reconciled with the shipped named-command API**
 (`DurableEntity<K, S, C extends Mutator<S>>`). **§6 (workflow) and §7 (saga) are PLANNED façades with no
 production code** (#353, #354; milestone v1.0.0-rc5). **§7 was reopened by #1827 and its five contract
@@ -139,7 +139,7 @@ serves any durable-single-writer need; workflow and saga are convenience facades
 | Partitioned placement + per-partition owner (HRW) | ✅ exists (DHT ring, governor/owner) | `ReplicaPlacement.java:16-34`; `GovernorElection.java:40-46` |
 | **Per-key write fence (single-writer enforcement)** | ✅ **IMPLEMENTED** — `staleEpochWrite` + `EpochBearing<E>` in `KVStore` Rabia applier; rejects any `Put` whose incoming epoch is strictly older than the committed one; deterministic (pure function of replicated state); covers governor + DHT ownership writes. Stream-path epoch-CAS is #345 piece 1b (remaining gap). | `KVStore.java:87-127`; `EpochBearing.java:1-38`; `AetherValue.java: DhtPartitionOwnershipValue`, `StreamPartitionOwnershipValue`; `BootstrapModule.java:367-402` |
 | Per-key serialization queue (serialize same-key, parallel across keys) | ✅ **SHIPPED** (v0.6.0 status update) | `PerKeySerialExecutor.java` |
-| Durable per-instance timers (one-shot, fire-and-delete, survive handover) | ✅ **SHIPPED** (#351, #345 I4): a timer is a record in the entity's own fenced log | `EntityTimerDriver.java`; `DurableEntity.java:143-221`; CHANGELOG "#351 / #345 I4" |
+| Durable per-instance timers (one-shot, fire-and-delete, survive handover) | ✅ **SHIPPED** (#351, #345 I4): a timer is a record in the entity's own fenced log | `EntityTimerDriver.java`; `DurableEntity.java:144-222`; CHANGELOG "#351 / #345 I4" |
 | Runtime→slice invocation (dispatch) | ✅ exists | `SliceInvoker.java:95-96` |
 | Timer fire on the owner | ✅ **SHIPPED** (#351): applied in-process by the entity, not through `SliceInvoker` | `EntityTimerDriver.java:17-28` |
 | Durable KV store (replicated, quorum) | ✅ exists, **in-memory — not restart-durable** (→ #349). No longer the entity's state store: since #345 I3 entity state lives on a fenced, fsync-durable, replicated stream log (§4.4). | `DHTClient.java:39-76`; `MemoryStorageEngine.java:71-75` |
@@ -168,7 +168,8 @@ owner cannot commit after handover.
 > **Decision.** Every entity write is `update(key, mutator)` executed **only on the partition owner**
 > and committed via a **fenced write** (#345): `write(key, newState, ownerEpoch)` succeeds iff
 > `ownerEpoch` is current. The fence mechanism (`EpochBearing` + `staleEpochWrite`) is already live
-> in the KV Rabia applier; it must be extended to the stream-path append (#345 piece 1b).
+> in the KV Rabia applier and, since v0.6.0's status update, on the entity log's stream-path append too
+> (#345 piece 1b, §3).
 >
 > **Why.** This is the per-partition-fenced-leader pattern. The owner serializes writes (per-key queue,
 > §4.3); the epoch fence makes single-writer a *guarantee* across handover, not a convention. A reader
@@ -176,7 +177,7 @@ owner cannot commit after handover.
 > fence is deterministic: every replica accepts or rejects identically (reads only committed state +
 > the command, no wall-clock, no randomness — `EpochBearing.java:23-27`).
 >
-> **Rejected alternative.** *Unfenced owner* (today for stream path) — split-brain double-writes
+> **Rejected alternative.** *Unfenced owner* (the stream path before #345 piece 1b) — split-brain double-writes
 > during handover (the #345 bug). *Per-key Paxos/Rabia group* — correct but a consensus group per
 > key doesn't scale to millions of entities; the fenced-owner-over-replicated-partition is the
 > scalable form.
@@ -246,7 +247,7 @@ correct trade-off stated explicitly: single-writer = serialized = bounded throug
 ### 5.1 Interface
 
 **Reconciled with the shipped surface (v0.6.0, #1827).** This is the interface as it ships in
-`aether/resource/durable-entity/.../DurableEntity.java:85-262`; the shipped javadoc is authoritative for
+`aether/resource/durable-entity/.../DurableEntity.java:86-263`; the shipped javadoc is authoritative for
 per-method semantics and is summarized here, not restated. Earlier revisions of this section showed
 `DurableEntity<K, S>` with lambda (`Fn1<S, S>`) mutators — that shape was replaced by the named-command
 form (CHANGELOG, "A durable entity's transition is now a NAMED command", #596 prerequisite) and does not
@@ -762,13 +763,18 @@ step's own `R`.
 ```java
 /** How a step's in-flight outcome is recovered (R1). Mandatory — there is no default (S3 carried over). */
 public sealed interface StepRecovery<S, R> {
-    /** Re-invoking with the same operationId returns the ORIGINAL result (downstream dedups on the key). */
-    record Replayable<S, R>() implements StepRecovery<S, R> {}
+    /**
+     * Re-invoking with the same operationId returns the ORIGINAL result (downstream dedups on the key).
+     * keyRetention: how long the DOWNSTREAM remembers a key (e.g. a provider's idempotency-key window).
+     */
+    record Replayable<S, R>(Duration keyRetention) implements StepRecovery<S, R> {}
     /**
      * A declared outcome query. some(R) = the operation happened, with this result;
-     * none() = it did not happen AND no earlier attempt carrying this key can still apply (see §7.4).
+     * none() = it did not happen AND no earlier attempt carrying this key can still apply — the query is
+     * ORDERED against the operation (§7.4). keyRetention: how long the downstream can answer for a key.
      */
-    record Lookup<S, R>(Fn2<Promise<Option<R>>, StepContext, S> outcome) implements StepRecovery<S, R> {}
+    record Lookup<S, R>(Duration keyRetention,
+                        Fn2<Promise<Option<R>>, StepContext, S> outcome) implements StepRecovery<S, R> {}
     /** Neither: an unresolved outcome parks the saga for the operator. */
     record Neither<S, R>() implements StepRecovery<S, R> {}
 }
@@ -801,7 +807,9 @@ public sealed interface SagaStepKind<S> permits SagaStep, WaitStep {}
 
 /** Built once per slice load inside the slice factory (§7.9), never in a static field. */
 public final class SagaDefinition<S, D extends SagaData> {
-    public static <S, D extends SagaData> Builder<S, D> builder(String name, int definitionVersion) { ... }
+    /** clockSafetyMargin: required, no default — see the key-retention rule in §7.4 (v1828 B1). */
+    public static <S, D extends SagaData> Builder<S, D> builder(String name, int definitionVersion,
+                                                                Duration clockSafetyMargin) { ... }
 
     public static final class Builder<S, D extends SagaData> {
         public <R extends D> Builder<S, D> step(SagaStep<S, R> step) { ... }
@@ -825,7 +833,8 @@ whose shape the author owns and versions with the definition (§7.9).
 
 ### 7.4 Forward-step recovery (R1)
 
-Before invoking a forward the runtime commits `StepAttempt(stepIndex, attempt)` under the fence. A
+Before invoking a forward the runtime commits `StepAttempt(stepIndex, attempt, at)` under the fence, where
+`at` is the committing owner's clock reading (§7.6). A
 recovering owner that finds an attempt and no `StepRecord` for that step is in one of two situations it
 cannot tell apart from the marker:
 
@@ -846,9 +855,30 @@ speaks of recovery; the timeout case is the same ambiguity reached without a cra
 
 | Declared capability | Recovery action for an in-flight step | What it earns, and the condition it rests on |
 |---|---|---|
-| `Replayable` | re-invoke `forward` with the **same** `operationId` (`attempt` + 1, same persisted `S`); commit the returned `R`, fold, continue | the effect is applied at most once **and** the receipt is recovered — **iff** the downstream dedups on `operationId` and answers a repeat with the original result. The runtime cannot check that; the declaration is the author's assertion about the downstream. |
-| `Lookup` | call `outcome(ctx, S)`. `some(R)` → commit `R` as the step's result. `none()` → invoke `forward` (same `operationId`) | the receipt is recovered when the operation happened; a `none()` is "safe to invoke" **iff** the query is ordered against the operation — no earlier attempt carrying this `operationId` can still be applied after the query answers `none()` (e.g. the downstream records the key durably before acting, or rejects late arrivals). A query that can race an in-flight earlier attempt makes `Lookup` unsound; such a downstream must be declared `Neither`. A lookup that itself fails ambiguously is retried, never treated as `none()`. |
+| `Replayable` | within the key-retention window (below): re-invoke `forward` with the **same** `operationId` (`attempt` + 1, same persisted `S`); commit the returned `R`, fold, continue. Past the window: as `Neither` | the effect is applied at most once **and** the receipt is recovered — **iff** the downstream dedups on `operationId` and answers a repeat with the original result. The runtime cannot check that; the declaration is the author's assertion about the downstream. |
+| `Lookup` | within the key-retention window (below): call `outcome(ctx, S)`. `some(R)` → commit `R` as the step's result. `none()` → invoke `forward` (same `operationId`). Past the window: as `Neither` | the receipt is recovered when the operation happened; a `none()` is "safe to invoke" **iff** the query is ordered against the operation — no earlier attempt carrying this `operationId` can still be applied after the query answers `none()` (e.g. the downstream records the key durably before acting, or rejects late arrivals). A query that can race an in-flight earlier attempt makes `Lookup` unsound; such a downstream must be declared `Neither`. A lookup that itself fails ambiguously is retried, never treated as `none()`. |
 | `Neither` | no invocation. The step enters **`OutcomeUnknown`** and the saga parks in **`NeedsReconciliation`** (§7.6) | nothing is guessed. The operator resolves it (§7.7) as **succeeded-with-receipt** (supplies `R`), **failed** (no effect), or **compensate** (§7.7). The parked instance keeps its version pin (§7.9) and is counted by the retirement gate. |
+
+**Key-retention window (v1828 B1, CTO ruling T1).** A downstream remembers an operation key for a
+bounded time (a payment provider's idempotency-key window, a search index's retention). Re-invoking or
+querying after the downstream has forgotten the key is not `Replayable`/`Lookup` any more: a re-invoke
+would apply the effect a second time, and a lookup would answer `none()` for an operation that happened.
+So `Replayable` and `Lookup` each declare the downstream's `keyRetention`, and the definition declares a
+`clockSafetyMargin` (required, §7.3). Recovery — after a crash, after an ambiguous failure, after a park
+for any reason, after a drain — re-invokes or looks up **only while**
+
+    now − attempt.at  <  keyRetention − clockSafetyMargin
+
+and otherwise treats the step as `Neither`: `OutcomeUnknown` → `NeedsReconciliation`, no invocation. The
+same rule applies to an in-flight compensation, against `compensationRecovery`'s window.
+
+*Clock assumption, stated:* `attempt.at` is stamped by the owner that committed the marker and `now` is
+read on the owner performing recovery, possibly another node. The comparison is correct **iff** the
+declared margin exceeds the skew between any two owners' clocks plus the skew between the cluster and the
+downstream's clock for its window. The marker is committed before the request is sent, so the
+downstream's own window starts no earlier than `attempt.at`; that delay errs on the safe side and needs no
+margin. Nothing in the runtime measures the skew; the margin is the author's declaration, like the
+capability itself.
 
 `IDEMPOTENT`/`RUN_ONCE` (v0.5.0) are superseded: `Replayable` covers what `IDEMPOTENT` meant *and* says
 how the receipt comes back; `RUN_ONCE`'s at-most-once invocation is what `Neither` gives, now with a
@@ -901,18 +931,30 @@ public sealed interface SagaPhase {
     record Running(int nextStep, Option<StepAttempt> inFlight)                    implements SagaPhase {}
     /** Parked on a WaitStep (§7.8). */
     record Waiting(int waitStep, Instant deadlineAt, String deadlineTimerToken)   implements SagaPhase {}
-    /** Parked for the operator. Non-terminal. */
-    record NeedsReconciliation(Reconcile reason)                                  implements SagaPhase {}
-    /** Running compensations in reverse; inFlight as for Running. */
+    /**
+     * Parked for the operator. Non-terminal. `suspended` is the phase it parked FROM — Running, Waiting
+     * or Compensating, with every field intact — so a resolution resumes exactly there (v1828 B7, T3).
+     */
+    record NeedsReconciliation(Reconcile reason, SagaPhase suspended)            implements SagaPhase {}
+    /** Running compensations in reverse; inFlight as for Running; one outcome per compensated step. */
     record Compensating(int nextToCompensate, Option<StepAttempt> inFlight,
-                        List<CompensationFailure> failures)                       implements SagaPhase {}
+                        List<CompensationOutcome> outcomes)                      implements SagaPhase {}
     record Completed()                                                            implements SagaPhase {}  // terminal
     record Compensated()                                                          implements SagaPhase {}  // terminal
     record PartiallyCompensated(List<CompensationFailure> failures)               implements SagaPhase {}  // terminal
     record Failed(String causeType, String message)                               implements SagaPhase {}  // terminal
 }
 
-public record StepAttempt(int stepIndex, int attempt, boolean compensation) {}
+/** `at`: the committing owner's clock when the marker was committed — the key-retention origin (§7.4). */
+public record StepAttempt(int stepIndex, int attempt, boolean compensation, Instant at) {}
+
+/** Per-step compensation progress, persisted so that neither a park nor a handover loses it. */
+public sealed interface CompensationOutcome {
+    int stepIndex();
+    record Compensated(int stepIndex)                         implements CompensationOutcome {}
+    record CompensationFailed(int stepIndex, String causeType, String message) implements CompensationOutcome {}
+    record Unresolved(int stepIndex, OperationId compensationId) implements CompensationOutcome {}
+}
 
 public sealed interface Reconcile {
     record OutcomeUnknown(int stepIndex, OperationId operationId, int attempts)             implements Reconcile {}
@@ -926,8 +968,12 @@ public record SignalRecord(String waitName, String signalId, byte[] encodedPaylo
                            boolean consumed, Instant receivedAt) {}
 ```
 
-`SagaInstance` also carries `List<SignalRecord> signals` and `List<CompensationFailure>` where the phase
-needs them; they are elided above for width. Results and payloads are stored **encoded with their type
+`SagaInstance` also carries `List<SignalRecord> signals`; it is elided above for width. A
+`NeedsReconciliation` never nests (`suspended` is never itself `NeedsReconciliation` or terminal), and it
+carries the suspended phase's resume point (`nextStep` / `waitStep` + `deadlineAt` + token /
+`nextToCompensate` + per-step `outcomes`), so the information a resolution needs to continue is in the
+persisted state, not in a node's memory. **What each resolution does with it is an owner decision
+pending under v1828 B7; it is not specified here.** Results and payloads are stored **encoded with their type
 tag** (the codec of the bound version, §7.9) so the ledger is decodable by exactly the code the instance is
 bound to.
 
@@ -947,8 +993,12 @@ public interface Saga<S, D extends SagaData> {
     Promise<Option<SagaInstance<S>>> status(String sagaId);
     Promise<Option<SagaInstance<S>>> status(String sagaId, ReadConsistency consistency);
 
-    /** Deliver a signal to a wait step (§7.8). Idempotent on (waitName, signalId). */
-    <P extends D> Promise<SignalAccepted> signal(String sagaId, String waitName, String signalId, P payload);
+    /**
+     * Deliver a signal to a wait step of ONE incarnation (§7.8). The incarnation comes from run()/status().
+     * Idempotent on (waitName, signalId) within a live incarnation.
+     */
+    <P extends D> Promise<SignalAccepted> signal(SagaInstanceId instance, String waitName, String signalId,
+                                                 P payload);
 
     /** Operator resolution of a NeedsReconciliation instance. Fenced like any write. */
     Promise<SagaOutcome<S>> resolve(String sagaId, Resolution<D> resolution);
@@ -1002,9 +1052,22 @@ step arrives or its deadline passes. A wait has no external effect, so it has no
 recovery capability. Every rule below is enforced on the owner, inside the per-key serialization, so
 signals, deadline fires, operator actions and step completions on one instance are totally ordered.
 
-**Signal identity and dedup.** A signal is addressed `(sagaId, waitName, signalId)`. `signalId` is
+**Signal identity and dedup.** A signal is addressed `(SagaInstanceId, waitName, signalId)` — the
+instance id **includes the incarnation** (§7.2), so a signal meant for a deleted instance can never fold
+into a new instance created under the same `sagaId` (v1828 B8, CTO ruling T4). `signalId` is
 **caller-minted** (the `TimerToken` precedent, §5.1): a sender that re-sends after a lost
-acknowledgement presents the same id. The instance keeps at most **one** `SignalRecord` per wait step,
+acknowledgement presents the same id.
+
+**Precedence (T4), evaluated in this order on the owner:**
+1. **Incarnation.** No instance under `sagaId` → `SagaNotFound`. The addressed incarnation is not the
+   current one → `SignalRejected(IncarnationReplaced)`. The current incarnation is terminal →
+   `SignalRejected(Terminated(phase))`. This check comes **first**, so even an exact duplicate of a signal
+   the instance consumed before it terminated is answered with the rejection, not with `SignalAccepted`.
+2. **Dedup within the live incarnation** (below): an exact duplicate is a no-op.
+3. **Phase and wait rules** (the paragraphs that follow): `Compensating`, `WaitExpired`,
+   `WaitAlreadySignalled`, `UnknownWait`.
+
+**Dedup.** The instance keeps at most **one** `SignalRecord` per wait step,
 so dedup is exact and needs no window: a signal whose `(waitName, signalId)` matches the stored record
 is a **no-op** answered with the original `SignalAccepted`, whether the record is still buffered or
 already consumed. A signal with a **different** `signalId` for a wait step that already holds one is
@@ -1017,38 +1080,67 @@ record per wait step, so a saga's buffer is at most the number of wait steps in 
 payload larger than the keyspace's maximum record size is refused at the boundary. A signal naming no
 wait step of the bound definition is refused (`SignalRejected(UnknownWait)`).
 
-**Signals after the saga cannot use them.** Refused with a typed `SignalRejected(reason)`:
-`Completed`, `Compensated`, `PartiallyCompensated`, `Failed` (terminal), `Compensating` (an in-flight or
+**Signals the saga can no longer use.** Terminal and replaced incarnations are rejected at step 1 of the
+precedence. Otherwise refused with a typed `SignalRejected(reason)`: `Compensating` (an in-flight or
 pending compensation is never interrupted by a signal), and `WaitExpired` (the wait's deadline already
-won). A signal for a wait that lies ahead while the instance is in `NeedsReconciliation` is buffered as
-above — parking for the operator does not discard future input.
+won). A `NeedsReconciliation` instance is judged by its **suspended** phase (§7.6): parked from
+`Running` or `Waiting`, a signal for a wait that lies ahead is buffered as above — parking for the
+operator does not discard future input; parked from `Compensating`, it is refused `Compensating`.
 
-**Deadline.** Entering a wait schedules a durable entity timer (shipped, #351) with a token derived from
-the wait's identity (`<operationId of the wait step>/deadline`), so a retried entry cannot plant a second
-timer. It fires at or after `deadlineAt` by the firing owner's clock, late by up to one tick plus any
-ownerless interval (the timer contract, §5.1). On fire, if still `Waiting` on that step, the author's
-declared `OnDeadline` applies: `ContinueWith(defaultFold)` folds the default into `S` and continues;
-`Compensate()` enters `Compensating` for every completed step. If a signal and the deadline race, the
-first one applied by the owner wins; the other is a no-op (a late fire finds the instance not waiting; a
-late signal is refused `WaitExpired`). A signal that wins cancels the timer (idempotent cancel).
+**Deadline — mechanism (v1828 B6, CTO ruling T2).** The shipped primitives give no atomic "change state
+and arm a timer": `update` and `scheduleTimer` are separate appends (`DurableEntity.java:142,222`). The
+deadline is therefore built so that every interleaving of those two appends with a crash is safe:
 
-**Interaction with compensation.** A wait is never entered while `Compensating`. An operator
-`Compensate` resolution, or a deadline `Compensate()`, on a waiting instance cancels the deadline timer
-in the same write that moves it to `Compensating`. Buffered signals of a compensating or terminal
-instance are retained only for dedup answers until the instance is deleted; they are never applied.
+1. **Arm first.** Entering a wait first calls `scheduleTimer` with a **deterministic token**
+   `<operationId of the wait step>/deadline` (one wait step = one token; §7.2) and the command
+   `DeadlineFired(waitStep, token)`.
+2. **Then persist `Waiting(waitStep, deadlineAt, token)`.**
+3. **A fire is a guarded no-op unless it matches.** `DeadlineFired` is a pure transition: if the phase is
+   `Waiting` on the same `waitStep` with the same token, it applies the author's `OnDeadline` —
+   `ContinueWith(defaultFold)` folds the default into `S` and continues, `Compensate()` enters
+   `Compensating` for every completed step. In any other phase, or for a different wait, it leaves the
+   state unchanged. A crash between steps 1 and 2 therefore leaves a timer whose fire does nothing; on
+   recovery the runtime re-enters the wait and arms it again (the earlier token is no longer pending once it
+   fired, so this schedules a new timer; while it is still pending, the same token dedupes, §5.1). If it
+   has already fired, the re-entry's deadline starts at re-entry. If it is still pending, the timer armed at
+   the first entry governs, so the fire may come earlier than the re-entry's persisted `deadlineAt` by up to
+   the crash-to-recovery interval. It never comes later than the first arming's instant plus the timer
+   contract's lateness.
+4. **Recovery re-arms idempotently.** An owner taking over a partition calls `scheduleTimer` with the
+   persisted token and delay `max(0, deadlineAt − now)` for each `Waiting` instance. If the timer is still
+   pending, the shipped already-pending check appends nothing (`PartitionFencedDurableEntity.java:299-311`);
+   if it was lost, it is re-created. Either way exactly one live timer guards the wait.
+5. **A fire that fails is not consumed.** Shipped timers consume a fire whose preparation fails
+   deterministically — undecodable command, absent key, a throwing mutator, an unencodable result — and
+   then never retry it (`PartitionFencedDurableEntity.java:709-711` chooses consume-by-cancel;
+   `:792-800` settles it). For a saga deadline that loses the deadline for good. **Required for #354:** a
+   `DeadlineFired` whose transition does not commit leaves the timer pending; it is re-fired on every tick
+   until the transition commits, each failure logged at ERROR with its attempt count and visible on the
+   instance's status — the same visible-retry treatment the shipped code already gives a consume append
+   that fails. Ending such a loop is an operator action (deploy a bound version whose transition succeeds),
+   not a timeout.
+
+If a signal and the deadline race, the first one the owner applies wins and the other is a no-op: a late
+fire fails the guard in step 3; a late signal is refused `WaitExpired`. A signal that wins then cancels the
+timer (idempotent cancel); if that cancel is lost, the guard still makes the eventual fire a no-op.
+
+**Interaction with compensation.** A wait is never entered while `Compensating`. A deadline `Compensate()`
+moves the instance to `Compensating` in the fire's own transition; any later fire for that wait fails the
+guard. Whether an **operator** resolution may act on a `Waiting` instance is an owner decision pending
+under v1828 B5. Signals are never applied to a compensating or terminal instance.
 
 **Composition with the state fold (R3).** The consumed payload `P` folds into `S` through the wait step's
 pure `fold`, exactly like a step result; later steps and compensations see it only through `S`.
 
 **Wire and persistence shape.** A waiting instance is `SagaInstance` with phase
 `Waiting(waitStep, deadlineAt, deadlineTimerToken)` plus its `SignalRecord`s (§7.6). Signals travel to
-the owner as an ordinary entity command (`DeliverSignal(waitName, signalId, encodedPayload,
-payloadType)`), forwarded from any node like any entity write (#596), and are encoded with the bound
+the owner as an ordinary entity command (`DeliverSignal(incarnation, waitName, signalId,
+encodedPayload, payloadType)`), forwarded from any node like any entity write (#596), and are encoded with the bound
 version's codec for `P` (§7.9).
 
 **Recovery after owner failure.** State-based: the new owner folds the log to the same
-`SagaInstance` (still `Waiting`, buffered signals intact) and the deadline timer, being a record in the
-same log, is re-armed by the shipped timer driver. Nothing replays; no author code runs until a signal,
+`SagaInstance` (still `Waiting`, buffered signals intact). The deadline timer is a record in the same log
+and survives the handover; step 4 above re-arms it idempotently in case it was never armed or was lost. Nothing replays; no author code runs until a signal,
 deadline or operator action arrives.
 
 **Version pin.** A waiting instance is bound like any other (§7.9) and counts toward its version's
@@ -1189,22 +1281,26 @@ public sealed interface OrderSagaData extends SagaData {
 static Result<SagaDefinition<OrderSagaState, OrderSagaData>> orderSaga(InventorySlice inventory,
                                                                         PaymentSlice payment,
                                                                         ShippingSlice shipping) {
-    return SagaDefinition.<OrderSagaState, OrderSagaData>builder("order-saga", 1)
+    return SagaDefinition.<OrderSagaState, OrderSagaData>builder("order-saga", 1, Duration.ofMinutes(5))
         // A: reserve. Inventory dedups on the key and answers a repeat with the original reservation.
         .step(new SagaStep<OrderSagaState, ReservationId>(
             "reserve-inventory",
             (ctx, s) -> inventory.reserve(ctx.operationId(), s.orderId(), s.items()),
             OrderSagaState::withReservation,
-            new StepRecovery.Replayable<>(),
+            new StepRecovery.Replayable<>(Duration.ofDays(7)),      // inventory keeps keys 7 days
             (ctx, s, reservation) -> inventory.release(ctx.compensationId(), reservation),  // A's OWN R
-            new StepRecovery.Replayable<>()))
-        // B: charge, CONSUMING A's folded result from S. The provider offers a lookup by our key.
+            new StepRecovery.Replayable<>(Duration.ofDays(7))))
+        // B: charge, CONSUMING A's folded result from S. The provider offers a lookup by our key that is
+        //    ORDERED against the charge: it records the key before charging, so not-found means no attempt
+        //    carrying the key can still land. A search API that is only eventually consistent does NOT
+        //    qualify — such a provider must be declared Neither (§7.4).
         .step(new SagaStep<OrderSagaState, ChargeId>(
             "charge-payment",
             (ctx, s) -> payment.charge(ctx.operationId(), s.customerId(), s.total(),
                                        s.reservation().unwrap()),      // present: A's fold ran before B
             OrderSagaState::withCharge,
-            new StepRecovery.Lookup<>((ctx, s) -> payment.findCharge(ctx.operationId())),
+            new StepRecovery.Lookup<>(Duration.ofHours(24),          // the provider's key window
+                                      (ctx, s) -> payment.findCharge(ctx.operationId())),
             (ctx, s, chargeId) -> payment.refund(ctx.compensationId(), chargeId),
             new StepRecovery.Neither<>()))      // a refund with no lookup: unknown outcome goes to the operator
         // W: manual approval for large orders, 24h; on expiry compensate.
@@ -1230,7 +1326,11 @@ here.)
 **Crash windows on `charge-payment` (Lookup):**
 - W1 (crash after the marker, before the provider saw the request): the new owner calls
   `findCharge(operationId)` → `none()` → invokes `charge` with the **same** `operationId` → commits the
-  `ChargeId`, folds, continues. One charge.
+  `ChargeId`, folds, continues. One charge — because the lookup is ordered against the charge; with an
+  eventually consistent lookup a late first attempt could still land after `none()`, which is why such a
+  provider is `Neither`.
+- Recovery more than 24h − 5min after the marker (a long park or drain): past the key window, so no
+  lookup and no re-charge — the instance parks `NeedsReconciliation(OutcomeUnknown)` (§7.4).
 - W2 (provider charged, crash before `ChargeId` committed): `findCharge` → `some(chargeId)` → commits it,
   folds, continues. One charge, and the receipt is recovered — so if a later step fails, `refund` gets the
   real `ChargeId`.
@@ -1264,12 +1364,15 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` before unload (R4b) | v1 unloaded with a non-zero count and no force-retire; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint) and drive a step that calls it | the call is not made against any other version; instance parks `NeedsReconciliation(BoundVersionUnavailable)` (R4a) | a dependent call served by a non-bound version |
 | A9 | **Incompatible codec coexistence** | deploy v2 whose saga codec fingerprint v1 does not declare compatible, into a live keyspace | rollout refused at deploy with `IncompatibleDurableCodec` (R4a) | a deploy accepted with incompatible codecs; a refusal surfacing only at first read |
+| A10 | **Recovery past the key window** (v1828 B1) | park a `Replayable` and a `Lookup` step after the marker commits, then resume once `now − attempt.at ≥ keyRetention − clockSafetyMargin` | no re-invocation and no lookup; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1) | an invocation or lookup issued past the window |
 | W1 | **Signal before the wait** | deliver the `approval` signal while the saga is still on step B | buffered and acknowledged; consumed on entering the wait, payload folded into `S`, no deadline scheduled (R5) | the signal lost; a deadline timer armed despite a buffered signal |
 | W2 | **Duplicate signal** | deliver the same `(waitName, signalId)` twice, once buffered and once after consumption; then a different `signalId` | both duplicates are no-ops answered with the original `SignalAccepted`; the different id is refused `WaitAlreadySignalled` (R5) | payload folded more than once |
 | W3 | **Deadline expiry** | let the wait's deadline pass with no signal, once per `OnDeadline`; then send a late signal | `ContinueWith`: default folded, saga continues; `Compensate`: compensation of completed steps in reverse; the late signal refused `WaitExpired` (R5) | both the deadline and a signal applied to one wait; a fire earlier than `deadlineAt` by the firing owner's clock |
 | W4 | **Owner failure while parked** | kill the owner of a `Waiting` instance, then signal it, and separately let a deadline fire after the handover | the new owner holds the same `Waiting` state and re-armed timer; the signal or deadline is applied once; no author code ran during takeover (R5, state-based recovery) | the deadline lost across handover; any step re-invoked during takeover |
 | W5 | **Retirement attempted while parked** | retire the version a `Waiting` instance is bound to | blocked, the waiting instance counted; force-retire parks it `NeedsReconciliation(ForceRetired)` and cancels its deadline (R4b, R5) | the bound version unloaded while the instance is still `Waiting` |
-| W6 | **Signal during compensation / after terminal** | signal an instance that is `Compensating`, and one that is `Completed` | refused `SignalRejected(Compensating)` / `SignalRejected(Completed)`; compensation is not interrupted (R5) | a signal folded into a compensating or terminal instance |
+| W6 | **Signal during compensation / after terminal** | signal an instance that is `Compensating`, one parked from `Compensating`, and one that is `Completed` — including an exact duplicate of a signal the `Completed` instance consumed | refused `SignalRejected(Compensating)` twice and `SignalRejected(Terminated(Completed))`, the duplicate included (incarnation check first, T4); compensation is not interrupted (R5) | a signal folded into a compensating or terminal instance; `SignalAccepted` returned for a terminal incarnation |
+| W7 | **Signal to a replaced incarnation** (v1828 B8) | `delete` a terminal instance, `run` the same `sagaId` again, then retry a signal addressed to the old incarnation | refused `SignalRejected(IncarnationReplaced)`; the new instance's state is unchanged (T4) | an old-incarnation signal folded into, or buffered on, the new instance |
+| W8 | **Crash between arming and `Waiting`** (v1828 B6) | kill the owner after the deadline `scheduleTimer` lands and before `Waiting` commits; separately, make a `DeadlineFired` transition fail | the stray fire is a no-op; recovery re-enters the wait with one live timer. The failing fire stays pending and re-fires each tick, ERROR-logged with its attempt count, until the transition commits (T2) | a wait with no live deadline timer; a failed deadline fire consumed |
 | D1 | **Typed dataflow after recovery** | kill the owner between A's commit and B's invocation | B reads A's `ReservationId` from the recovered `S`; if B then definitely fails, A's compensation receives the same `ReservationId` (R3) | B invoked with no reservation in `S`; A's compensation invoked with a value differing from A's `StepRecord` |
 | I1 | **Identity stability** | force re-invocations across owner change and a redeploy of the same version; delete a terminal instance and `run` the same `sagaId` again | the same `operationId`/`compensationId` on every re-invocation of one instance; different values for the new incarnation; `attempt` changes and appears in no key (R2) | two different `operationId`s for one step of one instance; one `operationId` shared by two incarnations |
 
@@ -1278,7 +1381,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 Evidence that informed R4; it records today's code, which the R4 contract (§7.9) changes.
 
 - **No durable version binding exists.** No entity record carries an artifact version, and `DurableEntity`
-  has no version parameter (`DurableEntity.java:85`).
+  has no version parameter (`DurableEntity.java:86`).
 - **During an active rollout the requested version is not honoured.** `SliceInvoker.selectEndpoint` takes
   the base's `activeRouting` and picks old/new by weight (`SliceInvoker.java:997-1011, 1083-1101`), a
   per-call weighted round-robin over every version of the base (`EndpointRegistry.java:218-270`). Pinning
@@ -1311,7 +1414,7 @@ Evidence that informed R4; it records today's code, which the R4 contract (§7.9
 
 - **Single-writer total order per entity** (owner + per-key queue + fence). Across entities: no order.
 - **Writes: linearizable per key** — a committed `update` is ordered and durable across RF replicas
-  under the epoch write-fence (KV path live; stream path is #345 piece 1b).
+  under the epoch write-fence (KV path and the entity log's stream path both live, §3).
 - **Reads: per-call consistency (resolves S5)** — see §8.1. The default is committed-but-bounded-stale;
   callers state what they need per call. The write fence orders writes, not default reads: a
   BOUNDED_STALE read during handover can be served by a deposed owner that has not yet learned it
@@ -1428,7 +1531,7 @@ Status column updated in v0.6.0 for the pieces whose shipped state was verified 
 |---|---|---|
 | **0 — Persistent backing** (epic #349, sibling) | **PARTIAL** (v0.6.0) | the entity log is fsync'd to a per-partition WAL before ack and replicated at the keyspace's factors (`guarantees.md` §6, "crash-durable, not none"); #349's broader persistence work remains open |
 | **1a — KV-path ownership fence** (#345) | **IMPLEMENTED** | `staleEpochWrite` + `EpochBearing` in `KVStore` Rabia applier; covers DHT + governor writes |
-| **1b — Stream-path epoch fence** (#345) | **SHIPPED** (v0.6.0) | a deposed owner's entity-log append is refused `StaleEpochAppend` (`StreamEntityLogSubstrate.java:268-288`) |
+| **1b — Stream-path epoch fence** (#345) | **SHIPPED** (v0.6.0) | a deposed owner's entity-log append is refused: the stream raises `StaleEpochAppend`, which the entity layer sees as `EntityLogError.StaleOwnerAppend` (`StreamEntityLogSubstrate.java:268-288`) |
 | 2 — Per-key serialization queue | **SHIPPED** (v0.6.0) | `PerKeySerialExecutor`, used by `PartitionFencedDurableEntity` |
 | 3 — Durable per-instance timers | **SHIPPED** (#351, closed) | a timer is a record in the entity's fenced log; owner-stamped instant |
 | 4 — `DurableEntity` core | **SHIPPED** (#345 I1–I4) | fenced-log `PartitionFencedDurableEntity`, named-command API (§5.1), owner forwarding (#596) |
@@ -1463,7 +1566,7 @@ Per-slice cron stays on `ScheduledTaskManager` (independent). **Two foundations 
 | 1 | `DurableEntity` core — fenced KV-snapshot state, owner routing, per-key serialization queue | pieces 2, 4 |
 | 2 | Durable per-entity timers (fenced-persisted, handover recovery) | piece 3 |
 | 3 | **Workflow facade** — `PersistentWorkflow` over the entity + `StateMachineDefinition` (C=Unit) | piece 5 |
-| 4 | **Saga facade** — step ledger + journaled run-once step + compensation | piece 6 |
+| 4 | **Saga facade** — step ledger, three-way step recovery, waits and compensation (§7) | piece 6 |
 | 5 | Observability + audit stream + operator API | piece 7 |
 | 6 | Hardening — docs, sample slices, chaos/soak under governor handover | — |
 
@@ -1487,9 +1590,13 @@ sections.
 
 **S6 — saga step recovery (#1827 item 1). RESOLVED (R1): three-way, by declared downstream
 capability** — `Replayable` (re-invoke with the same operation id; the downstream returns the original
-result), `Lookup` (declared outcome query; found → record, not-found → invoke) or `Neither` (`OutcomeUnknown`;
+result), `Lookup` (declared outcome query; found → record, not-found → invoke — sound only when the
+query is ordered against the operation, so that no earlier attempt can still apply after a not-found) or
+`Neither` (`OutcomeUnknown`;
 the saga parks `NeedsReconciliation`; the operator resolves succeeded-with-receipt, failed or compensate).
-A marker never becomes success. Normative: §7.4, §7.7. Supersedes S3's `RUN_ONCE`/`IDEMPOTENT` values
+A marker never becomes success. `Replayable` and `Lookup` apply only within the downstream's declared
+key-retention window, less a declared clock-safety margin; past it the step is `Neither` (CTO ruling on
+v1828 B1). Normative: §7.4, §7.7. Supersedes S3's `RUN_ONCE`/`IDEMPOTENT` values
 while keeping S3's rule that the declaration is mandatory. #354's scope/acceptance wording to be
 reconciled with it (tracker edit, owner/CTO).
 
@@ -1517,7 +1624,9 @@ persisted shape, state-based recovery, fold of the payload into `S` — **and de
 through the slice factory carrying codecs, dependencies and the R4 binding. Normative: §7.8, §7.9.
 Supersedes S1's "saga signals are v2".
 
-**S1 — signals scope for v1. RESOLVED (2026-07-04): signal injection IS v1** (book requirement).
+**S1 — signals scope for v1. RESOLVED (2026-07-04); saga half SUPERSEDED by S10 (2026-10-02)** — saga
+`WAIT_SIGNAL` is specified in rc4 (§7.8); the workflow half stands. Original text: **signal injection IS
+v1** (book requirement).
 Scoped precisely: **workflow** signal injection ships in v1 as a thin external exposure of
 `dispatch` (management triad, §6.6) — a signal is a dispatch, fenced like any write, no second
 write path. **Saga** signals (a `WAIT_SIGNAL` step kind with park/timeout/compensation
@@ -1563,6 +1672,24 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.7.1 (2026-10-02)
+
+**PR #1828 review round 2 (v1828 report), CTO technical rulings T1–T5.** Owner-decision items from the
+same review (B2 classifier, B3 retry budget, B4 dependency pin scope, B5/B7 resolution table, codec
+direction, operation-key encoding, endpoint-absence parking, §7.9 for workflows) are deliberately NOT
+addressed here.
+
+| What | v1828 | Ruling | Where |
+|---|---|---|---|
+| `Replayable`/`Lookup` declare the downstream's `keyRetention`; `StepAttempt.at`; recovery past `keyRetention − clockSafetyMargin` is `Neither`; clock assumption stated | B1 | T1 | §7.3, §7.4, §7.6, §7.11 A10 |
+| Deadline: arm first with a deterministic token, then persist `Waiting`; guarded no-op fires; idempotent re-arm on takeover; a failed deadline fire is not consumed | B6 | T2 | §7.8, §7.11 W8 |
+| `NeedsReconciliation` persists the suspended phase and per-step compensation outcomes | B7 (part) | T3 | §7.6 |
+| Signals address the incarnation; terminal/replaced incarnation rejected before dedup; parked-from-`Compensating` refuses signals | B8 | T4 | §7.7, §7.8, §7.11 W6, W7 |
+| Lookup ordering condition in S6 and §7.10; stream-fence leftovers; §13 phase 4; S1 superseded; `StaleOwnerAppend` naming | should-fix, leftovers | T5 | §4.2, §8, §7.10, §11, §13, §14 |
+| `DurableEntity.java` citations re-pinned (+1 line after the v0.7.0 javadoc reflow) | — | — | §3, §5.1, §7.8, §7.11.1 |
 
 ---
 
