@@ -30,6 +30,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -318,6 +319,32 @@ class DHTCatchUpGateTest {
 
         assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).isEqualTo(Readiness.CATCHING_UP);
         assertThat(cluster.member(joiner).node().stuckCatchUpPartitions()).as("reported stuck").isPositive();
+    }
+
+    /// K5: a round that decided on its answers in hand — after it timed out — keeps its pulls for one more
+    /// round timeout. Replaced on the next tick, a pull slower than a tick would never complete the partition.
+    @Test
+    void roundDecidedOnAnswersInHand_survivesTheNextTick_untilItsSlowPullLands() throws InterruptedException {
+        var cluster = Cluster.of(5, timeSpan(50).millis());
+        var joiner = new NodeId("node-5");
+        var key = cluster.keyGainedBy(joiner, "k5-slow-pull");
+
+        cluster.seedOnReplicas(key);
+        cluster.joinWithoutCatchUp(joiner);
+
+        var silent = cluster.replicasOf(key).stream().filter(id -> !id.equals(joiner)).findFirst().orElseThrow();
+
+        cluster.silence(silent);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        Thread.sleep(60);
+        cluster.holdPullAnswers();
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        Thread.sleep(5);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        cluster.releasePullAnswers();
+
+        assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).isEqualTo(Readiness.SERVING);
+        assertThat(cluster.holds(joiner, key)).isTrue();
     }
 
     /// H3/H7: the boot walk's 2·RF bound, on the LIVE ring. Three cores join together and become a key's whole
@@ -730,7 +757,30 @@ class DHTCatchUpGateTest {
             return ring;
         }
 
+        /// Pull answers held back, as a slow lane would — delivered by [#releasePullAnswers].
+        private final List<Map.Entry<NodeId, ProtocolMessage>> heldPullAnswers = new ArrayList<>();
+        private boolean holdingPullAnswers;
+
+        void holdPullAnswers() {
+            holdingPullAnswers = true;
+        }
+
+        void releasePullAnswers() {
+            holdingPullAnswers = false;
+
+            var held = List.copyOf(heldPullAnswers);
+
+            heldPullAnswers.clear();
+            held.forEach(entry -> deliver(entry.getKey(), entry.getValue()));
+        }
+
         private void deliver(NodeId target, ProtocolMessage message) {
+            if (holdingPullAnswers && message instanceof DHTMessage.MigrationDataResponse) {
+                heldPullAnswers.add(Map.entry(target, message));
+
+                return;
+            }
+
             countCatchUp(message);
 
             var member = members.get(target);

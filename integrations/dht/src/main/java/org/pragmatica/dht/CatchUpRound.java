@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTMessage.Readiness;
@@ -50,6 +51,8 @@ final class CatchUpRound {
     private final ConcurrentHashMap<NodeId, Answer> answers = new ConcurrentHashMap<>();
     private final Set<NodeId> outstandingPulls = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean decided = new AtomicBoolean();
+    /// When the round decided, so a round whose pulls are still landing is kept for a bounded while.
+    private final AtomicLong decidedAtNanos = new AtomicLong();
     private final AtomicBoolean anchorless = new AtomicBoolean();
 
     private CatchUpRound(long id, Partition partition, Set<NodeId> sources, Set<NodeId> anchors, long startedNanos) {
@@ -92,7 +95,22 @@ final class CatchUpRound {
 
         answers.put(source, new Answer(readiness, digestMatches));
 
-        return answers.size() == sources.size() && decided.compareAndSet(false, true);
+        return answers.size() == sources.size() && claimDecision();
+    }
+
+    /// Whether this round decided less than `ageNanos` ago — its pulls may still be landing (#1777, K5).
+    boolean decidedWithin(long ageNanos) {
+        return decided.get() && System.nanoTime() - decidedAtNanos.get() <= ageNanos;
+    }
+
+    private boolean claimDecision() {
+        if (!decided.compareAndSet(false, true)) {
+            return false;
+        }
+
+        decidedAtNanos.set(System.nanoTime());
+
+        return true;
     }
 
     /// Decide on the answers in hand, for a round some source never answered (#1777, H2): allowed only when at
@@ -110,7 +128,7 @@ final class CatchUpRound {
 
         return anyServing
                && !anyUnknown()
-               && decided.compareAndSet(false, true);
+               && claimDecision();
     }
 
     int silentCount() {
