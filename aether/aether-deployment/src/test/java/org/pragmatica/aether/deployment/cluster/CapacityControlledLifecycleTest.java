@@ -37,11 +37,28 @@ class CapacityControlledLifecycleTest {
         @Override public <T> T read(ByteBuf buffer) { return null; }
     });
     private final AtomicInteger creates = new AtomicInteger();
+    /// Ledger allocation the provider expects to see committed when a create reaches it.
+    private final AtomicInteger allocatedAtCreate = new AtomicInteger(1);
     private final java.util.concurrent.atomic.AtomicReference<List<InstanceInfo>> inventory = new java.util.concurrent.atomic.AtomicReference<>(List.of());
+    private final java.util.concurrent.atomic.AtomicReference<Promise<List<InstanceInfo>>> listed = new java.util.concurrent.atomic.AtomicReference<>(Promise.success(List.of()));
+    private static final String OPERATOR_TOML = """
+        config_version = "1.0.0"
+        [cluster]
+        name = "test"
+        version = "1.0.0"
+        [source.east]
+        type = "cloud"
+        provider = "hetzner"
+        credentials = "east-token"
+        region = "east-region"
+        [source.east.core]
+        count = 5
+        instance_type = "small"
+        """;
     private final NodeLifecycleManager provider = new NodeLifecycleManager() {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             creates.incrementAndGet();
-            assertThat(ledger().allocated()).isEqualTo(1);
+            assertThat(ledger().allocated()).isEqualTo(allocatedAtCreate.get());
             return Causes.cause("Provider timed out after accepting request").promise();
         }
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec, String binding) { return provisionNode(spec); }
@@ -53,6 +70,7 @@ class CapacityControlledLifecycleTest {
         @Override public org.pragmatica.lang.Result<String> sourceBinding(SourceName source) { return org.pragmatica.lang.Result.success("binding"); }
         @Override public boolean isCloudManaged() { return true; }
         @Override public Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source) { return Promise.success(inventory.get()); }
+        @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) { return listed.get(); }
     };
     private final NodeLifecycleManager lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
         commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 1);
@@ -72,6 +90,64 @@ class CapacityControlledLifecycleTest {
     private ProvisionSpec spec(String node, String source) {
         return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "size", "worker",
             ProvisionContext.forBootstrap(ClusterName.clusterName("test").unwrap(), "worker", SourceName.sourceName(source).unwrap(), node)).unwrap();
+    }
+
+    /// #1551: on a self-bootstrapped cluster the committed config is the BootstrapModule seed
+    /// (`tomlContent=""`). Fleet inventory has no operator sources to list, so the reservation proceeds to the
+    /// provider instead of failing the parse and blocking every provision — and completeness is NOT recorded,
+    /// so a later operator config is still inventoried (see the next test).
+    @Test
+    void provisionNode_bootstrapSeedConfig_dispatchesWithoutRecordingInventoryComplete() {
+        seedOnlyCluster();
+
+        lifecycle.provisionNode(spec("new-core", "default")).await();
+
+        assertThat(creates.get()).as("the provider create must be reached").isEqualTo(1);
+        assertThat(ledger().inventoryComplete()).isFalse();
+        assertThat(ledger().allocated()).isEqualTo(1);
+    }
+
+    /// #1551: a seed-only cluster later receives an operator config whose cloud source already runs an
+    /// instance. That instance must be inventoried and counted before any further capacity decision, and a
+    /// reservation attempted while the inventory is still running must refuse, exactly as at boot.
+    @Test
+    void provisionNode_operatorConfigReplacesSeed_inventoriesExistingInstancesBeforeReserving() {
+        var pendingInventory = Promise.<List<InstanceInfo>>promise();
+        listed.set(pendingInventory);
+        var wide = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 10);
+        seedOnlyCluster();
+        wide.provisionNode(spec("seed-era", "default")).await();
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+                                 AetherValue.ClusterConfigValue.clusterConfigValue(OPERATOR_TOML, "test", "1.0.0",
+                                                                                   List.of(new AetherValue.TopologyEntry("east", "core", 5)),
+                                                                                   3, 9, "cloud", 2L)));
+        assertThat(ledger().inventoryComplete()).as("arming: the seed era never recorded completeness").isFalse();
+
+        var first = wide.provisionNode(spec("after-config", "east"));
+        var raced = wide.provisionNode(spec("raced", "east")).await();
+
+        assertThat(raced.isFailure()).as("a reservation while the operator inventory runs must refuse: %s", raced).isTrue();
+        assertThat(creates.get()).as("nothing dispatched while the inventory is pending").isEqualTo(1);
+
+        allocatedAtCreate.set(3);
+        pendingInventory.succeed(List.of(observedCore("existing-east")));
+        first.await();
+
+        assertThat(ledger().inventoryComplete()).isTrue();
+        assertThat(store.getTyped(new AetherKey.CapacityReservationKey(new NodeId("existing-east")),
+                                  AetherValue.CapacityReservationValue.class).map(AetherValue.CapacityReservationValue::phase))
+            .as("the source's pre-existing instance is counted").isEqualTo(Option.some(AetherValue.CapacityReservationPhase.OBSERVED));
+        assertThat(ledger().allocated()).as("seed-era reservation + observed instance + new reservation").isEqualTo(3);
+        assertThat(creates.get()).isEqualTo(2);
+    }
+
+    private void seedOnlyCluster() {
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+                                 AetherValue.ClusterConfigValue.clusterConfigValue("", "test", "1.0.0",
+                                                                                   List.of(new AetherValue.TopologyEntry("", "core", 5)),
+                                                                                   3, 9, "bootstrap-seed", 1L)));
     }
 
     @Test

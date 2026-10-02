@@ -231,7 +231,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<Unit> ensureInventory() {
-        if (ledger().filter(CapacityLedgerValue::inventoryComplete).isPresent()) {
+        if (ledger().filter(this::inventorySatisfied).isPresent()) {
             return Promise.unitPromise();
         }
 
@@ -242,32 +242,62 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return initializeInventory().onResultRun(() -> initializing.set(false));
     }
 
+    /// #1551: `inventoryComplete` means "every OPERATOR source has been inventoried". A cluster with no operator
+    /// source document (absent, or the BootstrapModule seed) has none to list, so inventory is vacuously
+    /// satisfied — but it is deliberately NOT recorded as complete: the ledger is created incomplete, and the
+    /// first operator config therefore finds `inventoryComplete=false` and inventories its sources (counting
+    /// their existing instances) before any reservation. Recording completeness under the seed would skip
+    /// that inventory for good and let the ledger under-count the fleet.
     private Promise<Unit> initializeInventory() {
-        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
-                    .fold(() -> Causes.cause("Committed source configuration required for fleet inventory").promise(),
-                          config -> ClusterBootstrapConfigParser.parse(config.tomlContent())
-                                                                .async()
-                                                                .flatMap(parsed -> {
-                                                                             var pass = Promise.unitPromise();
+        return operatorConfig().fold(this::ensureSeedLedger, this::inventoryOperatorSources);
+    }
 
-                                                                             for (var source : parsed.sources()
-                                                                                                     .values()
-                                                                                                     .stream()
-                                                                                                     .filter(value -> value.type() != SourceType.SSH)
-                                                                                                     .sorted(java.util.Comparator.comparing(value -> value.name()
-                                                                                                                                                          .value()))
-                                                                                                     .toList()) {
-                                                                             pass = pass.flatMap(_ -> listInstances(Map.of("aether-source",
-                                                                                                                           source.name()
-                                                                                                                                 .value(),
-                                                                                                                           "aether-cluster",
-                                                                                                                           parsed.cluster()
-                                                                                                                                 .name()
-                                                                                                                                 .value())).mapToUnit());
-                                                                         }
+    private Option<AetherValue.ClusterConfigValue> operatorConfig() {
+        return SourceComputeRegistry.operatorConfig(store.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                   AetherValue.ClusterConfigValue.class));
+    }
 
-                                                                             return pass.flatMap(_ -> markInventoryComplete());
-                                                                         }));
+    private Promise<Unit> ensureSeedLedger() {
+        var current = ledger();
+
+        if (current.isPresent()) {
+            return Promise.unitPromise();
+        }
+
+        return mutate(current, new CapacityLedgerValue(0, 1, false), List.of()).flatMap(accepted -> accepted
+                                                                                                    ? Promise.unitPromise()
+                                                                                                    : Causes.cause("Fleet ledger creation lost core authority or concurrent reservation").promise());
+    }
+
+    /// Inventory is satisfied when the operator sources were inventoried, or when there are none (seed-only).
+    private boolean inventorySatisfied(CapacityLedgerValue ledger) {
+        return ledger.inventoryComplete() || operatorConfig().isEmpty();
+    }
+
+    private Promise<Unit> inventoryOperatorSources(AetherValue.ClusterConfigValue config) {
+        return ClusterBootstrapConfigParser.parse(config.tomlContent())
+                                           .async()
+                                           .flatMap(parsed -> {
+                                                        var pass = Promise.unitPromise();
+
+                                                        for (var source : parsed.sources()
+                                                                                .values()
+                                                                                .stream()
+                                                                                .filter(value -> value.type() != SourceType.SSH)
+                                                                                .sorted(java.util.Comparator.comparing(value -> value.name()
+                                                                                                                                     .value()))
+                                                                                .toList()) {
+                                                        pass = pass.flatMap(_ -> listInstances(Map.of("aether-source",
+                                                                                                      source.name()
+                                                                                                            .value(),
+                                                                                                      "aether-cluster",
+                                                                                                      parsed.cluster()
+                                                                                                            .name()
+                                                                                                            .value())).mapToUnit());
+                                                    }
+
+                                                        return pass.flatMap(_ -> markInventoryComplete());
+                                                    });
     }
 
     private Promise<Unit> markInventoryComplete() {
@@ -286,14 +316,16 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         var key = new AetherKey.CapacityReservationKey(node);
         var current = ledger();
 
-        if (store.get(key).isPresent() || current.filter(value -> value.inventoryComplete() && value.allocated() < limit.getAsInt())
+        if (store.get(key).isPresent() || current.filter(value -> inventorySatisfied(value) && value.allocated() < limit.getAsInt())
                                                  .isEmpty()) {
             return Promise.success(false);
         }
 
         return current.fold(() -> Promise.success(false),
                             value -> mutate(current,
-                                            new CapacityLedgerValue(value.allocated() + 1, value.version() + 1, true),
+                                            new CapacityLedgerValue(value.allocated() + 1,
+                                                                    value.version() + 1,
+                                                                    value.inventoryComplete()),
                                             List.of(new KVCommand.Mutation<>(key,
                                                                              Option.none(),
                                                                              Option.some(new CapacityReservationValue(source.value(),
