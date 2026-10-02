@@ -10,6 +10,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.AfterEach;
@@ -18,7 +19,6 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 
@@ -38,10 +38,11 @@ class EmberWorkerDeadSeedTest {
     private static final int APP_OFFSET = 80;
     /// A port inside the block that no slot ever uses: the dead seed's address.
     private static final int DEAD_OFFSET = 30;
-    /// Disjoint from every other Ember/Forge range surveyed on 2026-09-28 (38100–39900 and 42100–43900 are
-    /// in open PRs; 45100 is fixed).
-    private static final int FIRST_CANDIDATE_BASE = 40100;
-    private static final int LAST_CANDIDATE_BASE = 41900;
+    /// Disjoint from every other Ember/Forge range, and below the Linux ephemeral floor (32768): a base inside
+    /// 32768-60999 can be taken by any concurrent module's outbound connection between probe and bind.
+    /// Registered in TEST_PORT_ALLOCATION.md ("3000-4800 scan").
+    private static final int FIRST_CANDIDATE_BASE = 3000;
+    private static final int LAST_CANDIDATE_BASE = 4800;
     private static final int CANDIDATE_STEP = 200;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
     private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
@@ -68,9 +69,14 @@ class EmberWorkerDeadSeedTest {
     @Timeout(420)
     @SuppressWarnings("unchecked")
     void workerSeededWithOneDeadCore_stillJoinsAndBecomesReady() throws ReflectiveOperationException {
-        var base = EmberTestPorts.freeBase(PORTS);
-        cluster = emberCluster(CORES, base, base + MGMT_OFFSET, base + APP_OFFSET, "wds");
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        // The last base handed to the factory is the one that started: a retry builds a fresh cluster on a fresh block.
+        var startedBase = new AtomicInteger();
+
+        cluster = EmberTestPorts.startedCluster(PORTS, candidate -> {
+            startedBase.set(candidate);
+            return emberCluster(CORES, candidate, candidate + MGMT_OFFSET, candidate + APP_OFFSET, "wds");
+        }, START_BOUND);
+        var base = startedBase.get();
         awaitCondition("a leader is elected", () -> cluster.currentLeader().isPresent());
         var dead = new NodeId("wds-dead");
         var seeds = (Map<String, NodeInfo>) field("nodeInfos");
