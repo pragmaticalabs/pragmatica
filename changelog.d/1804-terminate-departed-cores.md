@@ -13,5 +13,9 @@
   retirable, tracked or not. [verified: `aether/node/src/test/java/org/pragmatica/aether/node/CoreCandidateRetirementTest.java`]
 - `ClusterTopologyManager.setRetirementAllowed(Predicate)` is replaced by `setRetirementRefusal(Function<NodeId, Option<String>>)` so the
   refusal carries its reason.
-- **Not changed:** instances forgotten at the in-flight ceiling (#1787) are live members and are still not terminated; a failed provider
-  terminate is still logged at DEBUG and not retried.
+- The retry tick is gated on the activation replay's own protection (live, tracked or in flight). A provider failure at terminate is now
+  logged at WARN with the provider's error and not retried (the activation replay re-selects a still-listed instance).
+- **Lookups by node id are scoped to the cluster**: terminate, restart and `instancesForNode` ignore an instance labelled for another cluster,
+  since core ids such as `hetzner-eu-core-1` repeat across clusters and the only match left could be another cluster's VM.
+  [verified: `NodeLifecycleManagerTerminateTest`]
+- **Not changed:** instances forgotten at the in-flight ceiling (#1787) are live members and are still not terminated.

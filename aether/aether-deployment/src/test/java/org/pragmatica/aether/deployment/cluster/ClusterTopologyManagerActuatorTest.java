@@ -1880,6 +1880,9 @@ class ClusterTopologyManagerActuatorTest {
         private static final NodeId DEAD = nodeId("node-dead").unwrap();
         private static final List<NodeId> REMAINING = List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E);
         private final AtomicReference<Set<NodeId>> voters = new AtomicReference<>(Set.of());
+        /// Every CTM a test activates is deactivated afterwards: a refused-reap chain outlives its test otherwise and
+        /// logs into the next test's appender, which reads the shared logger.
+        private final List<ClusterTopologyManager> activated = new CopyOnWriteArrayList<>();
         private CapturingAppender appender;
         private LoggerConfig loggerConfig;
         private Level originalLevel;
@@ -1902,6 +1905,7 @@ class ClusterTopologyManagerActuatorTest {
         void detachAppender() {
             var ctx = (LoggerContext) LogManager.getContext(false);
 
+            activated.forEach(ClusterTopologyManager::deactivate);
             loggerConfig.removeAppender(appender.getName());
             loggerConfig.setLevel(originalLevel);
             ctx.updateLoggers();
@@ -1922,6 +1926,7 @@ class ClusterTopologyManagerActuatorTest {
             manager.setRetirementRefusal(node -> voters.get().contains(node)
                                                  ? Option.some("still an installed voter")
                                                  : Option.none());
+            activated.add(manager);
 
             return manager;
         }
@@ -2016,6 +2021,102 @@ class ClusterTopologyManagerActuatorTest {
             settleFor(Duration.ofMillis(300));
 
             assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A node that is only TRACKED (not live, not counted) when the chain ticks is protected exactly as the
+        /// replay protects it, and is never terminated, even once voted out. Both protections are separate tests so
+        /// each is load-bearing.
+        @Test
+        void nodeRemoved_refusedThenTracked_isNeverTerminated() {
+            assertProtectedAfterRefusal(() -> trackedMembers.set(Set.of(DEAD)));
+        }
+
+        @Test
+        void nodeRemoved_refusedThenInFlight_isNeverTerminated() {
+            assertProtectedAfterRefusal(() -> inFlightNodes.set(Set.of(DEAD)));
+        }
+
+        private void assertProtectedAfterRefusal(Runnable protect) {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            protect.run();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("stopped")));
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A chain does not outlive its activation: deactivated, its next tick terminates nothing even though the
+        /// verdict has cleared. The successor's replay owns the instance.
+        @Test
+        void nodeRemoved_chainStopsWhenCtmDeactivates() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            manager.deactivate();
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A chain of an earlier activation is dropped even after the same CTM is activated again: the new
+        /// activation's own refusal path (here, none was raised) owns the node.
+        @Test
+        void nodeRemoved_chainOfEarlierActivationIsDroppedAfterReactivation() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            manager.deactivate();
+            manager.activate();
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Two refusals of one node within one activation, half a window apart, start ONE chain. A second chain would
+        /// tick half a window out of step with the first, and each would log the same "retries left" figure.
+        @Test
+        void nodeRemoved_refusedTwiceInOneActivation_runsOneChain() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(50));
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(650));
+
+            var ticks = appender.capturedWarns().stream()
+                                .filter(msg -> msg.contains("still REFUSED"))
+                                .toList();
+
+            assertThat(ticks).as("arming: the chain ticked").hasSizeGreaterThan(2);
+            assertThat(ticks).as("one chain logs each retries-left figure once").doesNotHaveDuplicates();
+        }
+
+        /// A provider failure at terminate is visible at WARN with the provider's error, not buried at DEBUG.
+        @Test
+        void terminateFailure_isLoggedAtWarnWithTheProviderError() {
+            var manager = voterAwareCtm(GRACE);
+
+            lifecycleManager.failTerminates();
+            manager.activate();
+            removed(manager, DEAD);
+
+            assertThat(appender.capturedWarns()).anyMatch(msg -> msg.contains(DEAD.id())
+                                                                 && msg.contains("FAILED")
+                                                                 && msg.contains("stub provider refused terminate"));
         }
 
         /// The new-leader shape: the activation replay selects an untracked, labelled instance of this cluster, the
@@ -2254,6 +2355,12 @@ class ClusterTopologyManagerActuatorTest {
             failProvision.set(true);
         }
 
+        private final java.util.concurrent.atomic.AtomicBoolean failTerminates = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        void failTerminates() {
+            failTerminates.set(true);
+        }
+
         void allowProvisions() {
             failProvision.set(false);
         }
@@ -2278,6 +2385,9 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
+            if (failTerminates.get()) {
+                return org.pragmatica.lang.utils.Causes.cause("stub provider refused terminate").promise();
+            }
             terminateCount.incrementAndGet();
             terminatedIds.add(nodeId);
             inventory.remove(nodeId);

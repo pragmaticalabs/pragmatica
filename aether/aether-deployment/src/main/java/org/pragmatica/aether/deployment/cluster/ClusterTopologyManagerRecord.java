@@ -1919,19 +1919,25 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                          .onEmpty(() -> terminateRetired(nodeId));
     }
 
+    /// A provider failure is logged at WARN and NOT retried here — FER, with the activation replay as the backstop:
+    /// the failures seen are mostly permanent until state changes (no provider wired, no capacity reservation
+    /// committed for the id), so a timer would repeat a refusal, while a transient provider error leaves the instance
+    /// listed, and the next activation's replay selects it again. Guarantee earned: the failure is visible, not that
+    /// the VM is gone.
     @Contract
     private void terminateRetired(NodeId nodeId) {
         abandonedReaps.remove(nodeId);
         refusedReaps.remove(nodeId);
         lifecycleManager.terminateNode(nodeId)
-                        .onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
-                                                      nodeId,
-                                                      cause.message()));
+                        .onFailure(cause -> log.warn("CTM: reap of departed node {} FAILED at the provider: {}",
+                                                     nodeId,
+                                                     cause.message()));
     }
 
     /// #1804 — WARN the refusal with its reason and, unless a chain of this activation is already pending for
     /// `nodeId`, start one. The chain is level-triggered: each tick re-reads the retirement verdict and the
-    /// liveness evidence, and ends when the node is terminated, shows life, the activation ends, or
+    /// liveness evidence, and ends when the node is terminated, becomes protected (live, tracked or in flight — the
+    /// activation replay's own protection, [MembershipLiveness#replayProtected]), the activation ends, or
     /// [#REFUSED_REAP_RETRIES] ticks are spent. A refusal arriving while a chain is pending only logs.
     @Contract
     private void parkRefusedReap(NodeId nodeId, String reason) {
@@ -1964,7 +1970,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        if (liveness.demonstrablyLive(nodeId)) {
+        if (liveness.replayProtected(nodeId)) {
             abandonRefusedReap(nodeId);
 
             return;
@@ -1995,9 +2001,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void abandonRefusedReap(NodeId nodeId) {
         abandonedReaps.add(nodeId);
-        log.warn("CTM: refused reap of {} stopped — it shows life ({}); a live node is never terminated; re-armed by the next SWIM FAULTY for it",
+        log.warn("CTM: refused reap of {} stopped — it is protected ({}, tracked={}, inFlight={}); a live, tracked or booting node is never terminated; re-armed by the next SWIM FAULTY for it",
                  nodeId,
-                 liveness.evidence(nodeId));
+                 liveness.evidence(nodeId),
+                 liveness.trackedMembers().get().contains(nodeId),
+                 liveness.inFlightProvisioning().get().contains(nodeId));
     }
 
     /// R4 — ACTIVATION REPLAY. `activate()` runs a one-shot reconciliation of this cluster's core instances,
