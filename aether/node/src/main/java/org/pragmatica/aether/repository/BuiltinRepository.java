@@ -36,6 +36,7 @@ public interface BuiltinRepository extends Repository {
         return switch (cause) {
             case ArtifactStore.ArtifactStoreError.NotFound notFound -> new RepositoryError.NotInStore(notFound.message());
             case ArtifactStore.ArtifactStoreError.Archived archived -> new RepositoryError.NotInStore(archived.message());
+            case ArtifactStore.ArtifactStoreError.LegacyArtifactMetadata legacy -> new RepositoryError.NotInStore(legacy.message());
             default -> cause;
         };
     }

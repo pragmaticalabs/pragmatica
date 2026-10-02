@@ -240,6 +240,25 @@ class ArtifactStoreWriteOnceTest {
         }
 
         @Test
+        void aCoordinateInTheSixFieldMetadataFormat_isNeitherServedNorOverwritten_andTheErrorIsTyped() {
+            var key = "artifacts/org.example/lib/1.0.0/jar/meta";
+
+            deploy(v1, CONTENT);
+
+            var fields = new String(dht.union().get(key), StandardCharsets.UTF_8).split(":");
+            var legacy = (String.join(":", fields[0], fields[1], fields[2], fields[3], fields[5], fields[6])).getBytes(StandardCharsets.UTF_8);
+
+            dht.replicas.getFirst().put(key, legacy);
+
+            assertThat(failureOf(store.resolve(v1))).isInstanceOf(ArtifactStoreError.LegacyArtifactMetadata.class);
+            assertThat(failureOf(store.deploy(v1, CONTENT))).as("not even an identical re-put")
+                                                            .isInstanceOf(ArtifactStoreError.LegacyArtifactMetadata.class);
+            assertThat(failureOf(store.deploy(v1, OTHER))).isInstanceOf(ArtifactStoreError.LegacyArtifactMetadata.class);
+            assertThat(dht.union().get(key)).as("write-once stands: nothing overwrote it").isEqualTo(legacy);
+            assertThat(failureOf(store.resolve(v1)).message()).contains("stored before the write-once artifact store").contains("new version");
+        }
+
+        @Test
         void deploy_keepsTheOriginalDeployTime_whenAnIdenticalRePutRewritesMissingMetadata() {
             var key = "artifacts/org.example/lib/1.0.0/jar/meta";
 

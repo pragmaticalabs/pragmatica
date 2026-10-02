@@ -187,6 +187,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         return switch (cause) {
             case ArtifactStore.ArtifactStoreError.NotFound _ -> MavenResponse.notFound("Artifact not found: " + ap.file().asString());
             case ArtifactStore.ArtifactStoreError.Archived archived -> MavenResponse.gone(archived.message());
+            case ArtifactStore.ArtifactStoreError.LegacyArtifactMetadata legacy -> MavenResponse.gone(legacy.message());
             default -> failureResponse("GET",
                                        ap.file().asString(),
                                        cause);
@@ -250,7 +251,9 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     private static MavenResponse checksumFailureResponse(Cause cause) {
         return cause instanceof ArtifactStore.ArtifactStoreError.Archived archived
                ? MavenResponse.gone(archived.message())
-               : MavenResponse.notFound("Artifact not found");
+               : cause instanceof ArtifactStore.ArtifactStoreError.LegacyArtifactMetadata legacy
+                 ? MavenResponse.gone(legacy.message())
+                 : MavenResponse.notFound("Artifact not found");
     }
 
     @Override
@@ -319,6 +322,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                                                                                MavenResponse.conflict(archived.message()));
             case ArtifactStore.ArtifactStoreError.VersionLimitReached full -> refusal(file,
                                                                                       MavenResponse.conflict(full.message()));
+            case ArtifactStore.ArtifactStoreError.LegacyArtifactMetadata legacy -> refusal(file,
+                                                                                           MavenResponse.conflict(legacy.message()));
             case ArtifactStore.ArtifactStoreError.SnapshotRefused refused -> refusal(file,
                                                                                      MavenResponse.badRequest(refused.message()));
             default -> failureResponse("PUT", file.asString(), cause);

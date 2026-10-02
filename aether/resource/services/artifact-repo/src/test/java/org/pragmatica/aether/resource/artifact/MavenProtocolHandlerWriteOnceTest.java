@@ -124,6 +124,25 @@ class MavenProtocolHandlerWriteOnceTest {
     }
 
     @Test
+    void aCoordinateInTheSixFieldMetadataFormat_answers410OnGet_and409OnPut() {
+        put(JAR_PATH, CONTENT);
+
+        var key = "artifacts/org/example/lib/1.0.0".replace("artifacts/org/example", "artifacts/org.example") + "/jar/meta";
+        var fields = new String(dht.union().get(key), StandardCharsets.UTF_8).split(":");
+
+        dht.replicas.getFirst().put(key, String.join(":", fields[0], fields[1], fields[2], fields[3], fields[5], fields[6]).getBytes(StandardCharsets.UTF_8));
+
+        assertThat(get(JAR_PATH).statusCode()).isEqualTo(410);
+        assertThat(body(get(JAR_PATH))).contains("stored before the write-once artifact store");
+
+        var refused = put(JAR_PATH, CONTENT);
+
+        assertThat(refused.statusCode()).isEqualTo(409);
+        assertThat(body(refused)).contains("cannot be served or re-pushed in place");
+        assertThat(get(JAR_PATH + ".sha1").statusCode()).isEqualTo(410);
+    }
+
+    @Test
     void checksumOfAnArchivedFile_answers410_whileALiveOneAnswers200() {
         put(JAR_PATH, CONTENT);
 
