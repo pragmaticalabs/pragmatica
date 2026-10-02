@@ -87,6 +87,11 @@ class ArtifactStoreWriteOnceTest {
                                                                               org.pragmatica.aether.artifact.ArtifactId artifactId) {
             return delegate.versions(groupId, artifactId);
         }
+
+        @Override
+        public Promise<Boolean> isArchived(Artifact artifact) {
+            return delegate.isArchived(artifact);
+        }
     }
 
     private ArtifactStore newStore(ReplicatedTestDht backing) {
@@ -395,6 +400,23 @@ class ArtifactStoreWriteOnceTest {
                 assertThat(failureOf(local.resolve(v2))).as("read order " + order)
                                                         .isInstanceOf(ArtifactStoreError.Archived.class);
             }
+        }
+
+        @Test
+        void resolve_staysArchived_whenTheMarkerIsLostOnEveryReplicaThatAnswers() {
+            // The marker is a DHT key on its own replica set, so churn can lose it on every replica a read reaches
+            // while the metadata survives elsewhere. The consensus flag is the authority and still refuses.
+            var replicated = new ReplicatedTestDht(3, 2);
+            var local = new ArtifactStoreImpl(replicated, storage, SEVEN_DAYS, now::get, ArtifactVersionIndex.inMemory());
+
+            local.deploy(v2, CONTENT).await().onFailureRun(Assertions::fail);
+            now.addAndGet(7 * DAY);
+            local.archive(v2).await().onFailureRun(Assertions::fail);
+            replicated.replicas.forEach(replica -> replica.remove("artifacts/org.example/lib/2.0.0/archived"));
+
+            assertThat(failureOf(local.resolve(v2))).as("resolve").isInstanceOf(ArtifactStoreError.Archived.class);
+            assertThat(failureOf(local.deploy(v2, CONTENT))).as("re-put").isInstanceOf(ArtifactStoreError.Archived.class);
+            assertThat(local.exists(v2).await().unwrap()).as("exists").isFalse();
         }
 
         @Test

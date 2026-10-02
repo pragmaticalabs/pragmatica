@@ -93,6 +93,8 @@ class ArtifactVersionsConsensusTest {
 
         for (var node : nodes) {
             assertThat(versionsOf(node)).as("v1 stays archived whatever the order, v2 is listed").containsExactly("2.0.0");
+            assertThat(node.isArchived(v1).await().unwrap()).as("the committed flag reads archived").isTrue();
+            assertThat(node.isArchived(v2).await().unwrap()).as("a published version is not archived").isFalse();
         }
     }
 

@@ -609,7 +609,20 @@ class ArtifactStoreImpl implements ArtifactStore {
                : Promise.unitPromise();
     }
 
+    /// Archived when EITHER the consensus-committed flag or the DHT marker says so. The flag is the authority: the
+    /// marker is a DHT key on its own replica set, so a churn that loses it on every replica that answers must not
+    /// resurrect the version. The marker still covers a node whose KV has not yet applied the flag.
     private Promise<Boolean> isArchived(Artifact artifact) {
+        return Promise.all(markerPresent(artifact),
+                           versionIndex.isArchived(artifact))
+                      .map(ArtifactStoreImpl::eitherArchived);
+    }
+
+    private static boolean eitherArchived(boolean marker, boolean flagged) {
+        return marker || flagged;
+    }
+
+    private Promise<Boolean> markerPresent(Artifact artifact) {
         return dhtGetWithRetry(archivedKey(artifact), ReadOptions.DEFAULT).map(Option::isPresent);
     }
 
@@ -696,11 +709,11 @@ class ArtifactStoreImpl implements ArtifactStore {
         return resolveWithMetadata(file).map(ResolvedArtifact::content);
     }
 
-    /// The archive marker is authoritative: a version carrying it never resolves, whatever the metadata key
-    /// says. The marker is a key of its own, written once and never rewritten or removed, so any replica that
-    /// holds it wins the read ("present beats absent") and no stale `meta` copy can resurrect an archived
-    /// artifact. Its read starts together with the metadata read, so a live artifact pays no extra round trip,
-    /// and it is consulted before any chunk is fetched.
+    /// A version that is archived ([#isArchived]: the consensus flag or the DHT marker) never resolves, whatever
+    /// the metadata key says. The marker is a key of its own, written once and never rewritten or removed, so any
+    /// replica that holds it wins the read ("present beats absent"); the consensus flag covers a marker lost on
+    /// every replica that answers. The check starts together with the metadata read, so a live artifact pays no
+    /// extra round trip, and it is consulted before any chunk is fetched.
     @Override
     public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
         log.debug("Resolving artifact: {}", file.asString());
@@ -855,7 +868,7 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     /// Written once and never rewritten: an existing marker is left exactly as it is.
     private Promise<Unit> writeArchiveMarker(Artifact artifact) {
-        return isArchived(artifact).flatMap(archived -> putMarkerUnlessArchived(artifact, archived));
+        return markerPresent(artifact).flatMap(archived -> putMarkerUnlessArchived(artifact, archived));
     }
 
     private Promise<Unit> putMarkerUnlessArchived(Artifact artifact, boolean archived) {

@@ -83,6 +83,12 @@ public final class KvArtifactVersionIndex implements ArtifactVersionIndex {
                                                                                                       artifactId)).live()));
     }
 
+    @Override
+    public Promise<Boolean> isArchived(Artifact artifact) {
+        return Promise.success(committed(ArtifactBase.artifactBase(artifact)).isArchived(artifact.version()
+                                                                                                 .withQualifier()));
+    }
+
     private Promise<Unit> submit(Artifact artifact, ArtifactVersionsValue value) {
         return cluster.apply(List.<KVCommand<AetherKey>> of(new Put<>(ArtifactVersionsKey.artifactVersionsKey(ArtifactBase.artifactBase(artifact)),
                                                                       value)))

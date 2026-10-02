@@ -94,6 +94,13 @@ public sealed interface AetherValue {
                                                    .toList());
         }
 
+        /// Whether `version` is in the set and flagged archived.
+        public boolean isArchived(String version) {
+            return entries.stream()
+                          .anyMatch(entry -> entry.archived() && entry.version()
+                                                                      .equals(version));
+        }
+
         /// The versions that are present and not archived, in version-string order.
         public List<String> live() {
             return entries.stream()

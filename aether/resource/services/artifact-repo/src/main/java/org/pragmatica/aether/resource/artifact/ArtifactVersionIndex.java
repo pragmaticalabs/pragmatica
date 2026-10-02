@@ -34,6 +34,9 @@ public interface ArtifactVersionIndex {
     Promise<ArtifactContentValue> bindContent(ArtifactFile file, ArtifactContentValue digest);
     /// The versions that are present and not archived.
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
+    /// Whether the artifact's version is flagged archived. In a cluster this is the consensus-committed flag, the
+    /// authority a resolve obeys even when the DHT archive marker cannot be read from the replicas that answer.
+    Promise<Boolean> isArchived(Artifact artifact);
 
     /// A process-local index with the cluster index's merge semantics. For single-process use and tests; a
     /// cluster node wires the consensus-backed one.
@@ -67,6 +70,13 @@ public interface ArtifactVersionIndex {
                                                                                                              artifactId),
                                                                                             ArtifactVersionsValue.empty())
                                                                               .live()));
+            }
+
+            @Override
+            public Promise<Boolean> isArchived(Artifact artifact) {
+                return Promise.success(sets.getOrDefault(ArtifactBase.artifactBase(artifact),
+                                                         ArtifactVersionsValue.empty())
+                                           .isArchived(artifact.version().withQualifier()));
             }
         };
     }
