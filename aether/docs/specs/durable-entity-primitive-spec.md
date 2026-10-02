@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.10.1
+**Version:** 0.10.2
 **Status:** Draft. **§5 (`DurableEntity`) is reconciled with the shipped named-command API**
 (`DurableEntity<K, S, C extends Mutator<S>>`). **§6 (workflow) and §7 (saga) are PLANNED façades with no
 production code** (#353, #354; milestone v1.0.0-rc5). **§7 was reopened by #1827 and its five contract
@@ -963,8 +963,12 @@ public sealed interface DeliveryEvidence {
   crash between sending and recording leaves exactly that gap.
 - **Every attempt is bounded (v1828 N2, CTO ruling E2).** The runtime bounds each invocation, re-invocation
   and lookup by the step's declared `attemptTimeout` (part of `RetryBudget`, default 30 s). Expiry counts
-  as **`Sent`** — the request may still be in flight — and counts against the budget; a reply that arrives
-  after expiry is discarded, and the next action follows the R1 path. **No `Running` step can be stuck
+  as **`Sent`** — the request may still be in flight — and counts against the budget, and the next action
+  follows the R1 path. A reply that arrives after expiry is never applied automatically. For a `Replayable`
+  or `Lookup` step it is dropped (the re-invoke or lookup recovers the receipt). For a **`Neither`** step it
+  is recorded on the instance as a **late receipt** (`LateReceipt(stepIndex, attempt, encoded R)`), visible
+  in the operator listing and `status`, as evidence the operator can use for `SucceededWithReceipt`
+  (v1828 nit). **No `Running` step can be stuck
   forever:** every attempt ends within `attemptTimeout`, and attempts end at `maxAttempts`, so a step either
   completes, fails definitely, or parks.
 
@@ -1131,7 +1135,6 @@ public sealed interface SagaPhase {
     record Failed(String causeType, String message)                               implements SagaPhase {}  // terminal
 }
 
-/** `at`: the committing owner's clock when the marker was committed — the key-retention origin (§7.4). */
 /**
  * at: the committing owner's clock (key-window origin, §7.4). ownerEpoch: delimits retry episodes (E4).
  * evidence: how the attempt ended, recorded when it fails; none() = unrecorded, which counts as Sent (E7).
@@ -1505,10 +1508,44 @@ which required one, is withdrawn).
 runtime record about an instance are written only by its bound version. v1-bound and v2-bound instances may
 share a keyspace **even when their `S` differs**. The hard requirement is that **every decode site
 dispatches on the instance's `VersionBinding`, never on "current" code.** Each saga-keyspace log record
-is therefore wrapped in a runtime-owned **envelope** with a fixed codec that no slice owns — the
-`SagaInstanceId`, a reference to the binding, the record kind — and its payload bytes are decoded only
-through the registry entry that matches that binding (§7.9 registration). The decode sites, all of which
-must do this (#354):
+is therefore wrapped in a runtime-owned **envelope** with a fixed codec that no slice owns, and its payload
+bytes are decoded only through the registry entry that matches that binding (§7.9 registration).
+
+```java
+/** Runtime-owned, never slice-encoded. Written first in every saga-keyspace log record (S1, S2). */
+record LogEnvelope(byte formatVersion,          // S2: the log outlives a full-cluster upgrade
+                   SagaInstanceId instance,
+                   String bindingRef,           // the instance's VersionBinding (by content hash)
+                   RecordKind kind,
+                   PhaseKind phaseAfter,        // Running / Waiting / NeedsReconciliation / Compensating / terminal…
+                   boolean pendingTimer,        // a deadline timer is armed after this record
+                   boolean pendingCompensation, // compensation work remains after this record
+                   Instant appendedAt) {}       // the owner's clock at append
+```
+
+**Format version (v1828 S2).** Both envelopes — this log envelope and the request envelope of (3) — begin
+with a format-version byte. The log outlives a runtime upgrade (an Aether upgrade stops the whole cluster
+and restarts it on the new build), so a new runtime must read the envelopes an old one wrote; a reader
+accepts every format version it knows. A log envelope with an unknown format version is the one case that
+still holds the partition's watermark (#701): it means the runtime is older than the data, and refusing is
+the honest answer. A request envelope with an unknown version is refused with
+`SagaError.UnsupportedEnvelopeVersion`.
+
+**The fold carries payloads opaquely (v1828 S1a).** Only owners must host every bound version (§7.9
+takeover eligibility); replicas need not. So the saga-keyspace fold never decodes a payload while
+applying a record: every transition the owner commits appends the instance's full encoded state
+(state-as-truth, as the shipped entity log already stores post-update state), so folding is "keep the
+latest envelope and the latest payload bytes per instance", decoding only the envelope. A payload is decoded
+lazily, at a decode site below, through the instance's binding. **A record a node cannot decode never holds
+the partition watermark** — the #701 refusal (`EntityFold.java:253-272`) applies to the envelope alone,
+so a replica that does not host v2 keeps folding v1 and v2 records alike.
+
+**Encode sites (v1828 S1b).** Payloads are encoded in exactly one place — the owner, by the bound version's
+codec, when it commits a transition; the envelope is encoded by the runtime. A **checkpoint write**
+(`EntityCheckpointDriver`) persists envelopes and payload bytes as they are, never decoding and re-encoding
+a payload, so any holder of the partition can write a checkpoint whatever versions it hosts.
+
+The decode sites, all of which must decode payloads through the binding and nowhere else (#354):
 
 | Decode site | What it decodes |
 |---|---|
@@ -1520,7 +1557,9 @@ must do this (#354):
 | Step execution and compensation | `S`, `S_j`, `R_j` handed to forward, lookup and compensation |
 | Timer fires (`DeadlineFired`, `DeadlineFireFailed`) | the timer command and the waiting state it guards |
 | Signal consumption | a buffered `SignalRecord` payload, folded into `S` |
-| Retirement-gate counting | envelope only (binding and phase) — never a payload |
+| Retirement-gate counting | the latest **envelope** per instance only — `bindingRef`, `phaseAfter`, `pendingTimer`, `pendingCompensation` — never a payload (v1828 S1c) |
+| Terminal-state GC (the terminal-TTL of S2, when it is built) | the latest envelope only: a terminal `phaseAfter` and its `appendedAt` give the terminal time (v1828 S1d) |
+| Audit stream (§11 piece 7, planned) | envelopes always; payloads only on a node hosting the binding, otherwise the record is emitted envelope-only and marked so (v1828 S1d) |
 
 A node that does not host an instance's bound version decodes none of its payloads; under §7.9's
 takeover-eligibility rule it is never that instance's owner, and for display it reports the envelope
@@ -1533,6 +1572,9 @@ version — nothing is decoded with it: registration of that definition fails lo
 `SagaError.BoundVersionFingerprintMismatch(binding, expected, found)` while any live binding names the
 version, and every decode site re-checks the registry entry's fingerprint against the binding as a
 backstop, failing with the same typed error instead of decoding.
+*Consequence for development, stated (v1828 nit):* a SNAPSHOT-style rebuild that changes a fingerprinted type
+under an unchanged version id is refused while any saga bound to that version is live. Use a new version id
+for each such dev build, or let the bound instances finish first.
 
 **(3) Inbound contract.** Some bytes reach an instance from callers that are **not** bound to its version,
 or go back to them: the `run` input `I`, signal payloads (§7.8), operator receipts in a `Resolution`, entity
@@ -1541,8 +1583,9 @@ These form the definition's **contract**, and its fingerprint is recorded in the
 the private-state fingerprint. A caller may address an instance only if its contract fingerprint **equals**
 the bound version's:
 
-- **Detection.** Every binary-encoded inbound request carries the caller's `contractFingerprint` and
-  contract named-shape hash in the runtime envelope (the caller's own registry entry computes them); the
+- **Detection.** Every binary-encoded inbound request carries, in a runtime-owned request envelope that
+  begins with its own format-version byte (S2), the caller's `contractFingerprint` and contract named-shape
+  hash (the caller's own registry entry computes them); the
   owner compares them with the instance's binding — fingerprint equality plus the swap guard below —
   **before decoding the payload**. A mismatch is refused with `SagaError.ContractFingerprintMismatch(
   instance, expected, presented)` — never a positional misdecode. For `run`, which has no instance yet, the
@@ -1598,6 +1641,13 @@ SHAPE lines, which the hash deliberately omits, so the runtime keeps them (mecha
   typed error as a fingerprint mismatch — `BoundVersionFingerprintMismatch` for drift (2),
   `ContractFingerprintMismatch` for the contract (3) — naming the moved components. Equal fingerprints
   with equal named-shape hashes need no lookup.
+- **Lifecycle (v1828 S3).** An entry is kept while any registered definition or any live binding references
+  its hash, and collected only after both are gone. Every slice load **republishes** its entries (an
+  idempotent put by hash), so a loaded version's shapes are present after any restart. **A lookup miss is
+  refused** with the same typed mismatch error, marked "shape unavailable" — never assumed compatible.
+  *Durability, stated:* whether the consensus KV keeps the registry across a full-cluster restart is
+  `[unverified]`; the design relies on republish-on-load instead, which covers every version that is
+  loaded — and a version that is not loaded has no code to decode with anyway.
 
 **Scope.** The fingerprint and swap guard apply to **(2) and (3) only**; they are not a coexistence gate
 on private state, which (1) needs none of. Within that scope the swap guard protects every pair that reads
@@ -1790,9 +1840,10 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
 | A13 | **Resolution table** (D3) | park one instance per row of §7.7's table and apply each accepted resolution, then each unlisted one | each accepted resolution has the row's effect, resumed from the persisted suspended phase; each unlisted one is refused `ResolutionNotApplicable`; `Abandon` works on every row | a resolution applied outside its row; a resolution needing unloaded code |
-| A14 | **Retry budget and episodes** (D7a, D7b, E2, E4, E7) | (a) a `NotSent` failure that clears after two attempts; (b) persistent `NotSent` failures; (c) persistent `Sent` failures on a `Replayable` step; (d) a key window shorter than the budget; (e) a forward whose promise never settles; (f) a compensation whose attempts all fail `NotSent`; kill the owner mid-budget in (b) and (c) | (a) succeeds with no park; (b) parks `RetriesExhausted`; (c) parks `OutcomeUnknown`; (d) stops at the key window; (e) each attempt ends at `attemptTimeout` as `Sent`, then (c)'s path; (f) parks `RetriesExhausted(compensation = true)`; across the owner change the attempt count continues, a new episode starts, and the persisted evidence decides the split | an attempt beyond `maxAttempts` (cumulative) or beyond `maxElapsed` within one episode; an attempt past the key window; an attempt outliving `attemptTimeout`; an attempt count reset by an owner change; a `RetriesExhausted` park for a step with an unrecorded or `Sent` attempt |
+| A14 | **Retry budget and episodes** (D7a, D7b, E2, E4, E7; late receipt) | (a) a `NotSent` failure that clears after two attempts; (b) persistent `NotSent` failures; (c) persistent `Sent` failures on a `Replayable` step; (d) a key window shorter than the budget; (e) a forward whose promise never settles; (f) a compensation whose attempts all fail `NotSent`; kill the owner mid-budget in (b) and (c) | (a) succeeds with no park; (b) parks `RetriesExhausted`; (c) parks `OutcomeUnknown`; (d) stops at the key window; (e) each attempt ends at `attemptTimeout` as `Sent`, then (c)'s path; (f) parks `RetriesExhausted(compensation = true)`; across the owner change the attempt count continues, a new episode starts, and the persisted evidence decides the split | an attempt beyond `maxAttempts` (cumulative) or beyond `maxElapsed` within one episode; an attempt past the key window; an attempt outliving `attemptTimeout`; an attempt count reset by an owner change; a `RetriesExhausted` park for a step with an unrecorded or `Sent` attempt |
 | A15 | **Transitive pin** (D7c) | create an instance whose slice depends on X, which depends on Y; roll out new versions of Y; try to retire the old Y | the binding lists X and Y at creation; calls from X on the instance's behalf go to the bound Y; retiring the old Y is blocked with a live count naming the binding | a call reaching a Y version outside the binding; the old Y unloaded while a live binding references it |
 | A16 | **Reply classification** (E5) | fail a forward with (a) a 409 "idempotency key in use", (b) a 429, (c) a `StepRefusal` cause, (d) an unrecognised error decoded from a reply | (a) `Sent` → R1 path; (b) `NotSent` → retried in budget; (c) `Answered` → step failed, compensate, no retry; (d) `Sent` | a 409 or unrecognised reply treated as definite; compensation started while the original request may still apply |
+| A17 | **Replica without the bound version** (v1828 S1a, S1b, S2) | a partition replica hosts only v1 while the owner hosts v1 and v2 and commits v2-bound transitions; let the replica write a checkpoint; restart the cluster on a newer runtime build | the replica keeps folding v1 and v2 records (payloads opaque, envelopes decoded), its watermark advances past v2 records, and its checkpoint carries v2 payloads byte-identical; `status` on the replica shows v2 instances envelope-only; the newer runtime reads the old envelopes (known format version) | the replica's watermark held at a v2 record; a v2 payload decoded or re-encoded on the replica; an old-format envelope refused by the newer runtime |
 | W1 | **Signal before the wait** | deliver the `approval` signal while the saga is still on step B | buffered and acknowledged; consumed on entering the wait, payload folded into `S`, no deadline scheduled (R5) | the signal lost; a deadline timer armed despite a buffered signal |
 | W2 | **Duplicate signal** | deliver the same `(waitName, signalId)` twice, once buffered and once after consumption; then a different `signalId` | both duplicates are no-ops answered with the original `SignalAccepted`; the different id is refused `WaitAlreadySignalled` (R5) | payload folded more than once |
 | W3 | **Deadline expiry** | let the wait's deadline pass with no signal, once per `OnDeadline`; then send a late signal | `ContinueWith`: default folded, saga continues; `Compensate`: compensation of completed steps in reverse; the late signal refused `WaitExpired` (R5) | both the deadline and a signal applied to one wait; a fire earlier than `deadlineAt` by the firing owner's clock |
@@ -2120,6 +2171,22 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.10.2 (2026-10-02)
+
+**#1828 final round (v1828 r4: MERGE WITH NITS), folded in before merge.**
+
+| What | v1828 |
+|---|---|
+| The saga-keyspace fold carries payloads opaquely and decodes lazily per binding; an undecodable payload never holds the watermark; matrix A17 | S1a |
+| Encode sites: payloads only by the owner under the bound codec; checkpoint writes keep payloads opaque | S1b |
+| `LogEnvelope` carries `phaseAfter`, `pendingTimer`, `pendingCompensation`, `appendedAt`; the retirement gate and terminal GC read envelopes only | S1c, S1d |
+| Terminal-TTL GC and the audit stream added as decode sites | S1d |
+| Format-version byte on the log envelope and the request envelope; `UnsupportedEnvelopeVersion` | S2 |
+| Shape-registry lifecycle: kept while referenced, republished on every load, a miss refused | S3 |
+| Duplicate `StepAttempt` javadoc removed; arch-examples `Saga<I, S, O, D>`; a late `Neither` reply recorded as an operator-visible late receipt; drift guard's dev-rebuild consequence stated | nits |
 
 ---
 

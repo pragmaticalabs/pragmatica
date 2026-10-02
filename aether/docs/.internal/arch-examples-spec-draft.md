@@ -139,7 +139,7 @@ instances of the same subscriber group split the load.
 
 ### 3.4 Saga — **effort L** · **gated on #345 facade (spec §7, §13 Ph4)** · example-first
 
-**Shape.** Targets the specced-but-unimplemented `Saga<S, D>` facade (`durable-entity-primitive-spec.md`
+**Shape.** Targets the specced-but-unimplemented `Saga<I, S, O, D>` facade (`durable-entity-primitive-spec.md`
 §7.7). Order saga with three steps + compensations (spec §7.10): `reserve-inventory`,
 `charge-payment` (a second charge moves real money; recovery capability per spec §7.4), `confirm-order`.
 Spec §7.10 is now the R1–R5 example (accumulating state, `StepContext`, an approval wait); align this
