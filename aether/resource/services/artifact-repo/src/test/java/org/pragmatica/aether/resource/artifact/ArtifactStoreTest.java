@@ -515,6 +515,13 @@ class ArtifactStoreTest {
         private final AtomicInteger gets = new AtomicInteger();
         private final AtomicInteger refusalsLeft = new AtomicInteger();
 
+        /// Only the metadata read is counted: the archive-marker read (#1778) runs beside it and has its own retry.
+        private void countIfMetadata(byte[] key) {
+            if (new String(key, StandardCharsets.UTF_8).endsWith("/meta")) {
+                gets.incrementAndGet();
+            }
+        }
+
         /// Answers `NotCaughtUp` while `refusalsLeft` is positive, then delegates.
         private DHTClient catchingUp() {
             var delegate = testDht();
@@ -522,7 +529,7 @@ class ArtifactStoreTest {
             return new DHTClient() {
                 @Override
                 public Promise<Option<byte[]>> get(byte[] key) {
-                    gets.incrementAndGet();
+                    countIfMetadata(key);
 
                     return refusalsLeft.getAndDecrement() > 0
                            ? DHTError.notCaughtUp(2, 0).promise()
@@ -577,7 +584,7 @@ class ArtifactStoreTest {
                                                                 .await()
                                                                 .onSuccessRun(Assertions::fail)
                                                                 .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
-            assertThat(gets.get()).as("the bounded retry re-issued the read").isEqualTo(3);
+            assertThat(gets.get()).as("the bounded retry re-issued the metadata read").isEqualTo(3);
         }
     }
 
