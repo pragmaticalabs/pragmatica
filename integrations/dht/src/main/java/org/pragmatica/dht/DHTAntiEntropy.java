@@ -102,6 +102,7 @@ public final class DHTAntiEntropy {
         this.config = config;
         this.antiEntropyInterval = antiEntropyInterval;
         this.catchUpRoundTimeout = catchUpRoundTimeout;
+        node.ring().onNodeRemoved(this::dropRoundsAsking);
     }
 
     /// Create an anti-entropy process for the given node with default interval.
@@ -469,6 +470,18 @@ public final class DHTAntiEntropy {
         return Arrays.toString(entry.key());
     }
 
+    /// A round whose sources include a node the ring has since pruned is dropped (#1777 Q2): it would keep
+    /// waiting on that node, or deciding without it, on a source set frozen before the prune. The removal's own
+    /// catch-up tick then starts a fresh round from the current ring. A dropped round is no longer current, so
+    /// its late answers complete nothing.
+    private void dropRoundsAsking(NodeId removed) {
+        rounds.values().removeIf(round -> asks(round, removed));
+    }
+
+    private static boolean asks(CatchUpRound round, NodeId node) {
+        return round.sources().contains(node);
+    }
+
     private boolean isCurrent(CatchUpRound round) {
         return rounds.get(round.partition().value()) == round && round.generation() == node.catchUpGeneration(round.partition());
     }
@@ -580,6 +593,7 @@ public final class DHTAntiEntropy {
     /// Compares local vs remote digest; if they differ, requests migration data.
     @Contract
     public void onDigestResponse(DHTMessage.DigestResponse response) {
+        node.noteHeardFrom(response.sender());
         Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> handleDigestComparison(pending,
                                                                                                                response));
         Option.option(catchUpDigests.remove(response.requestId())).onPresent(pending -> onCatchUpDigest(pending,

@@ -19,6 +19,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
@@ -52,6 +53,9 @@ public final class DHTNode {
     /// The ring members when [#beginCatchUp] ran: the joins observed since boot are the current members
     /// outside this set, and they bound the boot walk ([#previousHolders]).
     private final AtomicReference<Set<NodeId>> bootMembers = new AtomicReference<>(Set.of());
+    /// Ring members this node has heard from over the DHT since it booted: a digest request or answer from
+    /// them. The rest are unconfirmed and lengthen the boot walk ([#previousHolders]).
+    private final Set<NodeId> heardFrom = ConcurrentHashMap.newKeySet();
 
     private DHTNode(NodeId nodeId,
                     StorageEngine storage,
@@ -204,6 +208,15 @@ public final class DHTNode {
     /// booted is counted as a join too. That overcounts J, which only lengthens the walk: safe for reach,
     /// at the cost of asking a few more sources. Walk nodes are sources, never anchors: an empty non-owner on
     /// the walk answers SERVING, so it may not authorize a timed-out decision (see [#recordedPreviousHolders]).
+    ///
+    /// The same static list can name cores that left before this node booted (#1777 Q1). This node's ring
+    /// keeps such a phantom until the membership prunes it (#1830), and J does not count it, so each phantom
+    /// would take one walk slot from a real holder. The walk therefore adds U: the ring members this node has
+    /// not yet heard from over the DHT since boot. A phantom can never be heard from, so U counts every
+    /// phantom, and each one displaces a holder by at most one position, the same argument as for joins.
+    /// U also counts real members not heard from yet (every one, before the first round's answers) and a
+    /// joiner already in J; both only lengthen the walk. The source is DHT contact rather than SWIM because
+    /// the DHT's liveness view (`DHTNetwork.livePeers`) reports a seeded phantom as a live member.
     Set<NodeId> previousHolders(Partition partition) {
         var recorded = catchUp.previousHolders(partition);
 
@@ -220,9 +233,21 @@ public final class DHTNode {
 
     private int bootWalkLength() {
         var boot = bootMembers.get();
-        var joinedSinceBoot = (int) ring.nodes().stream().filter(member -> !boot.contains(member)).count();
+        var members = ring.nodes();
+        var joinedSinceBoot = (int) members.stream().filter(member -> !boot.contains(member)).count();
+        var unconfirmed = (int) members.stream().filter(this::unconfirmed).count();
 
-        return config.effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot;
+        return config.effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot + unconfirmed;
+    }
+
+    private boolean unconfirmed(NodeId member) {
+        return !member.equals(nodeId) && !heardFrom.contains(member);
+    }
+
+    /// Record that `peer` has reached this node over the DHT since boot (#1777 Q1).
+    @Contract
+    void noteHeardFrom(NodeId peer) {
+        heardFrom.add(peer);
     }
 
     @Contract
@@ -421,6 +446,7 @@ public final class DHTNode {
     @Contract
     public void handleDigestRequest(DHTMessage.DigestRequest request,
                                     Consumer<DHTMessage.DigestResponse> responseHandler) {
+        noteHeardFrom(request.sender());
         var partition = Partition.at(request.partitionStart());
         var readiness = readiness(partition);
 

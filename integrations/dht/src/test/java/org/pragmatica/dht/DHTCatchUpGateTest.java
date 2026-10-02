@@ -365,6 +365,63 @@ class DHTCatchUpGateTest {
         joiners.forEach(joiner -> assertThat(cluster.holds(joiner, key)).as("%s filled from an old holder", joiner.id()).isTrue());
     }
 
+    /// Q1: a node boots with a static core list naming two cores that left before it booted (phantoms). They
+    /// sit in its ring, never answer, and are not joins, so J does not count them. For a key whose first RF
+    /// positions on this node's ring are the two phantoms and itself, every real holder lies past RF + J. The
+    /// walk adds U, the members not yet heard from, so the holders are still asked — on the first round, and
+    /// on a later round once every real member has answered and only the phantoms are unconfirmed. Nothing is
+    /// served empty meanwhile. Red with U dropped from the walk: the holders are never asked.
+    @Test
+    void bootWalk_asksTheHoldersDisplacedByPhantomCores_andNeverServesEmpty() throws InterruptedException {
+        var cluster = Cluster.of(6, TimeSpan.timeSpan(50).millis());
+        var booter = new NodeId("node-b");
+        var phantoms = List.of(new NodeId("phantom-1"), new NodeId("phantom-2"));
+        var key = cluster.keyBehindPhantoms(booter, phantoms, "q1");
+        var holders = cluster.replicasOf(key);
+        var partition = cluster.partitionOf(key);
+
+        cluster.seedOnReplicas(key);
+        cluster.bootWithPhantoms(booter, phantoms);
+        cluster.member(booter).antiEntropy().catchUpNow();
+
+        assertThat(cluster.digestsTo(holders, partition)).as("a holder is asked on the first round").isPositive();
+
+        Thread.sleep(60);
+        cluster.clearDigests();
+        cluster.member(booter).antiEntropy().catchUpNow();
+
+        assertThat(cluster.digestsTo(holders, partition)).as("and again once only the phantoms are unconfirmed").isPositive();
+        assertThat(servedEmpty(cluster, booter, key)).as("never served without the key").isFalse();
+    }
+
+    /// Q2: a round whose sources include a phantom waits on it. When the membership prunes the phantom, the
+    /// round is dropped and the removal's tick starts a fresh round from the current ring, which completes
+    /// with the data at once. Red when a pruned source does not invalidate the round: the old round, still
+    /// young under a long round timeout, keeps waiting on the pruned phantom.
+    @Test
+    void roundWaitingOnAPhantom_isRestartedWhenTheRingPrunesIt() {
+        var cluster = Cluster.of(6, TimeSpan.timeSpan(1).hours());
+        var booter = new NodeId("node-b");
+        var phantoms = List.of(new NodeId("phantom-1"), new NodeId("phantom-2"));
+        var key = cluster.keyBehindPhantoms(booter, phantoms, "q2");
+        var partition = cluster.partitionOf(key);
+
+        cluster.seedOnReplicas(key);
+        cluster.bootWithPhantoms(booter, phantoms);
+        cluster.member(booter).antiEntropy().catchUpNow();
+
+        assertThat(cluster.member(booter).node().readiness(partition)).as("control: waiting on the phantoms").isEqualTo(Readiness.CATCHING_UP);
+
+        phantoms.forEach(phantom -> cluster.pruneOn(booter, phantom));
+
+        assertThat(cluster.member(booter).node().readiness(partition)).isEqualTo(Readiness.SERVING);
+        assertThat(cluster.holds(booter, key)).isTrue();
+    }
+
+    private static boolean servedEmpty(Cluster cluster, NodeId id, byte[] key) {
+        return cluster.member(id).node().readiness(cluster.partitionOf(key)) == Readiness.SERVING && !cluster.holds(id, key);
+    }
+
     /// T2b: when quorum becomes unreachable because replicas refused as catching up, the read fails with
     /// the transient [DHTError.NotCaughtUp] — never "absent", and distinguishable from an unreachable quorum.
     @Test
@@ -596,6 +653,41 @@ class DHTCatchUpGateTest {
             joiners.forEach(joiner -> existing.forEach(old -> members.get(joiner).node().changeRing(ring -> ring.addNode(old))));
         }
 
+        /// `booter` boots with a static ring of every member, itself and `phantoms` — cores that left before it
+        /// booted and never answer. The members learn of the booter; nobody learns of the phantoms.
+        void bootWithPhantoms(NodeId booter, List<NodeId> phantoms) {
+            var ids = new java.util.ArrayList<>(members.keySet());
+
+            ids.add(booter);
+            ids.addAll(phantoms);
+            members.values().forEach(member -> member.node().changeRing(ring -> ring.addNode(booter)));
+            members.put(booter, member(booter, ids));
+            members.get(booter).node().beginCatchUp();
+        }
+
+        /// `id` alone learns that `removed` left — the membership pruning a phantom from its ring.
+        void pruneOn(NodeId id, NodeId removed) {
+            members.get(id).listener().onNodeRemoved(MembershipDecision.nodeRemoved(removed, List.copyOf(members.keySet())));
+        }
+
+        /// A key whose first RF positions on the booter's ring are the booter and the phantoms, so every real
+        /// holder lies past RF on it.
+        byte[] keyBehindPhantoms(NodeId booter, List<NodeId> phantoms, String prefix) {
+            var withPhantoms = ringWith(booter, phantoms.get(0), phantoms.get(1));
+            var wanted = new HashSet<>(phantoms);
+
+            wanted.add(booter);
+            for (int i = 0; i < 200_000; i++) {
+                var candidate = bytes(prefix + "-" + i);
+
+                if (Set.copyOf(withPhantoms.nodesFor(candidate, 3)).equals(wanted)) {
+                    return candidate;
+                }
+            }
+
+            throw new AssertionError("no key whose prefix is the booter and the phantoms");
+        }
+
         /// Only the nodes in `aware` learn of the joiner — the others' rings disagree with it.
         void joinOnlyOn(NodeId joiner, Set<NodeId> aware) {
             var ids = new java.util.ArrayList<>(members.keySet());
@@ -782,6 +874,7 @@ class DHTCatchUpGateTest {
             }
 
             countCatchUp(message);
+            logDigest(target, message);
 
             var member = members.get(target);
 
@@ -796,6 +889,26 @@ class DHTCatchUpGateTest {
             if (message instanceof DHTMessage.DigestRequest || message instanceof DHTMessage.MigrationDataRequest) {
                 catchUpTraffic++;
             }
+        }
+
+        /// Every digest request sent, by target.
+        private final List<Map.Entry<NodeId, DHTMessage.DigestRequest>> digests = new ArrayList<>();
+
+        private void logDigest(NodeId target, ProtocolMessage message) {
+            if (message instanceof DHTMessage.DigestRequest request) {
+                digests.add(Map.entry(target, request));
+            }
+        }
+
+        void clearDigests() {
+            digests.clear();
+        }
+
+        long digestsTo(Collection<NodeId> targets, Partition partition) {
+            return digests.stream()
+                          .filter(entry -> targets.contains(entry.getKey()))
+                          .filter(entry -> entry.getValue().partitionStart() == partition.value())
+                          .count();
         }
 
         private void route(Member member, ProtocolMessage message) {
