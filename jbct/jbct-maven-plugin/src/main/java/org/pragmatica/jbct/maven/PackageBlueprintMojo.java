@@ -38,6 +38,11 @@ public class PackageBlueprintMojo extends AbstractMojo {
     private static final String BLUEPRINT_TOML = "blueprint.toml";
     private static final String RESOURCES_TOML = "resources.toml";
 
+    /// `project.build.outputTimestamp`: when set, every jar entry carries this time and entries are ordered, so the same
+    /// sources build byte-identical jars (a rebuilt jar of an unchanged commit is then an idempotent re-push, #1778).
+    @Parameter(defaultValue = "${project.build.outputTimestamp}")
+    private String outputTimestamp;
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
 
@@ -117,6 +122,7 @@ public class PackageBlueprintMojo extends AbstractMojo {
 
             mavenArchiver.setArchiver(archiver);
             mavenArchiver.setOutputFile(jarFile);
+            mavenArchiver.configureReproducibleBuild(outputTimestamp);
             var config = new MavenArchiveConfiguration();
 
             config.addManifestEntry("Blueprint-Id", blueprintId);

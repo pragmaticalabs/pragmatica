@@ -5,9 +5,11 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeMap;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -26,6 +28,7 @@ import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
+import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
@@ -42,6 +45,124 @@ import static org.pragmatica.lang.Option.none;
 @CodecFor(ExecutionMode.class)
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
+    /// The digest (size, MD5, SHA-1, SHA-256) of the content bound to one file of one coordinate, keyed by `AetherKey.ArtifactContentKey`
+    /// (#1778). The applier keeps the FIRST committed value ([GrowOnlyMergeable]: a later write merges into the
+    /// committed one and yields it unchanged), so the binding is decided once, by the consensus log.
+    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+        /// Whether `other` describes the same CONTENT: size, MD5, SHA-1 and SHA-256, not the deploy time. The deploy
+        /// time is the FIRST proposer's, kept with the binding so that completing an interrupted write rewrites the
+        /// file's metadata with its original time instead of a new one.
+        public boolean sameDigest(ArtifactContentValue other) {
+            return size == other.size
+                   && md5.equals(other.md5)
+                   && sha1.equals(other.sha1)
+                   && sha256.equals(other.sha256);
+        }
+
+        @Override
+        public ArtifactContentValue mergeInto(ArtifactContentValue committed) {
+            return committed;
+        }
+    }
+
+    /// One version of an artifact and whether it was archived (#1778).
+    record ArtifactVersionEntry(String version, boolean archived) {}
+
+    /// The versions of one artifact in the built-in artifact store, keyed by `AetherKey.ArtifactVersionsKey`
+    /// (#1778). A grow-only set: the applier MERGES a written value into the committed one
+    /// ([GrowOnlyMergeable]), the merge is a union that takes the higher state per version
+    /// (`present < archived`), so concurrent publishes are folded in consensus order and no writer can lose
+    /// another's version or un-archive one. A writer sends only what it adds: [#added] or [#archived].
+    record ArtifactVersionsValue(List<ArtifactVersionEntry> entries, int maxLive) implements AetherValue, GrowOnlyMergeable<ArtifactVersionsValue> {
+        /// The default bound on the PRESENT (not archived) versions of one artifact; `[slice] artifact_max_versions`.
+        public static final int DEFAULT_MAX_LIVE = 10_000;
+
+        public ArtifactVersionsValue {
+            entries = entries.stream().sorted(Comparator.comparing(ArtifactVersionEntry::version)).toList();
+        }
+
+        public static ArtifactVersionsValue added(String version) {
+            return added(version, DEFAULT_MAX_LIVE);
+        }
+
+        /// `maxLive` is the writer's bound; the applier enforces it on THIS command, so every replica decides alike.
+        public static ArtifactVersionsValue added(String version, int maxLive) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, false)), maxLive);
+        }
+
+        public static ArtifactVersionsValue archived(String version) {
+            return archived(version, DEFAULT_MAX_LIVE);
+        }
+
+        public static ArtifactVersionsValue archived(String version, int maxLive) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, true)), maxLive);
+        }
+
+        public static ArtifactVersionsValue empty() {
+            return new ArtifactVersionsValue(List.of(), DEFAULT_MAX_LIVE);
+        }
+
+        /// Monotone merge. A version already in the set only moves up (`present < archived`); an ARCHIVED entry is
+        /// always accepted (it never adds a present version); a NEW present version is accepted only while the
+        /// committed set holds fewer than `maxLive` present versions, otherwise it is NOT added. A present version is
+        /// never dropped and an archived one never un-archived, so the bound only ever refuses growth, loudly: the
+        /// writer re-reads the committed set and reports the refusal.
+        @Override
+        public ArtifactVersionsValue mergeInto(ArtifactVersionsValue committed) {
+            var merged = new TreeMap<String, Boolean>();
+
+            committed.entries().forEach(entry -> merged.put(entry.version(), entry.archived()));
+            entries.forEach(entry -> mergeEntry(merged, entry));
+
+            return new ArtifactVersionsValue(merged.entrySet()
+                                                   .stream()
+                                                   .map(entry -> new ArtifactVersionEntry(entry.getKey(),
+                                                                                          entry.getValue()))
+                                                   .toList(),
+                                             maxLive);
+        }
+
+        private void mergeEntry(TreeMap<String, Boolean> merged, ArtifactVersionEntry entry) {
+            if (merged.containsKey(entry.version()) || entry.archived() || liveIn(merged) < maxLive) {
+                merged.merge(entry.version(), entry.archived(), Boolean::logicalOr);
+            }
+        }
+
+        private static long liveIn(TreeMap<String, Boolean> merged) {
+            return merged.values()
+                         .stream()
+                         .filter(archived -> !archived)
+                         .count();
+        }
+
+        /// Whether `version` is in the set, archived or not.
+        public boolean contains(String version) {
+            return entries.stream()
+                          .anyMatch(entry -> entry.version()
+                                                  .equals(version));
+        }
+
+        /// Whether a NEW present version could be added under `maxLive`.
+        public boolean hasRoom(int maxLive) {
+            return live().size() < maxLive;
+        }
+
+        /// Whether `version` is in the set and flagged archived.
+        public boolean isArchived(String version) {
+            return entries.stream()
+                          .anyMatch(entry -> entry.archived() && entry.version()
+                                                                      .equals(version));
+        }
+
+        /// The versions that are present and not archived, in version-string order.
+        public List<String> live() {
+            return entries.stream()
+                          .filter(entry -> !entry.archived())
+                          .map(ArtifactVersionEntry::version)
+                          .toList();
+        }
+    }
+
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,
                             int minInstances,

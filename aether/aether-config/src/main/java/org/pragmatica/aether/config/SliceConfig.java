@@ -8,17 +8,33 @@ import java.util.List;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
+/// @param repositories             where slices are resolved from, in order
+/// @param artifactArchiveRetention minimum time a version must have been stored in the built-in artifact store
+///                                 before it may be archived (#1778); `[slice] artifact_archive_retention`.
+///                                 Mirrors `ArtifactStore.ArchivePolicy.DEFAULT`, which `aether-config` cannot
+///                                 reference.
+/// @param artifactMaxVersions      bound on the PRESENT (not archived) versions of one artifact in the built-in store
+///                                 (#1778); `[slice] artifact_max_versions`. A new version past it is refused with a
+///                                 clear error; nothing is ever dropped.
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
-public record SliceConfig(List<RepositoryType> repositories) {
+public record SliceConfig(List<RepositoryType> repositories,
+                          TimeSpan artifactArchiveRetention,
+                          int artifactMaxVersions) {
+    public static final int DEFAULT_ARTIFACT_MAX_VERSIONS = 10_000;
+    public static final TimeSpan DEFAULT_ARTIFACT_ARCHIVE_RETENTION = timeSpan(7).days();
+    /// Stands for a configured retention that did not parse; never a valid period, rejected by `ConfigValidator`.
+    public static final TimeSpan INVALID_ARTIFACT_ARCHIVE_RETENTION = timeSpan(-1).millis();
     private static final SliceConfig DEFAULT = sliceConfig(List.of(new RepositoryType.Local())).unwrap();
 
     public static Result<SliceConfig> sliceConfig(List<RepositoryType> repositories) {
-        return success(new SliceConfig(repositories));
+        return success(new SliceConfig(repositories, DEFAULT_ARTIFACT_ARCHIVE_RETENTION, DEFAULT_ARTIFACT_MAX_VERSIONS));
     }
 
     public static SliceConfig sliceConfig() {
@@ -35,7 +51,15 @@ public record SliceConfig(List<RepositoryType> repositories) {
     }
 
     public SliceConfig withRepositories(List<RepositoryType> repositories) {
-        return sliceConfig(repositories).unwrap();
+        return new SliceConfig(repositories, artifactArchiveRetention, artifactMaxVersions);
+    }
+
+    public SliceConfig withArtifactMaxVersions(int maxVersions) {
+        return new SliceConfig(repositories, artifactArchiveRetention, maxVersions);
+    }
+
+    public SliceConfig withArtifactArchiveRetention(TimeSpan retention) {
+        return new SliceConfig(repositories, retention, artifactMaxVersions);
     }
 
     private static Result<List<String>> checkNotEmpty(List<String> repositoryNames) {
@@ -49,7 +73,11 @@ public record SliceConfig(List<RepositoryType> repositories) {
 
     @SuppressWarnings("JBCT-NAM-01")
     private static Result<SliceConfig> toRepositoryTypes(List<String> names) {
-        return Result.allOf(names.stream().map(RepositoryType::repositoryType).toList()).map(SliceConfig::new);
+        return Result.allOf(names.stream().map(RepositoryType::repositoryType).toList()).map(SliceConfig::fromRepositories);
+    }
+
+    private static SliceConfig fromRepositories(List<RepositoryType> repositories) {
+        return new SliceConfig(repositories, DEFAULT_ARTIFACT_ARCHIVE_RETENTION, DEFAULT_ARTIFACT_MAX_VERSIONS);
     }
 
     public sealed interface SliceConfigError extends Cause {

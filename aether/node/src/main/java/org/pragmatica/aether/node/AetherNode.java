@@ -1899,7 +1899,13 @@ public interface AetherNode extends ManageableNode {
         var contentStorage = Objects.requireNonNull(storageSetups.get("content"),
                                                     "storageSetups missing \"content\" after createAll succeeded -- invariant violated")
                                     .instance();
-        var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
+        // #1778: the versions of each artifact are kept in consensus, where concurrent publishes are folded by the
+        // applier; the bytes and per-version metadata stay in the DHT.
+        var artifactStore = RepositoryFactory.artifactStore(dhtClient,
+                                                            artifactStorage,
+                                                            config.sliceConfig(),
+                                                            clusterNode,
+                                                            kvStore);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);

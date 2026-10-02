@@ -3962,10 +3962,12 @@ Upload an artifact file to the repository. Maximum upload size: 64 MB.
 
 **Content-Type**: Binary content (e.g., `application/java-archive`).
 
-**Idempotent (RC1)**: this endpoint is idempotent. Both a fresh upload and a
-duplicate upload (where the artifact is already present in the store) return
-HTTP 200 OK with a JSON body. Clients can distinguish the two cases via the
-`status` field instead of grepping error strings or relying on a 4xx status.
+**Write-once and idempotent (#1778)**: a coordinate is written once. Both a fresh upload and an upload of
+IDENTICAL content (size, MD5, SHA-1 and SHA-256 all match) return HTTP 200 OK with a JSON body; clients distinguish the two
+via the `status` field. An upload that differs from the stored content is refused with `409 Conflict` naming the
+what differs between the stored and the offered content: size and each digest (the stored content is kept); a `-SNAPSHOT` version is refused with `400` (SNAPSHOTs stay
+available through the Local repository); an upload to an archived version is refused with `409`. A transient DHT
+failure answers `503` with `Retry-After`; a failed existence check never deploys.
 
 Fresh upload response:
 
@@ -3979,8 +3981,8 @@ Fresh upload response:
 }
 ```
 
-Duplicate upload response (artifact already in store; size/md5/sha1 read from
-persisted metadata without re-reading the underlying chunks):
+Duplicate upload response (identical content already in store; size/md5/sha1 come from the
+persisted metadata, and nothing is uploaded):
 
 ```json
 {
@@ -3992,16 +3994,31 @@ persisted metadata without re-reading the underlying chunks):
 }
 ```
 
-Failure responses are unchanged: 4xx/5xx with the standard
-`application/problem+json` envelope.
+The refusals above (`400`, `409`) and `503`/`500` carry the reason as `text/plain`.
 
 ### POST /repository/{groupPath}/{artifactId}/{version}/{filename}
 
 Alternative upload method (same behavior as PUT).
 
+### DELETE /repository/{groupPath}/{artifactId}/{version}
+
+Archives the version (#1778): its files stop resolving and the version leaves the versions list, but every key is
+kept, so "absent" still means "never written". Requires OPERATOR or ADMIN (as a push does). Allowed once the version
+has been stored for at least the minimum retention period (default 7 days, `artifact_archive_retention` in `[slice]`).
+
+| Status | Meaning |
+|--------|---------|
+| `200` | `{"status":"archived","coords":"org.example:my-slice:1.0.0"}`; archiving an archived version is a no-op |
+| `404` | nothing was ever stored for the version |
+| `409` | stored for less than the retention period |
+| `503` | transient DHT failure; retry |
+
+CLI: `aether artifacts archive <group:artifact:version>` (`delete` is accepted as an alias). A `GET` of a file of an
+archived version answers `410 Gone`; `404` stays "never written".
+
 ### GET /repository/{groupPath}/{artifactId}/maven-metadata.xml
 
-Get Maven metadata XML for an artifact.
+Get Maven metadata XML for an artifact. Rendered from the artifact's versions set in the consensus KV plane: the versions that are stored and not archived; `404` when there are none.
 
 **Content-Type**: `application/xml`
 
