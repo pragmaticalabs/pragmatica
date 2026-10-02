@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.10.2
+**Version:** 0.10.3
 **Status:** Draft. **§5 (`DurableEntity`) is reconciled with the shipped named-command API**
 (`DurableEntity<K, S, C extends Mutator<S>>`). **§6 (workflow) and §7 (saga) are PLANNED façades with no
 production code** (#353, #354; milestone v1.0.0-rc5). **§7 was reopened by #1827 and its five contract
@@ -1292,6 +1292,8 @@ waiting instance.
 `SignalRejected(reason)` (§7.8), `BoundVersionUnavailable(artifact)` (§7.9),
 `DefinitionNotRegistered(definitionId)` (§7.9), `BoundVersionFingerprintMismatch(binding, expected, found)`
 (§7.9), `ContractFingerprintMismatch(instance, expected, presented)` (§7.9),
+`ContractChangeRequiresNewDefinition(definition, differingTypes)` (§7.9, D10),
+`UnsupportedEnvelopeVersion(version)` (§7.9, S2),
 plus the entity's own `EntityError` cases passed through unchanged (fence, ownership, storage).
 
 ### 7.8 `WAIT_SIGNAL` — waits, signals and deadlines (R5)
@@ -1453,8 +1455,8 @@ public interface SagaRegistry<I, S, O, D extends SagaData> {
 #### Version binding at creation (R4a)
 
 `run` creates the instance on the version the **existing** rollout/split policy selects for that request
-(rolling, A/B split, canary stage — whatever `activeRouting` would pick for a new start), restricted to
-versions whose contract fingerprint equals the caller's (D8 refined, (3) below), and persists, in the create
+(rolling, A/B split, canary stage — whatever `activeRouting` would pick for a new start) among the versions
+of the addressed definition — which all share one contract (D10, (3) below) — and persists, in the create
 record, a `VersionBinding`:
 
 ```java
@@ -1583,19 +1585,40 @@ These form the definition's **contract**, and its fingerprint is recorded in the
 the private-state fingerprint. A caller may address an instance only if its contract fingerprint **equals**
 the bound version's:
 
-- **Detection.** Every binary-encoded inbound request carries, in a runtime-owned request envelope that
-  begins with its own format-version byte (S2), the caller's `contractFingerprint` and contract named-shape
-  hash (the caller's own registry entry computes them); the
-  owner compares them with the instance's binding — fingerprint equality plus the swap guard below —
-  **before decoding the payload**. A mismatch is refused with `SagaError.ContractFingerprintMismatch(
-  instance, expected, presented)` — never a positional misdecode. For `run`, which has no instance yet, the
-  owner binds the new instance only to a version that the rollout policy permits **and** whose contract
-  fingerprint equals the request's; if there is none the request is refused with the same error. The
-  management API's JSON surface is not positional: it decodes operator input through the bound version's
-  types (decode-site table) and needs no fingerprint.
-- **A changed contract** therefore does not break existing instances: callers keep using the old contract to
-  reach old instances until those drain, while new instances bind to the version whose contract new callers
-  present. The alternative is a new keyspace or an explicit migration.
+- **A contract change is a new definition (owner decision D10).** Every version of one saga definition name
+  — one keyspace — has the **same** contract fingerprint (with the swap guard). A change to `I`, `O` or `D`'s
+  signal/receipt closure must ship under a **new definition name**, i.e. a new keyspace. A deploy that
+  registers a definition name whose contract differs from that name's registered or live-bound versions is
+  **refused at deploy** with `SagaError.ContractChangeRequiresNewDefinition(definition, differingTypes)`,
+  naming the differing TAG/ENUM/SHAPE lines (the same pre-flight path that refuses a missing config
+  section, #1067). The old definition stays deployed per R4b — draining: no new starts, still executing
+  its bound work — **together with the code paths that call it**, until its instances finish. In practice
+  the new slice version registers both definitions, the old one unchanged and the new one under its new
+  name; new starts go to the new name, and signals and resolutions for old instances keep using the old
+  definition's handle. Because the old definition's contract never changes, **nothing on the application path
+  can strand**: every old instance stays reachable by callers holding the old contract, which are still
+  deployed.
+- **Private-only changes stay ordinary rollouts.** A change to `S` alone, with `I`, `O` and `D` unchanged,
+  keeps the definition name and rolls out normally (D9).
+- **How a caller obtains the fingerprint.** A caller that does not host the saga gets it **from the definition
+  registry entry it was compiled against**: the contract types live in the defining slice's API artifact,
+  and the slice processor generates into that artifact a `SagaContract` descriptor — definition name,
+  `contractFingerprint`, contract named-shape hash. The caller's build depends on that artifact, so the
+  fingerprint it presents is the one of the contract its code was compiled against. A hosting caller uses
+  its own registry entry, which is the same descriptor.
+- **Detection (backstop).** Every binary-encoded inbound request carries, in a runtime-owned request
+  envelope that begins with its own format-version byte (S2), the definition name, the caller's
+  `contractFingerprint` and its named-shape hash; the owner compares them with the instance's binding —
+  fingerprint equality plus the swap guard below — **before decoding the payload**. Under D10 a mismatch
+  means a caller compiled against something no deployed version of that definition has (a stale or
+  mis-built caller), and is refused with `SagaError.ContractFingerprintMismatch(instance, expected,
+  presented)` — never a positional misdecode. The management API's JSON surface is not positional: it decodes
+  operator input through the bound version's types (decode-site table) and needs no fingerprint.
+- **Cross-slice deploy order.** Because a contract change is a new definition, the defining slice and its
+  callers need no lock-step deploy: the defining slice ships first with both definitions registered;
+  callers move to the new name in their own rollout; old-name callers keep working until the old
+  instances finish. There is no window in which `run` is refused in both orders.
+- **Additive contract evolution is deferred** until a tolerant, framed codec exists (post-GA, not promised).
 - **`S` is not in the contract (owner decision D9).** `run` takes `I`, outcomes carry `O`, and `status`
   exposes no `S`, so a change to `S` alone — with `I`, `O`, `D` unchanged — is an ordinary rollout: new
   instances bind to the new version, old ones finish on theirs, and every caller keeps working.
@@ -1661,12 +1684,14 @@ Today the TAG/ENUM/SHAPE derivation covers the node's `@Codec` types; producing 
 slice's generated codecs is #354 implementation work.
 
 **What it costs.** Changing private types costs nothing at deploy: new instances bind to the new version and
-old ones finish on theirs. Changing contract types splits callers by contract until old instances drain, or
-needs a new keyspace or a migration. Rebuilding a version id with different types is refused.
+old ones finish on theirs. Changing contract types costs a new definition name — a new keyspace — and
+keeping the old definition and its callers deployed until its instances finish (D10). Rebuilding a version
+id with different types is refused.
 
 *Out of scope, not promised:* a framed envelope around each payload (a field count and per-field lengths)
-would let a reader skip what it does not know and could relax (3). It is a wire-format change of its own,
-and nothing in this spec depends on it.
+would let a reader skip what it does not know and could allow additive contract changes in place, relaxing
+D10. It is a wire-format change of its own (post-GA at the earliest), and nothing in this spec depends on
+it.
 
 This applies to keyspaces backing sagas and workflows; whether plain `DurableEntity` keyspaces take the same
 envelope and checks is a follow-up (§7.11.1 shows they have the same exposure).
@@ -1835,7 +1860,7 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A6 | **Rollback with live v2 work** | instances created under v2 hold pending steps/compensations/waits; roll back to v1 | new starts bind to v1; v2 instances run to completion on v2, which stays DRAINING until its count is zero; no persisted state or external effect is reversed by the rollback (R4b) | a v2-bound instance executed by v1 code; v2 deallocated with a non-zero count; a v2 instance dropped without a `NeedsReconciliation` record |
 | A7 | **Retirement while old code is referenced** | attempt to retire v1 while v1-bound deadline timers or compensations are pending; then operator force-retire; then resolve every instance | plain retirement is BLOCKED with the live count reported; force-retire moves every v1-bound instance to `NeedsReconciliation(ForceRetired)` and keeps v1 loaded reconcile-only; v1 retires only when the unresolved count reaches 0 (R4b, D3) | v1 unloaded while any bound instance is unresolved; a bound instance with no `NeedsReconciliation` record after force-retire |
 | A8 | **Missing bound code** | make the bound dependency version unavailable (no live endpoint), on a step with no earlier attempts and the default budget, (a) for 300 s, then restore it; (b) for 600 s | the call is never made against another version; (a) retried with backoff and succeeds, no park (300 s < 381 s); (b) parks `NeedsReconciliation(BoundVersionUnavailable)` when the 20th attempt fails, at 381–476 s (R4a, D7a, E4) | a dependent call served by a non-bound version; a park in (a); no park in (b) |
-| A9 | **Coexistence by binding** (D8 refined, D9; rename ruling; swap guard) | (a) v2 changes only `S` (`I`, `O`, `D` unchanged): roll it out while v1 instances are live, then exercise every decode site on both (owner takeover, replica `status`, checkpoint restore, listing, `resolve`, a deadline fire, a signal) and call `run`/`signal`/`status` from v1 and v2 callers; (b) rebuild v1's version id with a changed component type and deploy it while v1 instances are live; (c) a caller whose contract fingerprint differs (a changed `I`, `O` or `D` type) signals, resolves and `run`s against v1 instances; (d) a caller or rebuild differing only by a pure rename of a component; (e) a same-typed name swap in a contract type (caller) and in a private type (rebuild) | (a) a normal rollout: both versions coexist, every decode uses the instance's binding, and no request sees a contract mismatch — callers of either version reach instances of both; (b) registration fails loudly with `BoundVersionFingerprintMismatch`, nothing decoded with the drifted build; (c) each request refused with `ContractFingerprintMismatch` before its payload is decoded, `run` binding only to a version with the caller's contract; (d) accepted; (e) refused — `ContractFingerprintMismatch` for the caller, `BoundVersionFingerprintMismatch` for the rebuild — naming the moved components | a payload decoded by a version other than the instance's binding; a contract mismatch reported for an `S`-only change; a decode with a drifted build; a request decoded despite a contract mismatch; a pure rename refused; a same-typed swap accepted |
+| A9 | **Coexistence by binding** (D8 refined, D9; rename ruling; swap guard) | (a) v2 changes only `S` (`I`, `O`, `D` unchanged): roll it out while v1 instances are live, then exercise every decode site on both (owner takeover, replica `status`, checkpoint restore, listing, `resolve`, a deadline fire, a signal) and call `run`/`signal`/`status` from v1 and v2 callers; (b) rebuild v1's version id with a changed component type and deploy it while v1 instances are live; (c) a stale or mis-built caller whose contract fingerprint differs from every deployed version of the definition signals, resolves and `run`s; (d) a caller or rebuild differing only by a pure rename of a component; (e) a same-typed name swap in a contract type (caller) and in a private type (rebuild) | (a) a normal rollout: both versions coexist, every decode uses the instance's binding, and no request sees a contract mismatch — callers of either version reach instances of both; (b) registration fails loudly with `BoundVersionFingerprintMismatch`, nothing decoded with the drifted build; (c) each request refused with `ContractFingerprintMismatch` before its payload is decoded; (d) accepted; (e) refused — `ContractFingerprintMismatch` for the caller, `BoundVersionFingerprintMismatch` for the rebuild — naming the moved components | a payload decoded by a version other than the instance's binding; a contract mismatch reported for an `S`-only change; a decode with a drifted build; a request decoded despite a contract mismatch; a pure rename refused; a same-typed swap accepted |
 | A10 | **Recovery past the key window** (v1828 B1, N3) | for a `Replayable` and a `Lookup` step: a first attempt ends `Sent`, later re-invokes keep failing `Sent`, then resume once `now − origin ≥ keyRetention − clockSafetyMargin`, where origin is the FIRST attempt's `at`; repeat with the first attempt's evidence unrecorded (crash) | no re-invocation and no lookup after that point, although the LATEST attempt is still inside the window; both steps park `NeedsReconciliation(OutcomeUnknown)` (T1, E3, E7) | an invocation or lookup issued once the earliest possibly-sent attempt is past the window |
 | A11 | **Sent vs not sent** (D1) | fail a forward (a) with the circuit open, (b) by timing out after the request was written, (c) with an unclassified error, (d) with a refusal decoded from the downstream's reply | (a) definite, no effect assumed; (b), (c) ambiguous → R1 path; (d) definite, `Answered` (CTO-confirmed), not retried | an ambiguous failure treated as definite; a re-invocation after (a) or (d) that is not a fresh decision of the retry policy |
 | A12 | **Compensation sees `S_j`** (D2) | steps A, B, C complete; C's successor fails definitely | compensation of B receives `S_B` (state right after B's fold), not the final `S`; the snapshots are absent after the terminal transition | a compensation invoked with a state other than its step's snapshot; snapshots retained on a terminal instance |
@@ -1844,6 +1869,8 @@ downstream was or was not reached, the signal arrived before the wait, …) befo
 | A15 | **Transitive pin** (D7c) | create an instance whose slice depends on X, which depends on Y; roll out new versions of Y; try to retire the old Y | the binding lists X and Y at creation; calls from X on the instance's behalf go to the bound Y; retiring the old Y is blocked with a live count naming the binding | a call reaching a Y version outside the binding; the old Y unloaded while a live binding references it |
 | A16 | **Reply classification** (E5) | fail a forward with (a) a 409 "idempotency key in use", (b) a 429, (c) a `StepRefusal` cause, (d) an unrecognised error decoded from a reply | (a) `Sent` → R1 path; (b) `NotSent` → retried in budget; (c) `Answered` → step failed, compensate, no retry; (d) `Sent` | a 409 or unrecognised reply treated as definite; compensation started while the original request may still apply |
 | A17 | **Replica without the bound version** (v1828 S1a, S1b, S2) | a partition replica hosts only v1 while the owner hosts v1 and v2 and commits v2-bound transitions; let the replica write a checkpoint; restart the cluster on a newer runtime build | the replica keeps folding v1 and v2 records (payloads opaque, envelopes decoded), its watermark advances past v2 records, and its checkpoint carries v2 payloads byte-identical; `status` on the replica shows v2 instances envelope-only; the newer runtime reads the old envelopes (known format version) | the replica's watermark held at a v2 record; a v2 payload decoded or re-encoded on the replica; an old-format envelope refused by the newer runtime |
+| A18 | **In-place contract change refused** (D10) | deploy a new version of `order-saga` whose `I`, `O` or a `D` signal/receipt type differs (including a same-typed swap) under the same definition name | refused at deploy with `ContractChangeRequiresNewDefinition`, naming the differing lines; the running versions are untouched | a deploy accepted with a contract change under an unchanged definition name |
+| A19 | **New definition with old instances live** (D10) | the new slice version registers `order-saga` (old contract, unchanged) and `order-saga-2` (new contract); old instances are mid-wait; callers move to `order-saga-2` in their own rollout; then send approvals to old instances from the application path | new starts go to `order-saga-2`; old instances stay reachable through `order-saga` by the deployed callers that hold its contract, and their signals are accepted; `order-saga` drains and retires once its instances finish | a signal to an old instance refused on the application path (stranded); a `run` refused in either deploy order |
 | W1 | **Signal before the wait** | deliver the `approval` signal while the saga is still on step B | buffered and acknowledged; consumed on entering the wait, payload folded into `S`, no deadline scheduled (R5) | the signal lost; a deadline timer armed despite a buffered signal |
 | W2 | **Duplicate signal** | deliver the same `(waitName, signalId)` twice, once buffered and once after consumption; then a different `signalId` | both duplicates are no-ops answered with the original `SignalAccepted`; the different id is refused `WaitAlreadySignalled` (R5) | payload folded more than once |
 | W3 | **Deadline expiry** | let the wait's deadline pass with no signal, once per `OnDeadline`; then send a late signal | `ContinueWith`: default folded, saga continues; `Compensate`: compensation of completed steps in reverse; the late signal refused `WaitExpired` (R5) | both the deadline and a signal applied to one wait; a fire earlier than `deadlineAt` by the firing owner's clock |
@@ -2121,7 +2148,8 @@ deadline fires park `DeadlineTransitionFailed`; persisted attempt evidence; `Sag
 carry the incarnation. D8 (owner, on v1828 N1, refined in round 4): per-binding decoding, drift guard,
 contract fingerprints; renames exempt from fingerprints, with a swap guard; A9 rewritten. D9 (owner):
 separate input and output — `Saga<I, S, O, D>`, `run(I)`, pure `init`/`finish`; the contract is `I`, `O`
-and `D`'s closure, and `S` is private (§7.3, §7.7, §7.9).
+and `D`'s closure, and `S` is private (§7.3, §7.7, §7.9). D10 (owner): a contract change is a new definition (new keyspace); an
+in-place contract change is refused at deploy; the old definition drains with its callers (§7.9).
 
 **S1 — signals scope for v1. RESOLVED (2026-07-04); saga half SUPERSEDED by S10 (2026-10-02)** — saga
 `WAIT_SIGNAL` is specified in rc4 (§7.8); the workflow half stands. Original text: **signal injection IS
@@ -2171,6 +2199,18 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.10.3 (2026-10-02)
+
+**Owner decision D10: a contract change is a new definition.** A change to `I`, `O` or `D`'s signal/receipt
+closure ships under a new definition name (new keyspace); an in-place change is refused at deploy with
+`ContractChangeRequiresNewDefinition`; the old definition and its callers stay deployed (draining) until its
+instances finish; private-only changes stay ordinary rollouts; additive contract evolution is deferred until
+a framed codec exists. A non-hosting caller's fingerprint comes from the generated `SagaContract` descriptor
+in the defining slice's API artifact. The "callers keep using the old contract" text and the cross-slice
+deploy-order gap are replaced; `run` version choice is the policy's again; matrix A18, A19. (§7.9, §7.11)
 
 ---
 
