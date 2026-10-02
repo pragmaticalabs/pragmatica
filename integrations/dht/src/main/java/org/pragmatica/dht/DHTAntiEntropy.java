@@ -371,10 +371,7 @@ public final class DHTAntiEntropy {
     /// A copy anywhere else is a stray the #428 fallback read can later serve, so those entries are dropped,
     /// counted, and the batch is nacked: the pusher keeps them at risk rather than believing them delivered.
     private void applyPlaced(DHTMessage.MigrationDataResponse response) {
-        var placed = response.entries()
-                             .stream()
-                             .filter(entry -> replicaHereAroundDeparture(response, entry))
-                             .toList();
+        var placed = response.entries().stream().filter(entry -> replicaHereAroundDeparture(response, entry)).toList();
 
         if (placed.size() == response.entries().size()) {
             applyAndAcknowledge(response);
