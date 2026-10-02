@@ -189,7 +189,9 @@ Known limits, stated so they are not mistaken for guarantees:
   to gate them together with the other applier changes.
 - **Coordinates stored before this change** have no consensus binding. Re-putting such a coordinate is checked
   against its stored metadata only when that read finds it; a read that answers absent binds the new content, which then
-  overwrites. Pre-GA nothing migrates them.
+  overwrites. Their metadata is in the pre-SHA-256 6-part format, which this version does not parse: such a coordinate
+  neither resolves nor accepts a re-put (`500`, metadata unparseable). Pre-GA nothing migrates them; republish under
+  a new version.
 - **The version cap is per node.** `artifact_max_versions` travels in each publish command, so every replica decides a
   command alike, but each node enforces its OWN configured cap: configure it identically on every node.
 - **Digest strength.** Content is compared by size, MD5, SHA-1 and SHA-256, so a collision of the two older digests alone does not pass. The integrity check on resolve still verifies SHA-1 only.
