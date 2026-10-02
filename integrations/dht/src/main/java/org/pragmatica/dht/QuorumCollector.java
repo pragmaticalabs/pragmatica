@@ -242,6 +242,11 @@ public final class QuorumCollector<T> {
         return successCount.get();
     }
 
+    /// Owner-epoch fence refusals recorded so far, including those arriving after the promise settled.
+    public int fencedCount() {
+        return fenced.get();
+    }
+
     private T selectBest(T existing, T incoming) {
         if (existing == null) {
             return incoming;

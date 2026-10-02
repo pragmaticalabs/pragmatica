@@ -189,7 +189,10 @@ public final class DistributedDHTClient implements DHTClient {
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
 
         return promise.timeout(config.operationTimeout())
-                      .fold(result -> result.fold(cause -> afterFailedPut(key, stamp, localPut, cause),
+                      .fold(result -> result.fold(cause -> afterFailedPut(key,
+                                                                          stamp,
+                                                                          localPut,
+                                                                          indeterminateIfFenced(cause, quorum, collector)),
                                                   Promise::success));
     }
 
@@ -203,6 +206,14 @@ public final class DistributedDHTClient implements DHTClient {
     /// it wrote — once its local put has settled. The caller always gets the original cause; a rollback
     /// that fails changes nothing about what the caller must assume (BER: the inverse of the local accept,
     /// best effort, and the residual — another lagging replica that also accepted — is #1777 track 3).
+    /// A put that times out after a fence refused it is just as indeterminate as one the collector failed on
+    /// fences: a slow or lost reply must not skip the rollback and leave the refused accept to spread.
+    private static Cause indeterminateIfFenced(Cause cause, int quorum, QuorumCollector<Unit> collector) {
+        return collector.fencedCount() > 0 && !(cause instanceof DHTError.WriteIndeterminate)
+               ? DHTError.writeIndeterminate(quorum, collector.successCount(), collector.fencedCount())
+               : cause;
+    }
+
     private Promise<Unit> afterFailedPut(byte[] key, WriteStamp stamp, Option<Promise<Boolean>> localPut, Cause cause) {
         return cause instanceof DHTError.WriteIndeterminate
                ? localPut.map(local -> rollBackLocalAccept(key, stamp, local))
