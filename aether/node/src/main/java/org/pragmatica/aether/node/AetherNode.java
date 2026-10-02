@@ -3720,6 +3720,7 @@ public interface AetherNode extends ManageableNode {
         // long after assembly — so the announcer cannot be a plain local. The holder is how stop()
         // reaches it to cancel the re-announce tick; empty on a node that never became a worker.
         var governorAnnouncerHolder = new AtomicReference<GovernorAnnouncer>();
+        var communityDirectory = org.pragmatica.aether.worker.health.CommunityMemberDirectory.communityMemberDirectory();
         var governorAuthorityClient = GovernorAuthorityClient.governorAuthorityClient(() -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                                              LeaderValue.class)
                                                                                                    .map(LeaderValue::leader),
@@ -3742,6 +3743,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                 sliceStore,
                                                                                                                                                                                 sliceInvoker,
                                                                                                                                                                                 swimHealthDetectorHolder::get,
+                                                                                                                                                                                communityDirectory,
                                                                                                                                                                                 governorAnnouncerHolder,
                                                                                                                                                                                 governorAuthorityClient,
                                                                                                                                                                                 () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
@@ -4089,29 +4091,43 @@ public interface AetherNode extends ManageableNode {
         clusterNode.onStateRestored(workerMetadataChannel::onStateRestored);
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(workerMetadataChannel::tick,
                                                                       TimeSpan.timeSpan(100).millis()));
-        var communityDirectory = org.pragmatica.aether.worker.health.CommunityMemberDirectory.communityMemberDirectory();
-
         communityDirectory.restore(kvStore.snapshot());
         membershipFsm.setJoinGraceReapEligibility(node -> configuredWorker(config) || (communityDirectory.assignment(node)
                                                                                                          .isEmpty() && !workerAdmissionAllowed(node,
                                                                                                                                                membershipFsm,
                                                                                                                                                kvStore,
                                                                                                                                                config)));
+        // The candidate index replaces a per-edge KV scan (#1840), so a committed directive change must refresh
+        // the nomination view itself: SWIM edges alone would leave it stale until the next edge.
+        Runnable refreshCommunityMembership = () -> Option.option(governorAnnouncerHolder.get())
+                                                          .onPresent(announcer -> announceCommunityMembership(announcer,
+                                                                                                              swimHealthDetector,
+                                                                                                              communityDirectory,
+                                                                                                              announcer.communityId()));
         var communityDirectoryRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                            .onPut(AetherKey.ActivationDirectiveKey.class,
-                                                                  (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> communityDirectory.put(put.cause()
-                                                                                                                                                                                      .key()
-                                                                                                                                                                                      .nodeId(),
-                                                                                                                                                                                   put.cause()
-                                                                                                                                                                                      .value()))
+                                                                  (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> {
+                                                                      communityDirectory.put(put.cause()
+                                                                                                .key()
+                                                                                                .nodeId(),
+                                                                                             put.cause()
+                                                                                                .value());
+                                                                      refreshCommunityMembership.run();
+                                                                  })
                                                            .onRemove(AetherKey.ActivationDirectiveKey.class,
-                                                                     (ValueRemove<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> remove) -> communityDirectory.remove(remove.cause()
-                                                                                                                                                                                                     .key()
-                                                                                                                                                                                                     .nodeId()))
+                                                                     (ValueRemove<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> remove) -> {
+                                                                         communityDirectory.remove(remove.cause()
+                                                                                                         .key()
+                                                                                                         .nodeId());
+                                                                         refreshCommunityMembership.run();
+                                                                     })
                                                            .build();
 
         allEntries.addAll(communityDirectoryRouter.asRouteEntries());
-        clusterNode.onStateRestored(() -> communityDirectory.restore(kvStore.snapshot()));
+        clusterNode.onStateRestored(() -> {
+                                        communityDirectory.restore(kvStore.snapshot());
+                                        refreshCommunityMembership.run();
+                                    });
         Function<String, Option<AetherValue.GovernorAnnouncementValue>> governorLookup = community -> kvStore.getTyped(AetherKey.GovernorAnnouncementKey.forCommunity(community),
                                                                                                                        AetherValue.GovernorAnnouncementValue.class);
         var communityHealth = org.pragmatica.aether.worker.health.CommunityHealthIndex.communityHealthIndex(config.self(),
@@ -4216,7 +4232,7 @@ public interface AetherNode extends ManageableNode {
                                                  }));
         swimHealthDetector.addObservationListener(observation -> Option.option(governorAnnouncerHolder.get()).onPresent(announcer -> announceCommunityMembership(announcer,
                                                                                                                                                                  swimHealthDetector,
-                                                                                                                                                                 kvStore,
+                                                                                                                                                                 communityDirectory,
                                                                                                                                                                  announcer.communityId())));
         var communityHealthRuntime = new org.pragmatica.aether.worker.health.CommunityHealthRuntime(config.self(),
                                                                                                     communityDirectory,
@@ -7536,6 +7552,7 @@ public interface AetherNode extends ManageableNode {
                                                   SliceStore sliceStore,
                                                   SliceInvoker sliceInvoker,
                                                   Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
+                                                  org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
                                                   AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                                   GovernorAuthorityClient governorAuthorityClient,
                                                   java.util.function.BooleanSupplier ready,
@@ -7569,6 +7586,7 @@ public interface AetherNode extends ManageableNode {
                                sliceInvoker,
                                communityId,
                                swimHealthDetectorSupplier.get(),
+                               communityDirectory,
                                governorAnnouncerHolder,
                                governorAuthorityClient,
                                ready,
@@ -7588,6 +7606,7 @@ public interface AetherNode extends ManageableNode {
                                            SliceInvoker sliceInvoker,
                                            String communityId,
                                            CoreSwimHealthDetector swimHealthDetector,
+                                           org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
                                            AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                            GovernorAuthorityClient governorAuthorityClient,
                                            java.util.function.BooleanSupplier ready,
@@ -7623,7 +7642,7 @@ public interface AetherNode extends ManageableNode {
             governorAnnouncerHolder.set(governorAnnouncer);
             // Each SWIM edge refreshes the nomination view using committed community
             // assignments. Provider source labels do not define community membership.
-            announceCommunityMembership(governorAnnouncer, swimHealthDetector, kvStore, communityId);
+            announceCommunityMembership(governorAnnouncer, swimHealthDetector, communityDirectory, communityId);
             log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
         }
     }
@@ -7631,10 +7650,10 @@ public interface AetherNode extends ManageableNode {
     @SuppressWarnings({"JBCT-RET-01"})
     private static void announceCommunityMembership(GovernorAnnouncer governorAnnouncer,
                                                     CoreSwimHealthDetector swimHealthDetector,
-                                                    KVStore<AetherKey, AetherValue> kvStore,
+                                                    org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
                                                     String communityId) {
         governorAnnouncer.onMembershipChange(CommunityMembershipFilter.communityAliveMembers(swimHealthDetector.aliveMembers(),
-                                                                                             kvStore,
+                                                                                             communityDirectory,
                                                                                              communityId));
     }
 

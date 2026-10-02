@@ -20,6 +20,7 @@ import static org.pragmatica.lang.Unit.unit;
 public final class CommunityMemberDirectory {
     private final Map<NodeId, String> assignments = new HashMap<>();
     private final Map<String, Set<NodeId>> communities = new HashMap<>();
+    private final Map<String, Set<NodeId>> candidates = new HashMap<>();
 
     public static CommunityMemberDirectory communityMemberDirectory() {
         return new CommunityMemberDirectory();
@@ -33,6 +34,11 @@ public final class CommunityMemberDirectory {
             communities.computeIfAbsent(value.communityId(), _ -> new HashSet<>()).add(node);
         }
 
+        if (AetherValue.ActivationDirectiveValue.WORKER.equals(value.role()) && !value.communityId()
+                                                                                       .isBlank()) {
+            candidates.computeIfAbsent(value.communityId(), _ -> new HashSet<>()).add(node);
+        }
+
         return org.pragmatica.lang.Unit.unit();
     }
 
@@ -44,6 +50,7 @@ public final class CommunityMemberDirectory {
 
     private void removeFromCommunity(NodeId node, String community) {
         Option.option(communities.get(community)).onPresent(members -> removeMember(community, members, node));
+        Option.option(candidates.get(community)).onPresent(members -> removeCandidate(community, members, node));
     }
 
     private void removeMember(String community, Set<NodeId> members, NodeId node) {
@@ -51,6 +58,20 @@ public final class CommunityMemberDirectory {
         if (members.isEmpty()) {
             communities.remove(community);
         }
+    }
+
+    private void removeCandidate(String community, Set<NodeId> members, NodeId node) {
+        members.remove(node);
+        if (members.isEmpty()) {
+            candidates.remove(community);
+        }
+    }
+
+    /// Governor candidates of a community (H13): nodes whose committed directive has role WORKER and names
+    /// this community. The ROLE is checked here, so a core is never a candidate whatever its directive's
+    /// community says. O(community): a map lookup plus a copy of the community's candidates.
+    public synchronized Set<NodeId> governorCandidates(String community) {
+        return Set.copyOf(candidates.getOrDefault(community, Set.of()));
     }
 
     public synchronized Option<String> assignment(NodeId node) {
@@ -72,6 +93,7 @@ public final class CommunityMemberDirectory {
     public synchronized org.pragmatica.lang.Unit restore(Map<?, ?> snapshot) {
         assignments.clear();
         communities.clear();
+        candidates.clear();
         snapshot.forEach(this::restoreEntry);
 
         return org.pragmatica.lang.Unit.unit();
