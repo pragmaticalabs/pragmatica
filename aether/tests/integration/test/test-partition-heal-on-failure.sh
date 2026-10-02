@@ -88,8 +88,8 @@ emit() { if [ -n "$out" ]; then printf '%s' "$1" > "$out"; [ -n "$w" ] && printf
 case "${STUB_CURL:-ok}" in
     fail) [ -n "$w" ] && printf 000; exit 7 ;;
     flaky) [ "$n" -le 2 ] && { [ -n "$w" ] && printf 000; exit 7; } ;;
-    dies) [ "$n" -ge 2 ] && { [ -n "$w" ] && printf 000; exit 7; } ;;
-    none) emit "{\"cluster\":{\"leaderId\":null,\"quorate\":true}}"; exit 0 ;;
+    dies) [ "$n" -ge "${STUB_DIES_AT:-2}" ] && { [ -n "$w" ] && printf 000; exit 7; } ;;
+    none) if [ "$n" -ge "${STUB_NONE_AT:-1}" ]; then emit "{\"cluster\":{\"leaderId\":null,\"quorate\":true}}"; exit 0; fi ;;
 esac
 case "$url" in
     http://majority/*) emit "{\"cluster\":{\"leaderId\":\"node-1\",\"quorate\":${STUB_QUORATE:-true}}}" ;;
@@ -157,7 +157,7 @@ run s2 CLOUD_MODE=true STUB_CURL=flaky CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_S
 if grep -q 'PASS S05: majority stayed quorate' "$WORK/out.s2" && ! grep -q 'S05 violation\|S05 inconclusive\|S05 majority-unreadable' "$WORK/out.s2"; then
     ok "S2 two failed reads then successes: S05 passes (failed read = unknown)"
 else fail "S2 out: $(grep 'S05' "$WORK/out.s2" | head -2 | cut -c1-90 | tr '\n' '|')"; fi
-run s5 CLOUD_MODE=true STUB_CURL=dies CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
+run s5 CLOUD_MODE=true STUB_CURL=dies STUB_DIES_AT=6 CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
 if grep -q 'S05 majority-unreadable.*(1 successful before)' "$WORK/out.s5" && ! grep -q 'PASS S05' "$WORK/out.s5" && ! grep -q 'S05 violation' "$WORK/out.s5"; then
     ok "S5 one good read then a dead leader fails as majority-unreadable (no PASS)"
 else fail "S5 out: $(grep 'S05' "$WORK/out.s5" | head -2 | cut -c1-110 | tr '\n' '|')"; fi
@@ -165,7 +165,7 @@ run s6 CLOUD_MODE=true S05_MIN_OK_READS=1000 CLOUD_PARTITION_SWIM_WINDOW_S=3 TIM
 if grep -q 'S05 inconclusive: only' "$WORK/out.s6" && ! grep -q 'PASS S05' "$WORK/out.s6"; then
     ok "S6 too few successful reads across the window is inconclusive (no PASS)"
 else fail "S6 out: $(grep 'S05' "$WORK/out.s6" | head -2 | cut -c1-110 | tr '\n' '|')"; fi
-run s3 CLOUD_MODE=true STUB_CURL=none CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
+run s3 CLOUD_MODE=true STUB_CURL=none STUB_NONE_AT=5 CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1
 if grep -q 'S05 violation: the majority.*NO leader' "$WORK/out.s3"; then ok "S3 a successful leaderId=none read is the violation"
 else fail "S3 out: $(grep 'S05' "$WORK/out.s3" | head -2 | cut -c1-90 | tr '\n' '|')"; fi
 run s4 CLOUD_MODE=true CLOUD_PARTITION_SWIM_WINDOW_S=3 TIMEOUT_SCALE=1

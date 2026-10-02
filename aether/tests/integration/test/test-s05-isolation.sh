@@ -8,6 +8,8 @@
 #       leader has no live link to either; an asymmetric cut, a live link or an unreadable read is NOT isolation, and a split
 #       that never completes is an honest FAIL naming who still sees whom
 #   O1-O2  order in the test function: apply both -> confirm isolation -> monitor; no isolation = no monitoring, but the heal still runs
+#   L1-L4  LEADER CONTINUITY: a leader other than the pre-partition one at ANY majority read (isolation wait or window) is a FAIL,
+#       the PASS line prints the leaders actually observed, an unreadable read stays unknown; L1 is v1792's run-7 stub
 #   M1-M2  the failure text prints the HTTP status and body of the last read, and does not say "the leader may be down" when the
 #       answering node returned a forwarding error
 #   Mutations: sequential apply reddens C1; no isolation wait reddens O1 (and I-cases for the function removed); the old wording reddens M1.
@@ -165,6 +167,57 @@ test_partition_does_not_destabilize_majority; echo "RC=$?"'
 if [ "$(tr '\n' ' ' < "$WORK/d.o2/seq")" = "BOTH WAIT HEAL c-node-2 HEAL c-node-5 " ] && grep -q 'RC=1' "$WORK/out.o2"; then
     ok "O2 isolation never completes: NO monitoring window runs, the test fails, and both nodes are still healed"
 else fail "O2 seq=$(tr '\n' ' ' < "$WORK/d.o2/seq") out=$(head -c 160 "$WORK/out.o2")"; fi
+
+# ---- L: LEADER CONTINUITY (v1816: the isolation wait must not be where a deposition heals unseen) ---------------------------
+# Time-scripted world (virtual sleep). t=0 is the moment the partition is applied. Before H the leader endpoint answers the run-7
+# forwarding failure (503 "Leader node-2 is not connected for management forward"); from H on the majority reports leader $AFTER
+# (quorate). Minority membership/links stay Member/CONNECTED until I, then Dead/DISCOVERED. At base (clock starts at once) the three
+# failed reads FAIL; the isolation wait used to let the re-election complete inside it and then start the clock on the NEW leader,
+# so S05 PASSED printing "stable leader (node-1)" while every read said node-3 (#1748 masked).
+WORLD='
+curl() {
+    local out="" w="" url="${*: -1}" a prev="" t=$(( SECONDS - T0 )) code body st h
+    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; [ "$prev" = "-w" ] && w="$a"; prev="$a"; done
+    case "$url" in
+      */nodes/status) if [ "$t" -lt "$H" ]; then code=503; body="{\"error\":\"Leader node-2 is not connected for management forward\"}"; else code=200; body="{\"cluster\":{\"leaderId\":\"$AFTER\",\"quorate\":true}}"; fi ;;
+      */cluster/membership) st=Member; [ "$t" -ge "$I" ] && st=Dead; code=200; body="{\"members\":[{\"nodeId\":\"node-1\",\"state\":\"Member\"},{\"nodeId\":\"node-3\",\"state\":\"Member\"},{\"nodeId\":\"node-4\",\"state\":\"Member\"},{\"nodeId\":\"node-2\",\"state\":\"$st\"},{\"nodeId\":\"node-5\",\"state\":\"$st\"}]}" ;;
+      */cluster/topology) h=CONNECTED; [ "$t" -ge "$I" ] && h=DISCOVERED; code=200; body="{\"nodeDetails\":[{\"nodeId\":\"node-2\",\"health\":\"$h\"},{\"nodeId\":\"node-5\",\"health\":\"$h\"}]}" ;;
+      *) code=000; body="" ;;
+    esac
+    if [ -n "$out" ]; then printf "%s" "$body" > "$out"; else printf "%s" "$body"; fi
+    [ -n "$w" ] && printf "%s" "$code"
+    [ "$code" = 000 ] && return 7; return 0
+}
+S05_POLL_S=1; S05_ISOLATION_POLL_S=1; S05_LEADERS_SEEN_FILE="$D/seen"; : > "$S05_LEADERS_SEEN_FILE"; T0=$SECONDS
+log_info() { :; }; log_warn() { :; }; log_fail() { echo "FAIL $*"; }; log_pass() { echo "PASS $*"; }
+flow() { _s05_wait_isolated 45 node-1 "node-2 node-5" "node-1
+node-3
+node-4"; local g=$?; echo "GATE_RC=$g"; [ "$g" -eq 0 ] && { monitor_majority_during_partition node-1; echo "MON_RC=$?"; }; }
+'
+run_case l1 'H=8; I=12; AFTER=node-3; '"$WORLD"'flow'
+if grep -q 'GATE_RC=2' "$WORK/out.l1" && grep -q "FAIL S05 violation: the majority leader changed during the isolation wait: the pre-partition leader was 'node-1'" "$WORK/out.l1" \
+   && grep -q 'reports .node-3.' "$WORK/out.l1" && ! grep -q 'PASS' "$WORK/out.l1" && ! grep -q 'MON_RC' "$WORK/out.l1"; then
+    ok "L1 #1748 inside the isolation wait: the majority re-elects node-3 while the minority links are still CONNECTED: FAIL 'leader changed', never a PASS 'stable leader (node-1)' (v1792's stub: base FAIL, head 7cc2eb58e PASS)"
+else fail "L1 out=$(head -c 500 "$WORK/out.l1")"; fi
+run_case l2 'H=0; I=2; AFTER=node-1; '"$WORLD"'flow'
+if grep -q 'GATE_RC=0' "$WORK/out.l2" && grep -q 'MON_RC=0' "$WORK/out.l2" && grep -q 'PASS S05: majority stayed quorate with a stable leader (node-1)' "$WORK/out.l2" \
+   && grep -q 'leaders observed at every read.*: node-1 x[0-9]*;' "$WORK/out.l2" && ! grep -q 'node-3' "$WORK/out.l2"; then
+    ok "L2 control: the leader never changes: PASS, and the line prints the leaders actually observed (node-1 xN only)"
+else fail "L2 out=$(head -c 500 "$WORK/out.l2")"; fi
+run_case l3 'H=0; I=1; AFTER=node-1; '"$WORLD"'
+S05_LEADERS_SEEN_FILE="$D/seen3"; : > "$S05_LEADERS_SEEN_FILE"
+_s05_wait_isolated 45 node-1 "node-2 node-5" "node-1
+node-3
+node-4"; echo "GATE_RC=$?"
+AFTER=node-3; T0=$(( SECONDS - 100 )); H=0
+monitor_majority_during_partition node-1; echo "MON_RC=$?"'
+if grep -q 'GATE_RC=0' "$WORK/out.l3" && grep -q 'MON_RC=1' "$WORK/out.l3" && grep -q "FAIL S05 violation: the majority leader changed during the partition window: the pre-partition leader was 'node-1', http://node-1 reports 'node-3'" "$WORK/out.l3" && ! grep -q 'PASS' "$WORK/out.l3"; then
+    ok "L3 the leader changes only inside the monitoring window (isolation already confirmed): the monitor FAILS 'leader changed', never 'stable leader'"
+else fail "L3 out=$(head -c 500 "$WORK/out.l3")"; fi
+run_case l4 'H=8; I=12; AFTER=node-1; '"$WORLD"'flow'
+if grep -q 'GATE_RC=0' "$WORK/out.l4" && grep -q 'MON_RC=0' "$WORK/out.l4" && grep -q 'leaders observed at every read.*: node-1 x[0-9]*;' "$WORK/out.l4" && ! grep -q 'PASS.*node-3' "$WORK/out.l4"; then
+    ok "L4 unreadable leader reads (503 forwarding failure for 8 s) stay UNKNOWN: they neither fail nor count; once readable the leader is node-1, so PASS prints only node-1"
+else fail "L4 out=$(head -c 500 "$WORK/out.l4")"; fi
 
 # ---- M: failure wording ---------------------------------------------------------------------------------------------------
 mkdir -p "$WORK/d.m1"

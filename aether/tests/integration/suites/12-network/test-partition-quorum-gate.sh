@@ -140,6 +140,8 @@ fi
 MINORITY_FILE="/tmp/s05-minority-ids.$$"
 LEADER_FILE="/tmp/s05-leader.$$"
 S05_LAST_READ_FILE="/tmp/s05-lastread.$$"
+# Every leader id any majority read reported, one per line, from the instant before the partition through the end of the window.
+S05_LEADERS_SEEN_FILE="/tmp/s05-leaders-seen.$$"
 
 # Query the lifecycle endpoint for a specific node and extract the reported
 # state string. Returns one of SYNCING / READY / DRAINING (NodeReportedState),
@@ -335,6 +337,15 @@ _majority_sample() {
     printf '%s %s' "$leader" "${quorate:-unknown}"
 }
 
+# "<leader> xN, ..." — the distinct leader ids seen by any majority read since the partition began.
+_s05_leaders_seen() {
+    if [ -s "$S05_LEADERS_SEEN_FILE" ]; then
+        sort "$S05_LEADERS_SEEN_FILE" | uniq -c | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
+    else
+        printf '<no successful leader read>'
+    fi
+}
+
 # Apply both minority partitions CONCURRENTLY and return only when both have been applied (each disconnect confirms its own
 # application: cloud_partition_node waits for the firewall's applied_to). rc 0 only when both succeeded. Logs the spread
 # between the two completions.
@@ -401,7 +412,7 @@ _s05_link_health() {
 # rc 0 isolated; rc 1 not within the budget — an honest FAIL naming every node still seeing a minority node, never a silent start.
 _s05_wait_isolated() {
     local budget="$1" leader="$2" minority="$3" majority="$4"
-    local deadline=$(( SECONDS + budget )) m x ep st health pending lead_ep
+    local deadline=$(( SECONDS + budget )) m x ep st health pending lead_ep sample cur
     if [ -z "$(printf '%s' "$majority" | tr -d '[:space:]')" ]; then
         log_fail "S05: no majority nodes could be enumerated, so isolation cannot be confirmed — refusing to time the window against an unverified split"
         return 1
@@ -417,6 +428,24 @@ _s05_wait_isolated() {
                     Member|'?') pending="${pending} ${m}->$(to_node_id "$x")=${st:-absent}" ;;
                 esac
             done
+        done
+        # LEADER CONTINUITY: every majority node's view of the leader, on every poll. The wait must never be the place a deposition
+        # heals unseen (run 7: the minority node deposed the leader ~1 s after its firewall landed, i.e. INSIDE this wait). A read
+        # that fails is unknown (never a pass); a read that answers with a different leader, none, or not-quorate is the violation.
+        for m in $majority; do
+            ep=$(node_mgmt_endpoint "$m")
+            sample=$(_majority_sample "$ep")
+            [ -n "$sample" ] || continue
+            cur="${sample%% *}"
+            printf '%s\n' "$cur" >> "$S05_LEADERS_SEEN_FILE" || true
+            if [ "${sample##* }" = "false" ]; then
+                log_fail "S05 violation: ${m} reported NOT quorate during the isolation wait of the 2-vs-3 partition. Leaders observed: $(_s05_leaders_seen)"
+                return 2
+            fi
+            if [ -n "$leader" ] && [ "$cur" != "$leader" ]; then
+                log_fail "S05 violation: the majority leader changed during the isolation wait: the pre-partition leader was '${leader}', ${m} reports '${cur}'. The leader stayed in the majority partition; a 2-node minority must not depose it (#1748). Leaders observed: $(_s05_leaders_seen)"
+                return 2
+            fi
         done
         if [ -n "$lead_ep" ]; then
             for x in $minority; do
@@ -485,6 +514,11 @@ monitor_majority_during_partition() {
             log_fail "S05 violation: the majority (read from ${ep}) reported NO leader during the minority partition. The leader stayed in the majority partition; a 2-node minority split must not trigger re-election or leaderlessness on the majority side."
             return 1
         fi
+        printf '%s\n' "$cur_leader" >> "$S05_LEADERS_SEEN_FILE" || true
+        if [ -n "$leader" ] && [ "$cur_leader" != "$leader" ]; then
+            log_fail "S05 violation: the majority leader changed during the partition window: the pre-partition leader was '${leader}', ${ep} reports '${cur_leader}'. The leader stayed in the majority partition; a 2-node minority must not depose it (#1748). Leaders observed: $(_s05_leaders_seen)"
+            return 1
+        fi
         sleep "${S05_POLL_S:-1}"
     done
     if [ "$ok_reads" -lt "$min_ok" ]; then
@@ -492,7 +526,7 @@ monitor_majority_during_partition() {
         return 1
     fi
 
-    log_pass "S05: majority stayed quorate with a stable leader (${leader:-?}) throughout the ${PARTITION_DURATION_S}s dual-signal partition (${ok_reads} reads, ${unknown_reads} unreadable); prompt minority eviction (if any) is intended co-confirmation behavior"
+    log_pass "S05: majority stayed quorate with a stable leader (${leader:-?}) throughout the ${PARTITION_DURATION_S}s dual-signal partition (${ok_reads} window reads, ${unknown_reads} unreadable); leaders observed at every read from just before the partition (isolation wait + window): $(_s05_leaders_seen); prompt minority eviction (if any) is intended co-confirmation behavior"
     return 0
 }
 
@@ -522,8 +556,21 @@ test_partition_does_not_destabilize_majority() {
     # violation, or success. A `return 1` between partition and heal used to skip it, leaking
     # the partition (two Hetzner firewalls at 5c1a726b7) into the next test. Healing is
     # idempotent, so healing a node whose disconnect never landed is harmless.
-    local rc=0 majority
+    local rc=0 majority pre_sample
     majority=$(_s05_majority_ids "$m1" "$m2")   # enumerated BEFORE the partition changes what the cluster reports
+    # The pre-partition leader, read immediately before the partition: every later read (isolation wait AND window) is compared
+    # to it. An answered read that already differs means the premise is gone, not that the partition did anything.
+    : > "$S05_LEADERS_SEEN_FILE"
+    pre_sample=$(_majority_sample "$(node_mgmt_endpoint "$leader")")
+    if [ -n "$pre_sample" ]; then
+        printf '%s\n' "${pre_sample%% *}" >> "$S05_LEADERS_SEEN_FILE"
+        if [ -n "$leader" ] && [ "${pre_sample%% *}" != "$leader" ]; then
+            log_fail "S05 premise: the leader read immediately before the partition is '${pre_sample%% *}', not the picked '${leader}' — the cluster was already unsettled, so the partition is not injected"
+            return 1
+        fi
+    else
+        log_warn "S05: the leader could not be read immediately before the partition; comparing every later read to the picked leader '${leader:-?}'"
+    fi
     # (1) Both partitions are applied BEFORE the S05 clock starts, concurrently (applied one after the other they landed ~20 s
     # apart in run 7, so for that window the "2-vs-3 partition" was a 1-vs-4 plus a half-cut node). (2) The clock then starts only
     # when every majority node shows both minority nodes gone; established QUIC links outlive a provider firewall, so
@@ -598,7 +645,7 @@ cleanup() {
         done < "$MINORITY_FILE"
     fi
 
-    rm -f "$MINORITY_FILE" "$LEADER_FILE" "$S05_LAST_READ_FILE"
+    rm -f "$MINORITY_FILE" "$LEADER_FILE" "$S05_LAST_READ_FILE" "$S05_LEADERS_SEEN_FILE"
 
     # Semantic baseline restore — resets the CTM circuit breaker if
     # tripped, waits for ON_DUTY healthy parity + generation quiescence
