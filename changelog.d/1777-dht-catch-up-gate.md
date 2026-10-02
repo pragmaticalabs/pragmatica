@@ -15,8 +15,11 @@
     on the union of what the sources hold. That is logged at WARN, because its absent answers are then best-effort.
   - A 1 s catch-up tick retries pending partitions. Dead sources are skipped.
   - A round pulls from every source whose digest differs.
-  - A timed-out round decides on its serving answers, so a silent source does not block. A partition stuck behind
-    silent sources is warned and counted by the gauge `aether.dht.catchup.stuck.partitions`.
+  - A timed-out round decides on the answers it has, but only when a serving ANCHOR answered: a current co-replica or
+    an exactly recorded previous holder. A boot-walk node answering SERVING is not enough, because it may never have
+    held the partition. A decided round keeps its pulls for one more round timeout.
+  - A partition stuck behind silent sources is warned and counted by the gauge
+    `aether.dht.catchup.stuck.partitions`.
   - At boot the previous holders are walked on the live ring.
   - A partition lost while pending leaves the set.
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTCatchUpGateTest.java`,
@@ -29,3 +32,9 @@
 - Wire change, re-recorded in `wire-assignment-baseline.txt`: `Readiness` (tag 90, in the one-byte window: it rides in every DHT read reply), `GetResponse`/`ExistsResponse`/
   `DigestResponse.readiness`, and `MigrationDataResponse.refused`.
   [unverified: no multi-node, Ember or cloud run. Ember and Forge were held for the suite lock.]
+  [unverified/known: the boot walk covers at most RF nodes joining together. v1820 measured 5–6 concurrent joins while
+  a partition was pending: the 2·RF walk then misses every old holder in about 1–2% of partitions. With the anchor
+  rule that is a counted wait (WARN and the stuck gauge), not an empty partition served as authoritative.]
+  [unverified/known: a deleted key can resurrect from a copy a non-owner kept. Non-owners never drop copies, so a
+  catching-up replica pulling from one, or the #428 fallback read probe (which already does this today), can bring
+  back a key removed on its owners. This is durable-delete scope: #1777 track 3, rc5.]
