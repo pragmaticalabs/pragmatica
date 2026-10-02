@@ -81,7 +81,11 @@ public sealed interface AetherValue {
         }
 
         public static ArtifactVersionsValue archived(String version) {
-            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, true)), DEFAULT_MAX_LIVE);
+            return archived(version, DEFAULT_MAX_LIVE);
+        }
+
+        public static ArtifactVersionsValue archived(String version, int maxLive) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, true)), maxLive);
         }
 
         public static ArtifactVersionsValue empty() {

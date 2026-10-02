@@ -80,7 +80,8 @@ public final class KvArtifactVersionIndex implements ArtifactVersionIndex {
     @Override
     public Promise<Unit> archive(Artifact artifact) {
         return submit(artifact,
-                      ArtifactVersionsValue.archived(artifact.version().withQualifier()));
+                      ArtifactVersionsValue.archived(artifact.version().withQualifier(),
+                                                     maxLive));
     }
 
     @Override

@@ -39,7 +39,7 @@ class ArtifactVersionsValueBoundTest {
     void mergeInto_alwaysAcceptsAnArchive_andArchivingFreesRoom_butNeverResurrects() {
         var full = set(2, "1.0.0", "2.0.0");
 
-        var archived = ArtifactVersionsValue.archived("1.0.0").mergeInto(full);
+        var archived = ArtifactVersionsValue.archived("1.0.0", 2).mergeInto(full);
         var later = ArtifactVersionsValue.added("3.0.0", 2).mergeInto(archived);
         var staleAdd = ArtifactVersionsValue.added("1.0.0", 2).mergeInto(later);
 
@@ -53,7 +53,7 @@ class ArtifactVersionsValueBoundTest {
     void mergeInto_archivingAnUnknownVersion_isRecordedWithoutUsingRoom() {
         var full = set(1, "1.0.0");
 
-        var merged = ArtifactVersionsValue.archived("0.9.0").mergeInto(full);
+        var merged = ArtifactVersionsValue.archived("0.9.0", 1).mergeInto(full);
 
         assertThat(merged.isArchived("0.9.0")).isTrue();
         assertThat(merged.live()).containsExactly("1.0.0");

@@ -77,7 +77,8 @@ public interface ArtifactVersionIndex {
             public Promise<Unit> archive(Artifact artifact) {
                 return write(sets,
                              artifact,
-                             ArtifactVersionsValue.archived(artifact.version().withQualifier()));
+                             ArtifactVersionsValue.archived(artifact.version().withQualifier(),
+                                                            maxLive));
             }
 
             @Override
