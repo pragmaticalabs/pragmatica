@@ -50,6 +50,7 @@
   A phantom can never be heard from, so U counts it, and the holders it displaced are asked.
   [verified: `DHTCatchUpGateTest.bootWalk_asksTheHoldersDisplacedByPhantomCores_andNeverServesEmpty`, red without U]
   U comes from DHT contact rather than SWIM: the DHT's liveness view reports a seeded phantom as a live member.
+  #1830 may later supply a SWIM-confirmed signal that shrinks the first round's fan-out.
   Until a member has answered, it counts in U, so a booting node's first round asks every ring member.
   When the ring prunes a node, every round that was asking it is dropped and restarted from the current ring, so
   no round keeps a source set frozen before the prune.
