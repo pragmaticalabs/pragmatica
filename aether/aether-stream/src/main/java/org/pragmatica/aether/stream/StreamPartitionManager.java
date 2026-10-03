@@ -4763,7 +4763,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                      w,
                                                                                                                      ring,
                                                                                                                      trimFailed)))
-                      .or(() -> seedRing(ring, lastSealedOffset.lastSealedOffset(streamName, partition)));
+                      .or(() -> seedRing(ring,
+                                         lastSealedOffset.lastSealedOffset(streamName, partition)));
         }
 
         /// #1638 S1, trim at open: once the ring holds the recovered head, drop every provenance entry above it -- one a
