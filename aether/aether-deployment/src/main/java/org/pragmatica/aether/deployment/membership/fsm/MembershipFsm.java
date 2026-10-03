@@ -275,6 +275,16 @@ public final class MembershipFsm {
     /// the no-op by passing `null` to [`#onDepartingRecovery`].
     private volatile Consumer<NodeId> onDepartingRecovery = ignored -> {};
 
+    /// Reachability-evidence listener (#1853): invoked once per member, on the edge where its
+    /// [`MemberTracking#everReachable`] latch flips false → true. That latch is an input of
+    /// [`#strictCoreObservedMemberCount`] — the quorum-loss numerator — yet it flips on `PeerConnected` /
+    /// `SwimHealthy` events that need not change the member's state, so no transition record names it. Without
+    /// this edge a consumer re-evaluating the numerator on transitions alone could miss the one input change that
+    /// makes a forming cluster quorate. Runs after the per-member monitor is released, exactly like
+    /// [`#onTransition`] (#929), so it may read the member map. Reset to the no-op by passing `null` to
+    /// [`#onReachabilityLatched`].
+    private volatile Consumer<NodeId> onReachabilityLatched = ignored -> {};
+
     /// Wave-1 transition journal feed (cluster-topology-overhaul spec, Enrichment A): invoked
     /// with one [MembershipTransitionRecord] per ACTUAL per-member state change (dispatches that
     /// leave the state unchanged emit nothing), from the SAME central chokepoint
@@ -509,12 +519,25 @@ public final class MembershipFsm {
                                    : listener;
     }
 
+    /// Register the reachability-latch listener (#1853) — see [`#onReachabilityLatched`]. A `null` argument
+    /// resets it to the no-op.
+    @Contract
+    public void onReachabilityLatched(Consumer<NodeId> listener) {
+        this.onReachabilityLatched = listener == null
+                                     ? ignored -> {}
+                                     : listener;
+    }
+
+    private void reachabilityLatchedEdge(NodeId id) {
+        onReachabilityLatched.accept(id);
+    }
+
     /// Register the Wave-1 transition-journal listener invoked once per ACTUAL per-member state
     /// change, at the central dispatch chokepoint. Since #929 the listener runs AFTER the
     /// per-member monitor is released (still serialised per member by
     /// [`MemberTracking#transitionGuard`], and still while that member's state is exactly what the
     /// record names) — it may therefore read the member map without deadlocking, which is what
-    /// `AetherNode.propagateMemberCount` does on the Member-boundary edge. Cheap and non-blocking
+    /// `AetherNode.derivedMemberCount` does on the Member-boundary edge. Cheap and non-blocking
     /// is still the right shape: a slow listener stalls every further transition of THAT member.
     /// Diagnostic-only; a `null` argument resets it to the no-op.
     @Contract
@@ -1007,6 +1030,27 @@ public final class MembershipFsm {
                             .count();
     }
 
+    /// The quorum-loss numerator ([`#strictCoreObservedMemberCount`]) narrowed to `voter`s, in ONE pass over the
+    /// member map (#1853). `AetherNode` derives the detector's count from this on every evaluation, so the
+    /// read must not cost more than the push it replaces: the push built two member sets (a
+    /// [`#coreObservedMembers`] walk and a [`#strictCoreMembers`] walk) and intersected them with the voters;
+    /// this takes each member's monitor once for the strict predicate and once for the latch, builds nothing,
+    /// and never holds two monitors at a time (each `synchronized` accessor releases before the next member).
+    ///
+    /// `isStrictCoreMember` implies `isCoreCountedMember` (MEMBER is a counting state), so filtering the strict
+    /// set by observed reachability is identical to intersecting it with [`#coreObservedMembers`].
+    public int strictCoreObservedVoterCount(NodeId self, Predicate<NodeId> voter) {
+        return (int) members.entrySet()
+                            .stream()
+                            .filter(entry -> voter.test(entry.getKey()))
+                            .filter(entry -> entry.getValue()
+                                                  .isStrictCoreMember())
+                            .filter(entry -> entry.getKey()
+                                                  .equals(self) || entry.getValue()
+                                                                        .everReachable())
+                            .count();
+    }
+
     /// The SET form of [`#strictCoreMemberCount`] — core members whose current state is exactly
     /// MEMBER (SUSPECT excluded). Consumed by the `QuorumLossDetector` co-confirmation gate (Fix C)
     /// to derive the STUCK set (members in [`#coreCountedMembers`] but absent here, i.e. SUSPECT
@@ -1327,6 +1371,7 @@ public final class MembershipFsm {
                                           this::onDepartingRecoveryEdge,
                                           this::emitTransition,
                                           this::emitMembershipDelta,
+                                          this::reachabilityLatchedEdge,
                                           wallClockMs.getAsLong(),
                                           departureTimeout,
                                           joinGrace,
@@ -1387,6 +1432,9 @@ public final class MembershipFsm {
         /// strictly-newer-incarnation `SwimHealthy` refuting the drain). Wired to the DHT ring
         /// RE-ADD; the symmetric counterpart to [`#onEnteredDeparting`]. Default no-op upstream.
         private final Consumer<NodeId> onDepartingRecovery;
+        /// Reachability-latch sink (#1853) — invoked from [`#applyEvent`] on the one-way edge where
+        /// [`#everReachable`] flips true, staged and run with the monitor released like every other sink.
+        private final Consumer<NodeId> onReachabilityLatched;
         /// Wave-1 transition journal sink — receives one [`MembershipTransitionRecord`] per
         /// ACTUAL state change from [`#dispatch`]. Diagnostic-only (default no-op upstream).
         private final Consumer<MembershipTransitionRecord> transitionSink;
@@ -1428,7 +1476,7 @@ public final class MembershipFsm {
         /// **That lock order is true but it is NOT what earns the safety, and the distinction matters
         /// because the real invariant is the fragile one.** The fan-out still holds member X's guard
         /// while acquiring every OTHER member's monitor — that is exactly what
-        /// `AetherNode.propagateMemberCount` does. What makes that acyclic is that **the per-member
+        /// `AetherNode.derivedMemberCount` does. What makes that acyclic is that **the per-member
         /// monitor is a LEAF: nothing acquired under it acquires anything else.** [`#applyEvent`]
         /// reaches only the pure state table ([`MembershipState`] contains no `synchronized`), the
         /// timer arm/cancel helpers, and a list append.
@@ -1529,6 +1577,7 @@ public final class MembershipFsm {
                                Consumer<NodeId> onDepartingRecovery,
                                Consumer<MembershipTransitionRecord> transitionSink,
                                Consumer<MembershipDeltaEdge> deltaSink,
+                               Consumer<NodeId> onReachabilityLatched,
                                long firstTrackedAtMs,
                                TimeSpan departureTimeout,
                                TimeSpan joinGrace,
@@ -1544,6 +1593,7 @@ public final class MembershipFsm {
             this.onDepartingRecovery = onDepartingRecovery;
             this.transitionSink = transitionSink;
             this.deltaSink = deltaSink;
+            this.onReachabilityLatched = onReachabilityLatched;
             this.firstTrackedAtMs = firstTrackedAtMs;
             this.departureTimeout = departureTimeout;
             this.joinGrace = joinGrace;
@@ -1625,6 +1675,8 @@ public final class MembershipFsm {
             var emissions = new ArrayList<Runnable>(4);
 
             trackTransportConnectivity(event);
+            var wasReachable = everReachable;
+
             trackReachabilityEvidence(event);
             var wasDead = isDead();
             var wasDeparting = isDeparting();
@@ -1674,6 +1726,10 @@ public final class MembershipFsm {
 
             if (!wasDead && isDead()) {
                 enteredDead(event, emissions);
+            }
+
+            if (!wasReachable && everReachable) {
+                emissions.add(() -> onReachabilityLatched.accept(id));
             }
 
             return emissions;
