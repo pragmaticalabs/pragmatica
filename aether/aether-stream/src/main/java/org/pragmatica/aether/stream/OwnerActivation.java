@@ -240,10 +240,10 @@ public final class OwnerActivation {
             public String message() {
                 return ("Partition %s[%d] has no owner: committed owner %s is not live and no member of its in-sync "
                        + "replica set %s is live, so no copy is known to hold every acknowledged record; the partition "
-                       + "stays unavailable until an in-sync replica returns or an operator picks the source").formatted(streamName,
-                                                                                                                         partition,
-                                                                                                                         owner,
-                                                                                                                         isr);
+                       + "stays unavailable until an in-sync replica returns; there is no operator override yet (#1569)").formatted(streamName,
+                                                                                                                                    partition,
+                                                                                                                                    owner,
+                                                                                                                                    isr);
             }
         }
 

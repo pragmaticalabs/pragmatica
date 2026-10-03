@@ -4,7 +4,9 @@
     commit atomically. Every write to the record is a guarded `LeaderTransaction` that expects the exact
     committed record.
   - **Acknowledgement (CF ≥ 2):** an ack waits for EVERY ISR member, not any `CF − 1` registered replicas.
-    Acks from replicas outside the ISR are not counted. A publish is refused with `NOT_ENOUGH_REPLICAS` before
+    Acks from replicas outside the ISR are not counted. The ack set is judged when the ack resolves, against
+    the ISR then, and counts a member the owner has proposed to add until that write lands or fails (Kafka's
+    maximal ISR), so an expansion racing an in-flight ack cannot leave a committed ISR member without the record. A publish is refused with `NOT_ENOUGH_REPLICAS` before
     the append while the ISR holds fewer than `confirmation_factor` members. The visibility watermark is the
     high-water mark, the lowest offset every ISR member confirmed.
   - **ISR changes:** only by consensus commit.
