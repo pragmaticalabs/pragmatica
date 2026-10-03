@@ -16,7 +16,7 @@ A cluster is **ready** when ALL of the following hold simultaneously:
 
 1. **Generation snapshot is converged** — `/api/cluster/generation` reports `core.members[]` with cardinality `≥ expected` (default `expected = NODE_COUNT`). The seed-node lifecycle write bug is fixed — `ClusterDeploymentState.handleNodeAdded` now plants a `JOINING` `NodeLifecycleKey` for seed nodes, so the initial leader's own entry is present from cluster bootstrap; see §6.
 2. **Leader is elected** — `/api/nodes/status` reports `cluster.leaderId` ≠ `"none"` and ≠ empty.
-3. **Active-core floor is met** — `/api/cluster/topology` reports `coreCount ≥ expected - 1`. (The `expected-1` floor tolerates one node lagging the consensus write of `ON_DUTY` while the rest of the cluster is operational — bounds the RC2 `MembershipView` convergence lag.)
+3. **Active-core floor is met** — `/api/v1/cluster/topology` reports `coreCount ≥ expected - 1`. (The `expected-1` floor tolerates one node lagging the consensus write of `ON_DUTY` while the rest of the cluster is operational — bounds the RC2 `MembershipView` convergence lag.)
 
 Properties (1)–(3) describe the cluster's *self-view* — the consensus plane's authoritative record of cluster shape. The contract is purely cluster-side; no per-node port probing. (An earlier revision added a Property 4 that iterated `MGMT_PORT..MGMT_PORT+N-1` calling `/health/ready` per port, but it broke under CTM auto-heal: replacement nodes are provisioned at ports outside that fixed range, so post-chaos tests cascaded with phantom "node X not ready" failures even though the cluster was operationally healthy. Tests that need per-node readiness verification should probe `/health/ready` directly with the appropriate port list.)
 
@@ -73,7 +73,7 @@ Do NOT use when:
 
 ### 2.2 `cluster_active_core_count` (topology snapshot)
 
-Source: `/api/cluster/topology` → `coreCount` field.
+Source: `/api/v1/cluster/topology` → `coreCount` field.
 
 Semantic: nodes that are simultaneously ON_DUTY (FSM intent) AND reachable in the aggregated reachability snapshot (operator-visible healthy).
 
@@ -111,7 +111,7 @@ Four endpoints expose health information. Each has a distinct semantic.
 |---|---|---|---|---|
 | `GET /health/live` | 200 if JVM is responding; never 5xx for liveness-only check | `{"status": "UP"\|"DOWN", "nodeId", "state", "ready"}` | In-memory NodeState ∈ {STARTING, JOINING, ACTIVE, DRAINING, STOPPED} | Liveness probe (k8s livenessProbe). "Is the process alive?" |
 | `GET /health/ready` | 200 if ready to accept new work; 503 if not ready | `{"status": "UP"\|"DOWN", "nodeId", "state", "ready", "components[]"}` | Composite: consensus + quorum + routes + lifecycle | Readiness probe (k8s readinessProbe). "Should the load balancer send me traffic?" |
-| `GET /api/health` | 200 always (returns body even if unhealthy) | `{"status": "healthy"\|"unhealthy", "ready", "quorum", "nodeCount", "connectedPeers", ...}` | Aggregated node + cluster view | Legacy direct check; use before LB available. Operator dashboard. |
+| `GET /api/v1/health` | 200 always (returns body even if unhealthy) | `{"status": "healthy"\|"unhealthy", "ready", "quorum", "nodeCount", "connectedPeers", ...}` | Aggregated node + cluster view | Legacy direct check; use before LB available. Operator dashboard. |
 | `GET /api/nodes/status` | 200 always | Full cluster overview (see `StatusResponse` in `ManagementApiResponses.java`) | Composite: KV ∪ MembershipView ∪ topology ∪ leader | Cluster-wide topology query; "who's the leader?", "what's the cluster shape?" |
 
 ### 3.1 When to use which
@@ -120,13 +120,13 @@ Question: **"Is THIS node's JVM process running?"** → `/health/live`. Cheapest
 
 Question: **"Should THIS node receive new traffic?"** → `/health/ready`. Returns 503 during drain, during startup before consensus, during quorum loss. Read by the LB.
 
-Question: **"Is the WHOLE CLUSTER operational?"** → `/api/health`. Aggregated. Use when you don't want to construct a per-node fan-out.
+Question: **"Is the WHOLE CLUSTER operational?"** → `/api/v1/health`. Aggregated. Use when you don't want to construct a per-node fan-out.
 
 Question: **"Who's the leader / how many members / what's the topology?"** → `/api/nodes/status`. Full picture, not a probe; use for orchestration logic.
 
 ### 3.2 What NOT to do
 
-- ❌ Don't use `/api/health` as a per-node readiness probe (it's aggregated; doesn't tell you if THIS node is ready)
+- ❌ Don't use `/api/v1/health` as a per-node readiness probe (it's aggregated; doesn't tell you if THIS node is ready)
 - ❌ Don't use `/health/live` to decide whether to send traffic (a draining node is alive but should not receive new requests)
 - ❌ Don't use `/api/nodes/status` for liveness probes (it's expensive — full KV + MembershipView + topology join)
 - ❌ Don't use `/health/ready` to count nodes (it returns one node's view, not a cluster cardinality)
@@ -172,7 +172,7 @@ For test authors. Lookup table.
 | How many cores are operational? | `cluster_active_core_count` (§2.2) | ON_DUTY + reachable |
 | Is THIS node's JVM up? | `/health/live` (§3) | Cheap probe |
 | Should THIS node receive traffic? | `/health/ready` (§3) | Returns 503 if not |
-| Aggregated cluster health? | `/api/health` (§3) | One-shot composite |
+| Aggregated cluster health? | `/api/v1/health` (§3) | One-shot composite |
 | Who's the leader / what's the topology? | `/api/nodes/status` (§3) | Full picture |
 | What error rate is acceptable for my test? | §4 tier table | Match to disruption magnitude |
 

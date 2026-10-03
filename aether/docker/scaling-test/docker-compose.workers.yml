@@ -27,7 +27,7 @@ services:
     networks:
       - scaling-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -54,7 +54,7 @@ services:
     networks:
       - scaling-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -81,7 +81,7 @@ services:
     networks:
       - scaling-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -108,7 +108,7 @@ services:
     networks:
       - scaling-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -135,7 +135,7 @@ services:
     networks:
       - scaling-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -162,7 +162,7 @@ services:
     networks:
       - scaling-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -189,7 +189,7 @@ services:
     networks:
       - scaling-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20

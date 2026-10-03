@@ -11,7 +11,7 @@
 | ID | Contract | Spec citation |
 |---|---|---|
 | C1 | Cluster reaches the canonical "ready" state (N members, leader elected, ≥N-1 active cores) before any resource probe runs. | `aether/docs/specs/test-readiness-contract.md §1.1` |
-| C2 | Management API serves `/api/nodes/status`, `/api/cluster/topology`, and unknown-path 404s with correct `Content-Type` and authentication semantics. | `aether/docs/reference/management-api.md §Status / §Topology` |
+| C2 | Management API serves `/api/v1/nodes/status`, `/api/v1/cluster/topology`, and unknown-path 404s with correct `Content-Type` and authentication semantics. | `aether/docs/reference/management-api.md §Status / §Topology` |
 | C3 | Concurrent Management API requests do not lose responses (no thread-safety regression in request dispatch). | `aether/docs/reference/management-api.md` (operational expectation) |
 | C4 | In-memory event streams auto-create on first publish and surface in `/api/streams` listing. | `aether/docs/specs/in-memory-streams-spec.md`; `aether/docs/specs/streaming-spec.md` |
 | C5 | `stream_publish` returns success exactly when the event is committed to the stream's partition log. | `aether/docs/specs/in-memory-streams-spec.md` |

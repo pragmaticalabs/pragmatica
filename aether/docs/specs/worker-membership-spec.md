@@ -239,7 +239,7 @@ Deployment (CDM/NDM/`WorkerDeploymentManager`) consumes from this layer: (a) `Al
 | 1 | Governor-side read-through cache for hot pulls — permitted optimization; needed at S=100? | DEFER to Phase B measurement |
 | 2 | Per-blueprint placement constraints (zone-anti-affinity → zoned growth) | DEFER (post-GA; comparator is pluggable by design) |
 | 3 | `SPOT` role semantics (preemptible workers: drain-on-notice, never DHT owners?) | DEFER — spec treats SPOT = WORKER until defined; flagged so DHT ownership assignment can exclude SPOT communities cheaply later |
-| 4 | Worker readiness surfacing to operators (`/api/cluster/topology` per-community detail) | Phase C deliverable, shape with dashboard work |
+| 4 | Worker readiness surfacing to operators (`/api/v1/cluster/topology` per-community detail) | Phase C deliverable, shape with dashboard work |
 | 5 | Announcement payload delta-encoding at S > 100 | DEFER (permitted by §3.3, not required) |
 
 ## 14. Disposition of related documents & tickets
