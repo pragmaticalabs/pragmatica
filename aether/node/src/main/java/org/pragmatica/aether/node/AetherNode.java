@@ -4991,8 +4991,11 @@ public interface AetherNode extends ManageableNode {
         // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
         // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
         // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
+        // #1441: a partition WITHOUT a WAL has nothing above that snapshot but the refs, so its seals force a
+        // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
-                                                                                                    streamSegmentIndex),
+                                                                                                    streamSegmentIndex,
+                                                                                                    StorageSegmentSink.RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
                                                               streamMaxMemoryBytes);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
@@ -5588,7 +5591,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                     partition,
                                                                                                                                                     fromOffset,
                                                                                                                                                     maxEvents,
-                                                                                                                                                    ReadPreference.GOVERNOR));
+                                                                                                                                                    ReadPreference.GOVERNOR),
+                                                                                streamReadRouter::ownerBounds);
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
                                                                                                         ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,

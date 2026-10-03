@@ -2781,6 +2781,142 @@ class StreamConsumerRuntimeTest {
     /// the HRW owner when the local read fails `PARTITION_NOT_LOCAL`. These tests stand in for that
     /// router with a reader serving a synthetic remote log, and subscribe to a stream this node has
     /// never created — precisely the shape of an assignee that does not own the partition.
+    /// #1441 (v1862 finding 4): a stored cursor above the partition's head. A restart that kept less than the
+    /// cursor had committed (no WAL, or a promoted replica) leaves the head below it, and the offsets in between
+    /// are assigned to NEW records. Adopted unchecked, the consumer waits for the head to reach the cursor and
+    /// never delivers those records. Delivery is at-least-once, so the resume clamps to the head + 1.
+    @Nested
+    class ResumeAboveHead {
+        private static final String STREAM = "orders";
+        private static final long HEAD_AFTER_RESTART = 2;
+        private static final long STORED_CURSOR = 5;
+
+        private final List<Long> delivered = new CopyOnWriteArrayList<>();
+        private StreamConsumerRuntime resumed;
+
+        @AfterEach
+        void closeResumed() throws Exception {
+            if (resumed != null) {
+                resumed.close();
+            }
+        }
+
+        @Test
+        void resume_cursorAboveTheHead_deliversTheRecordsAssignedBetweenHeadAndCursor() throws InterruptedException {
+            restartedPartitionWithHeadAt(HEAD_AFTER_RESTART);
+            resumed = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), storedCursorAt(STORED_CURSOR));
+            subscribeRecording(resumed);
+            awaitSubscriptionStarted(resumed);
+            publish(3);
+
+            awaitDelivered(3);
+            assertThat(delivered).as("offsets 3 and 4 hold new records; skipping them is silent loss")
+                                 .containsExactly(3L, 4L, 5L);
+        }
+
+        /// Non-vacuity: a cursor at or below head + 1 is the ordinary resume and is adopted as stored.
+        @Test
+        void resume_cursorAtTheNextOffset_isAdoptedAsStored() throws InterruptedException {
+            restartedPartitionWithHeadAt(HEAD_AFTER_RESTART);
+            resumed = streamConsumerRuntime(manager,
+                                            DeadLetterHandler.deadLetterHandler(),
+                                            storedCursorAt(HEAD_AFTER_RESTART + 1));
+            subscribeRecording(resumed);
+            awaitSubscriptionStarted(resumed);
+            publish(2);
+
+            awaitDelivered(2);
+            assertThat(delivered).as("nothing below the stored cursor is redelivered").containsExactly(3L, 4L);
+        }
+
+        /// The head is asked of [StreamConsumerRuntime.PartitionBounds]; until it answers, delivery does not start
+        /// from a position nobody checked -- the resume is retried like a failed cursor fetch, then clamped.
+        @Test
+        void resume_whenTheBoundsCannotAnswerYet_retriesAndStillClamps() throws InterruptedException {
+            restartedPartitionWithHeadAt(HEAD_AFTER_RESTART);
+            var unanswered = new AtomicInteger(2);
+            StreamConsumerRuntime.PartitionBounds local = StreamConsumerRuntime.localPartitionBounds(manager);
+            StreamConsumerRuntime.PartitionBounds flaky = (stream, partition) -> unanswered.getAndDecrement() > 0
+                                                                               ? StreamError.General.PARTITION_NOT_LOCAL.promise()
+                                                                               : local.bounds(stream, partition);
+
+            resumed = new ConsumerRuntimeState(manager,
+                                               DeadLetterHandler.deadLetterHandler(),
+                                               option(storedCursorAt(STORED_CURSOR)),
+                                               none(),
+                                               StreamConsumerRuntime.localPartitionReader(manager),
+                                               option(flaky),
+                                               ConsumerRuntimeState.DEAD_LETTER_APPEND_TIMEOUT);
+            subscribeRecording(resumed);
+            awaitSubscriptionStarted(resumed);
+            publish(3);
+
+            awaitDelivered(3);
+            assertThat(unanswered.get()).as("control: the first bounds queries failed").isNegative();
+            assertThat(delivered).containsExactly(3L, 4L, 5L);
+        }
+
+        private void restartedPartitionWithHeadAt(long head) {
+            createTestStream(STREAM);
+            publish(head + 1);
+            delivered.clear();
+        }
+
+        private void publish(long count) {
+            for (var i = 0; i < count; i++) {
+                manager.publishLocal(STREAM, 0, ("e" + i).getBytes(UTF_8), 1000L + i);
+            }
+        }
+
+        private void subscribeRecording(StreamConsumerRuntime target) {
+            target.subscribe(STREAM,
+                             0,
+                             ConsumerConfig.consumerConfig("group-r"),
+                             (offset, payload, ts) -> recordDelivery(offset));
+        }
+
+        private Promise<Unit> recordDelivery(long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        /// The resume is asynchronous: publishing before it settles would race the clamp against the appends.
+        private void awaitSubscriptionStarted(StreamConsumerRuntime target) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 10_000;
+
+            while (target.subscriptions()
+                         .stream()
+                         .anyMatch(StreamConsumerRuntime.SubscriptionSnapshot::awaitingCursorFetch) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+
+        private void awaitDelivered(int count) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 10_000;
+
+            while (delivered.size() < count && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+
+            Thread.sleep(100);
+        }
+
+        private static ConsumerCursorStore storedCursorAt(long offset) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long committed) {
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(Option.some(offset));
+                }
+            };
+        }
+    }
+
     @Nested
     class RoutedReads {
         private static final int REMOTE_LOG_SIZE = 3;

@@ -868,9 +868,9 @@ REQ-STATUS-01: Status aggregates from multiple management API endpoints:
 |------|----------------|
 | Cluster info, leader, uptime | `GET /api/status` |
 | Node list, roles | `GET /api/nodes` |
-| Health, quorum | `GET /api/health` |
+| Health, quorum | `GET /api/v1/health` |
 | Node lifecycle states | `GET /api/nodes/lifecycle` |
-| Topology (core count, limits) | `GET /api/cluster/topology` |
+| Topology (core count, limits) | `GET /api/v1/cluster/topology` |
 | Certificate expiry | `GET /api/certificate` |
 | Cluster config (desired state) | `GET /api/cluster/config` (new) |
 | Slice deployment info | `GET /api/slices` |
@@ -1247,11 +1247,11 @@ Poll upgrade progress.
 |----------|---------|
 | `GET /api/status` | `status` command |
 | `GET /api/nodes` | `status` command |
-| `GET /api/health` | `status`, bootstrap health polling |
+| `GET /api/v1/health` | `status`, bootstrap health polling |
 | `GET /health/ready` | Bootstrap quorum check |
 | `GET /health/live` | Bootstrap liveness check |
 | `GET /api/nodes/lifecycle` | `status` command |
-| `GET /api/cluster/topology` | `status` command |
+| `GET /api/v1/cluster/topology` | `status` command |
 | `GET /api/certificate` | `status` command |
 | `POST /api/node/drain/{nodeId}` | `drain`, `destroy`, `upgrade` commands |
 | `POST /api/node/activate/{nodeId}` | `upgrade` command |

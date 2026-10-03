@@ -94,7 +94,7 @@ start_cluster() {
     sleep 7
 
     # Check if nodes are up
-    if curl -s http://localhost:8081/health > /dev/null 2>&1; then
+    if curl -sf http://localhost:8081/health/live > /dev/null 2>&1; then
         log_info "Cluster is UP!"
         echo ""
         log_info "Management endpoints:"
@@ -139,7 +139,7 @@ cluster_status() {
     for port in 8081 8082 8083 8084 8085; do
         local node_id="node-$((port - 8080))"
         echo -n "$node_id (localhost:$port): "
-        if curl -s "http://localhost:$port/health" > /dev/null 2>&1; then
+        if curl -sf "http://localhost:$port/health/live" > /dev/null 2>&1; then
             echo -e "${GREEN}UP${NC}"
         else
             echo -e "${RED}DOWN${NC}"
