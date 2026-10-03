@@ -2111,7 +2111,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                   member -> committedDeparture(Option.option(membershipFsmRef.get()),
                                                                                                                                                member),
                                                                                                                   delegateRouter::route,
-                                                                                                                  System::currentTimeMillis));
+                                                                                                                  System::currentTimeMillis,
+                                                                                                                  () -> !clusterNode.isPendingCatchUp()
+                                                                                                                  // v1882 r5: a replica accepts writes only once consensus has applied its log tail
+                                                                                                                 ));
 
         dhtNode.onReplicationCaughtUp(_ -> dhtSettlement.report());
         // #1777 (owner rule): this node announces its own writes being refused as stale beyond the bound
@@ -6508,11 +6511,9 @@ public interface AetherNode extends ManageableNode {
                             cacheDhtConfig);
         if (replication.changeVersion() != DHTNode.NO_CHANGE) {
             DhtReplicationSettlement.applyCommitted(dhtNode, declared, workerChange(replication));
-        } else {
-            // v1882 r4: the projection says no change is committed, so this worker's fence is known
-            dhtNode.replicationFenceIsBaseline();
         }
-
+        // a worker holds no partitions and receives no DHT writes; its fence is what its projection says
+        dhtNode.confirmReplicationFence();
         settlement.applied(replication.configVersion());
     }
 

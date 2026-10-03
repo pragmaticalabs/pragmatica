@@ -11,8 +11,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
@@ -336,14 +338,16 @@ public interface DhtReplicationSettlement {
                   Supplier<Set<NodeId>> workers,
                   Predicate<NodeId> departed,
                   Consumer<OperationalEvent> events,
-                  LongSupplier clock) {}
+                  LongSupplier clock,
+                  BooleanSupplier consensusCaughtUp) {}
 
     static DhtReplicationSettlement dhtReplicationSettlement(Inputs inputs) {
         record running(Inputs inputs,
                        AtomicLong appliedVersion,
                        AtomicReference<Option<DhtReplicationChangeValue>> inFlight,
                        AtomicReference<Option<DhtReplicationReportValue>> filed,
-                       AtomicReference<Option<DhtReplicationReportValue>> filing) implements DhtReplicationSettlement {
+                       AtomicReference<Option<DhtReplicationReportValue>> filing,
+                       AtomicBoolean restored) implements DhtReplicationSettlement {
             @Override
             @Contract
             public void applied(long configVersion) {
@@ -378,12 +382,25 @@ public interface DhtReplicationSettlement {
             @Override
             @Contract
             public void reapply() {
-                // v1882 r4: after a state restore the fence is known either way — the committed change, or none at all
-                committed().onPresent(change -> applyCommitted(inputs.dhtNode(),
-                                                               inputs.declared(),
-                                                               change))
-                         .onEmpty(inputs.dhtNode()::replicationFenceIsBaseline);
+                restored.set(true);
+                committed().onPresent(change -> applyCommitted(inputs.dhtNode(), inputs.declared(), change));
                 report();
+            }
+
+            /// v1882 rounds 4-5: this node's fence becomes KNOWN — and it accepts DHT writes as a replica — only once its
+            /// state is restored AND it has applied the consensus log up to the commit point it observed
+            /// (`RabiaNode.isPendingCatchUp` false, `inputs.consensusCaughtUp`). A restored snapshot may precede a committed
+            /// change still in the log tail; until the tail is applied, its fence could be too old. Re-adopts the latest
+            /// committed record (or none — the baseline) at that point. Driven by [#report], which runs on every relevant
+            /// commit and on the worker-metadata tick, so it needs no trigger of its own. A worker holds no partitions and
+            /// receives no writes, so its fence is confirmed as it applies its projection.
+            private void confirmFence() {
+                if (inputs.dhtNode().acceptsWrites() || !restored.get() || !inputs.consensusCaughtUp().getAsBoolean()) {
+                    return;
+                }
+
+                committed().onPresent(change -> applyCommitted(inputs.dhtNode(), inputs.declared(), change));
+                inputs.dhtNode().confirmReplicationFence();
             }
 
             @Override
@@ -406,6 +423,7 @@ public interface DhtReplicationSettlement {
             @Override
             @Contract
             public void report() {
+                confirmFence();
                 if (!inputs.dhtNode().replicationResolved()) {
                     return;
                 }
@@ -510,6 +528,7 @@ public interface DhtReplicationSettlement {
                            new AtomicLong(DHTNode.NO_CHANGE),
                            new AtomicReference<>(Option.none()),
                            new AtomicReference<>(Option.none()),
-                           new AtomicReference<>(Option.none()));
+                           new AtomicReference<>(Option.none()),
+                           new AtomicBoolean(false));
     }
 }
