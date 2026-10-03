@@ -25,7 +25,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Surface | Exposes | CLI |
 |---------|---------|-----|
 | `GET /api/events` | The `ClusterEvent` stream — `NODE_FAILED` (CRITICAL), `NODE_LEFT` (WARNING), `LEADER_LOST` / `LEADER_ELECTED`, `QUORUM_LOST` (CRITICAL) / `QUORUM_ESTABLISHED`, `SELF_DRAIN_INITIATED` (WARNING), `DEPARTURE_PUSH_INCOMPLETE`, `SCALE_CAPPED`, `STREAM_MEMORY_EXCEEDED`, `OPERATOR_WARNING` (identified by `details.code`) (`ClusterEvent.java`, 35 sealed variants) | `aether events` |
-| `GET /api/health` | `status` (healthy / degraded / unhealthy), `quorum` (true/false), `nodeCount`, `sliceCount` | `aether health`, `aether nodes health` |
+| `GET /api/v1/health` | `status` (healthy / degraded / unhealthy), `quorum` (true/false), `nodeCount`, `sliceCount` | `aether health`, `aether nodes health` |
 | `GET /api/nodes/lifecycle/<id>` | Per-node lifecycle state (ON_DUTY, DRAINING, DECOMMISSIONED, …) | `aether nodes lifecycle` |
 | `aether cluster membership` | Per-peer SWIM FSM state + the quorum-loss self-drain signal | (CLI) |
 | `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` | `hrwOwner`, `servedByOwner`, `replicas[].state`, `confirmedOffset` | (stream failover diagnosis) |
@@ -56,7 +56,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Non-leader node failure
 
-- **Symptom:** a node stops responding; `nodeCount` on `/api/health` drops by one; slices it hosted re-route to peers.
+- **Symptom:** a node stops responding; `nodeCount` on `/api/v1/health` drops by one; slices it hosted re-route to peers.
 - **Detection surface:** `/api/events` emits `NODE_FAILED` (CRITICAL, from the SWIM FSM DEAD edge) or `NODE_LEFT` (WARNING, graceful); `/api/nodes/lifecycle/<id>` transitions the node to DECOMMISSIONED; `aether cluster membership` shows the peer FAULTY.
 - **Automatic response:** SWIM detects the death → the leader writes DECOMMISSIONED to the KV → CTM auto-heal provisions a replacement to restore the configured member count N.
 - **Budget:** detection ~8 s when the cluster is quiescent, ≤60 s under sustained load (02-chaos C3); auto-heal back to exactly N ≤180 s (C6).
@@ -76,7 +76,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Quorum loss / minority partition (self-drain)
 
-- **Symptom:** nodes on the minority side reject writes and then exit; `/api/health` reports `quorum:false` on that side.
+- **Symptom:** nodes on the minority side reject writes and then exit; `/api/v1/health` reports `quorum:false` on that side.
 - **Detection surface:** `/api/events` emits `QUORUM_LOST` (CRITICAL) and `SELF_DRAIN_INITIATED` (WARNING, `reason` ∈ `sustained-below-quorum` | `quorum-disappeared` | `rabia-paused`); the minority JVMs exit with **code 2** (distinguishes self-drain from clean=0 / SIGKILL=137); `aether cluster membership` carries the self-drain signal.
 - **Automatic response:** a node that cannot reach `core/2 + 1` peers self-terminates via `Runtime.halt(2)` after the split timeout; the majority continues serving. Drained nodes require external restart / CTM reprovision.
 - **Budget:** self-drain exit ≤45 s (8 s threshold + 30 s grace + 7 s headroom; wall-clock ~38 s cloud-proven) (C12); post-restart recovery to N healthy cores ≤60 s (C16). The self-drain state machine is a `[CONTRACT-GAP]` (code-only; guarded by `SelfDrainCoordinatorTest`).
@@ -98,7 +98,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Provisioning stall under heavy reconciler load
 
 - **Symptom:** after churn under load, auto-heal does not restore the member count promptly; `nodeCount` stays below target.
-- **Detection surface:** `/api/health` `nodeCount`; `aether status`.
+- **Detection surface:** `/api/v1/health` `nodeCount`; `aether status`.
 - **Automatic response:** a periodic reconcile re-evaluation (armed at the quorum threshold) retries provisioning; the historical permanent-paused wedge is closed.
 - **Budget:** **not yet pinned** — this is a cloud-gate-class scenario.
 - **Operator action:** manually reprovision if the cluster stays under target well beyond the ~180 s auto-heal budget.
@@ -133,17 +133,17 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Automatic response (intended, `[design intent — unverified]` at RF=3):** HRW ownership reseats to a CAUGHT_UP replica; the epoch fence rejects the deposed owner's late appends; the new owner serves **every** pre-kill event in order.
 - **Budget:** measured at RF=2 before #1547 — new owner-authoritative view ≤180 s; complete history settled ≤120 s (02-chaos C18/C19/C20). Not re-measured since #1555.
 - **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `confirmation_factor = replication_factor` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events). At `2 ≤ CF < RF` an acked event is on the owner and `CF − 1` peers; #1555's promotion gate catches the new owner up from the highest-head live member before it serves, so every acked event held by a live replica is recovered `[design intent — unverified]`. The 02-chaos proof below ran at RF=2 with the write-ack floor equal to RF (then named `min-sync-replicas`, renamed `confirmation_factor` by #1564); its fixture is RF=3 with CF 2 since #1547, and a blueprint's declared factor reaches the runtime since #1549.
-- **Operator action:** none for the ownership move (automatic since #1555). A lost core's replica slot is NOT refilled by a replacement joining under a fresh identity (#1732), so the partition runs one replica short until that lands.
+- **Operator action:** none for the ownership move (automatic since #1555). A lost core's replica slot is refilled by a replacement joining under a fresh identity once the voter install adds it (#1732) `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamConfirmationEqualsFactorAvailabilityTest.java — Ember, 3 nodes, graceful stop of a NON-owner core; green at 44367f625, RED at its base b55a359e1; not run on the cloud or under SIGKILL]` `[unverified: when the lost core was the partition's OWNER — StreamDefaultRfOwnerReplacementTest kills the owner and joins a replacement but does not assert the replacement's placement]`; until then the partition runs one replica short.
 - **Proof anchor:** `02-chaos/test-stream-replica-failover.sh` (C17–C20); `PartitionBackfillTest`.
 
 ### Stream owner loss — RF = 3, default `confirmation_factor` 2 (the default stream)
 
 - **Symptom (before #1555; #1550):** a partition's owner is terminally removed and the partition stops being served: every survivor keeps resolving the dead node as owner, and forwarded reads fail with "Stream partition is not owned by this node". Fixed by #1555: ownership moves to a surviving replica.
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes and the new owner's view shows the replicas' `confirmedOffset`.
-- **Automatic response:** HRW hands ownership to the next-ranked survivor, which is already a replica, and it serves every replicated event `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java — 2/2 on cloudbb-d1 at 53b168eb0, 2026-09-30, 4 <testcase> 0 red; logs and XML archived in oss s29/s6-1735-recite-forge-53b168eb0.tgz]`. The replacement core itself is not placed into the partition's replica set (#1732).
+- **Automatic response:** HRW hands ownership to the next-ranked survivor, which is already a replica, and it serves every replicated event `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java — 2/2 on cloudbb-d1 at 53b168eb0, 2026-09-30, 4 <testcase> 0 red; logs and XML archived in oss s29/s6-1735-recite-forge-53b168eb0.tgz]`. The replacement core is placed into the partition's replica set once the voter install adds it (#1732) `[mechanism: placement members are the installed voters narrowed to the FSM's counted core, and the voter install triggers the reconcile, whichever core was lost]` `[unverified: when the lost core was the partition's OWNER — StreamDefaultRfOwnerReplacementTest kills the owner and joins a replacement but does not assert the replacement's placement]`; the non-owner case is `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamConfirmationEqualsFactorAvailabilityTest.java — Ember, 3 nodes, graceful stop of a NON-owner core; green at 44367f625, RED at its base b55a359e1; not run on the cloud or under SIGKILL]`.
 - **Budget:** not measured.
 - **Degraded / at risk:** since #1564 the default `confirmation_factor` is 2, so an acked event is on the owner and one peer before the ack and the owner's death alone does not lose it `[design intent — unverified]`. Before #1564 the default acked on the owner's WAL fsync alone; that is still the case for a stream declaring `confirmation_factor = 1` (warned at declaration), and because a terminally removed owner's WAL is never read again, events acked but not yet replicated when such an owner dies are **lost**, not merely unavailable. Everything that reached the replicas is held on the survivors and served by the new owner `[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]`.
-- **Operator action:** none for the ownership move. Replacing the lost core does not refill the partition's replica set today (#1732). To make every acked event reach every replica before the ack, declare `confirmation_factor = replication_factor` — at the cost that losing any one replica refuses writes (see [known-limitations.md](known-limitations.md)).
+- **Operator action:** none for the ownership move. Replacing the lost core refills the partition's replica set once the voter install adds it (#1732) `[unverified: when the lost core was the partition's OWNER — StreamDefaultRfOwnerReplacementTest kills the owner and joins a replacement but does not assert the replacement's placement]`. To make every acked event reach every replica before the ack, declare `confirmation_factor = replication_factor` — at the cost that losing any one replica refuses writes (see [known-limitations.md](known-limitations.md)).
 - **Proof anchor:** Forge `StreamDefaultRfOwnerReplacementTest` (owner killed, replacement joins under a fresh id: two survivors hold all events, RF=1 control holds none; the new owner serves them — enabled by #1555).
 
 ### Fresh-stream first-publish race

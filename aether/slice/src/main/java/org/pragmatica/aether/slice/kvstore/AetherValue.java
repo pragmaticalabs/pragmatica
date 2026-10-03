@@ -33,6 +33,7 @@ import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
+import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -223,8 +224,9 @@ public sealed interface AetherValue {
         /// the slice is re-allocated under the default (#937). Rebuild through the `with*` methods
         /// instead — they thread every unchanged component through by construction, which is what
         /// makes this class of loss inexpressible rather than merely absent. #698 (owner), #936
-        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer,
-        /// and `ClusterDeploymentState.handleAppBlueprintChange` is a second, still unfixed.
+        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer;
+        /// `ClusterDeploymentState.handleAppBlueprintChange` was a second (#983) and now rebuilds through
+        /// [#withBlueprintDeclaration].
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
@@ -351,6 +353,34 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+
+        /// Re-applies a republished blueprint onto this committed value: version, `minInstances`, owner and the
+        /// autoscaler overrides come from the blueprint, while `placement`, which a blueprint cannot express, and
+        /// `targetInstances`, the scale the slice is running at, are carried (#983). Both are carried by
+        /// construction rather than by a caller remembering to.
+        ///
+        /// The carried count is clamped into the NEW bounds: `[minimumInstances, maxInstancesOverride]`. A count
+        /// the new bounds exclude moves to the nearest bound; where the bounds contradict each other
+        /// (`min > max`) the minimum wins. The declared instance count applies only to a first deploy, which has
+        /// no committed value and so does not come through here.
+        public SliceTargetValue withBlueprintDeclaration(Version version,
+                                                         int minimumInstances,
+                                                         Option<BlueprintId> owner,
+                                                         Option<Integer> maxInstancesOverride,
+                                                         Option<Double> scaleUpOverride,
+                                                         Option<Double> scaleDownOverride) {
+            var cappedAtMax = maxInstancesOverride.map(max -> Math.min(targetInstances, max)).or(targetInstances);
+
+            return new SliceTargetValue(version,
+                                        Math.max(minimumInstances, cappedAtMax),
+                                        minimumInstances,
+                                        owner,
+                                        placement,
+                                        System.currentTimeMillis(),
+                                        maxInstancesOverride,
+                                        scaleUpOverride,
+                                        scaleDownOverride);
         }
 
         public SliceTargetValue withVersion(Version newVersion) {
@@ -1698,6 +1728,10 @@ public sealed interface AetherValue {
     /// from the committed value ([#nextVersion]) and confirms after its apply resolves by re-reading
     /// the committed value and comparing it to the one it wrote ([VersionFenced]'s protocol).
     ///
+    /// #806: the holder renews the lease while it works (each renewal is the next `lockVersion` with a
+    /// later `expiresAt`), and the lock is a [WitnessedRemoval] — its release carries the value the holder
+    /// last wrote, so a holder whose claim was superseded cannot delete its successor's lock.
+    ///
     /// Wire-format note: this adds a record component to a committed AetherValue (generated codec and
     /// `KVStoreSerializer` text form both change), following the #805 `outcomeVersion` precedent. rc4
     /// promises no cross-rc wire compatibility; that contract is #434/#666's.
@@ -1705,7 +1739,7 @@ public sealed interface AetherValue {
                                     NodeId heldBy,
                                     long acquiredAt,
                                     long expiresAt,
-                                    long lockVersion) implements AetherValue, VersionFenced {
+                                    long lockVersion) implements AetherValue, WitnessedRemoval {
         /// The version a claim against an ABSENT key carries; the applier does not fence a first write.
         public static final long FIRST_VERSION = 1L;
 

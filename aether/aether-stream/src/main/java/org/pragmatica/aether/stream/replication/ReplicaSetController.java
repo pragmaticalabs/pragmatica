@@ -121,6 +121,8 @@ public final class ReplicaSetController implements AutoCloseable {
     private final Executor executor;
     private final boolean ownsExecutor;
     private final AtomicBoolean passive = new AtomicBoolean(false);
+    /// True while a reconcile run is queued and has not yet started reading its inputs (see [#reconcile]).
+    private final AtomicBoolean reconcilePending = new AtomicBoolean(false);
     /// #1555 sticky ownership source. Default: no records, so every placement is pure HRW (Forge/unit/legacy
     /// controllers). `AetherNode` binds the committed `StreamPartitionOwnershipValue`.
     private volatile CommittedOwnerLookup committedOwners = (_, _) -> none();
@@ -320,11 +322,26 @@ public final class ReplicaSetController implements AutoCloseable {
     }
 
     /// Schedule a serialized reconcile. Returns immediately; the work runs on the controller's
-    /// executor. Safe to call from any thread and any number of times (coalesces naturally because
-    /// each run recomputes from a fresh snapshot).
+    /// executor. Safe to call from any thread and any number of times: calls made while a run is
+    /// still QUEUED coalesce into it, and a call made while a run is EXECUTING schedules exactly one
+    /// more — the pending flag is cleared BEFORE the run reads its inputs, so an input that changed
+    /// after that read is always followed by a run that sees it. That ordering is the whole point of
+    /// the flag: a trigger can be coalesced only into a run that has not yet read.
+    ///
+    /// This is the one entry every placement-input trigger calls. The pass derives everything from
+    /// CURRENT state when it runs (members, cluster size, committed ownership records, the stream
+    /// catalog), so a trigger carries no payload and ordering between a trigger and the state it
+    /// announces cannot lose an update — it can only make one extra pass redundant.
     @Contract
     public void reconcile() {
-        executor.execute(this::reconcileNow);
+        if (reconcilePending.compareAndSet(false, true)) {
+            executor.execute(this::runPendingReconcile);
+        }
+    }
+
+    private void runPendingReconcile() {
+        reconcilePending.set(false);
+        reconcileNow();
     }
 
     private void reconcileNow() {

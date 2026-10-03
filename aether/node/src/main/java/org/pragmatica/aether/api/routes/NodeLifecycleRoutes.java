@@ -50,6 +50,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// has no terminal value (a halting node simply stops reporting), so the shutdown route uses
     /// this label for the audit + `NodeLifecycleChanged` event surface only.
     private static final String STOPPED_STATE = "STOPPED";
+    /// `MembershipFsm.memberStates()` reports `getClass().getSimpleName()`; `MembershipState.Dead` is the terminal,
+    /// committed departure of an identity.
+    private static final String MEMBERSHIP_DEAD = "Dead";
 
     private final Supplier<ManageableNode> nodeSupplier;
     /// Membership v2 (B5b) — leader-local DRAIN command sink. Operator `drain` / `shutdown` routes
@@ -100,6 +103,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     record TransitionResult(boolean success, String nodeId, String state, String message) {}
 
     record InFlightResponse(int count) {}
+
+    /// Package-private accessor for unit tests of the per-node lifecycle GET (#1868).
+    Promise<LifecycleEntry> getNodeLifecycleForTest(String nodeIdStr) {
+        return getNodeLifecycle(nodeIdStr);
+    }
 
     /// Package-private accessor for unit tests that exercise the drain admission path (notably the
     /// disruption-budget guard) without standing up the HTTP routing layer. Production callers go
@@ -206,8 +214,43 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
+    /// Per-node lifecycle GET (#1868). 404 here means ONE thing: this node's MEMBERSHIP has committed the
+    /// node's departure (its `MembershipFsm` state is `Dead`), or the id was never a member. It is NOT "absent
+    /// from the soft readiness view": that view drops a LIVE node on a transient QUIC evict, after three missed
+    /// pongs, and is empty on a freshly elected leader until the first pongs arrive. A node missing from the
+    /// view but not departed answers 503 "readiness unknown" — never the verdict a drain wait reads as
+    /// completion. Without an authoritative or fresh cached view at all it answers 503 + leader hint, as LIST does.
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
-        return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr, state.name(), 0L));
+        if (!nodeSupplier.get().metricsCollector().hasAuthoritativeReadiness()) {
+            return readinessUnavailableError().promise();
+        }
+
+        return NodeId.nodeId(nodeIdStr)
+                     .async()
+                     .flatMap(this::lifecycleEntryOrVerdict);
+    }
+
+    private Promise<LifecycleEntry> lifecycleEntryOrVerdict(NodeId nodeId) {
+        return readLifecycleState(nodeId).map(state -> Promise.success(new LifecycleEntry(nodeId.id(),
+                                                                                          state.name(),
+                                                                                          0L)))
+                                 .or(() -> absentFromReadinessView(nodeId));
+    }
+
+    private Promise<LifecycleEntry> absentFromReadinessView(NodeId nodeId) {
+        var memberState = Option.option(nodeSupplier.get().membershipFsm().memberStates().get(nodeId));
+        var departedOrUnknownId = memberState.filter(state -> !MEMBERSHIP_DEAD.equals(state)).isEmpty();
+
+        return departedOrUnknownId
+               ? LIFECYCLE_NOT_FOUND.promise()
+               : readinessUnknownError(nodeId).promise();
+    }
+
+    /// Tracked and not departed, yet absent from the soft readiness view: a transient gap, not a verdict.
+    private static Cause readinessUnknownError(NodeId nodeId) {
+        return HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                   Causes.cause("readiness of " + nodeId.id()
+                                               + " is unknown: it is a member that has not departed"));
     }
 
     /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the presence
@@ -444,18 +487,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// Membership-v2 finale: the per-node work-state is read from the real node-authoritative
-    /// `NodeReportedState` readiness view (metrics pong) — the snapshot lifecycle enum was
-    /// removed. `LIFECYCLE_NOT_FOUND` when the node has not reported a pong yet / is absent.
-    private Promise<NodeReportedState> resolveLifecycleState(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(this::lookupLifecycleState);
-    }
-
-    private Promise<NodeReportedState> lookupLifecycleState(NodeId nodeId) {
-        return readLifecycleState(nodeId).async(LIFECYCLE_NOT_FOUND);
-    }
-
+    /// `NodeReportedState` readiness view (metrics pong) — the snapshot lifecycle enum was removed.
     private Option<NodeReportedState> readLifecycleState(NodeId nodeId) {
         return Option.option(nodeSupplier.get().metricsCollector().reportedStates().get(nodeId));
     }

@@ -31,8 +31,14 @@ import static org.pragmatica.http.HttpClientError.Timeout.timeout;
 /// Typed error causes for HTTP client operations.
 /// Maps common HTTP exceptions to domain-friendly error types.
 public sealed interface HttpClientError extends Cause {
-    /// Connection to server failed (network unreachable, DNS failure, connection refused).
-    record ConnectionFailed(String message, Option<Throwable> cause) implements HttpClientError, Cause.Transient {
+    /// Connection to server failed (network unreachable, DNS failure, connection refused, reset).
+    ///
+    /// Transient only when the request provably never reached a server: a refused connection
+    /// (`ConnectException`) or an unresolvable host (`UnknownHostException`). Any other transport failure
+    /// (a reset or EOF mid-request, a TLS error) may have happened AFTER the server executed the request, so
+    /// retrying it could duplicate a non-idempotent call; it is not transient. A failure built with no cause
+    /// keeps the declared classification (transient), since nothing says otherwise.
+    record ConnectionFailed(String message, Option<Throwable> cause) implements HttpClientError {
         public static ConnectionFailed connectionFailed(String message) {
             return new ConnectionFailed(message, Option.none());
         }
@@ -42,13 +48,23 @@ public sealed interface HttpClientError extends Cause {
         }
 
         @Override
+        public boolean isTransient() {
+            return cause.map(c -> c instanceof java.net.ConnectException || c instanceof java.net.UnknownHostException)
+                        .or(true);
+        }
+
+        @Override
         public String message() {
             return "Connection failed: " + message;
         }
     }
 
     /// Request or connection timeout exceeded.
-    record Timeout(String message, Option<Duration> duration) implements HttpClientError, Cause.Transient {
+    ///
+    /// NOT transient: a request that timed out may still have been executed by the server, so a retry
+    /// (`RetryOn.TRANSIENT`, notification senders) could duplicate a non-idempotent call. The retry policy
+    /// for an idempotent call is the caller's to opt into (`RetryOn.NON_TERMINAL`).
+    record Timeout(String message, Option<Duration> duration) implements HttpClientError {
         public static Timeout timeout(String message) {
             return new Timeout(message, Option.none());
         }
@@ -107,11 +123,19 @@ public sealed interface HttpClientError extends Cause {
     /// @return Corresponding HttpClientError
     static HttpClientError fromException(Throwable throwable) {
         return switch (throwable) {
+            // A dependent CompletableFuture stage (`sendAsync(..).thenApply(..).whenComplete(..)` in
+            // JdkHttpOperations) delivers the failure WRAPPED; matching the wrapper turned every refused
+            // connection and timeout into a generic Failure (#1868 verifier).
+            case java.util.concurrent.CompletionException e when e.getCause() != null -> fromException(e.getCause());
+            case java.util.concurrent.ExecutionException e when e.getCause() != null -> fromException(e.getCause());
             case HttpConnectTimeoutException _ -> timeout("Connection timeout");
             case HttpTimeoutException e -> timeout(e.getMessage());
-            case java.net.ConnectException e -> connectionFailed(e.getMessage(), e);
+            // The JDK client's ConnectException carries no message; name the failure rather than print "null".
+            case java.net.ConnectException e -> connectionFailed(Option.option(e.getMessage()).or("Connection refused"),
+                                                                 e);
             case java.net.UnknownHostException e -> connectionFailed("Unknown host: " + e.getMessage(), e);
-            case java.io.IOException e -> connectionFailed(e.getMessage(), e);
+            case java.io.IOException e -> connectionFailed(Option.option(e.getMessage()).or(e.getClass().getSimpleName()),
+                                                           e);
             case InterruptedException _ -> timeout("Request interrupted");
             default -> failure(throwable);
         };
