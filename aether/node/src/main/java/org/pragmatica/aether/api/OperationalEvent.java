@@ -94,4 +94,21 @@ public sealed interface OperationalEvent extends Message.Local {
                                              System.currentTimeMillis());
         }
     }
+
+    /// #1777 (owner rule): this node's DHT writes have been refused as stale by the replication-change fence for longer
+    /// than the operator-attention bound, and it has not adopted the change ([ClusterEvent.DhtWriterStale]). Raised by the
+    /// refused node itself, the subject.
+    record DhtWriterStale(String nodeId, long fence, long since, long timestamp) implements OperationalEvent {
+        public static DhtWriterStale dhtWriterStale(String nodeId, long fence, long since) {
+            return new DhtWriterStale(nodeId, fence, since, System.currentTimeMillis());
+        }
+    }
+
+    /// #1777: the stale writer adopted a newer replication change; its writes are stamped under it now
+    /// ([ClusterEvent.DhtWriterStaleResolved]).
+    record DhtWriterStaleResolved(String nodeId, long fence, long since, long timestamp) implements OperationalEvent {
+        public static DhtWriterStaleResolved dhtWriterStaleResolved(String nodeId, long fence, long since) {
+            return new DhtWriterStaleResolved(nodeId, fence, since, System.currentTimeMillis());
+        }
+    }
 }

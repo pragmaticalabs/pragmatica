@@ -83,6 +83,7 @@ public final class DHTNode {
     /// UNKNOWN, and an unknown fence refuses writes rather than accepting any stamp — a write in flight across a settled
     /// change would otherwise land on it at the old quorum.
     private final AtomicBoolean replicationFenceKnown;
+
     /// The first refusal of this node's own writes by the replication-change fence since it last adopted a change (#1777,
     /// owner rule): the fence version its writes carried and when. Empty while its writes are accepted.
     private final AtomicReference<Option<StaleRefusal>> staleRefusal = new AtomicReference<>(Option.none());

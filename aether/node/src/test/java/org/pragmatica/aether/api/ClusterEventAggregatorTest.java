@@ -262,6 +262,24 @@ class ClusterEventAggregatorTest {
         assertThat(events.get(1).details()).containsEntry("reason", "settled");
     }
 
+    /// #1777 (owner rule): a stale DHT writer's own announcement and its resolution reach the stream as the typed pair.
+    @Test
+    void dhtWriterStaleAndResolved_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onDhtWriterStale(OperationalEvent.DhtWriterStale.dhtWriterStale("writer-1", 5, 1000));
+        h.aggregator().onDhtWriterStaleResolved(OperationalEvent.DhtWriterStaleResolved.dhtWriterStaleResolved("writer-1", 5, 1000));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0).type()).isEqualTo("DHT_WRITER_STALE");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("nodeId", "writer-1")
+                                           .containsEntry("fence", "5")
+                                           .containsEntry("since", "1000");
+        assertThat(events.get(1).type()).isEqualTo("DHT_WRITER_STALE_RESOLVED");
+    }
+
     // --- owner-gated emit (operational events: config/deploy/scale/blueprint stay owner-gated) -----
 
     @Test

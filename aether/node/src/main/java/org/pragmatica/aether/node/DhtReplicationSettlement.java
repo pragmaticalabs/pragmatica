@@ -378,7 +378,11 @@ public interface DhtReplicationSettlement {
             @Override
             @Contract
             public void reapply() {
-                committed().onPresent(change -> applyCommitted(inputs.dhtNode(), inputs.declared(), change));
+                // v1882 r4: after a state restore the fence is known either way — the committed change, or none at all
+                committed().onPresent(change -> applyCommitted(inputs.dhtNode(),
+                                                               inputs.declared(),
+                                                               change))
+                         .onEmpty(inputs.dhtNode()::replicationFenceIsBaseline);
                 report();
             }
 

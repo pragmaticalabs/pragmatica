@@ -1483,6 +1483,33 @@ public final class ClusterEventAggregator {
                                                            event.reason())));
     }
 
+    /// #1777 (owner rule): a per-node fact raised by the stale writer itself, so it bypasses the owner gate
+    /// ([#emitLocal]); published at most once per episode.
+    @Contract
+    public void onDhtWriterStale(OperationalEvent.DhtWriterStale event) {
+        emitLocal(new ClusterEvent.DhtWriterStale(hlcClock.now(),
+                                                  Severity.WARNING,
+                                                  "DHT writes of node " + event.nodeId()
+                                                 + " have been refused for over 5 minutes as stamped under replication change " + event.fence()
+                                                 + "; the node has not adopted the cluster's newer change",
+                                                  writerStaleDetails(event.nodeId(), event.fence(), event.since())));
+    }
+
+    @Contract
+    public void onDhtWriterStaleResolved(OperationalEvent.DhtWriterStaleResolved event) {
+        emitLocal(new ClusterEvent.DhtWriterStaleResolved(hlcClock.now(),
+                                                          Severity.INFO,
+                                                          "DHT writes of node " + event.nodeId()
+                                                         + " are stamped under the cluster's replication change again",
+                                                          writerStaleDetails(event.nodeId(),
+                                                                             event.fence(),
+                                                                             event.since())));
+    }
+
+    private static Map<String, String> writerStaleDetails(String nodeId, long fence, long since) {
+        return Map.of("nodeId", nodeId, "fence", String.valueOf(fence), "since", String.valueOf(since));
+    }
+
     @Contract
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         emit(new ConnectionFailed(hlcClock.now(),
