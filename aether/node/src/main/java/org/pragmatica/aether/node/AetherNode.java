@@ -1758,7 +1758,6 @@ public interface AetherNode extends ManageableNode {
         @Contract
         void settled(long refused) {
             consecutiveFailures.set(0);
-
             if (refused > 0) {
                 LOG.debug("{} stream ownership write(s) refused on a moved record; re-deciding", refused);
                 schedule.accept(reconcile, OWNERSHIP_REDRIVE_DELAY);
