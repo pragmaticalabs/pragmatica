@@ -18,6 +18,9 @@
     the majority will not hold.
   - **Failover:** elects only from the live ISR. With no ISR member live, the partition stays unavailable,
     reported as the `NoInSyncReplica` block. Unclean failover is off, and there is no opt-in yet.
+    The refusal is announced once as the CRITICAL cluster event `STREAM_FAILOVER_REFUSED`, and
+    `STREAM_FAILOVER_RESOLVED` follows when an owner is elected or returns (owner ruling). The ownership record
+    gains `failoverRefused` (BREAKING wire shape, pre-GA).
   - **Placement:** ISR members stay placed as replicas, so they keep receiving the partition.
   - **Activation:** owner activation is bound to the ownership (owner, epoch, term), not the ISR, so an ISR
     change does not re-run the promotion gate.
