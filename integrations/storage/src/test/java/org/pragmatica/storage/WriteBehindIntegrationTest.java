@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,7 +50,7 @@ class WriteBehindIntegrationTest {
                     .onFailure(c -> fail("put failed: " + c.message()))
                     .onSuccess(_ -> {
                         assertThat(fastTier.usedBytes()).isGreaterThan(0);
-                        waitForFlush();
+                        awaitAtLeast(slowTier::usedBytes, 1);
                         assertThat(slowTier.usedBytes()).isGreaterThan(0);
                     });
         }
@@ -77,7 +78,7 @@ class WriteBehindIntegrationTest {
             instance.put(CONTENT_C).await()
                     .onFailure(c -> fail("put C failed: " + c.message()));
 
-            waitForFlush();
+            awaitAtLeast(slowTier::usedBytes, CONTENT_A.length + CONTENT_B.length + CONTENT_C.length);
 
             assertThat(slowTier.usedBytes()).isGreaterThanOrEqualTo(CONTENT_A.length + CONTENT_B.length + CONTENT_C.length);
         }
@@ -88,7 +89,7 @@ class WriteBehindIntegrationTest {
                              .fold(c -> { fail("put failed: " + c.message()); return null; },
                                    blockId -> blockId);
 
-            waitForFlush();
+            awaitAtLeast(slowTier::usedBytes, 1);
             assertThat(slowTier.usedBytes()).isGreaterThan(0);
 
             // Remove from fast tier to force waterfall read from slow tier
@@ -147,11 +148,18 @@ class WriteBehindIntegrationTest {
         }
     }
 
-    private static void waitForFlush() {
-        try {
-            TimeUnit.MILLISECONDS.sleep(300);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+    /// Bounded poll of the asserted value itself (the drain thread writes the slow tier with no
+    /// happens-before to the test); replaces a fixed sleep that only hoped the write had happened.
+    private static void awaitAtLeast(LongSupplier value, long minimum) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (value.getAsLong() < minimum && System.nanoTime() < deadline) {
+            try {
+                TimeUnit.MILLISECONDS.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 }

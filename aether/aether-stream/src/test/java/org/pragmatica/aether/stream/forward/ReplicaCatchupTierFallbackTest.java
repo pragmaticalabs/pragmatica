@@ -582,9 +582,10 @@ class ReplicaCatchupTierFallbackTest {
 
             var outcome = Promise.<Unit> promise();
 
-            heldSegments.add(segment);
+            // heldSegments LAST: held() and release() size off it, so a reader that sees entry N finds logs/outcomes N.
             heldLogs.add(log);
             heldOutcomes.add(outcome);
+            heldSegments.add(segment);
 
             return outcome;
         }
