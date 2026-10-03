@@ -343,7 +343,9 @@ public final class QuorumLossDetector {
                : some(since);
     }
 
-    private void recompute() {
+    /// Synchronized so the count read and the window edge it implies are one step: unsynchronized, a stale
+    /// quorate read applied after a fresh below-threshold one closes the window with nothing left to reopen it.
+    private synchronized void recompute() {
         var threshold = requiredThresholdFor(coreCountSupplier.getAsInt());
         var quorumCount = currentMemberCount();
         var nowBelow = threshold > 0 && quorumCount < threshold;
