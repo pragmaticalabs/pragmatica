@@ -301,7 +301,8 @@ public final class DHTNode {
     ///
     /// A node on other factors has already applied a LATER configuration (the record is committed after the configuration
     /// that carries it, and every node applies commits in order), so its fence is raised to at least this version. Either
-    /// way the fence is known from here on.
+    /// The fence becomes KNOWN only through [#confirmReplicationFence]: a record adopted from a restored prefix may be
+    /// followed by a newer one still in the consensus log tail (v1882 round 5).
     @Contract
     public void adoptReplicationChange(long version, DHTConfig factors) {
         synchronized (placementLock) {
@@ -310,17 +311,16 @@ public final class DHTNode {
             } else {
                 replicationFence.accumulateAndGet(version, Math::max);
             }
-
-            replicationFenceKnown.set(true);
         }
 
         clearStaleRefusalBelow(replicationFence.get());
     }
 
-    /// The cluster has no committed replication change yet (#1777, v1882 round 4): this node's [#NO_CHANGE] fence is the
-    /// truth, so it is known.
+    /// This node's fence reflects the committed replication change (#1777, v1882 rounds 4-5): it has adopted the latest
+    /// committed record — or found none — AFTER applying the consensus log up to the commit point it observed, so no newer
+    /// record is still waiting in its log tail. From here on it accepts writes stamped at or above its fence.
     @Contract
-    public void replicationFenceIsBaseline() {
+    public void confirmReplicationFence() {
         replicationFenceKnown.set(true);
     }
 
@@ -339,6 +339,12 @@ public final class DHTNode {
     /// The ongoing refusal of this node's writes as stale, if any (#1777, owner rule).
     public Option<StaleRefusal> staleRefusal() {
         return staleRefusal.get();
+    }
+
+    /// A write this node coordinated was accepted: whatever refusal it recorded is over (v1882 round 5).
+    @Contract
+    public void clearStaleRefusal() {
+        staleRefusal.set(Option.none());
     }
 
     private void clearStaleRefusalBelow(long fence) {
@@ -738,8 +744,26 @@ public final class DHTNode {
     /// catch-up begins only after every member, this one included, reported the change applied, so it pulls that copy.
     @Contract
     public void handlePutRequest(DHTMessage.PutRequest request, Consumer<DHTMessage.PutResponse> responseHandler) {
-        if (!acceptsWrites() || request.replicationVersion() < replicationFence.get()) {
-            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(), nodeId, false, false, false, true));
+        if (!acceptsWrites()) {
+            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                              nodeId,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              true));
+
+            return;
+        }
+
+        if (request.replicationVersion() < replicationFence.get()) {
+            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                              nodeId,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              true,
+                                                              false));
 
             return;
         }
@@ -755,12 +779,14 @@ public final class DHTNode {
                                                                                        true,
                                                                                        !written,
                                                                                        false,
+                                                                                       false,
                                                                                        false)))
                .onFailure(cause -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                                                      nodeId,
                                                                                      false,
                                                                                      false,
                                                                                      cause instanceof DHTError.StaleEpochWrite,
+                                                                                     false,
                                                                                      false)));
     }
 

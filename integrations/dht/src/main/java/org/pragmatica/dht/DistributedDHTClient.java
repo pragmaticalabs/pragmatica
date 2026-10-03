@@ -220,10 +220,13 @@ public final class DistributedDHTClient implements DHTClient {
                                                                           localPut,
                                                                           indeterminateIfFenced(cause, quorum, collector)),
                                                   Promise::success))
-                      .onFailure(cause -> noteIfStale(cause, stamp));
+                      .onFailure(cause -> noteIfStale(cause, stamp))
+                      .onSuccess(_ -> node.clearStaleRefusal());
     }
 
-    /// #1777 (owner rule): a put refused by the replication-change fence starts this node's stale-writer clock.
+    /// #1777 (owner rule): a put refused because replicas applied a NEWER change starts this node's stale-writer clock. A
+    /// refusal by replicas that do not know the change yet ([DHTError.ReplicationFenceUnknown]) says nothing about this
+    /// writer and starts nothing; any accepted write ends the clock.
     private void noteIfStale(Cause cause, WriteStamp stamp) {
         if (cause instanceof DHTError.ReplicationChangeStale) {
             node.noteStaleRefusal(stamp.replicationVersion(), System.currentTimeMillis());
@@ -394,6 +397,10 @@ public final class DistributedDHTClient implements DHTClient {
     private static Cause putRefusal(DHTMessage.PutResponse response) {
         if (response.fenced()) {
             return DHTError.replicaFenced(response.sender());
+        }
+
+        if (response.fenceUnknown()) {
+            return DHTError.replicaFenceUnknown(response.sender());
         }
 
         return response.replicationStale()

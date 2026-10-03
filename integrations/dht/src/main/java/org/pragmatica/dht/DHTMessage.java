@@ -88,14 +88,16 @@ public sealed interface DHTMessage extends ProtocolMessage {
     ///
     /// `replicationStale` (#1777, CTO ruling R1c) marks a refusal by the replication-change fence: the put was stamped with
     /// an older replication change than this replica has applied, so its quorum was sized under factors the cluster has
-    /// left; or this replica does not know the committed change yet (restarted, before its state restore), so it cannot
-    /// tell. The writer retries — under the newer change once it has applied it.
+    /// left. The writer retries under the newer change once it has applied it. `fenceUnknown` marks the other refusal of
+    /// that fence: this replica does not know the committed change yet (restarted, before its state restore and catch-up),
+    /// so it can judge no stamp — a plain retriable refusal that says nothing about the WRITER (v1882 round 5).
     record PutResponse(String requestId,
                        NodeId sender,
                        boolean success,
                        boolean superseded,
                        boolean fenced,
-                       boolean replicationStale) implements DHTMessage {}
+                       boolean replicationStale,
+                       boolean fenceUnknown) implements DHTMessage {}
 
     /// Request to remove a value.
     record RemoveRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
