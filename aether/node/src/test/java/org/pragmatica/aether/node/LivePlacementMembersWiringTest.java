@@ -53,6 +53,24 @@ class LivePlacementMembersWiringTest {
         assertThat(assemblyCode()).contains("EntityOwnershipReconciler.entityOwnershipReconciler(kvStore,config.self(),streamReplicaSetController::reconciledMembers,");
     }
 
+    /// Rebalance handoff (run 8, 02w): the receiving service must be told what the COMMITTED state says
+    /// about this node, or every missing target answers terminally again — the wiring is the half a service
+    /// unit test cannot see, because the test constructs its own predicate.
+    @Test
+    void entityForwardService_isGivenTheCommittedStakeTest() {
+        assertThat(assemblyCode()).contains("EntityForwardService.entityForwardService(config.self(),clusterNode.network()::sendOutcome,ENTITY_FORWARD_TIMEOUT,CommittedEntityStake.committedEntityStake(kvStore,config.self()));");
+    }
+
+    /// The reconciler's event triggers: a real executor (not a no-op) for the retract-driven pass, and the
+    /// committed-registration-removal route that wakes the leader's mint.
+    @Test
+    void entityReconcile_isTriggeredByRetractAndByACommittedRegistrationRemoval() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("clusterCommandApplier,ENTITY_RECONCILE_KICK);");
+        assertThat(code).contains("MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,entityOwnershipReconciler::onRegistrationRemoved)");
+    }
+
     @Test
     void consumerGroupOwnership_readsTheController() {
         var code = assemblyCode();

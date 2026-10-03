@@ -121,6 +121,7 @@ import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.SliceScopedResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.node.entityforward.CommittedEntityStake;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage;
 import org.pragmatica.aether.node.entityforward.EntityForwardService;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
@@ -1109,6 +1110,14 @@ public interface AetherNode extends ManageableNode {
     /// Matched to the reshuffle cadence so an entity arc's owner converges in the same window a stream
     /// partition's does.
     TimeSpan ENTITY_OWNERSHIP_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+
+    /// Where an EVENT-triggered entity reconcile runs (the retract of a keyspace on unload, a committed
+    /// registration removal): the shared scheduler, off the caller's thread, with no delay. This is a hand-off
+    /// to the same executor the periodic tick runs on, not a timer — the periodic tick stays as the
+    /// level-triggered backstop that heals a kick lost to a failed apply.
+    Executor ENTITY_RECONCILE_KICK = command -> SharedScheduler.schedule(command,
+                                                                         TimeSpan.timeSpan(0).millis());
+
     /// How often each entity partition folds to a durable checkpoint (#345 I3).
     ///
     /// This is a safety bound, not a tuning knob. A new owner recovers from the checkpoint plus whatever
@@ -5598,7 +5607,9 @@ public interface AetherNode extends ManageableNode {
         // command reaches the committed owner over the ordinary FORWARD lane rather than a new transport.
         var entityForwardService = EntityForwardService.entityForwardService(config.self(),
                                                                              clusterNode.network()::sendOutcome,
-                                                                             ENTITY_FORWARD_TIMEOUT);
+                                                                             ENTITY_FORWARD_TIMEOUT,
+                                                                             CommittedEntityStake.committedEntityStake(kvStore,
+                                                                                                                       config.self()));
 
         allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityUpdateForward.class,
                                                  entityForwardService::onEntityUpdateForward));
@@ -5689,7 +5700,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                                                             partition),
                                                                                                                                                                                                                     StreamPartitionOwnershipValue.class),
                                                                                                                                                                             entityArcOwner),
-                                                                                            clusterCommandApplier);
+                                                                                            clusterCommandApplier,
+                                                                                            ENTITY_RECONCILE_KICK);
+        // A committed registration REMOVAL is a hosting-set shrink, which is the one edge the leader's mint
+        // must not wait a tick for: until it re-mints, the retracting node is still the committed owner of
+        // arcs it can no longer serve. Every node sees the notification; the writer's own leader gate
+        // decides who acts, so a follower's pass emits nothing.
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                                 entityOwnershipReconciler::onRegistrationRemoved));
         // #1302/#1330: every checkpoint tick reports this node's largest checkpoint lag — over partitions it
         // OWNS, measured from the committed checkpoint in KV — into the node metrics map, where the alert
         // threshold path (DashboardMetricsPublisher -> AlertManager.checkThreshold) evaluates it.

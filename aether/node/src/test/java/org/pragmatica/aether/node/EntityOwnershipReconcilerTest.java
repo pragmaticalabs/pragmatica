@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -18,6 +19,7 @@ import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityKeyspaceRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityKeyspaceRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -27,6 +29,7 @@ import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -342,7 +345,7 @@ class EntityOwnershipReconcilerTest {
                                                                                  () -> MEMBERS,
                                                                                  () -> true,
                                                                                  hrwOwner -> observingWriter(hrwOwner, observed),
-                                                                                 recordingApplier(applied));
+                                                                                 recordingApplier(applied), Runnable::run);
 
             reconciler.declare(KEYSPACE, PARTITIONS);
             reconciler.tick();
@@ -377,7 +380,7 @@ class EntityOwnershipReconcilerTest {
                                                                                  () -> MEMBERS,
                                                                                  active::get,
                                                                                  _ -> followerWriter(),
-                                                                                 recordingApplier(applied));
+                                                                                 recordingApplier(applied), Runnable::run);
 
             reconciler.tick();
 
@@ -391,15 +394,144 @@ class EntityOwnershipReconcilerTest {
                                .containsExactly(List.of(new KVCommand.Remove<AetherKey>(registrationKey(KEYSPACE, N1))));
         }
 
+        /// The unloading node: `retract` has to ask for a pass (and the pass must prune the node's committed
+        /// registration). The executor DEFERS, so the pass running only when the queue is drained proves the
+        /// trigger is the retract and not an unrelated periodic tick.
+        @Test
+        void retract_requestsAPassOffTheCallersThread_thatPrunesTheRegistration() {
+            var store = emptyStore();
+
+            seedRegistration(store, KEYSPACE, N1, PARTITIONS);
+
+            var applied = new ArrayList<List<KVCommand<AetherKey>>>();
+            var queued = new ArrayList<Runnable>();
+            var reconciler = reconcilerOn(store, followerWriter(), applied, queued::add);
+
+            reconciler.declare(KEYSPACE, PARTITIONS);
+            reconciler.retract(KEYSPACE);
+
+            assertThat(queued).as("retract must request exactly one pass")
+                              .hasSize(1);
+            assertThat(applied).as("the pass is handed off, not run on the caller's thread")
+                               .isEmpty();
+
+            queued.getFirst().run();
+
+            assertThat(applied).as("the requested pass must prune the retracted keyspace's registration")
+                               .containsExactly(List.of(new KVCommand.Remove<AetherKey>(registrationKey(KEYSPACE, N1))));
+        }
+
+        /// The leader: a committed registration REMOVAL must drive a pass (so the writer is asked to
+        /// re-place the arcs), and an unrelated removal must not — the notification fires for every key
+        /// family, and a pass per removal anywhere would be a consensus-read storm.
+        @Test
+        void onRegistrationRemoved_drivesAPassOnlyForARegistrationKey() {
+            var store = storeRegisteredOn(HOSTS);
+            var observed = new ArrayList<Option<NodeId>>();
+            var reconciler = EntityOwnershipReconciler.entityOwnershipReconciler(store,
+                                                                                 N1,
+                                                                                 () -> MEMBERS,
+                                                                                 () -> true,
+                                                                                 hrwOwner -> observingWriter(hrwOwner, observed),
+                                                                                 recordingApplier(new ArrayList<>()),
+                                                                                 Runnable::run);
+
+            reconciler.onRegistrationRemoved(new ValueRemove<>(new KVCommand.Remove<>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(ARC,
+                                                                                                                                              0)),
+                                                               Option.none()));
+
+            assertThat(observed).as("an ownership-record removal is not a hosting-set change")
+                                .isEmpty();
+
+            reconciler.onRegistrationRemoved(new ValueRemove<>(new KVCommand.Remove<>(registrationKey(KEYSPACE, N3)),
+                                                               Option.none()));
+
+            assertThat(observed).as("a registration removal must re-ask the writer for every arc")
+                                .hasSize(PARTITIONS);
+        }
+        /// Passes now have three triggers on different (virtual) threads — the periodic tick, `retract`, a
+        /// committed registration removal — and every pass publishes the SHARED hosting snapshot the writer's
+        /// per-arc asks read. Two overlapping passes would emit the same delta twice and could drive one
+        /// pass's writer from the other pass's snapshot. Pins the `synchronized` on `tick`: while one pass is
+        /// inside the writer, a second must BLOCK on the monitor, never enter. Deterministic: the wait ends
+        /// as soon as the second thread is either BLOCKED or inside the writer, so it needs no timeout.
+        @Test
+        void tick_neverRunsTwoPassesAtOnce() throws InterruptedException {
+            var store = storeRegisteredOn(HOSTS);
+            var inside = new java.util.concurrent.atomic.AtomicInteger();
+            var maxInside = new java.util.concurrent.atomic.AtomicInteger();
+            var firstEntered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var writer = new StreamPartitionOwnershipWriter() {
+                @Override
+                public Option<KVCommand<AetherKey>> decide(String stream,
+                                                           int partition,
+                                                           Option<StreamPartitionOwnershipValue> committed,
+                                                           NodeId hrwOwner,
+                                                           Epoch committedEpoch) {
+                    return Option.none();
+                }
+
+                @Override
+                public Option<KVCommand<AetherKey>> writeOwnershipChange(String stream, int partition) {
+                    return Option.none();
+                }
+
+                @Override
+                public List<KVCommand<AetherKey>> writeOwnershipChanges(List<PartitionKey> partitions) {
+                    maxInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
+                    firstEntered.countDown();
+                    try {
+                        release.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    inside.decrementAndGet();
+
+                    return List.of();
+                }
+            };
+            var reconciler = reconciler(store, writer, java.util.Collections.synchronizedList(new ArrayList<>()));
+            var first = Thread.ofPlatform().start(reconciler::tick);
+
+            firstEntered.await();
+
+            var second = Thread.ofPlatform().start(reconciler::tick);
+
+            while (second.getState() != Thread.State.BLOCKED && second.getState() != Thread.State.TERMINATED
+                   && inside.get() < 2) {
+                Thread.onSpinWait();
+            }
+
+            var overlapped = inside.get() >= 2;
+
+            release.countDown();
+            first.join();
+            second.join();
+
+            assertThat(overlapped).as("a second pass must block on the monitor, never enter the writer alongside the first")
+                                  .isFalse();
+            assertThat(maxInside.get()).as("both passes ran, one at a time")
+                                       .isEqualTo(1);
+        }
+
         private static EntityOwnershipReconciler reconciler(KVStore<AetherKey, AetherValue> store,
                                                             StreamPartitionOwnershipWriter writer,
                                                             List<List<KVCommand<AetherKey>>> applied) {
+            return reconcilerOn(store, writer, applied, Runnable::run);
+        }
+
+        private static EntityOwnershipReconciler reconcilerOn(KVStore<AetherKey, AetherValue> store,
+                                                              StreamPartitionOwnershipWriter writer,
+                                                              List<List<KVCommand<AetherKey>>> applied,
+                                                              Executor executor) {
             return EntityOwnershipReconciler.entityOwnershipReconciler(store,
                                                                        N1,
                                                                        () -> MEMBERS,
                                                                        () -> true,
                                                                        _ -> writer,
-                                                                       recordingApplier(applied));
+                                                                       recordingApplier(applied),
+                                                                       executor);
         }
 
         private static Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> recordingApplier(List<List<KVCommand<AetherKey>>> applied) {

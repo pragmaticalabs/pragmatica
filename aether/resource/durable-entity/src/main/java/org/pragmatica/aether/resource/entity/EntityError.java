@@ -210,6 +210,29 @@ public sealed interface EntityError extends Cause {
         }
     }
 
+    /// The request reached a node that the COMMITTED state names as the owner (or a host) of the entity
+    /// key's keyspace, but that cannot serve it right now: either the keyspace's slice has unloaded there and
+    /// ownership has not yet been re-minted elsewhere (the handoff window of a rebalance), or it is still
+    /// loading — declared as a host before its forward target or partition ring is in place.
+    ///
+    /// **This is TRANSIENT and self-clearing**, and it is the answer that replaces a terminal
+    /// "no entity registered for keyspace" for that window. Unloading retracts the node's hosting
+    /// declaration and unregisters its forward target at once, but the committed owner record leaves the
+    /// node only when the leader re-mints it over the remaining hosts — so for that interval the committed
+    /// owner has nothing to answer with. Answering terminally there made a healthy rebalance read as a
+    /// permanent refusal to every caller; the caller retries, and the retry reaches the new owner.
+    ///
+    /// Distinct from [OwnershipNotYetCommitted], where NOBODY owns the arc yet, and from [NotCurrentOwner],
+    /// a stable "someone else owns this". `reason` carries the owner's own wording verbatim, so a
+    /// not-ready answer that crossed the forward wire under another name (e.g. `FoldInProgress`) keeps it.
+    record OwnerTransitioning(String key, String reason) implements EntityError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Durable entity operation for key '" + key
+                 + "' reached an owner that is transitioning (loading or handing off) — transient, retry: " + reason;
+        }
+    }
+
     /// A [ReadConsistency#LINEARIZABLE] read at the committed owner found the committed owner epoch
     /// STRICTLY older than the entity key's `(keyspace, partition)` ownership-arc high-water — self is a
     /// deposed owner whose committed record is now stale (a newer owner took over, possibly during the

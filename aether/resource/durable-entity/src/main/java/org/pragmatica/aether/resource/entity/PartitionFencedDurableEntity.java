@@ -476,6 +476,23 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
         return substrate.holdsPartition(keyspace, partition)
                ? fold.ready(partition)
                      .flatMap(_ -> fold.caughtUp(partition))
+               : notHeld(partition);
+    }
+
+    /// This node does not hold the partition's ring. Whether that is "ask elsewhere" or "wait" is decided
+    /// from COMMITTED state: a node the committed ownership record names as OWNER of the arc yet holding no
+    /// ring is mid-transition (its ring not materialized yet, or released while ownership has not moved),
+    /// so the answer is the transient [EntityError.OwnerTransitioning] — which also survives the forward
+    /// wire, where a terminal `PartitionNotHeld` was kept as a plain refusal nobody retried. A node that is
+    /// not the owner keeps the terminal `PartitionNotHeld`: it is genuinely foreign and retrying here never
+    /// helps. The unwired fence-test form has no admission and therefore no owner view, so it stays terminal.
+    private Promise<Unit> notHeld(int partition) {
+        var owner = admission.map(gate -> gate.isPartitionOwner(partition)).or(false);
+
+        return owner
+               ? new EntityError.OwnerTransitioning(keyspace + "/" + partition,
+                                                    "this node is the committed owner of partition " + partition
+                                                   + " but does not hold it yet").promise()
                : new EntityLogError.PartitionNotHeld(keyspace, partition).promise();
     }
 
@@ -1097,13 +1114,18 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// way). Only the variants that legitimately cross this boundary are reconstructed; anything
     /// else keeps the carrier, whose message already names the owner's reason. [EntityError.StorageUnavailable]
     /// crosses so a transient refusal stays transient for the caller; the carrier becomes its wrapped cause, so
-    /// the owner's inner reason survives in the message.
+    /// the owner's inner reason survives in the message. The owner's not-ready answers
+    /// (`OwnerTransitioning`, `OwnershipNotYetCommitted`, `FoldInProgress`) cross as
+    /// [EntityError.OwnerTransitioning], for the same reason: left as the terminal carrier they read as a
+    /// permanent refusal during a handoff that clears by itself.
     private Cause retypeForwarded(Cause cause, K key) {
-        return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ignored)
+        return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ownerMessage)
                ? switch (failureType) {
             case "EntityAlreadyExists" -> new EntityError.EntityAlreadyExists(String.valueOf(key));
             case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
             case "StorageUnavailable" -> new EntityError.StorageUnavailable(String.valueOf(key), cause);
+            case "OwnerTransitioning", "OwnershipNotYetCommitted", "FoldInProgress" -> new EntityError.OwnerTransitioning(String.valueOf(key),
+                                                                                                                          ownerMessage);
             default -> cause;
         }
                : cause;
