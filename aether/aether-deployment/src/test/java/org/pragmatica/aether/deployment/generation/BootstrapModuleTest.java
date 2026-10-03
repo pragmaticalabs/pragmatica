@@ -146,6 +146,8 @@ class BootstrapModuleTest {
             assertThat(clusterConfigPuts).hasSize(1);
             var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
             assertThat(seeded.coreCount()).isEqualTo(3);
+            // #1812: the seed carries NO source configuration, typed, never a blank TOML a reader could parse.
+            assertThat(seeded.tomlContent().isEmpty()).as("the bootstrap seed has no source TOML").isTrue();
         }
 
         /// #1019 — pins `SEED_CORE_MIN`, which nothing else reaches. It is the floor applied to the
