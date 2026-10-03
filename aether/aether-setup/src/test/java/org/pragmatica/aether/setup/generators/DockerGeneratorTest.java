@@ -24,26 +24,58 @@ class DockerGeneratorTest {
     /// cluster).
     @Test
     void generate_composeHealthcheck_usesWgetAgainstARouteTheNodeServes(@TempDir Path outputDir) {
-        var config = AetherConfig.aetherConfig(Environment.DOCKER);
-
-        new DockerGenerator().generate(config, outputDir).onFailure(cause -> fail(cause.message()));
-        var compose = read(outputDir.resolve("docker-compose.yml"));
+        var compose = generateCompose(outputDir, false);
 
         assertThat(compose).as("control: a healthcheck is rendered").contains("healthcheck:");
         assertThat(compose).contains("\"wget\", \"--spider\", \"-q\", \"http://localhost:")
                   .contains("/health/live\"]");
-        assertThat(compose).doesNotContain("\"curl\"").doesNotContain("/health\"]");
+        assertThat(compose).doesNotContain("\"curl\"").doesNotContain("/health\"]").doesNotContain("https://");
+    }
+
+    /// A TLS-enabled management listener serves HTTPS, so the healthcheck tries HTTPS first (the CA is
+    /// self-generated, hence `--no-check-certificate`) and falls back to HTTP, like the node image's
+    /// own HEALTHCHECK. Without TLS the plain-HTTP form above must stay (the control).
+    @Test
+    void generate_tlsEnabled_composeHealthcheckTriesHttpsFirst(@TempDir Path outputDir) {
+        var compose = generateCompose(outputDir, true);
+
+        assertThat(compose).contains("wget -q --spider --no-check-certificate https://localhost:")
+                  .contains("/health/live || wget -q --spider http://localhost:")
+                  .doesNotContain("\"curl\"");
     }
 
     @Test
     void generate_statusScript_curlsARouteTheNodeServes(@TempDir Path outputDir) {
-        var config = AetherConfig.aetherConfig(Environment.DOCKER);
-
-        new DockerGenerator().generate(config, outputDir).onFailure(cause -> fail(cause.message()));
-        var statusScript = read(outputDir.resolve("status.sh"));
+        var statusScript = generateStatus(outputDir, false);
 
         assertThat(statusScript).as("control: the status script probes node health").contains("/health/");
-        assertThat(statusScript).contains("/health/ready").doesNotContain("/health 2>");
+        assertThat(statusScript).contains("curl -sk http://localhost:$port/health/ready").doesNotContain("/health 2>");
+    }
+
+    @Test
+    void generate_tlsEnabled_statusScriptUsesHttps(@TempDir Path outputDir) {
+        var statusScript = generateStatus(outputDir, true);
+
+        assertThat(statusScript).contains("curl -sk https://localhost:$port/health/ready");
+    }
+
+    private static String generateCompose(Path outputDir, boolean tls) {
+        generate(outputDir, tls);
+
+        return read(outputDir.resolve("docker-compose.yml"));
+    }
+
+    private static String generateStatus(Path outputDir, boolean tls) {
+        generate(outputDir, tls);
+
+        return read(outputDir.resolve("status.sh"));
+    }
+
+    private static void generate(Path outputDir, boolean tls) {
+        var config = AetherConfig.builder().withEnvironment(Environment.DOCKER).tls(tls).build();
+
+        assertThat(config.tlsEnabled()).as("control: the config under test has the requested TLS mode").isEqualTo(tls);
+        new DockerGenerator().generate(config, outputDir).onFailure(cause -> fail(cause.message()));
     }
 
     private static String read(Path path) {

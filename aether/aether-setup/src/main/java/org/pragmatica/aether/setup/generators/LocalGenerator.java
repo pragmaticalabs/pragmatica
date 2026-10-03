@@ -222,6 +222,9 @@ public final class LocalGenerator implements Generator {
     private String generateStatusScript(AetherConfig config) {
         var mgmtPort = config.cluster().ports().management();
         var lastNode = config.cluster().nodes() - 1;
+        var scheme = config.tlsEnabled()
+                     ? "https"
+                     : "http";
 
         return String.format("""
             #!/bin/bash
@@ -240,7 +243,7 @@ public final class LocalGenerator implements Generator {
                 if [ -f "$PID_FILE" ]; then
                     PID=$(cat "$PID_FILE")
                     if kill -0 "$PID" 2>/dev/null; then
-                        HEALTH=$(curl -s http://localhost:$PORT/health/ready 2>/dev/null || echo "unreachable")
+                        HEALTH=$(curl -sk %s://localhost:$PORT/health/ready 2>/dev/null || echo "unreachable")
                         echo "running (PID: $PID) - $HEALTH"
                     else
                         echo "dead (stale PID file)"
@@ -251,7 +254,8 @@ public final class LocalGenerator implements Generator {
             done
             """,
                              lastNode,
-                             mgmtPort);
+                             mgmtPort,
+                             scheme);
     }
 
     @SuppressWarnings("JBCT-SEQ-01")

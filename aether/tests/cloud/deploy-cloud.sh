@@ -311,7 +311,7 @@ fi
 
 log_info "Waiting for cluster health via Aether LB..."
 for i in $(seq 1 60); do
-    HEALTH=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/health" 2>/dev/null || echo "")
+    HEALTH=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/v1/health" 2>/dev/null || echo "")
     if echo "$HEALTH" | grep -q '"ready":true'; then
         log_pass "Cluster healthy"
         break
@@ -326,7 +326,7 @@ if ! echo "$HEALTH" | grep -q '"ready":true'; then
 fi
 
 # Verify node count
-NODE_COUNT=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/cluster/topology" 2>/dev/null \
+NODE_COUNT=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/v1/cluster/topology" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("coreCount",0))' 2>/dev/null || echo "0")
 log_info "Core nodes visible: ${NODE_COUNT}"
 

@@ -21,3 +21,12 @@
   Docker/Local `status.sh` and `script/demo-cluster.sh` probed bare `/health` — none exist on a node, which
   serves `/health/live` and `/health/ready`. The generated Docker healthcheck also used `curl`, which the node
   image does not install; it now uses `wget`.
+- **#960 follow-up — probes honour TLS, and live docs name routes that exist.** The generated Kubernetes
+  probes and Docker healthcheck were HTTP-only, but the management listener serves HTTPS when `tls` is on (the
+  default for the Docker and Kubernetes environments): K8s probes now carry `scheme: HTTPS`, the Docker
+  healthcheck tries HTTPS first then HTTP like the node image's own `HEALTHCHECK`, and the generated
+  `status.sh` scripts use `curl -sk` with the matching scheme. `tests/cloud/deploy-cloud.sh` polled the
+  non-existent `/api/health` and `/api/cluster/topology` (now `/api/v1/...`), and the live docs, specs and test
+  charters that named the unversioned paths were corrected; the archived/draft specs and RFC-0013 carry a path
+  note instead of a rewrite. The dashboard's `RestClient` still calls unversioned `/api/...` paths (#300
+  migration, not part of this change).
