@@ -240,7 +240,7 @@ public final class LocalGenerator implements Generator {
                 if [ -f "$PID_FILE" ]; then
                     PID=$(cat "$PID_FILE")
                     if kill -0 "$PID" 2>/dev/null; then
-                        HEALTH=$(curl -s http://localhost:$PORT/health 2>/dev/null || echo "unreachable")
+                        HEALTH=$(curl -s http://localhost:$PORT/health/ready 2>/dev/null || echo "unreachable")
                         echo "running (PID: $PID) - $HEALTH"
                     else
                         echo "dead (stale PID file)"

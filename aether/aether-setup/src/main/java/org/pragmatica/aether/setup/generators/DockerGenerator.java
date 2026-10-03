@@ -223,7 +223,7 @@ public final class DockerGenerator implements Generator {
                 networks:
                   - %s
                 healthcheck:
-                  test: ["CMD", "curl", "-f", "http://localhost:%d/health"]
+                  test: ["CMD", "wget", "--spider", "-q", "http://localhost:%d/health/live"]
                   interval: 10s
                   timeout: 5s
                   retries: 3
@@ -335,7 +335,7 @@ public final class DockerGenerator implements Generator {
             echo "=== Node Health ==="
             for port in $(seq $MANAGEMENT_PORT $((MANAGEMENT_PORT + NODES - 1))); do
                 echo -n "Node on port $port: "
-                curl -s http://localhost:$port/health 2>/dev/null || echo "unreachable"
+                curl -s http://localhost:$port/health/ready 2>/dev/null || echo "unreachable"
             done
             """;
     }

@@ -7,8 +7,8 @@
 #   - HCLOUD_TOKEN set in environment (NEVER echoed)
 #   - hcloud CLI installed
 #   - aether CLI installed
-#   - Node image pushed to GHCR (see AETHER_IMAGE below; published by the release workflow
-#     from the pushed git tag, e.g. v1.0.0-rc3-candidate -> :1.0.0-rc3-candidate)
+#   - Node image pushed to GHCR (the tag pinned by [deployment.runtime].image in
+#     aether-cloud.toml; published by the release workflow from the pushed git tag)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,10 +31,6 @@ NETWORK_NAME="${CLUSTER_NAME}-net"
 NETWORK_RANGE="10.0.1.0/24"
 SSH_KEY_NAME="${CLUSTER_NAME}-key"
 LB_NAME="${CLUSTER_NAME}-lb-public"
-# Keep in step with aether-cloud.toml's [deployment.runtime].image — the candidate tag
-# v1.0.0-rc3-candidate publishes :1.0.0-rc3-candidate (release.yml derives the image tag
-# from the pushed git tag).
-AETHER_IMAGE="ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
 
 DO_BUILD=false
 SKIP_BUILD=false

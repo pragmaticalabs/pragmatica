@@ -44,6 +44,20 @@ class LocalGeneratorTest {
         }
     }
 
+    /// #960 class: the generated `status.sh` curls a node health route; the node serves
+    /// `/health/live` and `/health/ready`, never bare `/health` (a 404 that `curl -s` prints as success).
+    @Test
+    void generate_statusScript_curlsARouteTheNodeServes(@TempDir Path outputDir) {
+        var config = AetherConfig.aetherConfig(Environment.LOCAL);
+
+        new LocalGenerator().generate(config, outputDir).onFailure(cause -> fail(cause.message()));
+        var statusScript = read(outputDir.resolve("status.sh"));
+
+        assertThat(statusScript).as("control: the status script probes node health").contains("/health/");
+        assertThat(statusScript).contains("/health/ready");
+        assertThat(statusScript).doesNotContain("/health 2>");
+    }
+
     private static int occurrences(String text, String needle) {
         return text.split(java.util.regex.Pattern.quote(needle), -1).length - 1;
     }

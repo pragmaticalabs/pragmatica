@@ -25,4 +25,20 @@ class KubernetesGeneratorTest {
         assertThat(statefulSet).contains("image: " + DockerConfig.DEFAULT_IMAGE);
         assertThat(statefulSet).doesNotContain("ghcr.io/siy");
     }
+
+    /// #960 class: a probe pointed at a route the node does not serve fails forever. The node serves
+    /// only the unversioned `/health/live` and `/health/ready` probes (`ManagementRoute.HEALTH_LIVE`,
+    /// `HEALTH_READY`); bare `/health` is a 404 (measured against a running Forge cluster).
+    @Test
+    void generateStatefulSet_probesTargetRoutesTheNodeServes() {
+        var config = AetherConfig.aetherConfig(Environment.KUBERNETES);
+
+        var statefulSet = new KubernetesGenerator().generateStatefulSet(config);
+
+        assertThat(statefulSet).as("control: both probes are rendered")
+                  .contains("readinessProbe:")
+                  .contains("livenessProbe:");
+        assertThat(statefulSet).contains("path: /health/ready").contains("path: /health/live");
+        assertThat(statefulSet).doesNotContain("path: /health\n");
+    }
 }

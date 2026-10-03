@@ -242,13 +242,13 @@ public final class KubernetesGenerator implements Generator {
                         memory: "%s"
                     readinessProbe:
                       httpGet:
-                        path: /health
+                        path: /health/ready
                         port: management
                       initialDelaySeconds: 10
                       periodSeconds: 5
                     livenessProbe:
                       httpGet:
-                        path: /health
+                        path: /health/live
                         port: management
                       initialDelaySeconds: 30
                       periodSeconds: 10
