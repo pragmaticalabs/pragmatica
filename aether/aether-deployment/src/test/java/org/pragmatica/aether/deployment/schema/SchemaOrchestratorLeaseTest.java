@@ -66,15 +66,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// #806: the migration lock is a LEASE the holder renews while its attempt is in flight, and its release
-/// is a compare-and-delete. Before, the lock was a fixed 5-minute claim around a migration bounded at 15
+/// is a fenced tombstone. Before, the lock was a fixed 5-minute claim around a migration bounded at 15
 /// minutes, released by a bare `Remove`: the lock expired under a slow holder, a second node took it, and
 /// the first holder's later release deleted the SECOND node's lock — a third migration then ran beside it.
 ///
-/// Time is real here (the lease is a wall-clock claim), with a TTL of a few hundred milliseconds in place
-/// of five minutes; every wait is on a condition with a bound, never a bare sleep.
+/// Time is injected: the orchestrator reads a [FakeTime] clock and schedules its renewal ticks on it, so a
+/// test steps time by hand and no assertion depends on a sleep. The only real waits are for EVENTS a test
+/// cannot step — a parked renewal Put giving up after `RENEWAL_TIMEOUT_MS`, which is the path under test.
 @SuppressWarnings({"JBCT-EX-01", "JBCT-RET-03"})
 class SchemaOrchestratorLeaseTest {
-    private static final long TTL_MS = 600L;
+    private static final long TTL_MS = 3_000L;
+    private static final long TICK_MS = TTL_MS / 3;
+    private static final long RENEWAL_TIMEOUT_MS = 50L;
     private static final NodeId NODE_1 = new NodeId("node-1");
     private static final NodeId NODE_2 = new NodeId("node-2");
     private static final String DATASOURCE = "database.orders";
@@ -107,98 +110,175 @@ class SchemaOrchestratorLeaseTest {
     private InMemoryKvStore kvStore;
     private RecordingClusterNode cluster;
     private ControlledSchemaManager schemaManager;
+    private FakeTime time;
 
     @BeforeEach
     void setUp() {
         kvStore = new InMemoryKvStore(MessageRouter.mutable());
         cluster = new RecordingClusterNode(NODE_1, kvStore);
         schemaManager = new ControlledSchemaManager();
+        time = new FakeTime(1_000_000L);
         seedPendingSchema();
     }
 
     @Test
-    void migrationOutlivingTheLeaseTtl_keepsExclusivity_secondAcquirerRefused() throws InterruptedException {
-        var first = orchestrator(NODE_1, TTL_MS).migrateIfNeeded(DATASOURCE);
+    void migrationOutlivingTheLeaseTtl_keepsExclusivity_secondAcquirerRefused() {
+        var first = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
 
         assertThat(schemaManager.invocations).containsExactly(NODE_1.id());
         var firstExpiry = committedLock().expiresAt();
 
-        // Run past the moment the ORIGINAL claim would have expired, with the migration still running.
-        await("lock outlives its original expiry", () -> System.currentTimeMillis() > firstExpiry + TTL_MS / 2);
+        // Run well past the moment the ORIGINAL claim would have expired, the migration still running.
+        for (var i = 0; i < 6; i++) {
+            time.advance(TICK_MS);
+        }
+
+        assertThat(time.now()).isGreaterThan(firstExpiry);
         assertThat(first.isResolved()).as("migration still running").isFalse();
-        assertThat(committedLock().isExpired()).as("renewed lease is live past the original expiry").isFalse();
+        assertThat(committedLock().expiresAt()).as("renewed lease is live past the original expiry").isGreaterThan(time.now());
         assertThat(committedLock().heldBy()).isEqualTo(NODE_1);
         assertThat(committedLock().lockVersion()).as("lease was renewed, not merely held").isGreaterThan(1L);
 
         // The retry path re-marks the record PENDING while the first attempt is still running (#806 triage).
         seedPendingSchema();
-        var second = orchestrator(NODE_2, TTL_MS).migrateIfNeeded(DATASOURCE).await(timeSpan(5).seconds());
+        var second = orchestrator(NODE_2).migrateIfNeeded(DATASOURCE).await(timeSpan(5).seconds());
 
         second.onSuccess(_ -> Assertions.fail("a second node must not acquire a lock whose holder is still migrating"))
               .onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.LockAcquisitionFailed.class));
         assertThat(schemaManager.invocations).as("exactly one node ever ran the migration").containsExactly(NODE_1.id());
     }
 
+    /// Control for the test above: without renewal the same elapsed time frees the lock, so the renewal
+    /// is what the exclusivity rests on, not the length of the TTL.
     @Test
-    void completedMigration_afterRenewals_releasesTheLock() {
-        var migration = orchestrator(NODE_1, TTL_MS).migrateIfNeeded(DATASOURCE);
+    void holderThatStopsRenewing_losesTheLockAfterTheTtl() {
+        orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
+        var claim = committedLock();
 
-        await("at least two renewals", () -> committedLock().lockVersion() >= 3L);
+        time.advanceWithoutFiring(TTL_MS + 1);
+        seedPendingSchema();
+        orchestrator(NODE_2).migrateIfNeeded(DATASOURCE);
+
+        assertThat(committedLock().heldBy()).as("an unrenewed lock is taken over once expired").isEqualTo(NODE_2);
+        assertThat(committedLock().lockVersion()).isEqualTo(claim.nextVersion());
+    }
+
+    @Test
+    void completedMigration_afterRenewals_releasesByTombstone() {
+        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
+
+        time.advance(TICK_MS);
+        time.advance(TICK_MS);
+        var renewedVersion = committedLock().lockVersion();
+
+        assertThat(renewedVersion).isGreaterThanOrEqualTo(3L);
         schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
         migration.await(timeSpan(5).seconds());
 
-        assertThat(kvStore.get(LOCK_KEY).isPresent()).as("the holder's witnessed release removes its own lock").isFalse();
+        assertThat(committedLock().expiresAt() <= time.now()).as("the release leaves an expired tombstone").isTrue();
+        assertThat(committedLock().lockVersion()).as("the version chain continues; it never restarts").isEqualTo(renewedVersion + 1);
+        assertThat(time.pending()).as("a released lease schedules no further tick").isZero();
     }
 
     /// A renewal Put still in flight when the migration finishes must settle BEFORE the release: otherwise
-    /// the Remove runs first and the late Put lands on an absent key — a first write, which the applier
-    /// admits — resurrecting a lock nobody holds until its expiry.
+    /// it could land after the tombstone and leave a live lock nobody renews.
     @Test
-    void releaseWaitsForAnInFlightRenewal_soNoLockIsResurrected() {
-        var migration = orchestrator(NODE_1, TTL_MS).migrateIfNeeded(DATASOURCE);
+    void releaseWaitsForAnInFlightRenewal() {
+        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
 
         cluster.parkRenewals();
-        await("a renewal is in flight", () -> cluster.parkedRenewals() == 1);
+        time.advance(TICK_MS);
+        assertThat(cluster.parkedRenewals()).isEqualTo(1);
         schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
+        assertThat(migration.isResolved()).as("release is waiting for the renewal").isFalse();
+
         cluster.commitParkedRenewals();
         migration.await(timeSpan(5).seconds());
 
-        assertThat(kvStore.get(LOCK_KEY).isPresent()).as("no lock may outlive its holder's release").isFalse();
+        assertThat(committedLock().expiresAt() <= time.now()).as("no live lock may outlive its holder's release").isTrue();
     }
 
     @Test
-    void staleHolder_successResult_doesNotRemoveSuccessorsLock() {
-        var migration = orchestrator(NODE_1, 5 * 60_000L).migrateIfNeeded(DATASOURCE);
+    void staleHolder_successResult_doesNotTouchSuccessorsLock() {
+        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
         var successor = takeOver();
 
         schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
         migration.await(timeSpan(5).seconds());
 
-        assertThat(committedLock()).as("A's release must not delete B's lock").isEqualTo(successor);
+        assertThat(committedLock()).as("A's release must not overwrite B's lock").isEqualTo(successor);
     }
 
     @Test
-    void staleHolder_failureResult_doesNotRemoveSuccessorsLock() {
-        var migration = orchestrator(NODE_1, 5 * 60_000L).migrateIfNeeded(DATASOURCE);
+    void staleHolder_failureResult_doesNotTouchSuccessorsLock() {
+        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
         var successor = takeOver();
 
         schemaManager.completeAll(Result.failure(Causes.cause("script failed")));
         migration.await(timeSpan(5).seconds());
 
-        assertThat(committedLock()).as("A's finalize-time release must not delete B's lock").isEqualTo(successor);
+        assertThat(committedLock()).as("A's finalize-time release must not overwrite B's lock").isEqualTo(successor);
     }
 
     @Test
     void supersededHolder_stopsRenewing() {
-        var migration = orchestrator(NODE_1, TTL_MS).migrateIfNeeded(DATASOURCE);
+        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
         var successor = takeOver();
         var putsAtTakeover = cluster.lockPuts();
 
-        await("a lease period passes", () -> System.currentTimeMillis() > successor.acquiredAt() + 2 * TTL_MS);
+        time.advance(TICK_MS);
+        time.advance(TICK_MS);
 
         assertThat(cluster.lockPuts()).as("a holder that lost the lock submits no further renewals").isEqualTo(putsAtTakeover);
+        assertThat(time.pending()).as("and schedules no further tick").isZero();
         assertThat(committedLock()).isEqualTo(successor);
         assertThat(migration.isResolved()).isFalse();
+    }
+
+    /// v1860 S1: renewal R1 times out but is still pending; the next tick submits R2 for the SAME version
+    /// (R1 never committed); R1 then lands and R2 is fenced out. The committed value is R1 — this holder's
+    /// own write, nobody else claimed the key — so the lease must go on.
+    @Test
+    void lateLandingRenewal_afterANewerOneWasSubmitted_doesNotCostTheLease() {
+        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
+
+        cluster.parkRenewals();
+        time.advance(TICK_MS);
+        assertThat(cluster.parkedRenewals()).as("R1 in flight").isEqualTo(1);
+        awaitEvent("R1 gave up and the next tick was scheduled", () -> time.pending() == 1);
+        time.advance(TICK_MS);
+        assertThat(cluster.parkedRenewals()).as("R2 submitted for the same version").isEqualTo(2);
+
+        cluster.commitParkedRenewals();
+        var landed = committedLock();
+
+        assertThat(landed.heldBy()).isEqualTo(NODE_1);
+        awaitEvent("R2's settlement scheduled the next tick", () -> time.pending() == 1);
+        time.advance(TICK_MS);
+        assertThat(committedLock().lockVersion()).as("the holder renews past its own late-landed value").isGreaterThan(landed.lockVersion());
+        assertThat(migration.isResolved()).isFalse();
+    }
+
+    /// v1860 S2: renewal R1 times out but is still pending; the migration completes and releases; node 2
+    /// claims the lock; R1 then lands. The release never restarts the version chain, so R1 is fenced out.
+    @Test
+    void renewalLandingAfterRelease_cannotClobberASuccessorsClaim() {
+        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
+
+        cluster.parkRenewals();
+        time.advance(TICK_MS);
+        assertThat(cluster.parkedRenewals()).as("R1 in flight").isEqualTo(1);
+        schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
+        migration.await(timeSpan(5).seconds());
+
+        seedPendingSchema();
+        orchestrator(NODE_2).migrateIfNeeded(DATASOURCE);
+        assertThat(committedLock().heldBy()).as("node 2 holds the lock").isEqualTo(NODE_2);
+        var successor = committedLock();
+
+        cluster.commitParkedRenewals();
+
+        assertThat(committedLock()).as("node 1's stale renewal must not overwrite node 2's live claim").isEqualTo(successor);
     }
 
     /// Node 2 takes the lock the way a taker does once it believes the holder's lease expired: the next
@@ -207,8 +287,8 @@ class SchemaOrchestratorLeaseTest {
         var held = committedLock();
         var successor = new SchemaMigrationLockValue(DATASOURCE,
                                                      NODE_2,
-                                                     System.currentTimeMillis(),
-                                                     System.currentTimeMillis() + 10 * 60_000L,
+                                                     time.now(),
+                                                     time.now() + 10 * TTL_MS,
                                                      held.nextVersion());
 
         kvStore.put(LOCK_KEY, successor);
@@ -221,7 +301,8 @@ class SchemaOrchestratorLeaseTest {
         return (SchemaMigrationLockValue) kvStore.get(LOCK_KEY).or((AetherValue) null);
     }
 
-    private static void await(String what, java.util.function.BooleanSupplier condition) {
+    /// Waits for an EVENT the test cannot step (a real timeout elapsing), never for a duration.
+    private static void awaitEvent(String what, java.util.function.BooleanSupplier condition) {
         var deadline = System.currentTimeMillis() + 10_000L;
 
         while (!condition.getAsBoolean()) {
@@ -230,7 +311,7 @@ class SchemaOrchestratorLeaseTest {
             }
 
             try {
-                Thread.sleep(20);
+                Thread.sleep(10);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 Assertions.fail("interrupted waiting for: " + what);
@@ -248,7 +329,7 @@ class SchemaOrchestratorLeaseTest {
                                                           OWNER));
     }
 
-    private SchemaOrchestratorService orchestrator(NodeId self, long leaseTtlMs) {
+    private SchemaOrchestratorService orchestrator(NodeId self) {
         Repository repository = _ -> NOT_IN_REPOSITORY.promise();
 
         return new SchemaOrchestratorServiceInstance(cluster,
@@ -259,7 +340,57 @@ class SchemaOrchestratorLeaseTest {
                                                      stubConnectionProvider(),
                                                      self,
                                                      Option.<MessageRouter> none(),
-                                                     leaseTtlMs);
+                                                     new LeaseTiming(TTL_MS, RENEWAL_TIMEOUT_MS, time::now, time::schedule));
+    }
+
+    /// A hand-stepped clock and scheduler: `advance` moves time forward one tick at a time and runs each
+    /// scheduled task whose moment has come, on the calling thread.
+    private static final class FakeTime {
+        private record Task(long at, Runnable body, boolean[] cancelled) {}
+
+        private final java.util.concurrent.atomic.AtomicLong now;
+        private final List<Task> tasks = Collections.synchronizedList(new ArrayList<>());
+
+        FakeTime(long start) {
+            now = new java.util.concurrent.atomic.AtomicLong(start);
+        }
+
+        long now() {
+            return now.get();
+        }
+
+        Runnable schedule(Runnable body, long delayMs) {
+            var task = new Task(now.get() + delayMs, body, new boolean[1]);
+
+            tasks.add(task);
+
+            return () -> {
+                task.cancelled()[0] = true;
+                tasks.remove(task);
+            };
+        }
+
+        int pending() {
+            return tasks.size();
+        }
+
+        void advanceWithoutFiring(long ms) {
+            now.addAndGet(ms);
+        }
+
+        void advance(long ms) {
+            var target = now.get() + ms;
+
+            now.set(target);
+            List.copyOf(tasks).stream()
+                .filter(t -> t.at() <= target)
+                .sorted(java.util.Comparator.comparingLong(Task::at))
+                .forEach(t -> {
+                    if (tasks.remove(t) && !t.cancelled()[0]) {
+                        t.body().run();
+                    }
+                });
+        }
     }
 
     /// Applies every batch immediately through the real applier and counts the lock `Put`s submitted.
@@ -344,6 +475,8 @@ class SchemaOrchestratorLeaseTest {
             return batch.stream()
                         .anyMatch(c -> c instanceof KVCommand.Put<AetherKey, ?> put
                                        && put.value() instanceof SchemaMigrationLockValue lock
+                                       && lock.heldBy().equals(NODE_1)
+                                       && lock.expiresAt() > 0
                                        && lock.lockVersion() > SchemaMigrationLockValue.FIRST_VERSION);
         }
     }

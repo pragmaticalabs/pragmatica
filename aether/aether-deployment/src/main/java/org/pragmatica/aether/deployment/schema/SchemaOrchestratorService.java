@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.schema;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.AuditLog;
@@ -34,7 +35,6 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
-import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.consensus.NodeId;
@@ -128,7 +128,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final DatasourceConnectionProvider connectionProvider;
     private final NodeId self;
     private final Option<MessageRouter> router;
-    private final long leaseTtlMs;
+    private final LeaseTiming timing;
 
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                                       KVStore<AetherKey, AetherValue> kvStore,
@@ -149,7 +149,15 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                       DatasourceConnectionProvider connectionProvider,
                                       NodeId self,
                                       Option<MessageRouter> router) {
-        this(cluster, kvStore, artifactStore, repository, schemaManager, connectionProvider, self, router, LOCK_TTL_MS);
+        this(cluster,
+             kvStore,
+             artifactStore,
+             repository,
+             schemaManager,
+             connectionProvider,
+             self,
+             router,
+             LeaseTiming.standard());
     }
 
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -160,8 +168,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                       DatasourceConnectionProvider connectionProvider,
                                       NodeId self,
                                       Option<MessageRouter> router,
-                                      long leaseTtlMs) {
-        this.leaseTtlMs = leaseTtlMs;
+                                      LeaseTiming timing) {
+        this.timing = timing;
         this.cluster = cluster;
         this.kvStore = kvStore;
         this.artifactStore = artifactStore;
@@ -741,17 +749,20 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
         var committed = committedLock(lockKey);
 
-        if (committed.filter(lock -> !lock.isExpired()).isPresent()) {
+        if (committed.filter(lock -> lock.expiresAt() > timing.clock()
+                                                              .getAsLong()).isPresent()) {
             inFlightMigrations.remove(datasourceName, attemptToken);
 
             return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
         }
 
-        var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName,
-                                                                          self,
-                                                                          leaseTtlMs,
-                                                                          committed.map(SchemaMigrationLockValue::nextVersion)
-                                                                                   .or(SchemaMigrationLockValue.FIRST_VERSION));
+        var now = timing.clock().getAsLong();
+        var lockValue = new SchemaMigrationLockValue(datasourceName,
+                                                     self,
+                                                     now,
+                                                     now + timing.ttlMs(),
+                                                     committed.map(SchemaMigrationLockValue::nextVersion)
+                                                              .or(SchemaMigrationLockValue.FIRST_VERSION));
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
         // #760/#724 review round 3 BLOCKING 1: bounded the same way as the migration itself
         // (schemaManager.policy().migrationTimeout(), read once per attempt) — before this, a lock Put
@@ -800,27 +811,31 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     /// #806: the lease of ONE attempt, keyed by its token (never by datasource: a late `finalizeAttempt`
     /// of a failed attempt must not stop the renewal of a later attempt that has since claimed the same
-    /// datasource). `held` is the last value this attempt CONFIRMED committed; `candidate` is the value
-    /// of a renewal Put still in flight, which may land after its submitter gave up on it. The monitor
-    /// serialises renewal start against release so a release never reads `renewing` between a renewal's
-    /// check of `released` and its publication of the Put.
+    /// datasource). The lock's version chain NEVER restarts — release is a tombstone write, not a Remove,
+    /// and a bare Remove is refused ([WitnessedRemoval]) — so every value this attempt ever writes carries
+    /// its claim's `heldBy` and `acquiredAt` and a version at or above the claim's, and no other claim can
+    /// match all three. That makes ownership a property of the committed value alone: a renewal Put that
+    /// timed out and lands late is still recognised, and one landing after a successor's claim is fenced
+    /// out by version. The monitor serialises renewal start against release so a release never reads
+    /// `renewing` between a renewal's check of `released` and its publication of the Put.
     private static final class Lease {
         final SchemaMigrationLockKey key;
-        SchemaMigrationLockValue held;
-        SchemaMigrationLockValue candidate;
+        final SchemaMigrationLockValue claimed;
         boolean released;
         boolean lost;
-        ScheduledFuture<?> next;
+        Runnable next;
         Promise<Unit> renewing = Promise.unitPromise();
 
         Lease(SchemaMigrationLockKey key, SchemaMigrationLockValue claimed) {
             this.key = key;
-            this.held = claimed;
-            this.candidate = claimed;
+            this.claimed = claimed;
         }
 
-        synchronized boolean owns(SchemaMigrationLockValue committed) {
-            return committed.equals(held) || committed.equals(candidate);
+        boolean owns(SchemaMigrationLockValue committed) {
+            return committed.heldBy()
+                            .equals(claimed.heldBy())
+                   && committed.acquiredAt() == claimed.acquiredAt()
+                   && committed.lockVersion() >= claimed.lockVersion();
         }
     }
 
@@ -836,7 +851,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private void scheduleRenewal(Lease lease) {
         synchronized (lease) {
             if (!lease.released && !lease.lost) {
-                lease.next = SharedScheduler.schedule(() -> renew(lease), timeSpan(leaseTtlMs / 3).millis());
+                lease.next = timing.scheduler().schedule(() -> renew(lease), timing.ttlMs() / 3);
             }
         }
     }
@@ -847,56 +862,48 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                 return;
             }
 
-            lease.renewing = renewalPut(lease);
+            lease.renewing = renewalPut(lease).fold(_ -> rescheduleRenewal(lease));
         }
-
-        lease.renewing.onResultRun(() -> scheduleRenewal(lease));
     }
 
-    /// One owner-fenced renewal: a Put of the next version in the chain, applied only if the committed
-    /// value is still the one this attempt holds. Never fails — a Put that errors or times out leaves
-    /// `held` as it was, and the next tick retries from there. A committed value that is NEITHER `held`
-    /// nor the in-flight `candidate` means a successor took the lock after the lease lapsed (this node
-    /// stalled for longer than the lease): the attempt keeps running — a script cannot be recalled from
-    /// the database — but stops renewing, says so, and its release will be refused by the applier.
-    private Promise<Unit> renewalPut(Lease lease) {
-        var committed = committedLock(lease.key);
-
-        if (committed.filter(lease::owns).isEmpty()) {
-            markLost(lease, committed);
-
-            return Promise.unitPromise();
-        }
-
-        var current = committed.or(lease.held);
-        var renewed = new SchemaMigrationLockValue(current.datasourceName(),
-                                                   self,
-                                                   current.acquiredAt(),
-                                                   System.currentTimeMillis() + leaseTtlMs,
-                                                   current.nextVersion());
-
-        synchronized (lease) {
-            lease.held = current;
-            lease.candidate = renewed;
-        }
-
-        KVCommand<AetherKey> command = new Put<>(lease.key, renewed);
-
-        return cluster.apply(List.of(command))
-                      .timeout(timeSpan(leaseTtlMs).millis())
-                      .fold(_ -> settleRenewal(lease, renewed));
-    }
-
-    private Promise<Unit> settleRenewal(Lease lease, SchemaMigrationLockValue renewed) {
-        committedLock(lease.key).filter(renewed::equals).onPresent(_ -> adopt(lease, renewed));
+    /// DEPENDENT, not `onResultRun`: the next tick is registered before the renewal's promise settles, so
+    /// a release waiting on that promise never races a tick that is about to be scheduled.
+    private Promise<Unit> rescheduleRenewal(Lease lease) {
+        scheduleRenewal(lease);
 
         return Promise.unitPromise();
     }
 
-    private static void adopt(Lease lease, SchemaMigrationLockValue renewed) {
-        synchronized (lease) {
-            lease.held = renewed;
+    /// One owner-fenced renewal: a Put of the next version in the chain, built on the committed value and
+    /// sent only while that value is this attempt's own. Never fails — a Put that errors or times out is
+    /// retried from whatever is committed at the next tick. A committed value this attempt did not write
+    /// means a successor took the lock after the lease lapsed: the attempt keeps running — a script cannot
+    /// be recalled from the database — but stops renewing, says so, and writes no release.
+    private Promise<Unit> renewalPut(Lease lease) {
+        var committed = committedLock(lease.key).filter(lease::owns);
+
+        if (committed.isEmpty()) {
+            markLost(lease, committedLock(lease.key));
+
+            return Promise.unitPromise();
         }
+
+        var renewed = committed.map(current -> successor(current,
+                                                         timing.clock().getAsLong() + timing.ttlMs()))
+                               .unwrap();
+        KVCommand<AetherKey> command = new Put<>(lease.key, renewed);
+
+        return cluster.apply(List.of(command))
+                      .timeout(timeSpan(timing.renewalTimeoutMs()).millis())
+                      .fold(_ -> Promise.unitPromise());
+    }
+
+    private SchemaMigrationLockValue successor(SchemaMigrationLockValue current, long expiresAt) {
+        return new SchemaMigrationLockValue(current.datasourceName(),
+                                            self,
+                                            current.acquiredAt(),
+                                            expiresAt,
+                                            current.nextVersion());
     }
 
     private void markLost(Lease lease, Option<SchemaMigrationLockValue> committed) {
@@ -909,11 +916,13 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                   committed.map(Object::toString).or("absent"));
     }
 
-    /// Release is a compare-and-delete: the Remove carries the value this attempt last wrote as its
-    /// witness ([WitnessedRemoval]), so a holder whose lease was superseded deletes nothing. It waits for
-    /// an in-flight renewal first — otherwise that Put could land after the Remove and resurrect the lock
-    /// until its expiry. The attempt's lease is looked up by token; an absent lease (already released, or
-    /// the claim never confirmed) is a no-op, which also makes a second release harmless.
+    /// Release is a fenced TOMBSTONE: the next version in the chain with `expiresAt = 0`, written only
+    /// while the committed value is this attempt's own. Never a Remove: a removed key restarts its chain
+    /// at `FIRST_VERSION`, and a renewal of this attempt still in flight would then land as the successor
+    /// of the NEXT holder's first claim and overwrite it. It waits for an in-flight renewal first, so that
+    /// renewal cannot land after the tombstone and leave a live lock nobody renews. The attempt's lease is
+    /// looked up by token; an absent lease (already released, or the claim never confirmed) is a no-op,
+    /// which also makes a second release harmless.
     private Promise<Unit> releaseLock(Object attemptToken) {
         return Option.option(leases.remove(attemptToken))
                      .map(this::releaseLease)
@@ -925,26 +934,25 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         synchronized (lease) {
             lease.released = true;
-            Option.option(lease.next).onPresent(SchemaOrchestratorServiceInstance::cancelFuture);
+            Option.option(lease.next).onPresent(Runnable::run);
             inFlight = lease.renewing;
         }
 
-        return inFlight.fold(_ -> removeWitnessed(lease));
+        return inFlight.fold(_ -> writeTombstone(lease));
     }
 
-    private Promise<Unit> removeWitnessed(Lease lease) {
-        var witness = witnessFor(lease);
-        KVCommand<AetherKey> command = new Remove<>(lease.key, Option.<Object> some(witness));
+    private Promise<Unit> writeTombstone(Lease lease) {
+        return committedLock(lease.key).filter(lease::owns)
+                            .map(current -> putLock(lease.key,
+                                                    successor(current, 0L)))
+                            .or(Promise::unitPromise);
+    }
+
+    private Promise<Unit> putLock(SchemaMigrationLockKey lockKey, SchemaMigrationLockValue value) {
+        KVCommand<AetherKey> command = new Put<>(lockKey, value);
 
         return cluster.apply(List.of(command))
                       .mapToUnit();
-    }
-
-    private SchemaMigrationLockValue witnessFor(Lease lease) {
-        synchronized (lease) {
-            return committedLock(lease.key).filter(lease::owns)
-                                .or(lease.held);
-        }
     }
 
     private Promise<Unit> updateStatus(String datasourceName, SchemaVersionValue current, SchemaStatus newStatus) {
@@ -1118,4 +1126,28 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         return updateStatus(datasourceName, value, SchemaStatus.COMPLETED);
     }
+}
+
+/// #806: the lease's sources of time, injectable so a test steps them by hand instead of sleeping.
+/// `renewalTimeoutMs` bounds one renewal Put; a renewal that exceeds it is abandoned by its submitter but
+/// may still be decided later, which the ownership rule on [SchemaOrchestratorServiceInstance] tolerates.
+record LeaseTiming(long ttlMs, long renewalTimeoutMs, LongSupplier clock, LeaseScheduler scheduler) {
+    static LeaseTiming standard() {
+        return withTtl(SchemaOrchestratorService.LOCK_TTL_MS);
+    }
+
+    static LeaseTiming withTtl(long ttlMs) {
+        return new LeaseTiming(ttlMs, ttlMs, System::currentTimeMillis, LeaseTiming::schedule);
+    }
+
+    private static Runnable schedule(Runnable task, long delayMs) {
+        var future = SharedScheduler.schedule(task, timeSpan(delayMs).millis());
+
+        return () -> future.cancel(false);
+    }
+}
+
+/// Runs `task` once after `delayMs`; the returned handle cancels it.
+interface LeaseScheduler {
+    Runnable schedule(Runnable task, long delayMs);
 }
