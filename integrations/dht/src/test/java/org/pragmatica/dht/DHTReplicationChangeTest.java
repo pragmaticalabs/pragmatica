@@ -219,6 +219,25 @@ class DHTReplicationChangeTest {
         assertThat(cluster.config(id).writeQuorum()).as("W_t = max(W_old 1, W_new 2)").isEqualTo(2);
     }
 
+    /// The writers-switched pass is a NEW pending spell, even for a partition still pending from the first pass: a round
+    /// started before the switch may have copied before the last W_old write landed, so it must not complete the
+    /// partition (the anti-entropy completes a round only for the spell it began in).
+    @Test
+    void writersSwitched_startsAFreshSpell_soARoundFromBeforeCannotCompleteIt() {
+        var cluster = new Cluster(3, factors(3, 1));
+        var node = cluster.nodes.get(cluster.anyId());
+        var partition = node.partitionFor(KEY);
+
+        node.resolveReplication(factors(3, 2), CHANGE);
+        var firstPass = node.catchUpGeneration(partition);
+
+        assertThat(firstPass).as("arming: pending from the first pass").isNotZero();
+
+        node.writersSwitched(CHANGE, 3);
+
+        assertThat(node.catchUpGeneration(partition)).as("a new spell").isNotEqualTo(firstPass);
+    }
+
     /// Caught up for a change is reported once, only for a pass that began after the writers switched.
     @Test
     void caughtUp_isReportedOncePerChange_afterTheWritersSwitchedPass() {
