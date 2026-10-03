@@ -27,6 +27,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
+import org.pragmatica.cluster.state.kvstore.CommunityFenced;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
@@ -925,7 +926,7 @@ public sealed interface AetherValue {
     /// Optional-field idiom mirrors [DhtPartitionOwnershipValue.ownerCommunityId]: empty-string is
     /// the canonical "absent" form, normalized in the compact constructor so a `null` from a
     /// wire/codec edge collapses to `""` (preserving `equals` with the role-only constructors).
-    record ActivationDirectiveValue(String role, String communityId, String governorHint) implements AetherValue {
+    record ActivationDirectiveValue(String role, String communityId, String governorHint) implements AetherValue, CommunityFenced {
         public static final String CORE = "CORE";
         public static final String WORKER = "WORKER";
 
@@ -943,6 +944,13 @@ public sealed interface AetherValue {
         /// `communityId`/`governorHint` default empty (CORE or community-less WORKER semantics).
         public ActivationDirectiveValue(String role) {
             this(role, "", "");
+        }
+
+        /// H11 (#1840): the committed non-empty community of a NodeId is final; see [CommunityFenced].
+        /// A CORE directive carries no community, so it fences nothing.
+        @Override
+        public String fenceCommunity() {
+            return communityId;
         }
 
         public static ActivationDirectiveValue core() {

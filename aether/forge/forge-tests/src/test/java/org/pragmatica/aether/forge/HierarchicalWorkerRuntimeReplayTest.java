@@ -27,7 +27,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-/// Repeated committed activation traverses consensus, scoped metadata and production node routing.
+/// Repeated committed activation, and a refused community reassignment (H11), traverse consensus, scoped metadata and production node routing.
 /// Reflection observes existing ownership handles; it neither installs a fake runtime nor arms tasks.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
@@ -39,7 +39,7 @@ class HierarchicalWorkerRuntimeReplayTest {
         LifecycleAwait.bestEffort("stop runtime replay", cluster, cluster.stop());
     }
 
-    @Test void repeatedActivationReassignmentAndShutdownHaveOneRuntimeOwner() {
+    @Test void repeatedActivationRefusedReassignmentAndShutdownHaveOneRuntimeOwner() {
         LifecycleAwait.settled("start runtime replay", cluster, cluster.start());
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
         var workerId = LifecycleAwait.nodeSettled("admit runtime replay worker", cluster, cluster.addWorkerNode());
@@ -66,12 +66,29 @@ class HierarchicalWorkerRuntimeReplayTest {
             assertThat(observationListenerCount(worker)).isEqualTo(listeners);
         }
 
+        // H11 (#1840): a directive naming another community is refused at commit on every replica, and a
+        // refused transaction applies none of its mutations, so no runtime is swapped.
         var prior = leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).unwrap();
         var communityKey = new AetherKey.CommunityKey("runtime-reassigned");
         var originalCommunity = leader().kvStore().getTyped(new AetherKey.CommunityKey(prior.communityId()), AetherValue.CommunityValue.class).unwrap();
         var reassigned = new AetherValue.ActivationDirectiveValue(prior.role(), communityKey.communityId(), "");
+        assertThat(tryCommit(List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
+            new KVCommand.Mutation<>(key, Option.some(prior), Option.some(reassigned))))).as("reassignment transaction accepted").isFalse();
+        assertThat(leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).unwrap()).isEqualTo(prior);
+        assertThat(leader().kvStore().get(communityKey).isEmpty()).as("the refused transaction created no community").isTrue();
+        await().atMost(BUDGET.duration()).until(() -> worker.kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class)
+            .filter(prior::equals).isPresent() && !worker.kvStore().hasPendingNotifications());
+        assertThat(announcerHolder(worker).get()).isSameAs(original);
+        assertThat(original.communityId()).isEqualTo(prior.communityId());
+        assertThat(originalTimer.isScheduled()).isTrue();
+        assertThat(worker.periodicTasks().armedCount()).isEqualTo(tasks);
+        assertThat(observationListenerCount(worker)).isEqualTo(listeners);
+
+        // Removal then creation in another community is still allowed (#1840 item 3), so the runtime
+        // replacement path stays reachable and keeps its one-owner pin.
+        commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none())));
         commit(List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
-            new KVCommand.Mutation<>(key, Option.some(prior), Option.some(reassigned))));
+            new KVCommand.Mutation<>(key, Option.none(), Option.some(reassigned))));
         await().atMost(BUDGET.duration()).until(() -> announcerHolder(worker).get() != original
             && announcerHolder(worker).get().communityId().equals(communityKey.communityId()));
         var replacement = announcerHolder(worker).get();
@@ -101,12 +118,16 @@ class HierarchicalWorkerRuntimeReplayTest {
     }
 
     private void commit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+        assertThat(tryCommit(mutations)).as("transaction accepted").isTrue();
+    }
+
+    private boolean tryCommit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
         var node = leader();
         var transactionId = UUID.randomUUID().toString();
         var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(mutations.getFirst().key(), transactionId,
             node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap(), List.of(), mutations);
         var results = node.<Object>apply(List.of(command)).await(BUDGET).unwrap();
-        assertThat(results).anyMatch(value -> value instanceof KVCommand.TransactionResult result
+        return results.stream().anyMatch(value -> value instanceof KVCommand.TransactionResult result
             && result.transactionId().equals(transactionId) && result.accepted());
     }
 
