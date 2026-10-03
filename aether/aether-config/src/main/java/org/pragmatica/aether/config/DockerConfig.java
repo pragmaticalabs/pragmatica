@@ -13,11 +13,12 @@ public record DockerConfig(String network, String image) {
     public static final String DEFAULT_NETWORK = "aether-network";
     /// Default node image for management-generated Docker artifacts. Uses the published
     /// `ghcr.io/pragmaticalabs` namespace (matching `DockerComposeTemplate` /
-    /// `ClusterConfigGenerator.IMAGE_PREFIX`) and pins the project version rather than a
-    /// floating `:latest`. The rest of the codebase versions images at runtime via
-    /// `config.cluster().version()`; this low-level module has no compile-time version source,
-    /// so the tag is pinned literally and must be bumped with the project version.
-    public static final String DEFAULT_IMAGE = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3";
+    /// `ClusterConfigGenerator.IMAGE_PREFIX`) and pins the running build's own version, read from
+    /// the jar manifest via [BuildInfo#version()], rather than a floating `:latest` or a literal
+    /// that goes stale every release. Outside a packaged jar (test classpath) the version is
+    /// `BuildInfo`'s `dev` sentinel, so the tag is visibly not a release instead of silently a
+    /// previous one.
+    public static final String DEFAULT_IMAGE = "ghcr.io/pragmaticalabs/aether-node:" + BuildInfo.version();
 
     public static Result<DockerConfig> dockerConfig(String network, String image) {
         return success(new DockerConfig(network, image));

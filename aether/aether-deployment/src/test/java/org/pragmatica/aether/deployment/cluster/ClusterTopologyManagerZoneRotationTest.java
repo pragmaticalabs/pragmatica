@@ -291,8 +291,8 @@ class ClusterTopologyManagerZoneRotationTest {
         }
 
         @Test
-        void provisionReplacement_blankToml_attemptsOnce() {
-            clusterStore.seedToml("");
+        void provisionReplacement_bootstrapSeed_attemptsOnce() {
+            clusterStore.seedBootstrapSeed();
             ctm.activate();
 
             var result = ctm.provisionReplacement(nodeId("node-r5").unwrap(),
@@ -353,6 +353,14 @@ class ClusterTopologyManagerZoneRotationTest {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
 
         void seedToml(String toml) {
+            seed(Option.some(toml));
+        }
+
+        void seedBootstrapSeed() {
+            seed(Option.none());
+        }
+
+        private void seed(Option<String> toml) {
             current.set(Option.some(new ClusterConfigValue(toml, "prod-cluster", "1.0.0", coreTopology(5), 3, 9, "cloud", 1L, System.currentTimeMillis())));
         }
 

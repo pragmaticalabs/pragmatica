@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.AppendLog.EpochStart;
@@ -15,6 +16,7 @@ import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.CompressionCodec;
 import org.pragmatica.storage.EncryptionParams;
+import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageInstance;
 
 import org.slf4j.Logger;
@@ -27,26 +29,55 @@ import static org.pragmatica.lang.Unit.unit;
 public final class StorageSegmentSink implements SegmentSink {
     private static final Logger log = LoggerFactory.getLogger(StorageSegmentSink.class);
 
+    /// Makes the metadata writes made before it durable (#1441). A seal WITHOUT a log calls it after the ref is
+    /// written and before the seal resolves: with a log, the log holds every record above the last metadata
+    /// snapshot until that snapshot is on disk (#1345), so recovery replays them; without one, the ref is the only
+    /// record that the range was sealed, and a crash before the next periodic snapshot loses it.
+    @FunctionalInterface
+    public interface RefDurability {
+        /// Every metadata write made before this call is durable once it succeeds.
+        Result<Unit> persist();
+        /// For a store that is its own durable truth (in-memory, tests): nothing to do.
+        RefDurability LIVE = Result::unitResult;
+
+        /// Force a metadata snapshot to disk: the refs written before it are in it.
+        static RefDurability snapshotted(SnapshotManager snapshots) {
+            return () -> snapshots.snapshotNow()
+                                  .mapToUnit();
+        }
+    }
+
     private final StorageInstance storage;
     private final SegmentIndex index;
     private final CompressionCodec compressionCodec;
     private final int compressionOrdinal;
     private final Option<BlockEncryptor> encryptor;
+    private final RefDurability refDurability;
 
     private StorageSegmentSink(StorageInstance storage,
                                SegmentIndex index,
                                CompressionCodec compressionCodec,
                                int compressionOrdinal,
-                               Option<BlockEncryptor> encryptor) {
+                               Option<BlockEncryptor> encryptor,
+                               RefDurability refDurability) {
         this.storage = storage;
         this.index = index;
         this.compressionCodec = compressionCodec;
         this.compressionOrdinal = compressionOrdinal;
         this.encryptor = encryptor;
+        this.refDurability = refDurability;
     }
 
     public static StorageSegmentSink storageSegmentSink(StorageInstance storage, SegmentIndex index) {
-        return new StorageSegmentSink(storage, index, CompressionCodec.NONE, 0, none());
+        return storageSegmentSink(storage, index, RefDurability.LIVE);
+    }
+
+    /// The production wiring (#1441): the storage instance's metadata reaches disk only through snapshots, so a
+    /// seal without a log forces one through `refDurability` before it resolves.
+    public static StorageSegmentSink storageSegmentSink(StorageInstance storage,
+                                                        SegmentIndex index,
+                                                        RefDurability refDurability) {
+        return new StorageSegmentSink(storage, index, CompressionCodec.NONE, 0, none(), refDurability);
     }
 
     public static StorageSegmentSink storageSegmentSink(StorageInstance storage,
@@ -54,7 +85,12 @@ public final class StorageSegmentSink implements SegmentSink {
                                                         CompressionCodec compressionCodec,
                                                         int compressionOrdinal,
                                                         Option<BlockEncryptor> encryptor) {
-        return new StorageSegmentSink(storage, index, compressionCodec, compressionOrdinal, encryptor);
+        return new StorageSegmentSink(storage,
+                                      index,
+                                      compressionCodec,
+                                      compressionOrdinal,
+                                      encryptor,
+                                      RefDurability.LIVE);
     }
 
     /// One write-and-ref call, never [StorageInstance#put] followed by
@@ -70,7 +106,9 @@ public final class StorageSegmentSink implements SegmentSink {
     /// With the partition's log, the block goes through [StorageInstance#seal] (#1567): durable on every
     /// durable tier, then the ref, then the log's seal bound -- so the log can never be truncated past a
     /// segment whose block is not on disk. Without one (a manager built with no WAL) there is nothing to
-    /// truncate and [StorageInstance#putRef] stores it, durably on the same tiers.
+    /// truncate and [StorageInstance#putRef] stores it, durably on the same tiers, and then the ref is made
+    /// durable through [RefDurability] (#1441): a restart rebuilds the sealed floor from the refs on disk, and
+    /// with no log above that floor, a ref lost to a crash would let recovery re-assign the sealed offsets.
     ///
     /// With a log whose owner-epoch history is not empty, the block carries the slice of it covering
     /// `[base, endOffset]` in front of the events ([SegmentProvenance], #1596), read here at seal time: a node that
@@ -108,8 +146,18 @@ public final class StorageSegmentSink implements SegmentSink {
     }
 
     private Promise<BlockId> store(SealedSegment segment, Option<AppendLog> log, byte[] block) {
-        return log.fold(() -> storage.putRef(refName(segment), block),
+        return log.fold(() -> storeWithoutLog(segment, block),
                         wal -> storage.seal(wal, segment.startOffset(), segment.endOffset(), refName(segment), block));
+    }
+
+    /// A failed [RefDurability#persist] fails the seal, so the segment is not indexed and the sealer retries it;
+    /// re-storing the same block under the same name is a no-op on its count (see [StorageInstance#putRef]).
+    private Promise<BlockId> storeWithoutLog(SealedSegment segment, byte[] block) {
+        return storage.putRef(refName(segment),
+                              block)
+                      .flatMap(id -> refDurability.persist()
+                                                  .map(_ -> id)
+                                                  .async());
     }
 
     private ProcessedData applyEncryption(byte[] data) {

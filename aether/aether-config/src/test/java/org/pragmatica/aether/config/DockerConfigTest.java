@@ -17,7 +17,8 @@ class DockerConfigTest {
 
     @Test
     void defaultImage_pinsProjectVersion_notFloatingLatest() {
-        assertThat(DockerConfig.DEFAULT_IMAGE).isEqualTo("ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3");
+        assertThat(DockerConfig.DEFAULT_IMAGE).isEqualTo("ghcr.io/pragmaticalabs/aether-node:" + BuildInfo.version());
+        assertThat(DockerConfig.DEFAULT_IMAGE).doesNotContain("1.0.0-rc");
         assertThat(DockerConfig.DEFAULT_IMAGE).doesNotEndWith(":latest");
     }
 

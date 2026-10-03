@@ -115,9 +115,11 @@ class DHTReplicationResolutionTest {
     class Change {
         /// A raised replication factor makes this node a replica of partitions it did not hold. Those must refuse
         /// "absent" until filled — exactly as a ring change does — or a read meets an empty new replica as an
-        /// authoritative one.
+        /// authoritative one. CTO ruling R1 widens this to EVERY partition the node replicates (this test used to pin
+        /// the kept ones as SERVING, which v1882 showed lets a CF raise answer a false "absent"); the quorums are the
+        /// transitional ones until the node has caught up.
         @Test
-        void raisedFactor_marksEveryGainedPartitionCatchingUp() {
+        void raisedFactor_marksEveryOwnedPartitionCatchingUp_andUsesTransitionalQuorums() {
             var node = resolved(FIVE.getFirst(), RF3);
             var gained = partitionsWhere(node, partition -> !replicaUnder(node, partition, 3) && replicaUnder(node, partition, 5));
             var kept = partitionsWhere(node, partition -> replicaUnder(node, partition, 3));
@@ -127,8 +129,10 @@ class DHTReplicationResolutionTest {
             node.resolveReplication(RF5);
 
             assertThat(gained).allMatch(partition -> node.readiness(partition) == Readiness.CATCHING_UP);
-            assertThat(kept).allMatch(partition -> node.readiness(partition) == Readiness.SERVING);
-            assertThat(node.config()).isEqualTo(RF5);
+            assertThat(kept).allMatch(partition -> node.readiness(partition) == Readiness.CATCHING_UP);
+            assertThat(node.config().replicationFactor()).isEqualTo(5);
+            assertThat(node.config().writeQuorum()).as("W_t = max(W_old 2, W_new 3)").isEqualTo(3);
+            assertThat(node.config().readQuorum()).as("R_t = max(R_old 2, R_new 3)").isEqualTo(3);
         }
 
         @Test

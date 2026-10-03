@@ -59,6 +59,13 @@ public final class DHTNode {
     /// Whether [#config] holds the committed factors yet. Until it does, every partition answers
     /// [Readiness#CATCHING_UP] and clients refuse quorum operations ([DHTError#REPLICATION_UNRESOLVED]).
     private final AtomicBoolean replicationResolved;
+    /// The quorum floor of a replication change still settling (#1777, CTO ruling R1): the old write and read quorums,
+    /// which this node keeps using — each raised to at least the new one — until its post-change catch-up completes.
+    /// Empty when no change is settling.
+    private final AtomicReference<Option<QuorumFloor>> quorumFloor = new AtomicReference<>(Option.none());
+
+    private record QuorumFloor(int writeQuorum, int readQuorum) {}
+
     /// Serializes the two mutations that change replica sets — a ring change and a replication change — so each
     /// diffs against the state the other left.
     private final Object placementLock = new Object();
@@ -157,9 +164,46 @@ public final class DHTNode {
         return storage;
     }
 
-    /// The replication this node currently places keys with (see [#resolveReplication]).
+    /// The replication this node currently places keys with (see [#resolveReplication]). While a replication change is
+    /// settling (#1777, CTO ruling R1) the quorums are the TRANSITIONAL ones — W_t = max(W_old, W_new) and
+    /// R_t = max(R_old, R_new), each capped at the new replication factor — and the placement is the new one. The view
+    /// is derived on read: it ends by itself the first time it is read with no partition pending here, i.e. once this
+    /// node's post-change catch-up has stored every key its old replica sets held.
     public DHTConfig config() {
-        return config.get();
+        var current = config.get();
+
+        return quorumFloor.get()
+                          .filter(_ -> settling())
+                          .map(floor -> transitional(current, floor))
+                          .or(current);
+    }
+
+    private boolean settling() {
+        if (catchUp.nonePending()) {
+            quorumFloor.set(Option.none());
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static DHTConfig transitional(DHTConfig current, QuorumFloor floor) {
+        var replicationFactor = current.replicationFactor();
+
+        return new DHTConfig(replicationFactor,
+                             Math.min(Math.max(current.writeQuorum(), floor.writeQuorum()),
+                                      replicationFactor),
+                             Math.min(Math.max(current.readQuorum(), floor.readQuorum()),
+                                      replicationFactor),
+                             current.operationTimeout(),
+                             current.retryPolicy());
+    }
+
+    /// Whether a replication change is still settling on this node (#1777 R1, a gauge).
+    public boolean replicationChangeSettling() {
+        return quorumFloor.get()
+                          .isPresent() && settling();
     }
 
     /// Whether the committed replication factors have been applied ([#dhtNodeAwaitingReplication]).
@@ -172,24 +216,58 @@ public final class DHTNode {
     /// catching up, with the previous replica set recorded as its sources, and a pending partition it loses is
     /// forgotten. So a raised replication factor is re-placed through the same catch-up gate as a join, and a read
     /// in the window refuses rather than answers "absent". FULL replication has no placement to diff.
+    ///
+    /// ANY change of the factors (CTO ruling R1) — not only one that gains a partition — re-opens the gate for EVERY
+    /// partition this node replicates, with its old replica set as the catch-up sources. A confirmation-factor raise at
+    /// a fixed replication factor gains nothing, yet lowers the read quorum below what the old writes were acked at:
+    /// without the gate a read of R_new replicas can miss a value acked at W_old and answer "absent". Gated, a replica
+    /// answers "absent" only after it has pulled the union of what its old replica set held, and until then this node
+    /// uses the transitional quorums of [#config].
     @Contract
     public void resolveReplication(DHTConfig resolved) {
         synchronized (placementLock) {
             if (resolved.isFullReplication() || config.get().isFullReplication()) {
                 config.set(resolved);
             } else {
+                var previous = config();
+                var changed = replicationResolved.get() && factorsDiffer(previous, resolved);
                 var before = replicaSets();
 
                 config.set(resolved);
                 var after = replicaSets();
 
-                markGained(before, after);
+                if (changed) {
+                    reopenEveryOwnedPartition(before, after);
+                    // `previous` is the transitional view, so a change made while an earlier one is still settling keeps
+                    // the strictest quorums of all of them
+                    quorumFloor.set(Option.some(floorOf(previous)));
+                } else {
+                    markGained(before, after);
+                }
+
                 forgetLost(after);
                 recordPlacementChange(before, after);
             }
 
             replicationResolved.set(true);
         }
+    }
+
+    private static boolean factorsDiffer(DHTConfig previous, DHTConfig resolved) {
+        return previous.replicationFactor() != resolved.replicationFactor() || previous.writeQuorum() != resolved.writeQuorum() || previous.readQuorum() != resolved.readQuorum();
+    }
+
+    private static QuorumFloor floorOf(DHTConfig config) {
+        return new QuorumFloor(config.writeQuorum(), config.readQuorum());
+    }
+
+    /// Every partition this node replicates after the change catches up again, from its replica set before it.
+    private void reopenEveryOwnedPartition(List<List<NodeId>> before, List<List<NodeId>> after) {
+        IntStream.range(0, Partition.MAX_PARTITIONS)
+                 .filter(index -> after.get(index)
+                                       .contains(nodeId))
+                 .forEach(index -> catchUp.markCatchingUp(Partition.at(index),
+                                                          before.get(index)));
     }
 
     /// Get the consistent hash ring.

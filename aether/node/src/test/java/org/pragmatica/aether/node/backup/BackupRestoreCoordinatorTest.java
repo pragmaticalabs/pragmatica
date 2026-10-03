@@ -82,7 +82,7 @@ class BackupRestoreCoordinatorTest {
     private static final ConfigValue BETA = ConfigValue.configValue("beta", "2");
     private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.test:restore:1.0.0")
                                                             .unwrap();
-    private static final ClusterConfigValue CLUSTER_CONFIG = new ClusterConfigValue("",
+    private static final ClusterConfigValue CLUSTER_CONFIG = new ClusterConfigValue(Option.none(),
                                                                                "restore-test",
                                                                                "1.0.0",
                                                                                List.of(new AetherValue.TopologyEntry("",
