@@ -47,7 +47,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// #1441, pinned through the REAL boot path: a partition WITHOUT a WAL has no record above the last metadata snapshot
 /// but its segment refs, so `AetherNode` must hand the sealer a sink that makes each no-WAL seal's ref durable before
-/// the seal resolves (`StorageSegmentSink.RefDurability.snapshotted(streams.snapshotManager())`). The stream-module
+/// the seal resolves (`RefDurability.snapshotted(streams.snapshotManager())`). The stream-module
 /// tests pin the sink given either durability; what they cannot pin is which one `assembleNode` wires. So on a booted
 /// node whose explicit `wal_path` is unwritable while `segments/` is not -- the reachable no-WAL state, degraded with a
 /// WARN because the node is built outside `Main` -- seal with the periodic snapshot tick cancelled, then rebuild the
@@ -106,7 +106,9 @@ class NoWalSealSnapshotBootTest {
 
         assertThat(sealed).as("fixture: the ring evicted and sealed").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
 
-        var floorOnDisk = DurableSealedOffsetSource.fromLatestSnapshot(snapshots)
+        // The production source reads each stream in the life its live index serves (#1278 review): this stream's
+        // refs are keyed by the incarnation its create minted.
+        var floorOnDisk = DurableSealedOffsetSource.fromLatestSnapshot(snapshots, node.streamSegmentIndex()::adoptions)
                                                    .current()
                                                    .lastSealedOffset(STREAM, PARTITION);
 

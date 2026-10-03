@@ -81,30 +81,11 @@ public final class RetentionEnforcer implements AutoCloseable {
         SegmentRetentionFloor NONE = (_, _) -> Long.MAX_VALUE;
     }
 
-    /// Makes the reclaimed-through floor refs this pass wrote durable BEFORE the segment refs they license are
-    /// dropped (#1278). A restart must find the floor whenever it no longer finds the refs: recovery reads a WAL
-    /// that starts above every surviving ref as reclaimed history only when a floor says so, and refuses it
-    /// otherwise. A floor ref is written before this runs and never touched again while it stands, so any
-    /// metadata snapshot this captures holds it, however weakly consistent the capture is.
-    @FunctionalInterface
-    public interface FloorDurability {
-        /// Every metadata write made before this call is durable once it succeeds.
-        Result<Unit> persist();
-        /// For a store that is its own durable truth (in-memory, tests): nothing to do.
-        FloorDurability LIVE = Result::unitResult;
-
-        /// Force a metadata snapshot to disk: the floor refs written before it are in it.
-        static FloorDurability snapshotted(SnapshotManager snapshots) {
-            return () -> snapshots.snapshotNow()
-                                  .mapToUnit();
-        }
-    }
-
     private final StorageInstance storage;
     private final SegmentIndex index;
     private final RetentionPolicy retentionPolicy;
     private final SegmentRetentionFloor retentionFloor;
-    private final FloorDurability floorDurability;
+    private final RefDurability floorDurability;
     /// Reads the age of a segment rebuilt after a restart from its own block (#1604); none keeps such segments'
     /// age unknown.
     private final Option<SegmentReader> ageReader;
@@ -125,7 +106,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                               SegmentIndex index,
                               RetentionPolicy retentionPolicy,
                               SegmentRetentionFloor retentionFloor,
-                              FloorDurability floorDurability,
+                              RefDurability floorDurability,
                               Option<SegmentReader> ageReader,
                               SegmentTierPressure pressure,
                               PressureRelief relief) {
@@ -146,7 +127,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      retentionPolicy,
                                      SegmentRetentionFloor.NONE,
-                                     FloorDurability.LIVE,
+                                     RefDurability.LIVE,
                                      none(),
                                      SegmentTierPressure.NONE,
                                      PressureRelief.NONE);
@@ -160,7 +141,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      retentionPolicy,
                                      retentionFloor,
-                                     FloorDurability.LIVE,
+                                     RefDurability.LIVE,
                                      none(),
                                      SegmentTierPressure.NONE,
                                      PressureRelief.NONE);
@@ -171,7 +152,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      SegmentRetentionFloor.NONE,
-                                     FloorDurability.LIVE,
+                                     RefDurability.LIVE,
                                      none(),
                                      SegmentTierPressure.NONE,
                                      PressureRelief.NONE);
@@ -185,7 +166,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      retentionFloor,
-                                     FloorDurability.LIVE,
+                                     RefDurability.LIVE,
                                      none(),
                                      SegmentTierPressure.NONE,
                                      PressureRelief.NONE);
@@ -202,7 +183,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      retentionFloor,
-                                     FloorDurability.LIVE,
+                                     RefDurability.LIVE,
                                      some(ageReader),
                                      SegmentTierPressure.NONE,
                                      PressureRelief.NONE);
@@ -211,7 +192,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// The production wiring (#1278, #1604): the durable segment tier's pressure is watched and relieved, and the
     /// floor refs are made durable by a forced snapshot of `snapshots` before retention drops what they license --
     /// the metadata store reaches disk only through those snapshots. Both derive from the one manager, so a caller
-    /// cannot pair a snapshot-backed store with a non-durable floor ([FloorDurability#LIVE] would let a snapshot
+    /// cannot pair a snapshot-backed store with a non-durable floor ([RefDurability#LIVE] would let a snapshot
     /// captured concurrently with the drops hold neither the dropped refs nor their floor).
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
                                                       SegmentIndex index,
@@ -225,7 +206,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                  index,
                                  retentionMs,
                                  retentionFloor,
-                                 FloorDurability.snapshotted(snapshots),
+                                 RefDurability.snapshotted(snapshots),
                                  ageReader,
                                  pressure,
                                  PressureRelief.snapshotBounded(snapshots, collector));
@@ -237,7 +218,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                                                SegmentIndex index,
                                                long retentionMs,
                                                SegmentRetentionFloor retentionFloor,
-                                               FloorDurability floorDurability,
+                                               RefDurability floorDurability,
                                                SegmentReader ageReader,
                                                SegmentTierPressure pressure,
                                                PressureRelief relief) {
@@ -355,7 +336,7 @@ public final class RetentionEnforcer implements AutoCloseable {
 
     /// Reclaim in three steps, so a restart never finds a partition's refs gone without the floor that says they
     /// were reclaimed (#1278): write each partition's new floor ref, make them durable together
-    /// ([FloorDurability]), and only then drop the expired segment refs. A floor that cannot be written or made
+    /// ([RefDurability]), and only then drop the expired segment refs. A floor that cannot be written or made
     /// durable reclaims nothing for its partition this pass -- the direction that keeps data.
     private Promise<Integer> reclaimExpired(long now) {
         var plans = index.listPartitionKeys()
@@ -397,17 +378,34 @@ public final class RetentionEnforcer implements AutoCloseable {
 
     /// The expired segments of one partition and the floor their reclamation records: the highest end offset
     /// among them.
-    private record ReclaimPlan(String streamName, int partition, List<SegmentIndex.SegmentRef> expired, long through) {
-        static ReclaimPlan reclaimPlan(String streamName, int partition, List<SegmentIndex.SegmentRef> expired) {
+    ///
+    /// `incarnation` is the life of the stream the plan was decided under (#1278 review): the floor is written under
+    /// that life's name, and nothing is dropped or recorded if the stream was destroyed or recreated before the
+    /// floor became durable.
+    private record ReclaimPlan(String streamName,
+                               long incarnation,
+                               int partition,
+                               List<SegmentIndex.SegmentRef> expired,
+                               long through) {
+        static ReclaimPlan reclaimPlan(String streamName,
+                                       long incarnation,
+                                       int partition,
+                                       List<SegmentIndex.SegmentRef> expired) {
             return new ReclaimPlan(streamName,
+                                   incarnation,
                                    partition,
                                    expired,
                                    expired.stream().mapToLong(SegmentIndex.SegmentRef::endOffset).max().orElse(-1L));
+        }
+
+        String floorRef(long floor) {
+            return SegmentIndex.floorRefName(SegmentIndex.durableName(streamName, incarnation), partition, floor);
         }
     }
 
     private ReclaimPlan planReclaim(SegmentIndex.PartitionKey key, long now) {
         return ReclaimPlan.reclaimPlan(key.streamName(),
+                                       index.incarnationOf(key.streamName()),
                                        key.partition(),
                                        findExpiredSegments(key.streamName(), key.partition(), now));
     }
@@ -418,9 +416,7 @@ public final class RetentionEnforcer implements AutoCloseable {
             return Promise.success(plan);
         }
 
-        return storage.putRef(SegmentIndex.floorRefName(plan.streamName(),
-                                                        plan.partition(),
-                                                        plan.through()),
+        return storage.putRef(plan.floorRef(plan.through()),
                               encodeFloor(plan.through()))
                       .map(_ -> plan)
                       .onFailure(cause -> logFloorWriteFailure(plan, cause));
@@ -435,12 +431,16 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// The floor is durable: drop the segment refs it licenses, record it, and drop the floor it supersedes. The
     /// superseded floor goes last, so a crash leaves at most two floors and the higher one wins on rebuild.
     private int reclaim(ReclaimPlan plan) {
+        if (plan.incarnation() != index.incarnationOf(plan.streamName())) {
+            return 0;
+        }
+
         var previous = index.reclaimedThrough(plan.streamName(), plan.partition());
 
         plan.expired().forEach(ref -> removeSegment(plan.streamName(), plan.partition(), ref));
-        index.recordReclaimed(plan.streamName(), plan.partition(), plan.through());
+        index.recordReclaimed(plan.streamName(), plan.incarnation(), plan.partition(), plan.through());
         if (previous >= 0 && previous < plan.through()) {
-            dropFloor(plan.streamName(), plan.partition(), previous);
+            dropFloor(plan, previous);
         }
 
         return plan.expired()
@@ -448,11 +448,11 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     @Contract
-    private void dropFloor(String streamName, int partition, long through) {
-        storage.deleteRef(SegmentIndex.floorRefName(streamName, partition, through))
+    private void dropFloor(ReclaimPlan plan, long through) {
+        storage.deleteRef(plan.floorRef(through))
                .onFailure(cause -> log.warn("Failed to drop the superseded reclaimed-through floor {}/{}:{}: {}",
-                                            streamName,
-                                            partition,
+                                            plan.streamName(),
+                                            plan.partition(),
                                             through,
                                             cause.message()));
     }
@@ -660,7 +660,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// block goes when none is left, through the storage garbage collector -- the single delete path, which
     /// never touches a cluster-shared tier.
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
-        var refName = SegmentIndex.buildRefName(streamName, partition, ref);
+        var refName = index.refNameOf(streamName, partition, ref);
 
         storage.deleteRef(refName).onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause));
         index.removeSegment(streamName, partition, ref.startOffset());

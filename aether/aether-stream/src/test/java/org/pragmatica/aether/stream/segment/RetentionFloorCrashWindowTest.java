@@ -51,7 +51,7 @@ import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSeg
 
 /// v1866 (adversarial verification of #1278): the composed chain no existing test runs end to end -- seal through the
 /// production sink, snapshot, compact the WAL off the snapshot on disk, run the production-shaped retention with
-/// [RetentionEnforcer.FloorDurability#snapshotted], and "crash" at every window by taking the snapshot that is on disk at
+/// [RefDurability#snapshotted], and "crash" at every window by taking the snapshot that is on disk at
 /// that instant. Each crash state is rebuilt the way boot rebuilds it and recovered from a copy of the WAL. Every
 /// window must recover the survivors at their stored offsets with no lost head; the negative control (the pre-#1278
 /// state: refs dropped, no floor) must refuse with [StreamError.WalHeadLost], so the instrument can see a refusal.
@@ -112,7 +112,7 @@ class RetentionFloorCrashWindowTest {
             onDisk.put("W3 periodic snapshot after the first segment ref was dropped", latest(snapshots));
         });
 
-        var snapshotted = RetentionEnforcer.FloorDurability.snapshotted(snapshots);
+        var snapshotted = RefDurability.snapshotted(snapshots);
         var removed = RetentionEnforcer.retentionEnforcer(storage,
                                                           index,
                                                           ONE_HOUR_MS,

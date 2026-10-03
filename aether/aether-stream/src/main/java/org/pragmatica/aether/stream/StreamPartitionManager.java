@@ -40,6 +40,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
@@ -992,10 +993,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return false;
     }
 
-    private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
+    private Result<Unit> createFreshStream(StreamConfig requested, CommitMode commitMode) {
+        var config = withIncarnation(requested);
+
         return checkReplicationMinimum(config).flatMap(_ -> checkRetentionCapacity(config))
                                       .flatMap(_ -> checkPartitionCaps(config))
-                                      .flatMap(_ -> finishPendingDestroy(config.name()))
+                                      .flatMap(_ -> adoptIncarnation(config))
                                       .flatMap(_ -> materializeFreshStream(config, commitMode));
     }
 
@@ -1355,12 +1358,24 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// replaces).
     private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing) {
         return config.partitions() == existing.config()
-                                              .partitions() && strongerDurability(config, existing.config())
+                                              .partitions() && (strongerDurability(config, existing.config()) || config.incarnation() != existing.config()
+                                                                                                                                                 .incarnation())
                ? adoptConfig(config, existing)
                : existing;
     }
 
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
+        if (config.incarnation() != existing.config().incarnation()) {
+            // Two creates of the name raced (a local default and a committed config minted elsewhere): the committed
+            // life is the cluster's. Records this node took under the local life stay readable on the open rings but
+            // are not reopened after a restart -- [limit: concurrent first creates of one name, #1278 review].
+            log.warn("Stream '{}' adopts the committed incarnation {} over its local one {}",
+                     config.name(),
+                     config.incarnation(),
+                     existing.config().incarnation());
+            adoptIncarnation(config);
+        }
+
         log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}",
                  config.name(),
                  existing.config().replicationFactor(),
@@ -1368,7 +1383,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                  existing.config().confirmationFactor(),
                  config.confirmationFactor());
 
-        return existing.withConfig(config);
+        return existing.withConfig(strongerDurability(config, existing.config())
+                                   ? config
+                                   : existing.config()
+                                             .withIncarnation(config.incarnation()));
     }
 
     private static boolean strongerDurability(StreamConfig incoming, StreamConfig existing) {
@@ -1401,10 +1419,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partitions materialize later through the single deferred-retry entry point once budget frees (see
     /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
     private StreamEntry hydrateEntry(StreamConfig config) {
-        finishPendingDestroy(config.name()).onFailure(cause -> log.error("Stream '{}' hydrates over an unfinished destroy of"
-                                                                        + " its name: {}",
-                                                                         config.name(),
-                                                                         cause.message()));
+        adoptIncarnation(config).onFailure(cause -> log.warn("Stream '{}' hydrates; reclaiming other lives of its name did"
+                                                            + " not complete: {}",
+                                                             config.name(),
+                                                             cause.message()));
         reportOverCeilingIfViolating(config);
         var floorBytes = materializedFloorBytes(config);
 
@@ -3166,10 +3184,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                  partition))));
     }
 
-    private static Option<Long> walHead(AppendLog.Opener opener, String streamName, int partition) {
-        return opener.inspect(StreamEntry.logName(streamName, partition))
-                     .map(AppendLog.LogExtent::headOffset)
-                     .option();
+    /// The head of the WAL of the stream's CURRENT life (#1278 review): no stream entry, no WAL of its to read.
+    private Option<Long> walHead(AppendLog.Opener opener, String streamName, int partition) {
+        return option(streams.get(streamName)).flatMap(entry -> opener.inspect(StreamEntry.logName(entry.config(),
+                                                                                                   partition))
+                                                                      .map(AppendLog.LogExtent::headOffset)
+                                                                      .option());
     }
 
     /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
@@ -3613,22 +3633,42 @@ public final class StreamPartitionManager implements AutoCloseable {
         return success(unit());
     }
 
-    /// A destroyed stream takes its durable footprint with it (#1278 review), as it takes its quarantine and WALs: a
-    /// stream later created under the same name must not anchor at a floor or sealed watermark it never had.
+    /// A destroyed stream stops being served and its life's durable refs are reclaimed (#1278 review). Best-effort:
+    /// the refs are keyed by the stream's incarnation, so whatever survives is garbage a recreated stream never reads.
     @Contract
     private void forgetFootprint(String streamName) {
         streamFootprint.forget(streamName)
                        .await(FOOTPRINT_TIMEOUT)
-                       .onFailure(cause -> log.error("Stream '{}' was destroyed but its durable segment refs and floors could"
-                                                    + " not all be dropped: {}",
-                                                     streamName,
-                                                     cause.message()));
+                       .onFailure(cause -> log.warn("Stream '{}' was destroyed; reclaiming its durable refs did not complete: {}",
+                                                    streamName,
+                                                    cause.message()));
     }
 
-    /// Before a stream materializes under `streamName`: finish a destroy of that name a crash interrupted.
-    private Result<Unit> finishPendingDestroy(String streamName) {
-        return streamFootprint.ensureForgotten(streamName)
+    /// Before a stream materializes: serve the life `config` names (#1278 review), so recovery anchors only at that
+    /// life's sealed watermark and floor, and reclaim any other life of the name.
+    private Result<Unit> adoptIncarnation(StreamConfig config) {
+        return streamFootprint.adopt(config.name(),
+                                     config.incarnation())
                               .await(FOOTPRINT_TIMEOUT);
+    }
+
+    /// The incarnation a fresh create gives `config` (#1278 review): the one already committed for the name, if any
+    /// (a republish or a create racing the committed config keeps the cluster's life), else a new one — but only
+    /// when the config is committed through a cluster. A manager without a cluster has no cluster-wide life to
+    /// distinguish, so the config keeps the incarnation it was built with.
+    private StreamConfig withIncarnation(StreamConfig config) {
+        if (config.incarnation() != StreamConfig.NO_INCARNATION || clusterNode.isEmpty()) {
+            return config;
+        }
+
+        return config.withIncarnation(option(appliedConfigs.get(config.name())).map(StreamConfig::incarnation)
+                                            .filter(incarnation -> incarnation != StreamConfig.NO_INCARNATION)
+                                            .or(StreamPartitionManager::mintIncarnation));
+    }
+
+    private static long mintIncarnation() {
+        return java.util.concurrent.ThreadLocalRandom.current()
+                                                     .nextLong(1L, Long.MAX_VALUE);
     }
 
     /// The held-back bookkeeping ([#noteHeldBack]) is keyed per partition; a removed stream's keys would
@@ -4790,7 +4830,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// The snapshot runs behind the live refs (≤100 mutations / 30 s), so the floor alone is not the highest
         /// sealed offset after a crash. Each path covers that lag: with a WAL, truncation is bounded by the same
         /// on-disk floor (#1345), so the WAL still holds every record above it; without one, a seal resolves only
-        /// once a snapshot holding its ref is on disk (`StorageSegmentSink.RefDurability`), so the floor covers
+        /// once a snapshot holding its ref is on disk (`RefDurability`), so the floor covers
         /// every completed seal. What a no-WAL crash loses is the range above the last COMPLETED seal -- records
         /// never in the durable tier, which that mode does not promise to keep.
         ///
@@ -5026,9 +5066,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                         List<Integer> selected,
                                                                         AppendLog.Opener opener) {
             var results = selected.stream()
-                                  .map(partition -> openPartitionWal(opener,
-                                                                     config.name(),
-                                                                     partition).map(Option::some))
+                                  .map(partition -> openPartitionWal(opener, config, partition).map(Option::some))
                                   .toList();
 
             return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
@@ -5039,21 +5077,20 @@ public final class StreamPartitionManager implements AutoCloseable {
         private static Result<Option<AppendLog>> openWal(StreamConfig config,
                                                          int partition,
                                                          Option<AppendLog.Opener> logs) {
-            return logs.map(opener -> openPartitionWal(opener,
-                                                       config.name(),
-                                                       partition).map(Option::some))
+            return logs.map(opener -> openPartitionWal(opener, config, partition).map(Option::some))
                        .or(() -> success(Option.none()));
         }
 
-        /// The log `<stream>/<partition>`: under the storage instance's log root in production, which keeps
-        /// the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal`.
-        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, String streamName, int partition) {
-            return opener.open(logName(streamName, partition));
+        /// The log `<stream>[@<incarnation>]/<partition>`: under the storage instance's log root in production, which
+        /// keeps the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal` for a config with no incarnation.
+        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, StreamConfig config, int partition) {
+            return opener.open(logName(config, partition));
         }
 
-        /// The log `<stream>/<partition>` names, shared by the open and the read-only inspect of it.
-        static String logName(String streamName, int partition) {
-            return streamName + "/" + partition;
+        /// The log of one partition of one LIFE of a stream (#1278 review), shared by the open and the read-only
+        /// inspect of it: keyed by the config's incarnation, so a recreated stream never reopens the old life's WAL.
+        static String logName(StreamConfig config, int partition) {
+            return SegmentIndex.durableName(config.name(), config.incarnation()) + "/" + partition;
         }
 
         private static List<Option<AppendLog>> noWals(int count) {

@@ -228,6 +228,7 @@ import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.RefDurability;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.SegmentTierPressure;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
@@ -1111,8 +1112,6 @@ public interface AetherNode extends ManageableNode {
     /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
     /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
     TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
-    /// Bound on finishing, at boot, the stream destroys a crash interrupted (#1278 review).
-    TimeSpan STREAM_FOOTPRINT_BOOT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
     /// third party, so partition ownership is polled; matching the reshuffle cadence keeps the
     /// handover window (during which the old and new owner may both deliver) at one tick.
@@ -4904,7 +4903,7 @@ public interface AetherNode extends ManageableNode {
         // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex,
-                                                                                                    StorageSegmentSink.RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
+                                                                                                    RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
                                                               streamMaxMemoryBytes);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
@@ -4914,22 +4913,16 @@ public interface AetherNode extends ManageableNode {
                                                                                    streamOwnerEpochSource,
                                                                                    streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
-                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
+                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager(),
+                                                                                                                                streamSegmentIndex::adoptions));
 
         streamPartitionManagerRef.set(streamPartitionManager);
-        // #1278 review: one owner of each stream's durable refs in this node's storage (sealed segments + reclaimed-
-        // through floors). A destroyed stream drops them behind a durable tombstone, and a destroy a crash
-        // interrupted is finished here, before any stream config hydrates over it.
-        var streamFootprint = StreamFootprint.streamFootprint(streamStorage,
-                                                              streamStorageSetup.metadataStore(),
-                                                              streamSegmentIndex,
-                                                              RetentionEnforcer.FloorDurability.snapshotted(streamStorageSetup.snapshotManager()));
-
-        streamFootprint.completePending(streamStorageSetup.metadataStore().listAllRefs().keySet())
-                       .await(STREAM_FOOTPRINT_BOOT_TIMEOUT)
-                       .onFailure(cause -> LOG.error("Unfinished stream destroys could not be completed at boot: {}",
-                                                     cause.message()));
-        streamPartitionManager.streamFootprint(streamFootprint);
+        // #1278 review: each stream's durable refs (sealed segments, reclaimed-through floors) and WAL are keyed by its
+        // incarnation; the manager adopts the committed life before a stream materializes, so another life of the
+        // name is never read, and reclaims the other lives' refs best-effort.
+        streamPartitionManager.streamFootprint(StreamFootprint.streamFootprint(streamStorage,
+                                                                               streamStorageSetup.metadataStore(),
+                                                                               streamSegmentIndex));
         // #1596: provenance failures this node detects (an N13 mismatch at catch-up, a log holding records with no
         // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
         // gate and cold-restart detection raise and read.

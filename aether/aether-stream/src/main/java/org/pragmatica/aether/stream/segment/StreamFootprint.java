@@ -4,11 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
@@ -19,116 +18,100 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// The single owner of a stream's durable footprint in this node's storage: its sealed-segment refs (`streams/`) and
-/// its reclaimed-through floors (`stream-floors/`, #1278). A destroyed stream drops all of it, so a stream later
-/// created under the same name starts from nothing — it must not inherit a floor or a sealed watermark it never had,
-/// which would make recovery treat its own WAL records at or below that watermark as already sealed and drop them.
+/// The owner of a stream's durable footprint in this node's storage: its sealed-segment refs (`streams/`) and its
+/// reclaimed-through floors (`stream-floors/`, #1278), both keyed by the stream's INCARNATION
+/// ([SegmentIndex#durableName]) — one cluster create of the name.
 ///
-/// **Crash ordering.** A destroy first writes a `stream-tombstones/<stream>` ref and makes it durable, then drops the
-/// segment refs, then the floors, then the tombstone. A crash anywhere in between leaves the tombstone on disk, and a
-/// rebuild ignores EVERY surviving ref of a tombstoned stream ([SegmentIndex#destroyedStreams]) — so it matters not
-/// which refs were already gone: nothing of the old stream anchors anything. [#completePending] finishes such a destroy
-/// at boot, and [#ensureForgotten] before a stream of that name materializes again.
-///
-/// The tombstone, not an order between floors and segment refs, is what makes this crash-safe: dropping floors last
-/// leaves a floor licensing segments that are gone (a recreate would anchor at it), and dropping them first leaves
-/// segment refs that rebuild into a watermark above a recreated stream's own WAL. Either order has a bad
-/// intermediate state; the tombstone hides all of them.
+/// **Correctness comes from the key, not from cleanup.** A node serves only the incarnation the committed config
+/// names ([#adopt]): the refs of any other life of the name are never installed, never anchor a watermark and are
+/// never read, whether the old life was destroyed while this node was down, a destroy crashed half-way, a retention
+/// pass or a seal outlived the destroy, or a floor landed after it. Dropping them ([#forget], and the garbage [#adopt]
+/// hands back) is best-effort reclamation of space; a failure leaves garbage, never a wrong answer. That is why no
+/// tombstone or ordering protocol exists here.
 public final class StreamFootprint {
     private static final Logger log = LoggerFactory.getLogger(StreamFootprint.class);
-
-    /// For a manager with no storage of its own (tests, minimal runtimes): there is no footprint to drop.
-    public static final StreamFootprint NONE = new StreamFootprint(null,
-                                                                   null,
-                                                                   null,
-                                                                   RetentionEnforcer.FloorDurability.LIVE);
+    /// For a manager with no storage of its own (tests, minimal runtimes): there is no footprint.
+    public static final StreamFootprint NONE = new StreamFootprint(null, null, null);
 
     private final StorageInstance storage;
     private final MetadataStore metadata;
     private final SegmentIndex index;
-    private final RetentionEnforcer.FloorDurability durability;
 
-    private StreamFootprint(StorageInstance storage,
-                            MetadataStore metadata,
-                            SegmentIndex index,
-                            RetentionEnforcer.FloorDurability durability) {
+    private StreamFootprint(StorageInstance storage, MetadataStore metadata, SegmentIndex index) {
         this.storage = storage;
         this.metadata = metadata;
         this.index = index;
-        this.durability = durability;
     }
 
-    /// `metadata` is the store behind `storage`: the refs to drop are enumerated from it, not from `index`, so a
-    /// destroy finished at boot — whose refs the rebuilt index ignored — still finds every one, an older floor
-    /// included.
-    public static StreamFootprint streamFootprint(StorageInstance storage,
-                                                  MetadataStore metadata,
-                                                  SegmentIndex index,
-                                                  RetentionEnforcer.FloorDurability durability) {
-        return new StreamFootprint(storage, metadata, index, durability);
+    /// `metadata` is the store behind `storage`; refs of a forgotten life are enumerated from it, so refs the index
+    /// never installed (an older floor, a seal that landed after the destroy) are reclaimed too.
+    public static StreamFootprint streamFootprint(StorageInstance storage, MetadataStore metadata, SegmentIndex index) {
+        return new StreamFootprint(storage, metadata, index);
     }
 
-    /// Drop every durable ref of `streamName` (see the class doc for the ordering). A tombstone that cannot be made
-    /// durable is withdrawn and nothing is dropped: the footprint then survives as before, logged at ERROR.
-    public Promise<Unit> forget(String streamName) {
-        if (storage == null) {
+    /// Serve `incarnation` of `streamName` from now on — before any of its partitions materializes, so recovery
+    /// anchors only at that life's sealed watermark and floor — and reclaim every other life's refs.
+    public Promise<Unit> adopt(String streamName, long incarnation) {
+        if (index == null) {
             return Promise.unitPromise();
         }
 
-        var tombstone = SegmentIndex.tombstoneRefName(streamName);
+        var garbage = new ArrayList<>(index.adopt(streamName, incarnation));
 
-        return storage.putRef(tombstone,
-                              streamName.getBytes(StandardCharsets.UTF_8))
-                      .flatMap(_ -> durable(streamName, tombstone))
-                      .flatMap(_ -> dropAll(refsUnder(SegmentIndex.segmentRefPrefix(streamName))))
-                      .flatMap(_ -> dropAll(refsUnder(SegmentIndex.floorRefPrefix(streamName))))
-                      .map(_ -> forgetIndexed(streamName))
-                      .flatMap(_ -> storage.deleteRef(tombstone));
+        garbage.addAll(otherLives(streamName, incarnation));
+
+        return dropAll(streamName, garbage);
     }
 
-    /// Before `streamName` materializes: if a destroy of that name did not finish (its tombstone is still here),
-    /// finish it now, so the new stream's own refs are never hidden by the old tombstone.
-    public Promise<Unit> ensureForgotten(String streamName) {
-        return storage != null && storage.resolveRef(SegmentIndex.tombstoneRefName(streamName))
-                                         .isPresent()
-               ? forget(streamName)
-               : Promise.unitPromise();
+    /// `streamName` was destroyed: stop serving it and reclaim the refs of the life it was.
+    public Promise<Unit> forget(String streamName) {
+        if (index == null) {
+            return Promise.unitPromise();
+        }
+
+        var incarnation = index.incarnationOf(streamName);
+        var garbage = new ArrayList<>(index.forgetStream(streamName));
+
+        garbage.addAll(refsOfLife(streamName, incarnation));
+
+        return dropAll(streamName, garbage);
     }
 
-    /// At boot: finish every destroy a crash interrupted.
-    public Promise<Unit> completePending(java.util.Collection<String> refNames) {
-        var pending = SegmentIndex.destroyedStreams(refNames).stream().map(this::forget).toList();
-
-        return Promise.allOf(pending).map(_ -> unit());
-    }
-
-    private Promise<Unit> durable(String streamName, String tombstone) {
-        return durability.persist()
-                         .onFailure(cause -> log.error("Destroy of stream '{}' left its durable refs in place: its tombstone could not"
-                                                      + " be made durable: {}",
-                                                       streamName,
-                                                       cause.message()))
-                         .async()
-                         .onFailure(_ -> storage.deleteRef(tombstone));
-    }
-
-    private Promise<Unit> dropAll(List<String> refNames) {
-        return Promise.allOf(refNames.stream().map(storage::deleteRef).toList())
-                      .map(results -> Result.allOf(results))
-                      .flatMap(Result::async)
-                      .map(_ -> unit());
-    }
-
-    private List<String> refsUnder(String prefix) {
+    private List<String> otherLives(String streamName, long incarnation) {
         return metadata.listAllRefs()
                        .keySet()
                        .stream()
-                       .filter(ref -> ref.startsWith(prefix))
+                       .filter(ref -> SegmentIndex.lifeOf(ref)
+                                                  .filter(life -> life.streamName()
+                                                                      .equals(streamName) && life.incarnation() != incarnation)
+                                                  .isPresent())
                        .toList();
     }
 
-    private Unit forgetIndexed(String streamName) {
-        index.forgetStream(streamName);
+    private List<String> refsOfLife(String streamName, long incarnation) {
+        return metadata.listAllRefs()
+                       .keySet()
+                       .stream()
+                       .filter(ref -> SegmentIndex.lifeOf(ref)
+                                                  .filter(life -> life.streamName()
+                                                                      .equals(streamName) && life.incarnation() == incarnation)
+                                                  .isPresent())
+                       .toList();
+    }
+
+    private Promise<Unit> dropAll(String streamName, List<String> refNames) {
+        return Promise.allOf(refNames.stream().distinct().map(storage::deleteRef).toList()).map(results -> logFailures(streamName,
+                                                                                                                       results.stream()
+                                                                                                                              .filter(result -> result.isFailure())
+                                                                                                                              .count()));
+    }
+
+    private static Unit logFailures(String streamName, long failed) {
+        if (failed > 0) {
+            log.warn("{} durable ref(s) of a retired life of stream '{}' could not be dropped; they are garbage nothing reads",
+                     failed,
+                     streamName);
+        }
 
         return unit();
     }

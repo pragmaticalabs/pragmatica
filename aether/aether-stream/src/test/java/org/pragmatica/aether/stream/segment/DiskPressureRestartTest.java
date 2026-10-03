@@ -151,7 +151,7 @@ class DiskPressureRestartTest {
                                                            index,
                                                            WINDOW_MS,
                                                            RetentionEnforcer.SegmentRetentionFloor.NONE,
-                                                           RetentionEnforcer.FloorDurability.snapshotted(snapshots),
+                                                           RefDurability.snapshotted(snapshots),
                                                            SegmentReader.segmentReader(storage, index),
                                                            pressure,
                                                            PressureRelief.snapshotBounded(snapshots, collector));

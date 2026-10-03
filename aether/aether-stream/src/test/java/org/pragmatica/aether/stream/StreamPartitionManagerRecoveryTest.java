@@ -237,6 +237,24 @@ class StreamPartitionManagerRecoveryTest {
         assertHeadLost(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)), -1L, 5L);
     }
 
+    /// #1278 review: a refused partition is re-attempted on every publish and placement edge; each attempt is the
+    /// SAME loss, so the operator counter counts it once.
+    @Test
+    void rebuild_lostHead_reattemptedRecovery_isCountedOnce() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"));
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+            var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+            assertThat(manager.createStream(StreamConfig.streamConfig(STREAM)).isFailure()).as("attempt %d refused", attempt)
+                                                                                     .isTrue();
+            manager.close();
+        }
+
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).as("three attempts, one loss").isEqualTo(1);
+    }
+
     /// The same shape above a non-negative watermark: offset 3 is neither sealed nor in the file.
     @Test
     void rebuild_refusesLostHead_aboveSealedBound() throws IOException {

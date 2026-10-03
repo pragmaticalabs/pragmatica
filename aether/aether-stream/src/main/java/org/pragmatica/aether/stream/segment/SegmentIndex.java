@@ -31,6 +31,13 @@ public final class SegmentIndex {
     /// Persisted as a `stream-floors/` ref before the segment refs it licenses are dropped, so a rebuild can tell
     /// a reclaimed prefix from one whose refs were lost.
     private final ConcurrentHashMap<PartitionKey, Long> reclaimedThrough = new ConcurrentHashMap<>();
+    /// #1278 review: the incarnation (one LIFE of the stream name) this index serves per stream, adopted when the
+    /// stream's committed config materializes here. Every durable ref name embeds it ([#durableName]); a stream never
+    /// adopted serves incarnation `0` (a config built outside a cluster create).
+    private final ConcurrentHashMap<String, Long> adopted = new ConcurrentHashMap<>();
+    /// Refs of a rebuilt listing that belong to an incarnation this index does not (yet) serve, by stream and
+    /// incarnation. [#adopt] installs the matching ones and hands back the rest as garbage.
+    private final ConcurrentHashMap<String, Map<Long, List<String>>> staged = new ConcurrentHashMap<>();
 
     public record SegmentRef(long startOffset,
                              long endOffset,
@@ -116,10 +123,87 @@ public final class SegmentIndex {
     }
 
     /// Record that retention reclaimed `(streamName, partition)` through `through`, AFTER its floor ref is
-    /// durable ([#floorRefName]). Never lowers the floor.
+    /// durable ([#floorRefOf]). Never lowers the floor.
     @Contract
     public void recordReclaimed(String streamName, int partition, long through) {
         reclaimedThrough.merge(PartitionKey.partitionKey(streamName, partition), through, Math::max);
+    }
+
+    /// [#recordReclaimed] for the life `incarnation` decided the reclaim under: a retention pass that outlived its
+    /// stream's destroy (or a recreate) must not resurrect the old life's floor in the new one.
+    @Contract
+    public void recordReclaimed(String streamName, long incarnation, int partition, long through) {
+        if (incarnation == incarnationOf(streamName)) {
+            recordReclaimed(streamName, partition, through);
+        }
+    }
+
+    /// [#addSegment] for the life `incarnation` the seal was stored under: a seal still in flight when its stream
+    /// was destroyed or recreated never lands in the new life's index.
+    @Contract
+    public void addSegment(String streamName,
+                           long incarnation,
+                           int partition,
+                           long startOffset,
+                           long endOffset,
+                           long maxTimestamp,
+                           int compressionOrdinal,
+                           boolean encrypted,
+                           int originalSize) {
+        if (incarnation == incarnationOf(streamName)) {
+            addSegment(streamName,
+                       partition,
+                       startOffset,
+                       endOffset,
+                       maxTimestamp,
+                       compressionOrdinal,
+                       encrypted,
+                       originalSize);
+        }
+    }
+
+    /// The incarnation this index serves for `streamName`: the adopted one, else `0`.
+    public long incarnationOf(String streamName) {
+        return option(adopted.get(streamName)).or(0L);
+    }
+
+    /// Serve incarnation `incarnation` of `streamName` from now on (#1278 review). A different life's in-memory
+    /// state is dropped and the rebuilt refs of this one are installed. Returns the durable refs that belong to any
+    /// OTHER life of the name — garbage, for the caller to drop best-effort; nothing reads them again.
+    public List<String> adopt(String streamName, long incarnation) {
+        var previous = incarnationOf(streamName);
+        var garbage = new java.util.ArrayList<String>();
+
+        if (previous != incarnation) {
+            garbage.addAll(liveRefNames(streamName));
+            dropLive(streamName);
+        }
+
+        adopted.put(streamName, incarnation);
+        var byIncarnation = option(staged.remove(streamName)).or(Map.of());
+
+        byIncarnation.forEach((life, refs) -> {
+            if (life == incarnation) {
+                refs.forEach(this::installRef);
+            } else {
+                garbage.addAll(refs);
+            }
+        });
+        anchorStream(streamName);
+
+        return garbage;
+    }
+
+    /// The incarnations adopted here, for an index rebuilt from a snapshot to serve the same lives
+    /// ([org.pragmatica.aether.stream.DurableSealedOffsetSource]).
+    public Map<String, Long> adoptions() {
+        return Map.copyOf(adopted);
+    }
+
+    /// Adopt every life of `adoptions` without collecting garbage: a read-only view of the same lives.
+    @Contract
+    public void adoptAll(Map<String, Long> adoptions) {
+        adoptions.forEach(this::adopt);
     }
 
     /// The reclaimed-through floor of `(streamName, partition)`, or `-1` when retention never reclaimed any of it.
@@ -242,19 +326,95 @@ public final class SegmentIndex {
         partitions.clear();
         sealedThrough.clear();
         reclaimedThrough.clear();
-        var destroyed = destroyedStreams(refs.keySet());
-
+        staged.clear();
         refs.keySet()
             .stream()
-            .filter(ref -> ref.startsWith(FLOORS_PREFIX) && !destroyed.contains(streamOf(ref, FLOORS_PREFIX)))
-            .forEach(this::parseFloorRef);
-        refs.keySet()
-            .stream()
-            .filter(ref -> ref.startsWith(STREAMS_PREFIX) && !destroyed.contains(streamOf(ref, STREAMS_PREFIX)))
-            .forEach(this::parseAndAddRef);
+            .filter(ref -> ref.startsWith(FLOORS_PREFIX) || ref.startsWith(STREAMS_PREFIX))
+            .forEach(this::placeRef);
         sealedThrough.clear();
         partitions.forEach(this::anchorAtFloor);
         reclaimedThrough.forEach(sealedThrough::putIfAbsent);
+    }
+
+    /// A ref of the life this index serves for its stream is installed; any other life's is staged for [#adopt].
+    private void placeRef(String refName) {
+        var name = DurableName.parse(streamSegment(refName));
+
+        if (name.incarnation() == incarnationOf(name.streamName())) {
+            installRef(refName);
+        } else {
+            staged.computeIfAbsent(name.streamName(),
+                                   _ -> new ConcurrentHashMap<>())
+                  .computeIfAbsent(name.incarnation(),
+                                   _ -> new java.util.concurrent.CopyOnWriteArrayList<>())
+                  .add(refName);
+        }
+    }
+
+    private void installRef(String refName) {
+        if (refName.startsWith(FLOORS_PREFIX)) {
+            parseFloorRef(refName);
+        } else {
+            parseAndAddRef(refName);
+        }
+    }
+
+    /// The `<stream>[@<incarnation>]` segment of a `streams/` or `stream-floors/` ref.
+    private static String streamSegment(String refName) {
+        var rest = refName.startsWith(FLOORS_PREFIX)
+                   ? refName.substring(FLOORS_PREFIX.length())
+                   : refName.substring(STREAMS_PREFIX.length());
+        var slash = rest.indexOf('/');
+
+        return slash < 0
+               ? rest
+               : rest.substring(0, slash);
+    }
+
+    private void anchorStream(String streamName) {
+        partitions.forEach((key, map) -> {
+            if (key.streamName()
+                   .equals(streamName)) {
+                anchorAtFloor(key, map);
+            }
+        });
+        reclaimedThrough.forEach((key, floor) -> {
+            if (key.streamName()
+                   .equals(streamName)) {
+                sealedThrough.putIfAbsent(key, floor);
+            }
+        });
+    }
+
+    private List<String> liveRefNames(String streamName) {
+        var names = new java.util.ArrayList<String>();
+
+        partitions.forEach((key, map) -> {
+            if (key.streamName()
+                   .equals(streamName)) {
+                map.values()
+                   .forEach(ref -> names.add(refNameOf(streamName,
+                                                       key.partition(),
+                                                       ref)));
+            }
+        });
+        reclaimedThrough.forEach((key, floor) -> {
+            if (key.streamName()
+                   .equals(streamName)) {
+                names.add(floorRefOf(streamName, key.partition(), floor));
+            }
+        });
+
+        return names;
+    }
+
+    private void dropLive(String streamName) {
+        partitions.keySet().removeIf(key -> key.streamName()
+                                               .equals(streamName));
+        sealedThrough.keySet().removeIf(key -> key.streamName()
+                                                  .equals(streamName));
+        reclaimedThrough.keySet().removeIf(key -> key.streamName()
+                                                     .equals(streamName));
     }
 
     /// Re-anchor a rebuilt partition's watermark at its persisted reclaimed-through floor (see
@@ -266,8 +426,8 @@ public final class SegmentIndex {
                                         option(reclaimedThrough.get(key)).or(NOTHING_SEALED)));
     }
 
-    /// `stream-floors/<stream>/<partition>/<through>`; a partition may briefly hold two (the new one is written
-    /// before the old one is dropped), and the highest wins.
+    /// `stream-floors/<stream>[@<incarnation>]/<partition>/<through>`; a partition may briefly hold two (the new one
+    /// is written before the old one is dropped), and the highest wins. Installed only for the life this index serves.
     private void parseFloorRef(String refName) {
         var parts = refName.substring(FLOORS_PREFIX.length()).split("/");
 
@@ -275,66 +435,75 @@ public final class SegmentIndex {
             return;
         }
 
-        Number.parseInt(parts[1]).onSuccess(partition -> Number.parseLong(parts[2]).onSuccess(through -> recordReclaimed(parts[0],
+        var streamName = DurableName.parse(parts[0]).streamName();
+
+        Number.parseInt(parts[1]).onSuccess(partition -> Number.parseLong(parts[2]).onSuccess(through -> recordReclaimed(streamName,
                                                                                                                          partition,
                                                                                                                          through)));
     }
 
-    /// Streams whose destroy was in progress when the listing was taken (a `stream-tombstones/` ref, written durably
-    /// before any of the stream's refs is dropped): none of their surviving refs is rebuilt, so a crash in the middle of
-    /// a destroy never leaves a half-dropped footprint for a recreated stream of the same name to anchor at
-    /// ([StreamFootprint]).
-    public static java.util.Set<String> destroyedStreams(java.util.Collection<String> refNames) {
-        return refNames.stream()
-                       .filter(ref -> ref.startsWith(TOMBSTONES_PREFIX))
-                       .map(ref -> ref.substring(TOMBSTONES_PREFIX.length()))
-                       .collect(java.util.stream.Collectors.toSet());
+    /// Stop serving `streamName`: its in-memory state and its adopted life are dropped, so nothing of it anchors
+    /// anything until a config of the name is adopted again. Returns the durable refs of the life it served, for the
+    /// caller to drop best-effort.
+    public List<String> forgetStream(String streamName) {
+        var garbage = liveRefNames(streamName);
+
+        dropLive(streamName);
+        adopted.remove(streamName);
+        staged.remove(streamName);
+
+        return garbage;
     }
 
-    private static String streamOf(String refName, String prefix) {
-        var rest = refName.substring(prefix.length());
-        var slash = rest.indexOf('/');
-
-        return slash < 0
-               ? rest
-               : rest.substring(0, slash);
+    /// `<stream>` for incarnation `0`, `<stream>@<incarnation>` otherwise: the name every durable artifact of one life
+    /// of a stream is keyed by — its WAL directory and its `streams/` and `stream-floors/` refs (#1278 review).
+    public static String durableName(String streamName, long incarnation) {
+        return incarnation == 0L
+               ? streamName
+               : streamName + INCARNATION_SEPARATOR + incarnation;
     }
 
-    /// Forget every in-memory fact about `streamName` — its segment refs, its sealed watermark and its reclaimed-through
-    /// floor — once its durable refs are dropped ([StreamFootprint]).
-    @Contract
-    public void forgetStream(String streamName) {
-        partitions.keySet().removeIf(key -> key.streamName()
-                                               .equals(streamName));
-        sealedThrough.keySet().removeIf(key -> key.streamName()
-                                                  .equals(streamName));
-        reclaimedThrough.keySet().removeIf(key -> key.streamName()
-                                                     .equals(streamName));
+    /// The life a `streams/` or `stream-floors/` ref belongs to; none for any other ref.
+    public static Option<DurableName> lifeOf(String refName) {
+        return refName.startsWith(FLOORS_PREFIX) || refName.startsWith(STREAMS_PREFIX)
+               ? Option.some(DurableName.parse(streamSegment(refName)))
+               : Option.none();
     }
 
-    /// The prefix every sealed-segment ref of `streamName` starts with.
-    public static String segmentRefPrefix(String streamName) {
-        return STREAMS_PREFIX + streamName + "/";
+    /// A parsed [#durableName]. A name with no numeric `@<incarnation>` suffix is incarnation `0`.
+    public record DurableName(String streamName, long incarnation) {
+        static DurableName parse(String durable) {
+            var at = durable.lastIndexOf(INCARNATION_SEPARATOR);
+
+            return at < 0
+                   ? new DurableName(durable, 0L)
+                   : Number.parseLong(durable.substring(at + 1))
+                           .map(incarnation -> new DurableName(durable.substring(0, at),
+                                                               incarnation))
+                           .or(new DurableName(durable, 0L));
+        }
     }
 
-    /// The prefix every floor ref of `streamName` starts with, every partition included.
-    public static String floorRefPrefix(String streamName) {
-        return FLOORS_PREFIX + streamName + "/";
+    /// The ref recording that `(streamName, partition)` of the life this index serves was reclaimed through
+    /// `through` (#1278).
+    public String floorRefOf(String streamName, int partition, long through) {
+        return floorRefName(durableName(streamName, incarnationOf(streamName)), partition, through);
     }
 
-    /// The ref marking `streamName`'s destroy as in progress.
-    public static String tombstoneRefName(String streamName) {
-        return TOMBSTONES_PREFIX + streamName;
+    /// The ref of a sealed segment of `(streamName, partition)` in the life this index serves.
+    public String refNameOf(String streamName, int partition, SegmentRef ref) {
+        return buildRefName(durableName(streamName, incarnationOf(streamName)), partition, ref);
     }
 
-    /// The ref recording that `(streamName, partition)` was reclaimed through `through` (#1278).
-    public static String floorRefName(String streamName, int partition, long through) {
-        return floorRefPrefix(streamName, partition) + through;
+    /// The ref recording that `(durableName, partition)` was reclaimed through `through` (#1278). `durableName` is
+    /// the stream name for incarnation `0`.
+    public static String floorRefName(String durableName, int partition, long through) {
+        return floorRefPrefix(durableName, partition) + through;
     }
 
-    /// The prefix every floor ref of `(streamName, partition)` starts with.
-    public static String floorRefPrefix(String streamName, int partition) {
-        return FLOORS_PREFIX + streamName + "/" + partition + "/";
+    /// The prefix every floor ref of `(durableName, partition)` starts with.
+    public static String floorRefPrefix(String durableName, int partition) {
+        return FLOORS_PREFIX + durableName + "/" + partition + "/";
     }
 
     private void parseAndAddRef(String refName) {
@@ -344,7 +513,7 @@ public final class SegmentIndex {
             return;
         }
 
-        var streamName = parts[0];
+        var streamName = DurableName.parse(parts[0]).streamName();
 
         Number.parseInt(parts[1]).onSuccess(partition -> parseOffsetRange(streamName, partition, parts[2]));
     }
@@ -362,13 +531,15 @@ public final class SegmentIndex {
                                                                                                                                               end)));
     }
 
-    static String buildRefName(String streamName, int partition, SegmentRef ref) {
-        return STREAMS_PREFIX + streamName + "/" + partition + "/" + ref.startOffset() + "-" + ref.endOffset();
+    /// The ref of a sealed segment under `durableName` (the stream name for incarnation `0`).
+    static String buildRefName(String durableName, int partition, SegmentRef ref) {
+        return STREAMS_PREFIX + durableName + "/" + partition + "/" + ref.startOffset() + "-" + ref.endOffset();
     }
 
     private static final String STREAMS_PREFIX = "streams/";
     private static final String FLOORS_PREFIX = "stream-floors/";
-    private static final String TOMBSTONES_PREFIX = "stream-tombstones/";
+
+    private static final String INCARNATION_SEPARATOR = "@";
 
     public record PartitionKey(String streamName, int partition) {
         public static PartitionKey partitionKey(String streamName, int partition) {

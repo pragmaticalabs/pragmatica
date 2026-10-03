@@ -18,9 +18,12 @@
     floor and refuses on every replica, so neither clears it: wipe and recreate the partition.
   - `walRecoveryHeadsLost` counts each distinct lost head once, however often the refused recovery is
     re-attempted.
-- **A destroyed stream drops its durable footprint** (sealed-segment refs and floors) behind a durable
-  tombstone, finished at boot if a crash interrupted it, so a stream recreated under the same name never
-  anchors at the old floor.
+- **Stream incarnations.** `StreamConfig` gains an `incarnation` (minted at a cluster create, kept across republish).
+  Every durable artifact of a stream — its WAL directory, sealed-segment refs and reclaimed-through floors — is
+  keyed by it, and a node opens only the committed life, so a stream recreated under the same name never inherits
+  the old life's records, watermark or floor (a node down for the destroy, a half-done destroy, a retention pass or
+  seal outliving the destroy). Destroy reclaims the old life's refs best-effort. BREAKING wire shape of
+  `StreamConfig` (pre-GA; no new tag).
 - **BREAKING (Management API / CLI, `GET /api/storage/retention`):**
   - `walRecoveryHeadGapsAccepted` is replaced by `walRecoveryHeadsLost`, the count of `WalHeadLost` refusals.
   - Each partition row gains `reclaimedThrough`.

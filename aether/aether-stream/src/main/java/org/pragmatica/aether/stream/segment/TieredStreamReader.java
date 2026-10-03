@@ -140,7 +140,7 @@ final class TieredReader implements TieredStreamReader {
     }
 
     private Promise<Unit> warmSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
-        var refName = SegmentIndex.buildRefName(streamName, partition, ref);
+        var refName = index.refNameOf(streamName, partition, ref);
 
         return storage.resolveRef(refName)
                       .map(blockId -> storage.get(blockId)

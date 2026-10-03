@@ -69,7 +69,7 @@ class RetentionAgeLearningBoundsTest {
                                                            setup.index(),
                                                            WINDOW_MS,
                                                            RetentionEnforcer.SegmentRetentionFloor.NONE,
-                                                           RetentionEnforcer.FloorDurability.LIVE,
+                                                           RefDurability.LIVE,
                                                            SegmentReader.segmentReader(setup.storage(), setup.index()),
                                                            () -> 0.9,
                                                            passes::incrementAndGet);
@@ -203,7 +203,7 @@ class RetentionAgeLearningBoundsTest {
                                                            setup.index(),
                                                            WINDOW_MS,
                                                            RetentionEnforcer.SegmentRetentionFloor.NONE,
-                                                           RetentionEnforcer.FloorDurability.LIVE,
+                                                           RefDurability.LIVE,
                                                            SegmentReader.segmentReader(setup.storage(), setup.index()),
                                                            () -> 0.9,
                                                            passes::incrementAndGet);

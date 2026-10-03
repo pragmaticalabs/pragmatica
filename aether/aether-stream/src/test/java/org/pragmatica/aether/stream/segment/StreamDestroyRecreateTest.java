@@ -33,8 +33,8 @@ import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSeg
 /// stream created again under the same name, after a restart, rebuilt its sealed watermark at the OLD floor and its
 /// own fresh records were placed above it — or, recovering a WAL that starts at 0, dropped as "already sealed".
 ///
-/// Also: a destroy a crash interrupted — the tombstone is on disk with some refs still present — hides every surviving
-/// ref of the old stream from a rebuild, and is finished before the stream materializes again.
+/// Each life sets its incarnation explicitly, as a cluster create mints one; see V1866R2ProbeTest for the lives whose
+/// cleanup did not happen.
 class StreamDestroyRecreateTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -57,7 +57,7 @@ class StreamDestroyRecreateTest {
         var firstIndex = new SegmentIndex();
         var first = manager(storage, firstIndex);
 
-        createStream(first);
+        createStream(first, 1L);
         publish(first, FIRST_LIFE);
         awaitSealed(firstIndex);
         reclaimEverything(storage, firstIndex);
@@ -73,7 +73,7 @@ class StreamDestroyRecreateTest {
 
         var second = manager(storage, secondIndex);
 
-        createStream(second);
+        createStream(second, 2L);
         var offsets = publish(second, SECOND_LIFE);
         second.close();
 
@@ -82,7 +82,7 @@ class StreamDestroyRecreateTest {
         var recoveredIndex = rebuilt();
         var recovered = manager(storage, recoveredIndex);
 
-        createStream(recovered);
+        createStream(recovered, 2L);
         var info = recovered.partitionInfo(STREAM, PARTITION).onFailure(cause -> fail(cause.message())).unwrap();
         var ringEvents = recovered.readLocal(STREAM, PARTITION, info.tailOffset(), 100)
                                   .onFailure(cause -> fail(cause.message()))
@@ -98,27 +98,6 @@ class StreamDestroyRecreateTest {
                                                                                     .toList());
     }
 
-    @Test
-    void rebuild_aTombstonedStream_ignoresEverySurvivingRef_andTheDestroyIsFinishedBeforeRecreate() {
-        var block = BlockId.blockId(new byte[]{1}).unwrap();
-
-        metadata.putRef("streams/" + STREAM + "/0/0-99", block);
-        metadata.putRef(SegmentIndex.floorRefName(STREAM, PARTITION, 199), block);
-        metadata.putRef(SegmentIndex.tombstoneRefName(STREAM), block);
-
-        assertThat(rebuilt().lastSealedOffset(STREAM, PARTITION)).as("a half-destroyed stream anchors nothing").isEqualTo(-1L);
-
-        var storage = storage();
-        var index = rebuilt();
-        var manager = manager(storage, index);
-
-        createStream(manager);
-        manager.close();
-
-        assertThat(refsOf(STREAM)).as("the interrupted destroy was finished before the stream materialized again").isEmpty();
-        assertThat(metadata.resolveRef(SegmentIndex.tombstoneRefName(STREAM)).isPresent()).isFalse();
-    }
-
     private StorageInstance storage() {
         return StorageInstance.storageInstance("streams",
                                                List.of(MemoryTier.memoryTier(ONE_GB),
@@ -132,7 +111,7 @@ class StreamDestroyRecreateTest {
                                              Option.some(walDir),
                                              index::lastSealedOffset);
 
-        manager.streamFootprint(StreamFootprint.streamFootprint(storage, metadata, index, RetentionEnforcer.FloorDurability.LIVE));
+        manager.streamFootprint(StreamFootprint.streamFootprint(storage, metadata, index));
 
         return manager;
     }
@@ -148,8 +127,7 @@ class StreamDestroyRecreateTest {
     private Map<String, BlockId> refsOf(String stream) {
         var refs = new java.util.HashMap<>(metadata.listAllRefs());
 
-        refs.keySet()
-            .removeIf(ref -> !ref.contains("/" + stream + "/") && !ref.endsWith("/" + stream));
+        refs.keySet().removeIf(ref -> SegmentIndex.lifeOf(ref).filter(life -> life.streamName().equals(stream)).isEmpty());
 
         return refs;
     }
@@ -161,11 +139,12 @@ class StreamDestroyRecreateTest {
                          .onFailure(cause -> fail(cause.message()));
     }
 
-    private static void createStream(StreamPartitionManager manager) {
+    private static void createStream(StreamPartitionManager manager, long incarnation) {
         manager.createStream(StreamConfig.streamConfig(STREAM,
                                                        1,
                                                        RetentionPolicy.retentionPolicy(RING_EVENTS, 1024 * 1024, 600_000),
-                                                       "earliest"))
+                                                       "earliest")
+                                         .withIncarnation(incarnation))
                .onFailure(cause -> fail(cause.message()));
     }
 

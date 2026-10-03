@@ -55,14 +55,23 @@ public interface DurableSealedOffsetSource {
     /// Snapshots that tear after a good boot make every subsequent tick fail, and the operator's only
     /// running-node signal is that this tick kept the WAL instead of truncating.
     static DurableSealedOffsetSource fromLatestSnapshot(SnapshotManager snapshotManager) {
-        return () -> onDisk(snapshotManager);
+        return fromLatestSnapshot(snapshotManager, java.util.Map::of);
     }
 
-    private static LastSealedOffsetSource onDisk(SnapshotManager snapshotManager) {
+    /// As above, reading each stream's refs in the life (incarnation) the live index serves (#1278 review): a
+    /// snapshot can still hold an old life's refs, and they must not raise the bound the current life's WAL is
+    /// truncated to.
+    static DurableSealedOffsetSource fromLatestSnapshot(SnapshotManager snapshotManager,
+                                                        java.util.function.Supplier<java.util.Map<String, Long>> adoptions) {
+        return () -> onDisk(snapshotManager, adoptions.get());
+    }
+
+    private static LastSealedOffsetSource onDisk(SnapshotManager snapshotManager,
+                                                 java.util.Map<String, Long> adoptions) {
         return snapshotManager.restoreFromLatest()
                               .onFailure(DurableSealedOffsetSource::reportUnreadable)
                               .fold(_ -> LastSealedOffsetSource.none(),
-                                    restored -> restored.map(DurableSealedOffsetSource::indexOf)
+                                    restored -> restored.map(snapshot -> indexOf(snapshot, adoptions))
                                                         .or(LastSealedOffsetSource.none()));
     }
 
@@ -73,9 +82,10 @@ public interface DurableSealedOffsetSource {
         LOG.warn("No durable sealed offset this tick: {}. Keeping the WAL; nothing is truncated.", cause.message());
     }
 
-    private static LastSealedOffsetSource indexOf(MetadataSnapshot snapshot) {
+    private static LastSealedOffsetSource indexOf(MetadataSnapshot snapshot, java.util.Map<String, Long> adoptions) {
         var index = new SegmentIndex();
 
+        index.adoptAll(adoptions);
         index.rebuildFromRefs(snapshot.refs());
 
         return index::lastSealedOffset;

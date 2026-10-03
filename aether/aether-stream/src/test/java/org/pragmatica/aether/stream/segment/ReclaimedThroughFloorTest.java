@@ -65,7 +65,7 @@ class ReclaimedThroughFloorTest {
             sealExpired(0, 9);
             sealExpired(10, 19);
 
-            assertThat(enforce(RetentionEnforcer.FloorDurability.LIVE)).isEqualTo(2);
+            assertThat(enforce(RefDurability.LIVE)).isEqualTo(2);
             assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
             assertThat(storage.resolveRef(SegmentIndex.floorRefName(STREAM, PARTITION, 19)).isPresent()).isTrue();
             assertThat(index.reclaimedThrough(STREAM, PARTITION)).isEqualTo(19L);
@@ -106,9 +106,9 @@ class ReclaimedThroughFloorTest {
         @Test
         void reclaim_dropsTheSupersededFloor() {
             sealExpired(0, 9);
-            enforce(RetentionEnforcer.FloorDurability.LIVE);
+            enforce(RefDurability.LIVE);
             sealExpired(10, 19);
-            enforce(RetentionEnforcer.FloorDurability.LIVE);
+            enforce(RefDurability.LIVE);
 
             assertThat(storage.resolveRef(SegmentIndex.floorRefName(STREAM, PARTITION, 9)).isPresent()).isFalse();
             assertThat(storage.resolveRef(SegmentIndex.floorRefName(STREAM, PARTITION, 19)).isPresent()).isTrue();
@@ -120,7 +120,7 @@ class ReclaimedThroughFloorTest {
             sealExpired(0, 9);
             sealExpired(20, 29);
 
-            assertThat(enforce(RetentionEnforcer.FloorDurability.LIVE)).isEqualTo(1);
+            assertThat(enforce(RefDurability.LIVE)).isEqualTo(1);
             assertThat(index.listSegments(STREAM, PARTITION)).extracting(SegmentIndex.SegmentRef::startOffset)
                                                              .containsExactly(20L);
             assertThat(index.reclaimedThrough(STREAM, PARTITION)).isEqualTo(9L);
@@ -137,7 +137,7 @@ class ReclaimedThroughFloorTest {
             sealExpired(0, 9);
             sealExpired(10, 19);
 
-            enforce(RetentionEnforcer.FloorDurability.snapshotted(snapshots));
+            enforce(RefDurability.snapshotted(snapshots));
             snapshots.forceSnapshot();
             var rebuilt = rebuiltFrom(latest(snapshots));
 
@@ -218,7 +218,7 @@ class ReclaimedThroughFloorTest {
             .onFailure(cause -> fail(cause.message()));
     }
 
-    private int enforce(RetentionEnforcer.FloorDurability durability) {
+    private int enforce(RefDurability durability) {
         return retentionEnforcer(storage,
                                  index,
                                  ONE_HOUR_MS,
