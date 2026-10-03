@@ -1728,6 +1728,17 @@ public interface AetherNode extends ManageableNode {
                                             cause.message()));
     }
 
+    /// #1730: the ownership writer decides only on the leader, so a membership edge that reached this node while it
+    /// was not the leader decided nothing — and when the departed node WAS the leader, every survivor saw that edge
+    /// leaderless. Gaining leadership re-runs the pass, so a dead ISR member (or a dead owner) is acted on at the
+    /// election, not at the next unrelated edge or one `isrLagMax` later.
+    @Contract
+    private static void reconcileOnLeaderGain(LeaderNotification.LeaderChange change, ReplicaSetController controller) {
+        if (change.localNodeIsLeader()) {
+            controller.reconcile();
+        }
+    }
+
     /// #1730: ownership writes are guarded transactions, refused when the committed record moved under them (an owner
     /// committed an ISR change first). A refusal is not a failure to wait out until the next membership edge: the
     /// decision is re-made against the record that won, on the next reconcile.
@@ -5419,6 +5430,8 @@ public interface AetherNode extends ManageableNode {
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
                                                  streamReplicaSetController::onQuorumStateChange));
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> reconcileOnLeaderGain(change, streamReplicaSetController)));
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
