@@ -40,6 +40,7 @@ import org.pragmatica.lang.Unit;
 import picocli.CommandLine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.connectionRefused;
 import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.drainAccepted;
 import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.lifecycle;
 import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.notFound;
@@ -144,6 +145,33 @@ class DrainWaitCallSitesTest {
 
         assertThat(exit).as("drain --wait must exit 0 once the node has gone, not ExitCode.TIMEOUT").isEqualTo(ExitCode.SUCCESS);
         assertThat(http.lifecycleGets()).isEqualTo(2);
+    }
+
+    /// These two sites poll the cluster's management endpoint, which may be a node other than the target (or
+    /// the one that just halted). A refused connection there says nothing about the target, so the wait must
+    /// keep going and finish only on the 404.
+    @Test
+    void destroyDrain_aRefusedConnectionOnTheClusterEndpoint_isNotCompletion() {
+        var http = new ScriptedDrainHttp(drainAccepted(NODE), connectionRefused(), notFound(NODE));
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
+
+        var results = new ClusterDestroyCommand().drainAllNodes(List.of(NODE));
+
+        assertThat(results.getFirst().success()).isTrue();
+        assertThat(http.lifecycleGets()).as("polled past the refusal, to the 404").isEqualTo(2);
+    }
+
+    @Test
+    void drainCommandWait_aRefusedConnectionOnTheClusterEndpoint_isNotCompletion() {
+        var http = new ScriptedDrainHttp(drainAccepted(NODE), connectionRefused(), notFound(NODE));
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
+
+        var exit = new CommandLine(new ClusterDrainCommand()).execute(NODE, "--wait", "--yes", "--timeout", "30");
+
+        assertThat(exit).isEqualTo(ExitCode.SUCCESS);
+        assertThat(http.lifecycleGets()).as("polled past the refusal, to the 404").isEqualTo(2);
     }
 
     private static String failureText(Result<?> result) {
