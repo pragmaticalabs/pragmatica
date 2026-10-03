@@ -59,7 +59,7 @@ class StreamDestroyRecreateTest {
 
         createStream(first, 1L);
         publish(first, FIRST_LIFE);
-        awaitSealed(firstIndex);
+        awaitSealed(firstIndex, FIRST_LIFE);
         reclaimEverything(storage, firstIndex);
         assertThat(firstIndex.reclaimedThrough(STREAM, PARTITION)).as("fixture: retention left a floor").isPositive();
 
@@ -75,6 +75,9 @@ class StreamDestroyRecreateTest {
 
         createStream(second, 2L);
         var offsets = publish(second, SECOND_LIFE);
+        // The second life evicts past its ring and seals asynchronously into storageDir: wait for those writes, or
+        // one can land while JUnit deletes the directory ("directory not empty", bigboy 2026-10-03/04).
+        awaitSealed(secondIndex, SECOND_LIFE);
         second.close();
 
         assertThat(offsets).as("the recreated stream starts at offset 0").startsWith(0L);
@@ -160,13 +163,15 @@ class StreamDestroyRecreateTest {
         return offsets;
     }
 
-    private static void awaitSealed(SegmentIndex index) {
+    /// Every event a life of `published` events evicted past its ring is sealed.
+    private static void awaitSealed(SegmentIndex index, int published) {
         var deadline = System.nanoTime() + 10_000_000_000L;
+        var evictedThrough = published - RING_EVENTS - 1;
 
-        while (index.lastSealedOffset(STREAM, PARTITION) < FIRST_LIFE - RING_EVENTS - 1 && System.nanoTime() < deadline) {
+        while (index.lastSealedOffset(STREAM, PARTITION) < evictedThrough && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
 
-        assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("fixture: sealed").isGreaterThanOrEqualTo(FIRST_LIFE - RING_EVENTS - 1);
+        assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("fixture: sealed").isGreaterThanOrEqualTo(evictedThrough);
     }
 }
