@@ -174,11 +174,50 @@ class DrainWaitCallSitesTest {
         assertThat(http.lifecycleGets()).as("polled past the refusal, to the 404").isEqualTo(2);
     }
 
+    /// `drainAndDestroyComputeNode`: a CLOUD source with no provider configured fails at the destroy
+    /// dispatch (`NO_PROVIDER`, before any network), which is reached only if the drain wait returned.
+    @Test
+    void rollingRestartOfComputeNodes_proceedsPastTheDrainWait_toTheDestroy() {
+        var http = drainsThenDisappears();
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        var config = config(SourceType.CLOUD, "unused-host");
+        var plan = DiffPlan.diffPlan(List.of(),
+                                     List.of(new DiffAction.RuntimeChange(sourceNameOrDefault("dc"), NodeRole.CORE, "a", "b")),
+                                     List.of(),
+                                     List.of());
+
+        var result = WaveExecutor.execute(plan, config, config);
+
+        assertThat(http.drainPosts()).isEqualTo(1);
+        assertThat(http.lifecycleGets()).as("the wait ran to the 404 before the destroy was dispatched").isEqualTo(2);
+        assertThat(failureText(result)).doesNotContain("did not complete drain");
+    }
+
+    /// `drainOldNodes` (replace-before-retire) sits behind provisioning, so it is driven directly.
+    @Test
+    void drainOldNodes_waitsForTheDrainToCompleteBeforeReturning() {
+        var http = drainsThenDisappears();
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+
+        var result = WaveExecutor.drainOldNodes(sourceNameOrDefault("dc"),
+                                                NodeRole.CORE,
+                                                1,
+                                                config(SourceType.SSH, UNRESOLVABLE_HOST));
+
+        assertThat(failureText(result)).isEmpty();
+        assertThat(http.drainPosts()).isEqualTo(1);
+        assertThat(http.lifecycleGets()).as("the old node's wait ran to the 404").isEqualTo(2);
+    }
+
     private static String failureText(Result<?> result) {
         return result.fold(cause -> cause.message(), _ -> "");
     }
 
     private static ClusterBootstrapConfig sshConfig(String... hosts) {
+        return config(SourceType.SSH, hosts);
+    }
+
+    private static ClusterBootstrapConfig config(SourceType type, String... hosts) {
         var role = RoleSubTable.roleSubTable(NodeRole.CORE,
                                              Option.some(hosts.length),
                                              Option.some(List.of(hosts)),
@@ -186,7 +225,7 @@ class DrainWaitCallSitesTest {
                                              Option.empty(),
                                              "default");
         var source = SourceProfile.sourceProfile(sourceNameOrDefault("dc"),
-                                                 SourceType.SSH,
+                                                 type,
                                                  Option.empty(),
                                                  Option.empty(),
                                                  Option.empty(),

@@ -556,7 +556,7 @@ public final class WaveExecutor {
                                                            count));
     }
 
-    private static Result<Unit> drainOldNodes(SourceName sourceName,
+    static Result<Unit> drainOldNodes(SourceName sourceName,
                                               NodeRole role,
                                               int count,
                                               ClusterBootstrapConfig desired) {
