@@ -30,14 +30,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #1730, multi-node: when the node that dies is both the consensus leader and a non-owner ISR member, the new leader
-/// drops it from the committed ISR on taking office, not one `isrLagMax` later.
+/// #1730, multi-node: when the node that dies is both the consensus leader and a non-owner ISR member, the leader that
+/// replaces it drops it from the committed ISR once membership counts it departed, not one `isrLagMax` later.
 ///
-/// The ISR shrink for a departed member is a leader-only decision taken on a reconcile pass. The departure's own
-/// membership edge reaches the survivors while there is no leader (the leader is the node that left), so that pass
-/// decides nothing; unless gaining leadership re-drives the pass, the dead member stays in the committed ISR — and, since
-/// placement keeps every committed ISR member, in the partition's replica set — until some unrelated edge or the owner's
-/// lag shrink. `isrLagMax` is raised to ten minutes here so the lag shrink cannot be what passes this test.
+/// The ISR shrink for a departed member is the leader's ownership-writer decision, made on the reconcile a membership
+/// decision triggers; placement keeps every committed ISR member, so until that shrink the dead node also stays in the
+/// partition's replica set. The writer's "live" set is placement membership (installed voters narrowed to the
+/// membership FSM's counted members), so the shrink lands when membership drops the node: about ten seconds after a
+/// kill through SWIM suspicion in a warm cluster, and only at the authoritative removal (about thirty seconds,
+/// measured on bigboy 2026-10-03) while SWIM's cold-boot suppression still turns FAULTY into UNKNOWN, as it does in a
+/// cluster this young. `isrLagMax` is raised to ten minutes so the owner's lag shrink cannot be what passes this test,
+/// and the budget is bounded by membership departure, not by the election.
 ///
 /// The in-run precondition: before the kill, the committed record names the leader as an ISR member that is not the
 /// owner, so the expected record is exactly "same owner, ISR minus the leader".
@@ -61,7 +64,7 @@ class EmberLeaderLossIsrShrinkTest {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long ISR_BUDGET_MS = 60_000L;
-    private static final long SHRINK_BUDGET_MS = 30_000L;
+    private static final long SHRINK_BUDGET_MS = 90_000L;
     private static final int STREAMS = 14;
     private static final String NAMESPACE = "ember";
     private static final String VERSION = "1.0.0";
@@ -80,7 +83,7 @@ class EmberLeaderLossIsrShrinkTest {
 
     @Test
     @Timeout(600)
-    void leaderThatWasANonOwnerIsrMember_dies_newLeaderDropsItFromTheIsr_withinTheElection_notTheLagWindow() {
+    void leaderThatWasANonOwnerIsrMember_dies_nextLeaderDropsItFromTheIsr_onMembershipDeparture_notTheLagWindow() {
         cluster = EmberTestPorts.startedCluster(PORTS, this::fiveNodes, START_BOUND);
         awaitLeader();
         var leaderId = cluster.currentLeader().unwrap();
