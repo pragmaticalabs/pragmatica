@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NodeDepartureWiringTest {
     @Test
     void membershipDeath_staysUnconditional_andCarriesNothingElse() {
-        assertThat(assemblyCode()).contains("membershipFsm.onConfirmedDeparture(departed->{onMembershipDeath(departed,dropDeadPeerLink,quorumLossDetectorRef,membershipFsmRef,leaderReconcilerRef,config.self(),installedVoterIds(clusterNode));});");
+        assertThat(assemblyCode()).contains("membershipFsm.onConfirmedDeparture(departed->{onMembershipDeath(departed,dropDeadPeerLink,quorumLossDetectorRef,leaderReconcilerRef);});");
     }
 
     @Test
@@ -38,7 +38,7 @@ class NodeDepartureWiringTest {
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
     /// because a pin that scans nothing always passes.
-    private static String assemblyCode() {
+    static String assemblyCode() {
         var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
 
         assertThat(file).exists();
