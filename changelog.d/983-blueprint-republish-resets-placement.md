@@ -22,8 +22,13 @@
   blueprint cannot or must not overwrite; `currentVersion`, `minInstances`, owner, `maxInstances` and both
   thresholds are declared by `ResolvedSlice` and replaced on republish by contract (a blueprint that stops
   declaring an override clears it); `updatedAt` is a clock.
-- [verified: `BlueprintRepublishPlacementTest` (`aether/aether-deployment`), 13 tests: placement carried, count
+- [verified: `BlueprintRepublishPlacementTest` (`aether/aether-deployment`), 18 tests: placement carried, count
   carried (with and without a declared max), clamped down to a new max, clamped up to a new min, carried across
-  a version change, first deploy uses the declared count and default placement. 13 mutations each reverted by
+  a version change, first deploy uses the declared count and default placement. 13 mutations (plus the restore hunk) each reverted by
   content, each reddening a named subset]
-- [unverified: no cluster run; the leader-restore path (`restoreAppBlueprint`) still registers the declared count in memory and relies on `restoreSliceTarget` for the committed one, ordering not examined; the relocation consequence is read from `handleSliceTargetChange`, as in #937]
+- **Leader restore.** `restoreAppBlueprint` registered the declared count in memory for the same artifact
+  `restoreSliceTarget` registers, and `Active.onEntry` iterates the store in JVM-salted order, so after a leader
+  change the declared count won about half the time and the reconciler resized an autoscaled slice back to it.
+  Both entries now register the committed count. [verified: `leaderRestore_*` tests force both restore orders;
+  with the `restoreAppBlueprint` hunk reverted, the BLUEPRINT_LAST order of each of the two carry tests reddens]
+- [unverified: no cluster run]
