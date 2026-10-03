@@ -1630,14 +1630,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                              artifact);
                 }
 
+                var target = declaredTarget(expanded, slice);
+
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
-                                                   slice.instances(),
-                                                   slice.minAvailable(),
+                                                   target.targetInstances(),
+                                                   target.minInstances(),
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
-                consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                          declaredTarget(expanded, slice)));
+                consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()), target));
             }
 
             submitBatch(consensusCommands);
@@ -1645,9 +1646,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         /// The `SliceTargetValue` a republish proposes: the committed value re-declared by the blueprint when
-        /// one exists, so the placement the blueprint cannot express survives (#983); a fresh value, with the
-        /// default placement, only when nothing is committed yet. Never a rebuild of an observed value from
-        /// the blueprint's components alone.
+        /// one exists, so the placement the blueprint cannot express and the scale the slice is running at
+        /// survive (#983) — the rollout allocates from this value's count (`handleSliceTargetChange`), so a
+        /// version change rolls at the current scale, clamped into the new bounds. A fresh value with the
+        /// declared count and the default placement only when nothing is committed yet.
         private SliceTargetValue declaredTarget(ExpandedBlueprint expanded, ResolvedSlice slice) {
             var artifact = slice.artifact();
             var owner = Option.some(expanded.id());
@@ -1656,7 +1658,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .getTyped(SliceTargetKey.sliceTargetKey(artifact.base()),
                                 SliceTargetValue.class)
                       .map(committed -> committed.withBlueprintDeclaration(artifact.version(),
-                                                                           slice.instances(),
                                                                            slice.minAvailable(),
                                                                            owner,
                                                                            slice.maxInstances(),

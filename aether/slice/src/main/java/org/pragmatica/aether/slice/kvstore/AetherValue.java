@@ -354,19 +354,26 @@ public sealed interface AetherValue {
                                         scaleDownThreshold);
         }
 
-        /// Re-applies what a blueprint declares for this slice: version, both instance counts, owner and the
-        /// autoscaler overrides — every component `ResolvedSlice` can express. The one component the
-        /// blueprint cannot express, `placement`, is threaded through from this value (#983), by construction
-        /// rather than by a caller remembering to carry it.
+        /// Re-applies a republished blueprint onto this committed value: version, `minInstances`, owner and the
+        /// autoscaler overrides come from the blueprint, while `placement`, which a blueprint cannot express, and
+        /// `targetInstances`, the scale the slice is running at, are carried (#983). Both are carried by
+        /// construction rather than by a caller remembering to.
+        ///
+        /// The carried count is clamped into the NEW bounds: `[minimumInstances, maxInstancesOverride]`. A count
+        /// the new bounds exclude moves to the nearest bound; where the bounds contradict each other
+        /// (`min > max`) the minimum wins. The declared instance count applies only to a first deploy, which has
+        /// no committed value and so does not come through here.
         public SliceTargetValue withBlueprintDeclaration(Version version,
-                                                         int instances,
                                                          int minimumInstances,
                                                          Option<BlueprintId> owner,
                                                          Option<Integer> maxInstancesOverride,
                                                          Option<Double> scaleUpOverride,
                                                          Option<Double> scaleDownOverride) {
+            var cappedAtMax = maxInstancesOverride.map(max -> Math.min(targetInstances, max))
+                                                  .or(targetInstances);
+
             return new SliceTargetValue(version,
-                                        instances,
+                                        Math.max(minimumInstances, cappedAtMax),
                                         minimumInstances,
                                         owner,
                                         placement,

@@ -57,16 +57,18 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #983 — `handleAppBlueprintChange` rebuilt the whole `SliceTargetValue` from the blueprint's
 /// `ResolvedSlice` on every republish, through a `sliceTargetValue(...)` factory that fixes
-/// `placement = CORE_ONLY`. `ResolvedSlice` has no placement, and neither has the blueprint format
-/// (`known-limitations.md`: "the blueprint has no placement key"), so the blueprint is silent about
-/// placement by construction and the only source of a non-default placement is the committed value
-/// (`POST /api/slices/scale`, which refuses slices that are not blueprint-owned). The republish
-/// must therefore carry the committed placement through.
+/// `placement = CORE_ONLY` and takes the declared instance count. Two components were lost:
 ///
-/// Every other component of the value (`currentVersion`, `targetInstances`, `minInstances`, owner,
-/// `maxInstances`, both thresholds) IS declared by the blueprint's `ResolvedSlice`, so a republish
-/// replaces those by contract; `updatedAt` is a clock. The tests below pin both halves: placement
-/// survives, declared components follow the blueprint.
+/// - `placement`. The blueprint has no placement key (`known-limitations.md`: "the blueprint has no
+///   placement key"; `ResolvedSlice` has none), so the committed value is the only source. Carried.
+/// - `targetInstances`. The autoscaler's current count is carried (owner ruling: otherwise a
+///   redeploy can overload the slice), clamped into the NEW blueprint's `[minAvailable, maxInstances]`
+///   (the CTO's reading of that ruling); the declared count applies only to a first deploy. The
+///   rollout allocates from this value (`handleSliceTargetChange` reads `value.targetInstances()`),
+///   so a version change rolls at the carried scale.
+///
+/// The remaining components (`currentVersion`, `minInstances`, owner, `maxInstances`, both
+/// thresholds) are declared by `ResolvedSlice` and follow the blueprint; `updatedAt` is a clock.
 class BlueprintRepublishPlacementTest {
     private static final NodeId SELF = new NodeId("node-self");
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -129,6 +131,10 @@ class BlueprintRepublishPlacementTest {
         return proposed.getFirst();
     }
 
+    private int inMemoryInstances(Artifact artifact) {
+        return ((ClusterDeploymentState.Active) harness.state()).blueprints().get(artifact).instances();
+    }
+
     private static ResolvedSlice slice(Artifact artifact, int instances, int min) {
         return ResolvedSlice.resolvedSlice(artifact, instances, min, false, Set.of()).unwrap();
     }
@@ -180,28 +186,23 @@ class BlueprintRepublishPlacementTest {
         assertThat(proposed.effectivePlacement()).isEqualTo("CORE_ONLY");
     }
 
-    /// The components the blueprint declares follow the blueprint on a republish — only placement
-    /// is carried. A fix that kept the whole committed value would pass the placement tests and
-    /// fail here.
+    /// The components the blueprint declares follow the blueprint on a republish. A fix that kept the
+    /// whole committed value would pass the placement tests and fail here.
     @Test
-    void republish_replacesEveryComponentTheBlueprintDeclares() {
+    void republish_replacesTheComponentsTheBlueprintDeclares() {
         newHarness();
-        commit(SliceTargetValue.sliceTargetValue(V1.version(), 3, 2, Option.none(), Option.some(9), Option.some(0.9), Option.some(0.1))
-                               .withPlacement("WORKERS_ONLY"));
+        commit(SliceTargetValue.sliceTargetValue(V1.version(), 3, 2, Option.none(), Option.some(9), Option.some(0.9), Option.some(0.1)));
 
-        var proposed = republish(slice(V1, 5, 4, Option.some(7), Option.some(0.8), Option.some(0.2)));
+        var proposed = republish(slice(V1, 3, 1, Option.some(7), Option.some(0.8), Option.some(0.2)));
 
-        assertThat(proposed.targetInstances()).isEqualTo(5);
-        assertThat(proposed.minInstances()).isEqualTo(4);
+        assertThat(proposed.minInstances()).isEqualTo(1);
         assertThat(proposed.owningBlueprint()).isEqualTo(Option.some(OWNER));
         assertThat(proposed.maxInstances()).isEqualTo(Option.some(7));
         assertThat(proposed.scaleUpThreshold()).isEqualTo(Option.some(0.8));
         assertThat(proposed.scaleDownThreshold()).isEqualTo(Option.some(0.2));
-        assertThat(proposed.effectivePlacement()).isEqualTo("WORKERS_ONLY");
     }
 
-    /// A blueprint that stops declaring an override removes it — the declaration is authoritative
-    /// for the components it can express.
+    /// A blueprint that stops declaring an override removes it.
     @Test
     void republish_withoutDeclaredOverrides_clearsCommittedOverrides() {
         newHarness();
@@ -212,6 +213,75 @@ class BlueprintRepublishPlacementTest {
         assertThat(proposed.maxInstances()).isEqualTo(Option.none());
         assertThat(proposed.scaleUpThreshold()).isEqualTo(Option.none());
         assertThat(proposed.scaleDownThreshold()).isEqualTo(Option.none());
+    }
+
+    @Test
+    void republish_carriesTheAutoscaledCount_andTheRolloutRegistrationAgrees() {
+        newHarness();
+        commit(autoscaled(V1, 8, 2, Option.some(12)));
+
+        var proposed = republish(slice(V1, 3, 2, Option.some(12), Option.none(), Option.none()));
+
+        assertThat(proposed.targetInstances()).isEqualTo(8);
+        assertThat(inMemoryInstances(V1)).as("the in-memory blueprint the reconciler allocates from").isEqualTo(8);
+    }
+
+    @Test
+    void republish_carriesTheAutoscaledCount_whenNoMaxIsDeclared() {
+        newHarness();
+        commit(autoscaled(V1, 8, 2, Option.none()));
+
+        assertThat(republish(slice(V1, 3, 2)).targetInstances()).isEqualTo(8);
+    }
+
+    @Test
+    void republish_clampsTheCarriedCountDownToTheNewMax() {
+        newHarness();
+        commit(autoscaled(V1, 8, 2, Option.some(12)));
+
+        var proposed = republish(slice(V1, 3, 2, Option.some(6), Option.none(), Option.none()));
+
+        assertThat(proposed.targetInstances()).isEqualTo(6);
+        assertThat(inMemoryInstances(V1)).isEqualTo(6);
+    }
+
+    @Test
+    void republish_clampsTheCarriedCountUpToTheNewMin() {
+        newHarness();
+        commit(autoscaled(V1, 2, 1, Option.none()));
+
+        var proposed = republish(slice(V1, 5, 4));
+
+        assertThat(proposed.targetInstances()).isEqualTo(4);
+        assertThat(inMemoryInstances(V1)).isEqualTo(4);
+    }
+
+    @Test
+    void republish_withNewVersion_carriesTheCountSoTheRolloutRunsAtTheCurrentScale() {
+        newHarness();
+        commit(autoscaled(V1, 6, 2, Option.none()));
+
+        var proposed = republish(slice(V2, 3, 2));
+
+        assertThat(proposed.currentVersion()).isEqualTo(V2.version());
+        assertThat(proposed.targetInstances()).isEqualTo(6);
+        assertThat(inMemoryInstances(V2)).isEqualTo(6);
+    }
+
+    /// Opposite polarity of the carry tests: with nothing committed there is no scale to carry, so the
+    /// declared count applies. Without it a fix that always kept some constant would pass.
+    @Test
+    void firstDeploy_usesTheDeclaredCount() {
+        newHarness();
+
+        var proposed = republish(slice(V1, 4, 2));
+
+        assertThat(proposed.targetInstances()).isEqualTo(4);
+        assertThat(inMemoryInstances(V1)).isEqualTo(4);
+    }
+
+    private static SliceTargetValue autoscaled(Artifact artifact, int count, int min, Option<Integer> max) {
+        return SliceTargetValue.sliceTargetValue(artifact.version(), count, min, Option.some(OWNER), max, Option.none(), Option.none());
     }
 
     // --- test fixtures ---
