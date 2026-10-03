@@ -12,6 +12,9 @@
 #   --cluster <host:port>    Management API endpoint (discovers other nodes)
 #   --version <version>      New version to deploy
 #   --canary-wait <seconds>  Health observation window per node (default: 30)
+#   --node-endpoint <id>=<host:port>
+#                            A node's OWN management address (repeat per node). Required: a drain is
+#                            complete only when this address refuses connections (see wait_for_refusal)
 #   --api-key <key>          RBAC authentication key
 #   --dry-run                Show plan without executing
 #   --skip-download          Assume binaries already staged
@@ -24,7 +27,7 @@
 #   1. Discovers all cluster nodes via the management API
 #   2. For each node (one at a time):
 #      a. Drains the node (evacuates slices)
-#      b. Waits for DECOMMISSIONED state
+#      b. Waits for the node's own management address to refuse connections (it halted)
 #      c. Initiates shutdown
 #      d. Waits for node to go offline
 #      e. (External: user restarts node with new binary)
@@ -40,6 +43,7 @@ CANARY_WAIT=30
 DRY_RUN=false
 SKIP_DOWNLOAD=false
 API_KEY=""
+NODE_ENDPOINTS=""
 CLUSTER=""
 VERSION=""
 
@@ -62,6 +66,7 @@ usage() {
     echo "  --cluster <host:port>    Management API endpoint"
     echo "  --version <version>      New version to deploy"
     echo "  --canary-wait <seconds>  Health observation window (default: 30)"
+    echo "  --node-endpoint <id>=<host:port>  A node's own management address (repeat per node; required)"
     echo "  --api-key <key>          RBAC authentication key"
     echo "  --dry-run                Show plan without executing"
     echo "  --skip-download          Assume binaries already staged"
@@ -78,6 +83,8 @@ while [ $# -gt 0 ]; do
         --version=*)   VERSION="${1#*=}"; shift ;;
         --canary-wait) CANARY_WAIT="$2"; shift 2 ;;
         --canary-wait=*) CANARY_WAIT="${1#*=}"; shift ;;
+        --node-endpoint) NODE_ENDPOINTS="$NODE_ENDPOINTS $2"; shift 2 ;;
+        --node-endpoint=*) NODE_ENDPOINTS="$NODE_ENDPOINTS ${1#*=}"; shift ;;
         --api-key)     API_KEY="$2"; shift 2 ;;
         --api-key=*)   API_KEY="${1#*=}"; shift ;;
         --dry-run)     DRY_RUN=true; shift ;;
@@ -182,6 +189,46 @@ wait_for_state() {
     return 1
 }
 
+# A node's own management address, from --node-endpoint <id>=<host:port>; empty when none was given.
+node_endpoint() {
+    local node_id="$1"
+    local pair
+    for pair in $NODE_ENDPOINTS; do
+        if [ "${pair%%=*}" = "$node_id" ]; then
+            echo "${pair#*=}"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# A drain is complete ONLY when the drained node's OWN management address refuses connections (curl exit 7:
+# nothing listens, the process halted). Any HTTP answer, including a 404 from /api/nodes/lifecycle, proves the
+# node is alive: that route is leader-forwarded, and the leader's 404 is soft readiness state that drops a LIVE
+# node on a transient evict or on a leader change. A timeout (28), DNS failure (6) or reset (56) is not a halt
+# either. The server has no terminal lifecycle state to wait for (NodeReportedState is SYNCING/READY/DRAINING),
+# so this script no longer waits for DECOMMISSIONED. See #1868 and DrainCompletion in the CLI.
+wait_for_refusal() {
+    local address="$1"
+    local timeout="${2:-120}"
+    local elapsed=0
+    local rc
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        rc=0
+        curl -s -o /dev/null --connect-timeout 2 --max-time 5 "http://$address/health/ready" >/dev/null 2>&1 || rc=$?
+        if [ "$rc" -eq 7 ]; then
+            return 0
+        fi
+
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    log_error "Timeout waiting for $address to refuse connections (waited ${timeout}s)"
+    return 1
+}
+
 # Wait for a node's health endpoint to respond
 wait_for_ready() {
     local node_id="$1"
@@ -189,7 +236,7 @@ wait_for_ready() {
     local elapsed=0
 
     # We use the main cluster endpoint since we don't know individual node endpoints
-    # The node will appear in lifecycle as ON_DUTY when ready
+    # The node will appear in lifecycle as READY when ready
     while [ "$elapsed" -lt "$timeout" ]; do
         local response
         response=$(api_call GET "http://$CLUSTER/api/nodes/lifecycle/$node_id" 2>/dev/null) || true
@@ -229,11 +276,11 @@ canary_check() {
 
     local state
     state=$(echo "$response" | jq -r '.state' 2>/dev/null) || true
-    if [ "$state" = "ON_DUTY" ]; then
-        log_info "  Canary PASSED: $node_id is ON_DUTY"
+    if [ "$state" = "READY" ]; then
+        log_info "  Canary PASSED: $node_id is READY"
         return 0
     else
-        log_error "  Canary FAILED: $node_id state is $state (expected ON_DUTY)"
+        log_error "  Canary FAILED: $node_id state is $state (expected READY)"
         return 1
     fi
 }
@@ -258,17 +305,24 @@ upgrade_node() {
         local msg
         msg=$(echo "$drain_response" | jq -r '.message' 2>/dev/null) || true
         # If already draining/decommissioned, continue
-        if echo "$msg" | grep -qi "DRAINING\|DECOMMISSIONED"; then
-            log_warn "  $node_id already draining/decommissioned, continuing..."
+        if echo "$msg" | grep -qi "DRAINING"; then
+            log_warn "  $node_id already draining, continuing..."
         else
             log_error "  Failed to drain $node_id: $msg"
             return 1
         fi
     fi
 
-    # Step 2: Wait for DECOMMISSIONED
-    log_info "  Waiting for $node_id to reach DECOMMISSIONED..."
-    if ! wait_for_state "$node_id" "DECOMMISSIONED" 120; then
+    # Step 2: Wait for the node to halt: its own address refusing connections is the only sound signal
+    local endpoint
+    endpoint=$(node_endpoint "$node_id")
+    if [ -z "$endpoint" ]; then
+        log_error "  Drain of $node_id was accepted, but its completion cannot be observed: no --node-endpoint ${node_id}=<host:port> was given,"
+        log_error "  and only the node's own address refusing connections proves it halted. Not shutting it down."
+        return 1
+    fi
+    log_info "  Waiting for $node_id ($endpoint) to halt..."
+    if ! wait_for_refusal "$endpoint" 120; then
         log_error "  Aborting: $node_id did not drain in time"
         log_info "  Re-activating $node_id..."
         api_call POST "http://$CLUSTER/api/nodes/activate/$node_id" > /dev/null 2>&1 || true
@@ -307,9 +361,9 @@ upgrade_node() {
     log_info "  Activating $node_id..."
     api_call POST "http://$CLUSTER/api/nodes/activate/$node_id" > /dev/null 2>&1 || true
 
-    # Step 7: Wait for ON_DUTY
-    if ! wait_for_state "$node_id" "ON_DUTY" 60; then
-        log_warn "  $node_id not yet ON_DUTY, but continuing..."
+    # Step 7: Wait for READY (NodeReportedState has no ON_DUTY)
+    if ! wait_for_state "$node_id" "READY" 60; then
+        log_warn "  $node_id not yet READY, but continuing..."
     fi
 
     # Step 8: Canary
