@@ -9039,7 +9039,10 @@ public interface AetherNode extends ManageableNode {
     /// `[replication]` factors — what idempotency and every other namespace resolve. The cache namespace's lower `[cache]`
     /// replication is a separate extension type ([CacheDhtClient]) that only the cache asks for. Registering the cache
     /// client as `DHTClient`, as before, put idempotency's dedup records at RF 1.
-    static void registerDhtExtensions(SpiResourceProvider spi, DHTClient replicatedDhtClient, DHTClient cacheDhtClient) {
+    @Contract
+    static void registerDhtExtensions(SpiResourceProvider spi,
+                                      DHTClient replicatedDhtClient,
+                                      DHTClient cacheDhtClient) {
         spi.registerExtension(DHTClient.class, replicatedDhtClient);
         spi.registerExtension(CacheDhtClient.class, new CacheDhtClient(cacheDhtClient));
     }

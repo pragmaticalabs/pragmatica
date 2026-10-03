@@ -170,8 +170,10 @@ public final class DHTNode {
         var replicationFactor = current.replicationFactor();
 
         return new DHTConfig(replicationFactor,
-                             Math.min(Math.max(current.writeQuorum(), floor.writeQuorum()), replicationFactor),
-                             Math.min(Math.max(current.readQuorum(), floor.readQuorum()), replicationFactor),
+                             Math.min(Math.max(current.writeQuorum(), floor.writeQuorum()),
+                                      replicationFactor),
+                             Math.min(Math.max(current.readQuorum(), floor.readQuorum()),
+                                      replicationFactor),
                              current.operationTimeout(),
                              current.retryPolicy());
     }
@@ -229,8 +231,7 @@ public final class DHTNode {
     }
 
     private static boolean factorsDiffer(DHTConfig previous, DHTConfig resolved) {
-        return previous.replicationFactor() != resolved.replicationFactor() || previous.writeQuorum() != resolved.writeQuorum()
-               || previous.readQuorum() != resolved.readQuorum();
+        return previous.replicationFactor() != resolved.replicationFactor() || previous.writeQuorum() != resolved.writeQuorum() || previous.readQuorum() != resolved.readQuorum();
     }
 
     private static QuorumFloor floorOf(DHTConfig config) {
