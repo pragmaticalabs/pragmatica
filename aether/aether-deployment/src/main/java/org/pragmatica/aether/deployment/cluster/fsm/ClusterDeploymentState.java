@@ -56,6 +56,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -899,11 +900,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                               artifact);
                     continue;
                 }
+                // The committed count, not the declared one (#983): `restoreSliceTarget` registers the same
+                // artifact, and the store's iteration order decides which of the two runs last.
+                var target = declaredTarget(expanded, slice);
 
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
-                                                   slice.instances(),
-                                                   slice.minAvailable(),
+                                                   target.targetInstances(),
+                                                   target.minInstances(),
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
             }
@@ -1612,7 +1616,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             for (var slice : expanded.loadOrder()) {
                 var artifact = slice.artifact();
 
-                log.info("Scheduling {} with {} requested instances ({} allocatable nodes)",
+                log.info("Scheduling {} with {} declared instances ({} allocatable nodes)",
                          artifact,
                          slice.instances(),
                          nodes.size());
@@ -1629,24 +1633,51 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                              artifact);
                 }
 
+                var target = declaredTarget(expanded, slice);
+
+                log.info("Scheduling {} at {} instances (declared {}; a committed count is carried, clamped into the declared bounds)",
+                         artifact,
+                         target.targetInstances(),
+                         slice.instances());
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
-                                                   slice.instances(),
-                                                   slice.minAvailable(),
+                                                   target.targetInstances(),
+                                                   target.minInstances(),
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
                 consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                          SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                                                            slice.instances(),
-                                                                                            slice.minAvailable(),
-                                                                                            Option.some(expanded.id()),
-                                                                                            slice.maxInstances(),
-                                                                                            slice.scaleUpThreshold(),
-                                                                                            slice.scaleDownThreshold())));
+                                                          target));
             }
 
             submitBatch(consensusCommands);
             trackInFlightBlueprint(expanded, previousExpanded);
+        }
+
+        /// The `SliceTargetValue` a republish proposes: the committed value re-declared by the blueprint when
+        /// one exists, so the placement the blueprint cannot express and the scale the slice is running at
+        /// survive (#983) — the rollout allocates from this value's count (`handleSliceTargetChange`), so a
+        /// version change rolls at the current scale, clamped into the new bounds. A fresh value with the
+        /// declared count and the default placement only when nothing is committed yet.
+        private SliceTargetValue declaredTarget(ExpandedBlueprint expanded, ResolvedSlice slice) {
+            var artifact = slice.artifact();
+            var owner = Option.some(expanded.id());
+
+            return ctx.kvStore()
+                      .getTyped(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                SliceTargetValue.class)
+                      .map(committed -> committed.withBlueprintDeclaration(artifact.version(),
+                                                                           slice.minAvailable(),
+                                                                           owner,
+                                                                           slice.maxInstances(),
+                                                                           slice.scaleUpThreshold(),
+                                                                           slice.scaleDownThreshold()))
+                      .or(() -> SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                                  slice.instances(),
+                                                                  slice.minAvailable(),
+                                                                  owner,
+                                                                  slice.maxInstances(),
+                                                                  slice.scaleUpThreshold(),
+                                                                  slice.scaleDownThreshold()));
         }
 
         /// Returns `true` exactly when the publishing blueprint was registered via

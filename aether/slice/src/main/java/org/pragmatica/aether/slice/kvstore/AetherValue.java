@@ -223,8 +223,9 @@ public sealed interface AetherValue {
         /// the slice is re-allocated under the default (#937). Rebuild through the `with*` methods
         /// instead — they thread every unchanged component through by construction, which is what
         /// makes this class of loss inexpressible rather than merely absent. #698 (owner), #936
-        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer,
-        /// and `ClusterDeploymentState.handleAppBlueprintChange` is a second, still unfixed.
+        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer;
+        /// `ClusterDeploymentState.handleAppBlueprintChange` was a second (#983) and now rebuilds through
+        /// [#withBlueprintDeclaration].
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
@@ -351,6 +352,34 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+
+        /// Re-applies a republished blueprint onto this committed value: version, `minInstances`, owner and the
+        /// autoscaler overrides come from the blueprint, while `placement`, which a blueprint cannot express, and
+        /// `targetInstances`, the scale the slice is running at, are carried (#983). Both are carried by
+        /// construction rather than by a caller remembering to.
+        ///
+        /// The carried count is clamped into the NEW bounds: `[minimumInstances, maxInstancesOverride]`. A count
+        /// the new bounds exclude moves to the nearest bound; where the bounds contradict each other
+        /// (`min > max`) the minimum wins. The declared instance count applies only to a first deploy, which has
+        /// no committed value and so does not come through here.
+        public SliceTargetValue withBlueprintDeclaration(Version version,
+                                                         int minimumInstances,
+                                                         Option<BlueprintId> owner,
+                                                         Option<Integer> maxInstancesOverride,
+                                                         Option<Double> scaleUpOverride,
+                                                         Option<Double> scaleDownOverride) {
+            var cappedAtMax = maxInstancesOverride.map(max -> Math.min(targetInstances, max)).or(targetInstances);
+
+            return new SliceTargetValue(version,
+                                        Math.max(minimumInstances, cappedAtMax),
+                                        minimumInstances,
+                                        owner,
+                                        placement,
+                                        System.currentTimeMillis(),
+                                        maxInstancesOverride,
+                                        scaleUpOverride,
+                                        scaleDownOverride);
         }
 
         public SliceTargetValue withVersion(Version newVersion) {
