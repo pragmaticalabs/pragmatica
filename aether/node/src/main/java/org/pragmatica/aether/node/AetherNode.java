@@ -921,60 +921,79 @@ public interface AetherNode extends ManageableNode {
 
     /// NTT reconcile fan-out (membership v2). Fired once per stable presence-sensor membership
     /// transition AND (Wave 7) once per FSM death edge — both gated upstream so an already-handled
-    /// re-fire is a no-op. Propagates the FSM member count to the quorum-loss detector and nudges
-    /// the leader reconciler.
+    /// re-fire is a no-op. Re-evaluates the quorum-loss detector (whose member count is derived from
+    /// current state, see [`#derivedMemberCount`]) and nudges the leader reconciler.
     @Contract
-    private static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                       AtomicReference<MembershipFsm> membershipFsmRef,
-                                       AtomicReference<LeaderReconciler> leaderReconcilerRef,
-                                       NodeId self,
-                                       Set<NodeId> voters) {
-        Option.option(membershipFsmRef.get()).onPresent(fsm -> propagateMemberCount(quorumLossDetectorRef,
-                                                                                    fsm,
-                                                                                    self,
-                                                                                    voters));
+    static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                               AtomicReference<LeaderReconciler> leaderReconcilerRef) {
+        Option.option(quorumLossDetectorRef.get()).onPresent(QuorumLossDetector::reevaluate);
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
     }
 
-    /// Feed the quorum-loss detector the current member count. Wave 2 / W1 of the
-    /// cluster-topology-overhaul spec (adopting membership-fsm-unification §6): the numerator is
-    /// the FSM's STRICT CORE count — state exactly MEMBER, role=core; SUSPECT excluded, workers
-    /// excluded. A worker must never hold the
-    /// quorum-loss detector above threshold (1 core + 2 workers is NOT a quorum of a 3-core
-    /// config — Rabia has no voter majority). The strict MEMBER-only numerator is safe against
-    /// premature self-drain on a transient SUSPECT because the detector only fires after the
-    /// `quorumLossDrainThreshold` window elapses below threshold — a flap that recovers within
-    /// the window cancels the pending intent. Wave 7 (parallel-view collapse): the legacy
-    /// pre-FSM fallback to the sampler's role-blind `currentMemberCount` is GONE — the FSM is
-    /// published before the sampler's first 1s tick can fire this path, so the propagation is
-    /// simply skipped in the (unreachable in practice) pre-FSM window; the next reconcile
-    /// trigger after FSM publication propagates.
+    /// The quorum-loss detector's member count, DERIVED FROM CURRENT STATE each time the detector evaluates it
+    /// (#1853). It used to be PUSHED: `propagateMemberCount` computed it from a `voters` snapshot the trigger
+    /// passed in and stored the result in the detector. Its inputs are the FSM's strict core members, their
+    /// observed reachability and the installed voter set, and the push had triggers for the first two only —
+    /// a presence-sampler edge that landed before genesis installed the voters computed against an empty voter
+    /// set, stored 0, and nothing ever recomputed it (rc4 cloud run 9: quorum=false on 4 of 5 nodes for 17
+    /// minutes with consensus active; and, since the detector's arm latch only sets on an evaluation that sees a
+    /// quorate count, no self-fence on a later real quorum loss). A supplier cannot be stale: every read walks
+    /// the live inputs. The edge-detecting half of the detector (arm latch, below-threshold window) is fed by
+    /// [`#wireQuorumCountTriggers`] plus the presence-sampler, Member-boundary and death triggers.
     ///
-    /// #557: the count is [`MembershipFsm#strictCoreObservedMemberCount`], i.e. the strict core
-    /// count narrowed to OBSERVED reachability. The plain strict count is seed-derived — every
-    /// configured core is MEMBER from wiring time — which armed the detector's
-    /// arm-after-first-quorum latch on configuration alone, before the cluster had formed. That
-    /// latch is specified as "has this cluster ever been quorate"; only the observed count means it.
-    @Contract
-    private static void propagateMemberCount(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                             MembershipFsm membershipFsm,
-                                             NodeId self,
-                                             Set<NodeId> voters) {
-        var observed = membershipFsm.coreObservedMembers(self);
-        var memberCount = (int) membershipFsm.strictCoreMembers()
-                                             .stream()
-                                             .filter(voters::contains)
-                                             .filter(observed::contains)
-                                             .count();
+    /// Wave 2 / W1 of the cluster-topology-overhaul spec (adopting membership-fsm-unification §6): the
+    /// numerator is the FSM's STRICT CORE count — state exactly MEMBER, role=core; SUSPECT excluded, workers
+    /// excluded. A worker must never hold the quorum-loss detector above threshold (1 core + 2 workers is NOT a
+    /// quorum of a 3-core config — Rabia has no voter majority). The strict MEMBER-only numerator is safe against
+    /// premature self-drain on a transient SUSPECT because the detector only fires after the
+    /// `quorumLossDrainThreshold` window elapses below threshold — a flap that recovers within the window
+    /// cancels the pending intent. Wave 7 (parallel-view collapse): the legacy pre-FSM fallback to the
+    /// sampler's role-blind `currentMemberCount` is GONE; before the FSM is published the count is `0`, exactly
+    /// what the push left in place when it skipped that window.
+    ///
+    /// #557: the count is [`MembershipFsm#strictCoreObservedMemberCount`] narrowed to the voters, i.e. the
+    /// strict core count narrowed to OBSERVED reachability. The plain strict count is seed-derived — every
+    /// configured core is MEMBER from wiring time — which armed the detector's arm-after-first-quorum latch on
+    /// configuration alone, before the cluster had formed. That latch is specified as "has this cluster ever
+    /// been quorate"; only the observed count means it.
+    ///
+    /// No installed voter configuration yields `0` without walking the members: nobody is a voter yet.
+    /// The configuration is read ONCE per evaluation, so every member is tested against the same electorate.
+    ///
+    /// **Cost, the read path vs the push it replaces (#929).** The push walked every member twice and built two
+    /// sets per trigger ([`MembershipFsm#coreObservedMembers`], [`MembershipFsm#strictCoreMembers`]). This is
+    /// one allocation-free pass ([`MembershipFsm#strictCoreObservedVoterCount`]) taking each member's monitor
+    /// briefly and one at a time, so it is cheaper per evaluation than the old trigger, and it adds no
+    /// lock-order edge: the only new evaluation sites are the detector's own firing checks (which already hold
+    /// the detector's monitor while the co-confirmation supplier walks the same member map) and the management
+    /// reads, which hold no lock. Evaluations per second are the old trigger rate plus health/status polls.
+    /// [unverified: no microbenchmark was run; the claim is the pass count and allocation, not a timing]
+    static int derivedMemberCount(Option<MembershipFsm> membershipFsm, NodeId self, Option<VoterConfiguration> voters) {
+        return Option.all(membershipFsm, voters)
+                     .map((fsm, electorate) -> fsm.strictCoreObservedVoterCount(self, electorate::contains))
+                     .or(0);
+    }
 
-        Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onMemberCountChanged(memberCount));
+    /// Re-evaluate the quorum-loss detector on the two input changes that carry no FSM transition record
+    /// (#1853): a voter-configuration INSTALL — genesis, a §4 command applied at its slot, or a sync adoption of
+    /// a newer epoch; the electorate is both a filter of the count and the source of the threshold — and a
+    /// member's reachability latch flipping true. Together with the presence-sampler edge, the Member-boundary
+    /// crossing and the death edge these are every input change of the derived count. The voter source calls
+    /// the listener immediately when a configuration is already installed, so wiring after genesis misses
+    /// nothing.
+    @Contract
+    static void wireQuorumCountTriggers(QuorumLossDetector detector,
+                                        MembershipFsm membershipFsm,
+                                        Consumer<Consumer<VoterConfiguration>> voterInstallSource) {
+        voterInstallSource.accept(_ -> detector.reevaluate());
+        membershipFsm.onReachabilityLatched(_ -> detector.reevaluate());
     }
 
     /// True iff this transition crosses the exact-`Member` boundary — i.e. the strict core member
     /// count ([`MembershipFsm#strictCoreMemberCount`], the quorum-loss numerator) changes. Feeding the
     /// detector on this edge (NOT only on the 15s presence down-hysteresis / DEAD edge) is what lets a
     /// node recognize quorum loss promptly when several cores enter SUSPECT at once — the design's own
-    /// safety argument (propagateMemberCount javadoc) already assumes this feed; the splitTimeout window
+    /// safety argument (derivedMemberCount javadoc) already assumes this feed; the splitTimeout window
     /// + refutation-cancel + Fix-C co-confirmation guard against a transient SUSPECT flap.
     private static boolean crossesMemberBoundary(MembershipTransitionRecord record) {
         return "Member".equals(record.fromState()) != "Member".equals(record.toState());
@@ -1022,15 +1041,12 @@ public interface AetherNode extends ManageableNode {
     /// FSM→PresenceSampler eviction used to trigger through the sampler's reconcile callback —
     /// behaviour parity with the sampler removed from the authority loop.
     @Contract
-    private static void onMembershipDeath(NodeId departed,
-                                          Consumer<NodeId> dropDeadPeerLink,
-                                          AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                          AtomicReference<MembershipFsm> membershipFsmRef,
-                                          AtomicReference<LeaderReconciler> leaderReconcilerRef,
-                                          NodeId self,
-                                          Set<NodeId> voters) {
+    static void onMembershipDeath(NodeId departed,
+                                  Consumer<NodeId> dropDeadPeerLink,
+                                  AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                  AtomicReference<LeaderReconciler> leaderReconcilerRef) {
         dropDeadPeerLink.accept(departed);
-        onNttReconcile(quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef, self, voters);
+        onNttReconcile(quorumLossDetectorRef, leaderReconcilerRef);
     }
 
     /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
@@ -3945,11 +3961,7 @@ public interface AetherNode extends ManageableNode {
         // constructed and listeners registered on every node. The migration-ramp
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
-        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
-                                                            membershipFsmRef,
-                                                            leaderReconcilerRef,
-                                                            config.self(),
-                                                            installedVoterIds(clusterNode));
+        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, leaderReconcilerRef);
         Supplier<HealthSnapshot> nttHealthSupplier = () -> swimHealthDetector.currentHealth()
                                                                              .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
         var presenceSampler = PresenceSampler.presenceSampler(membershipConfig,
@@ -3964,7 +3976,10 @@ public interface AetherNode extends ManageableNode {
         // LocalQuorumWatcher, whose drain firing was dormant). The drain chain is registered
         // below once drainProcedure/leaderReconciler exist.
         var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig,
-                                                                       () -> installedVoterIds(clusterNode).size());
+                                                                       () -> installedVoterIds(clusterNode).size(),
+                                                                       () -> derivedMemberCount(Option.option(membershipFsmRef.get()),
+                                                                                                config.self(),
+                                                                                                clusterNode.voterConfiguration()));
 
         quorumLossDetectorRef.set(quorumLossDetector);
         Supplier<Option<ClusterName>> clusterNameSupplier = () -> clusterConfigReader.get()
@@ -4303,12 +4318,7 @@ public interface AetherNode extends ManageableNode {
             // `onTransition` is a single-listener setter — registering a second one would silently
             // replace the transition journal.
             alertManager.noteMembershipTransition(record.nodeId(), record.cause());
-            onFsmTransition(transitionJournal,
-                            quorumLossDetectorRef,
-                            membershipFsm,
-                            record,
-                            config.self(),
-                            installedVoterIds(clusterNode));
+            onFsmTransition(transitionJournal, quorumLossDetectorRef, record);
         });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
@@ -4427,6 +4437,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
 
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
+        wireQuorumCountTriggers(quorumLossDetector, membershipFsm, clusterNode::onVoterConfiguration);
         // Fix C (split-brain self-fence co-confirmation): before the QUORUM_LOSS drain commits, the
         // detector consults this snapshot of the FSM's counted (MEMBER+SUSPECT) set vs raw-SWIM
         // liveness of the members missing from the STRICT (MEMBER-only) count. The strict count is
@@ -4594,13 +4605,7 @@ public interface AetherNode extends ManageableNode {
                                                                             operatorWarningSink);
 
         membershipFsm.onConfirmedDeparture(departed -> {
-            onMembershipDeath(departed,
-                              dropDeadPeerLink,
-                              quorumLossDetectorRef,
-                              membershipFsmRef,
-                              leaderReconcilerRef,
-                              config.self(),
-                              installedVoterIds(clusterNode));
+            onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, leaderReconcilerRef);
         });
         // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
         // death signal that drives auto-heal above — instead of the quorum-gated
@@ -6081,7 +6086,7 @@ public interface AetherNode extends ManageableNode {
     /// self-drain window when several cores enter SUSPECT at once, and CANCELS it on a SUSPECT→MEMBER
     /// refutation.
     ///
-    /// #929: `propagateMemberCount` walks EVERY member calling the `synchronized`
+    /// #929: the detector's count derivation (`derivedMemberCount`) walks EVERY member calling the `synchronized`
     /// `MemberTracking.isStrictCoreMember`. Until #929 this listener ran while the FSM held the
     /// DISPATCHING member's monitor, so this method held one member's monitor and requested all the
     /// others' — in `ConcurrentHashMap` iteration order. Two of this node's event loops (SWIM
@@ -6091,15 +6096,12 @@ public interface AetherNode extends ManageableNode {
     /// "safe-by-precedent" note here cited `onMembershipDeath` driving the same chain from inside
     /// that monitor — that was the same defect, not a precedent for it.
     @Contract
-    private static void onFsmTransition(TransitionJournal journal,
-                                        AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                        MembershipFsm membershipFsm,
-                                        MembershipTransitionRecord record,
-                                        NodeId self,
-                                        Set<NodeId> voters) {
+    static void onFsmTransition(TransitionJournal journal,
+                                AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                MembershipTransitionRecord record) {
         appendFsmTransition(journal, record);
         if (crossesMemberBoundary(record)) {
-            propagateMemberCount(quorumLossDetectorRef, membershipFsm, self, voters);
+            Option.option(quorumLossDetectorRef.get()).onPresent(QuorumLossDetector::reevaluate);
         }
     }
 

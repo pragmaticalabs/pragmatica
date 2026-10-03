@@ -315,7 +315,7 @@ public final class StatusRoutes implements RouteSource {
     /// includes every core the boot seed promoted from CONFIGURATION at wiring time, so this
     /// surface — and therefore `/health/ready` — reported quorum held before a single peer had
     /// connected. The detector path above is narrowed to the same observed projection at its feed
-    /// (`AetherNode.propagateMemberCount`), so both paths now answer from reachability and the
+    /// (`AetherNode.derivedMemberCount`), so both paths now answer from reachability and the
     /// three surfaces still cannot disagree with each other or with the consensus layer.
     static QuorumStatus quorumStatus(ManageableNode node) {
         return node.quorumLossSnapshot()

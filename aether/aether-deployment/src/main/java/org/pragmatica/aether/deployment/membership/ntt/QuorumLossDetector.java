@@ -30,8 +30,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Per-node observer of cluster quorum visibility (membership v2 spec §4, §8.1 third bullet,
 /// §12.5, I10). Unlike its predecessor `LocalQuorumWatcher` — which independently counted
 /// QUIC-connected peers — this detector consumes the member count from the single SWIM-fed
-/// membership source (`PresenceSampler.currentMemberCount()`, which already includes self).
-/// It tracks
+/// membership source (the FSM's strict observed core count, narrowed to the installed voters, which
+/// already includes self). It tracks
 /// that count against the simple-majority threshold `coreCount / 2 + 1` (same formula as
 /// `TopologyManager.quorumSize() = clusterSize() / 2 + 1`) and emits a [`QuorumLossIntent`]
 /// when the count stays below threshold continuously for at least `quorumLossDrainThreshold`.
@@ -41,7 +41,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// logs — Stage 6 wires it to the actual §8 drain procedure.
 ///
 /// **Inputs.**
-/// - [`#onMemberCountChanged`] — stores the latest member count (includes self) and recomputes.
+/// - `memberCountSupplier` — the member count (includes self), DERIVED FROM CURRENT STATE on every read
+///   (#1853). It is never stored here. Every consumer of the count — [`#currentMemberCount`], the arm latch,
+///   the below-threshold window, both firing checks and the observability accessors — evaluates it at the
+///   moment it needs it, so a value can never be stale because a trigger was missed.
+/// - [`#reevaluate`] — the edge input. The derived count says what the world IS; the arm latch and the
+///   below-threshold window are TRANSITIONS and can only be detected by evaluating at the moment an input
+///   changes. The wiring layer calls it on every change of every input of the count (see below).
 /// - `coreCountSupplier` — the configured core size, read on each recompute to derive the
 ///   threshold.
 ///
@@ -50,10 +56,21 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// above-period; recovery (count returns to ≥ threshold) closes the window and resets the
 /// "first below" timestamp for the next window.
 ///
-/// **Quorum count semantics.** The member count is supplied externally and already includes
-/// self — the detector never adds an implicit `+1`. A repeated `onMemberCountChanged` with the
-/// same value simply re-evaluates the window (no edge transition, so a no-op when the
-/// below/above state is unchanged).
+/// **Quorum count semantics.** The member count already includes self — the detector never adds an
+/// implicit `+1`. A repeated [`#reevaluate`] with an unchanged count simply re-evaluates the window (no edge
+/// transition, so a no-op when the below/above state is unchanged).
+///
+/// **Why derived, not pushed (#1853).** The count used to be pushed in as an `int` by whoever noticed a
+/// change. Its inputs are the FSM's strict core members, their observed reachability and the INSTALLED VOTER
+/// SET; the push had three triggers and none for the voter install. When the last sampler edge preceded
+/// genesis installing the voters, the pushed value was computed against an empty voter set (0) and nothing
+/// ever recomputed it: quorum read false forever on a cluster with consensus, and — because the arm latch only
+/// sets on an evaluation that sees a quorate count — the node would never have self-fenced on a later real
+/// quorum loss. Deriving removes that class for every READ. The EDGE half (arm latch, window) still needs an
+/// evaluation at each input change, so the wiring calls [`#reevaluate`] on all of: the presence-sampler edge,
+/// an FSM Member-boundary crossing, an FSM death, a member's reachability latch, and a voter-configuration
+/// install. `AetherNodeQuorumCountTriggersTest` pins that each of them arms the detector. A read is
+/// deliberately pure (no arming, no scheduling): an HTTP health poll must not be able to start a drain window.
 ///
 /// **Initial-state firing suppression.** `coreCountSupplier` returning `0` means "unknown — do
 /// not fire". Until the wiring layer supplies a configured core size `≥ 1`, no intent will ever
@@ -98,12 +115,12 @@ public final class QuorumLossDetector {
 
     private final MembershipConfig config;
     private final IntSupplier coreCountSupplier;
+    private final IntSupplier memberCountSupplier;
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
     private final AtomicLong belowThresholdSinceNanos = new AtomicLong(Long.MIN_VALUE);
     private final AtomicReference<ScheduledFuture<?>> pendingFuture = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> presenceFuture = new AtomicReference<>();
-    private volatile int memberCount;
     private volatile boolean armed;
     private volatile boolean quorumPresenceLost;
     /// Terminal off-latch (#642). Set once by [`#stop`] and never cleared. Read at every point that
@@ -148,41 +165,55 @@ public final class QuorumLossDetector {
 
     private QuorumLossDetector(MembershipConfig config,
                                IntSupplier coreCountSupplier,
+                               IntSupplier memberCountSupplier,
                                TimeSource timeSource,
                                NttTimerScheduler scheduler) {
         this.config = config;
         this.coreCountSupplier = coreCountSupplier;
+        this.memberCountSupplier = memberCountSupplier;
         this.timeSource = timeSource;
         this.scheduler = scheduler;
     }
 
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
-    public static QuorumLossDetector quorumLossDetector(MembershipConfig config, IntSupplier coreCountSupplier) {
-        return new QuorumLossDetector(config, coreCountSupplier, TimeSource.system(), SharedScheduler::schedule);
+    public static QuorumLossDetector quorumLossDetector(MembershipConfig config,
+                                                        IntSupplier coreCountSupplier,
+                                                        IntSupplier memberCountSupplier) {
+        return new QuorumLossDetector(config,
+                                      coreCountSupplier,
+                                      memberCountSupplier,
+                                      TimeSource.system(),
+                                      SharedScheduler::schedule);
     }
 
     /// Production factory with an explicit [`TimeSource`] (e.g. the node-wide HLC physical
     /// source).
     public static QuorumLossDetector quorumLossDetector(MembershipConfig config,
                                                         IntSupplier coreCountSupplier,
+                                                        IntSupplier memberCountSupplier,
                                                         TimeSource timeSource) {
-        return new QuorumLossDetector(config, coreCountSupplier, timeSource, SharedScheduler::schedule);
+        return new QuorumLossDetector(config,
+                                      coreCountSupplier,
+                                      memberCountSupplier,
+                                      timeSource,
+                                      SharedScheduler::schedule);
     }
 
     /// Test factory accepting an explicit scheduler — required for deterministic firing
     /// without wall-clock advancement.
     public static QuorumLossDetector quorumLossDetector(MembershipConfig config,
                                                         IntSupplier coreCountSupplier,
+                                                        IntSupplier memberCountSupplier,
                                                         TimeSource timeSource,
                                                         NttTimerScheduler scheduler) {
-        return new QuorumLossDetector(config, coreCountSupplier, timeSource, scheduler);
+        return new QuorumLossDetector(config, coreCountSupplier, memberCountSupplier, timeSource, scheduler);
     }
 
-    /// Member-count input. Stores the latest count (sourced from the SWIM-fed membership
-    /// tracker, which already includes self) and recomputes.
+    /// Edge input (#1853): some input of the derived member count changed — evaluate NOW, so the arm latch and
+    /// the below-threshold window see the transition. Carries no value: the count is read from current state
+    /// here, so the caller cannot hand in a stale or partial one, and a trigger need not know which input moved.
     @Contract
-    public void onMemberCountChanged(int newMemberCount) {
-        memberCount = newMemberCount;
+    public void reevaluate() {
         recompute();
     }
 
@@ -276,9 +307,10 @@ public final class QuorumLossDetector {
         cancelPresenceFuture();
     }
 
-    /// Observability — current member count (as last supplied; includes self).
+    /// The member count derived from current state (includes self). Evaluated on every call — this is the one
+    /// place the supplier is read, so no consumer can hold a value older than its own evaluation. Pure.
     public int currentMemberCount() {
-        return memberCount;
+        return memberCountSupplier.getAsInt();
     }
 
     /// Observability — whether the detector has ever observed a quorate member count. Once
@@ -311,7 +343,9 @@ public final class QuorumLossDetector {
                : some(since);
     }
 
-    private void recompute() {
+    /// Synchronized so the count read and the window edge it implies are one step: unsynchronized, a stale
+    /// quorate read applied after a fresh below-threshold one closes the window with nothing left to reopen it.
+    private synchronized void recompute() {
         var threshold = requiredThresholdFor(coreCountSupplier.getAsInt());
         var quorumCount = currentMemberCount();
         var nowBelow = threshold > 0 && quorumCount < threshold;
@@ -402,14 +436,15 @@ public final class QuorumLossDetector {
 
         presenceFuture.set(null);
         var threshold = requiredThresholdFor(coreCountSupplier.getAsInt());
+        var quorumCount = currentMemberCount();
 
-        if (suppressedByCoConfirmation(currentMemberCount(), threshold)) {
+        if (suppressedByCoConfirmation(quorumCount, threshold)) {
             schedulePresenceCheck(armedAtNanos, SUPPRESSED_RECHECK_INTERVAL);
 
             return;
         }
 
-        var intent = QuorumLossIntent.quorumLossIntent(armedAtNanos, currentMemberCount(), threshold);
+        var intent = QuorumLossIntent.quorumLossIntent(armedAtNanos, quorumCount, threshold);
 
         emitIntent(intent, () -> schedulePresenceCheck(armedAtNanos));
     }

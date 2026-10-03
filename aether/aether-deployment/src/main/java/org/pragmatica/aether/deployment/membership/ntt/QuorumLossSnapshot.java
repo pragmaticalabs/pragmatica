@@ -9,8 +9,8 @@ package org.pragmatica.aether.deployment.membership.ntt;
 /// quorum-loss self-drain window armed, and is it currently below the simple-majority
 /// threshold?". A pure, point-in-time read assembled by [`#from`]; carries no behaviour.
 ///
-/// - `strictMemberCount`: the detector's current strict member count (sourced from the SWIM-fed
-///   membership tracker; already includes self).
+/// - `strictMemberCount`: the detector's current strict member count (derived from current FSM,
+///   voter and reachability state on every read; already includes self).
 /// - `requiredThreshold`: the simple-majority threshold `coreCount / 2 + 1`; `0` while the core
 ///   count is unknown (firing suppressed during bootstrap).
 /// - `belowThreshold`: whether the strict count is currently below the threshold.
@@ -19,9 +19,11 @@ package org.pragmatica.aether.deployment.membership.ntt;
 public record QuorumLossSnapshot(int strictMemberCount, int requiredThreshold, boolean belowThreshold, boolean armed) {
     /// Read the four observability accessors off the live detector into an immutable snapshot.
     public static QuorumLossSnapshot from(QuorumLossDetector detector) {
-        return new QuorumLossSnapshot(detector.currentMemberCount(),
-                                      detector.currentRequiredThreshold(),
-                                      detector.isBelowThreshold(),
-                                      detector.isArmed());
+        // The count is derived on every read (#1853): read it ONCE so strictMemberCount and belowThreshold
+        // cannot disagree within one snapshot.
+        var count = detector.currentMemberCount();
+        var threshold = detector.currentRequiredThreshold();
+
+        return new QuorumLossSnapshot(count, threshold, threshold > 0 && count < threshold, detector.isArmed());
     }
 }

@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// ## The defect these pin
 ///
 /// `MemberTracking.dispatch` was `synchronized` and published to `transitionSink` while holding the
-/// dispatching member's monitor. `AetherNode.onFsmTransition` → `propagateMemberCount` →
-/// `MembershipFsm.strictCoreObservedMemberCount` walks the member map calling the `synchronized`
+/// dispatching member's monitor. `AetherNode.onFsmTransition` → `QuorumLossDetector.reevaluate` → `derivedMemberCount` →
+/// `MembershipFsm.strictCoreObservedVoterCount` walks the member map calling the `synchronized`
 /// `isStrictCoreMember` on EVERY member — so the listener held one member's monitor and requested
 /// all the others', in `ConcurrentHashMap` iteration order. One node's SWIM loop (`onSwimSuspect`)
 /// and QUIC loop (`onLivenessGone`) dispatching on two different members each held one monitor and
@@ -79,7 +79,7 @@ class MembershipFsmTransitionListenerLockingTest {
     /// The deadlock probe. Two threads enter `MembershipFsm` through the two production ingress
     /// points that collided in the field — SWIM `onSwimSuspect` and QUIC `onLivenessGone` — on two
     /// DIFFERENT members of ONE FSM. Each listener performs the same member walk
-    /// `AetherNode.propagateMemberCount` performs, after both are in position.
+    /// `AetherNode.derivedMemberCount` performs, after both are in position.
     @Test
     void concurrentDispatchOnTwoMembers_doesNotDeadlock() {
         var fsm = MembershipFsm.membershipFsm();
@@ -95,8 +95,8 @@ class MembershipFsmTransitionListenerLockingTest {
         fsm.onTransition(_ -> {
             arrivals.incrementAndGet();
             rendezvous(rendezvous, rendezvousBroken);
-            // Shape-for-shape AetherNode.propagateMemberCount: acquires EVERY member's monitor.
-            fsm.strictCoreObservedMemberCount(SELF);
+            // Shape-for-shape AetherNode.derivedMemberCount: acquires EVERY member's monitor.
+            fsm.strictCoreObservedVoterCount(SELF, _ -> true);
         });
 
         var swimLoop = daemon("probe-929-swim", () -> fsm.onSwimSuspect(A, 2L));
@@ -289,7 +289,7 @@ class MembershipFsmTransitionListenerLockingTest {
     ///
     /// "Lock order is always guard then monitor" is true and does not earn the safety: the fan-out
     /// still holds one member's guard while acquiring every OTHER member's monitor, which is exactly
-    /// what `AetherNode.propagateMemberCount` does. What makes that acyclic is that **the per-member
+    /// what `AetherNode.derivedMemberCount` does. What makes that acyclic is that **the per-member
     /// monitor is a LEAF — nothing acquired under it acquires anything else.**
     ///
     /// That property is breakable from OUTSIDE this class. [`MembershipFsm#membershipFsm`] overloads
