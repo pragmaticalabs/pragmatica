@@ -152,6 +152,8 @@ class AetherNodeDhtReplicationTest {
 
         assertThat(node.config().readQuorum()).as("unsettled: R_t = max(R_old 3, R_new 2)").isEqualTo(3);
         assertThat(node.config().writeQuorum()).as("unsettled: W_t = max(W_old 1, W_new 2)").isEqualTo(2);
+        assertThat(node.replicationFence()).as("R1c: the worker stamps its puts with the committed change, not the version it applied it at")
+                                           .isEqualTo(3L);
 
         AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 6, 3, 1, 3, true),
                                              node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache, settlement);

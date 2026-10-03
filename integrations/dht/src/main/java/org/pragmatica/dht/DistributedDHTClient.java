@@ -224,7 +224,11 @@ public final class DistributedDHTClient implements DHTClient {
 
     /// The version and owner epoch one put is stamped with — what a rollback must match exactly — and the replication
     /// change its quorum was sized under (#1777 R1c), read when the put starts.
-    private record WriteStamp(long version, long epochIncarnation, long epochTerm, long epochCounter, long replicationVersion) {}
+    private record WriteStamp(long version,
+                              long epochIncarnation,
+                              long epochTerm,
+                              long epochCounter,
+                              long replicationVersion) {}
 
     /// A put that lost its quorum to owner-epoch fences is INDETERMINATE (#1818, the owner's fence ruling):
     /// this node's own store may have accepted it because its high-water lags, and anti-entropy copies bypass
