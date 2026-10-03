@@ -40,6 +40,7 @@ class NodeLifecycleRoutesGetAuthorityTest {
             new Class[]{ManageableNode.class},
             (_, method, _) -> switch (method.getName()) {
                 case "metricsCollector" -> collector;
+                case "membershipFsm" -> org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.membershipFsm();
                 case "leader" -> Option.none();
                 default -> throw new UnsupportedOperationException(method.getName());
             });
@@ -59,7 +60,7 @@ class NodeLifecycleRoutesGetAuthorityTest {
     }
 
     @Test
-    void getNodeLifecycle_authoritativeViewWithoutTheNode_is404() {
+    void getNodeLifecycle_authoritativeViewWithoutAnUnknownNode_is404() {
         assertThat(statusOf(routes(true, Map.of()))).isEqualTo(HttpStatus.NOT_FOUND.code());
     }
 

@@ -51,6 +51,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// this label for the audit + `NodeLifecycleChanged` event surface only.
     private static final String STOPPED_STATE = "STOPPED";
 
+    /// `MembershipFsm.memberStates()` reports `getClass().getSimpleName()`; `MembershipState.Dead` is the terminal,
+    /// committed departure of an identity.
+    private static final String MEMBERSHIP_DEAD = "Dead";
+
     private final Supplier<ManageableNode> nodeSupplier;
     /// Membership v2 (B5b) — leader-local DRAIN command sink. Operator `drain` / `shutdown` routes
     /// enqueue the target here (wired to `DrainCommandRegistry::requestDrain` in `AetherNode`) so
@@ -211,16 +215,39 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
-    /// Same authority guard as LIST (#1868): without an authoritative or fresh cached view an absent
-    /// entry means "this node knows nothing", not "the node is gone", so it answers 503 + leader hint.
-    /// Only after the guard does `LIFECYCLE_NOT_FOUND` (404) mean "absent from an authoritative view" —
-    /// the signal the CLI's drain wait reads as completion (`DrainCompletion`).
+    /// Per-node lifecycle GET (#1868). 404 here means ONE thing: this node's MEMBERSHIP has committed the
+    /// node's departure (its `MembershipFsm` state is `Dead`), or the id was never a member. It is NOT "absent
+    /// from the soft readiness view": that view drops a LIVE node on a transient QUIC evict, after three missed
+    /// pongs, and is empty on a freshly elected leader until the first pongs arrive. A node missing from the
+    /// view but not departed answers 503 "readiness unknown" — never the verdict a drain wait reads as
+    /// completion. Without an authoritative or fresh cached view at all it answers 503 + leader hint, as LIST does.
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
         if (!nodeSupplier.get().metricsCollector().hasAuthoritativeReadiness()) {
             return readinessUnavailableError().promise();
         }
 
-        return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr, state.name(), 0L));
+        return NodeId.nodeId(nodeIdStr).async().flatMap(this::lifecycleEntryOrVerdict);
+    }
+
+    private Promise<LifecycleEntry> lifecycleEntryOrVerdict(NodeId nodeId) {
+        return readLifecycleState(nodeId).map(state -> Promise.success(new LifecycleEntry(nodeId.id(), state.name(), 0L)))
+                                         .or(() -> absentFromReadinessView(nodeId));
+    }
+
+    private Promise<LifecycleEntry> absentFromReadinessView(NodeId nodeId) {
+        var memberState = Option.option(nodeSupplier.get().membershipFsm().memberStates().get(nodeId));
+        var departedOrUnknownId = memberState.filter(state -> !MEMBERSHIP_DEAD.equals(state)).isEmpty();
+
+        return departedOrUnknownId
+               ? LIFECYCLE_NOT_FOUND.promise()
+               : readinessUnknownError(nodeId).promise();
+    }
+
+    /// Tracked and not departed, yet absent from the soft readiness view: a transient gap, not a verdict.
+    private static Cause readinessUnknownError(NodeId nodeId) {
+        return HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                   Causes.cause("readiness of " + nodeId.id()
+                                               + " is unknown: it is a member that has not departed"));
     }
 
     /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the presence
