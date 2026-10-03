@@ -99,15 +99,18 @@ class NoWalSealSnapshotBootTest {
         createStream(manager);
         assertThat(hasWal(manager)).as("fixture: the unwritable wal_path left this partition without a WAL").isFalse();
         IntStream.range(0, EVENTS).forEach(i -> publish(manager, i));
-        awaitCondition(() -> liveSealedThrough(manager) >= SEALED_AT_LEAST, "seals reach " + SEALED_AT_LEAST);
+        // Every evicted offset sealed: no seal is left in flight to write into the temp dir after stop, and since a
+        // seal's ref is persisted BEFORE it is indexed, every snapshot those seals force is already on disk.
+        awaitCondition(() -> liveSealedThrough(manager) == ringTail(manager) - 1, "every evicted offset is sealed");
+        var sealed = liveSealedThrough(manager);
+
+        assertThat(sealed).as("fixture: the ring evicted and sealed").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
 
         var floorOnDisk = DurableSealedOffsetSource.fromLatestSnapshot(snapshots)
                                                    .current()
                                                    .lastSealedOffset(STREAM, PARTITION);
 
-        assertThat(floorOnDisk).as("the floor the next boot rebuilds covers every completed seal (live: %d)",
-                                   liveSealedThrough(manager))
-                               .isGreaterThanOrEqualTo(SEALED_AT_LEAST);
+        assertThat(floorOnDisk).as("the floor the next boot rebuilds covers every completed seal").isEqualTo(sealed);
     }
 
     private SnapshotManager streamsSnapshotManager() {
@@ -129,6 +132,12 @@ class NoWalSealSnapshotBootTest {
 
     private static long liveSealedThrough(StreamPartitionManager manager) {
         return partitionView(manager).mapToLong(StreamPartitionManager.PartitionWalView::sealedThroughOffset)
+                                     .findFirst()
+                                     .orElse(-1L);
+    }
+
+    private static long ringTail(StreamPartitionManager manager) {
+        return partitionView(manager).mapToLong(StreamPartitionManager.PartitionWalView::ringTailOffset)
                                      .findFirst()
                                      .orElse(-1L);
     }
