@@ -8,6 +8,7 @@ import org.pragmatica.http.HttpClientError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
+
 /// The one definition of "this node's drain has completed", shared by every CLI drain wait.
 ///
 /// Built only from what the server produces. `NodeReportedState` has three values (SYNCING, READY,

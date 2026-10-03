@@ -394,13 +394,12 @@ public sealed interface ClusterHttpClient {
                                           int managementPort,
                                           String nodeId,
                                           long timeoutMs) {
-        return drainNode(scheme, address, managementPort, nodeId)
-                        .flatMap(_ -> awaitDrainComplete(scheme,
-                                                         address,
-                                                         managementPort,
-                                                         nodeId,
-                                                         timeoutMs,
-                                                         DRAIN_POLL_INTERVAL_MS));
+        return drainNode(scheme, address, managementPort, nodeId).flatMap(_ -> awaitDrainComplete(scheme,
+                                                                                                  address,
+                                                                                                  managementPort,
+                                                                                                  nodeId,
+                                                                                                  timeoutMs,
+                                                                                                  DRAIN_POLL_INTERVAL_MS));
     }
 
     /// Polls the DRAINING node itself. After an accepted drain the node halts (`DrainProcedure`), so

@@ -824,7 +824,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
         System.err.printf("  Node %s did not finish draining in time.%n", nodeId);
 
-        return NodeResult.failed(nodeId, "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for the drain to complete");
+        return NodeResult.failed(nodeId,
+                                 "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for the drain to complete");
     }
 
     /// The reason the summary warning carries per node (#587 review NIT-2): a refusal keeps its HTTP
