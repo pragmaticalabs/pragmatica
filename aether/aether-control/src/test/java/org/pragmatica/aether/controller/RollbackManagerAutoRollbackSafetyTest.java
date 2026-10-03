@@ -327,7 +327,7 @@ class RollbackManagerAutoRollbackSafetyTest {
     }
 
     private static ClusterConfigValue clusterConfig(String toml, long configVersion) {
-        return new ClusterConfigValue(toml, "test", "1.0.0", List.of(), 3, 3, "forge", configVersion, configVersion);
+        return new ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 3, "forge", configVersion, configVersion);
     }
 
     /// Every committed rollback is reported with the artifact, from→to and the per-host evidence.

@@ -34,8 +34,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
     /// Blank TOML, as a self-bootstrapped seed carries: the scale path now reads the committed TOML's
     /// `[replication.cluster_events]` (#1564 B1), and the placeholder `"toml"` it used before is not a TOML document.
     private static ClusterConfigValue base() {
-        return ClusterConfigValue.clusterConfigValue("",
-                                                     "prod",
+        return ClusterConfigValue.bootstrapSeed("prod",
                                                      "1.0.0",
                                                      List.of(new TopologyEntry("eu", "core", 3)),
                                                      3,

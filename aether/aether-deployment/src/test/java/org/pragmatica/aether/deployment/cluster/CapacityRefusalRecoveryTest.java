@@ -119,7 +119,7 @@ class CapacityRefusalRecoveryTest {
     @Test
     void competingReservationsForLastSlot_exactlyOneWinsViaLedgerCas() {
         seedLedger(0);
-        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, new AetherValue.ClusterConfigValue(CONFIG, "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
         var creates = new AtomicInteger();
         var providerB = provider(creates, s -> Promise.success(instance(s.context().nodeId().unwrap())));
         var lifecycleB = CapacityControlledLifecycle.capacityControlledLifecycle(providerB, CORE, store, this::process, () -> true, () -> 1);
@@ -153,7 +153,7 @@ class CapacityRefusalRecoveryTest {
     private void initializeReconcilerWorld() {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(CONFIG, "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
         seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(OLD), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
         seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(OLD), new AetherValue.NodePlacementValue("pool", Option.some("old"), "old-instance")));
         ready.add(OLD);

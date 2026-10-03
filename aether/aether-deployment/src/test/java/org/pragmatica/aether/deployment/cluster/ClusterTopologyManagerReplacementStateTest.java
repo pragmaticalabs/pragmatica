@@ -231,7 +231,7 @@ class ClusterTopologyManagerReplacementStateTest {
     }
 
     private void seedConfig(String toml) {
-        configRef.set(Option.some(new ClusterConfigValue(toml, "prod", "1.0.0", List.of(), 3, 9, "test", 1L,
+        configRef.set(Option.some(new ClusterConfigValue(Option.some(toml), "prod", "1.0.0", List.of(), 3, 9, "test", 1L,
                                                          System.currentTimeMillis())));
     }
 

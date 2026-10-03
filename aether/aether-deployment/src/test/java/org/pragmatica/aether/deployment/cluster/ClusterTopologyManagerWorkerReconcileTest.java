@@ -189,10 +189,14 @@ class ClusterTopologyManagerWorkerReconcileTest {
     }
 
     private void seedTopology(AetherValue.TopologyEntry... entries) {
-        seedConfig("", entries);
+        seedConfig(Option.none(), entries);
     }
 
     private void seedConfig(String toml, AetherValue.TopologyEntry... entries) {
+        seedConfig(Option.some(toml), entries);
+    }
+
+    private void seedConfig(Option<String> toml, AetherValue.TopologyEntry... entries) {
         configRef.set(Option.some(new ClusterConfigValue(toml, CLUSTER, "1.0.0", List.of(entries), 3, 9, "test", 1L,
                                                          System.currentTimeMillis())));
     }

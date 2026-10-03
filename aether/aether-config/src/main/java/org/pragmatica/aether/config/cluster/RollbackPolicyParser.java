@@ -10,6 +10,7 @@ import java.util.Set;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -44,14 +45,13 @@ public sealed interface RollbackPolicyParser {
     String BAKE_WINDOW = "bake_window";
     Set<String> KEYS = Set.of(ENABLED, TRIGGER, COOLDOWN, MAX_ROLLBACKS, BAKE_WINDOW);
 
-    /// The policy committed in `tomlContent`. Blank content (a self-bootstrapped cluster's seed) is the
-    /// built-in default.
-    static Result<RollbackConfig> fromClusterToml(String tomlContent) {
-        return tomlContent.isBlank()
-               ? success(RollbackConfig.rollbackConfig())
-               : TomlParser.parse(tomlContent)
-                           .mapError(cause -> new ClusterConfigError.ParseFailed(cause.message()))
-                           .flatMap(RollbackPolicyParser::parse);
+    /// The policy committed in `tomlContent`. The self-bootstrap seed carries no source configuration
+    /// ([Option#none()]) and is the built-in default.
+    static Result<RollbackConfig> fromClusterToml(Option<String> tomlContent) {
+        return tomlContent.fold(() -> success(RollbackConfig.rollbackConfig()),
+                                toml -> TomlParser.parse(toml)
+                                                  .mapError(cause -> new ClusterConfigError.ParseFailed(cause.message()))
+                                                  .flatMap(RollbackPolicyParser::parse));
     }
 
     /// The `[rollback]` section of an already parsed document; an absent section is the built-in default.

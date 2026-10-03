@@ -245,29 +245,44 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Promise<Unit> initializeInventory() {
         return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
                     .fold(() -> Causes.cause("Committed source configuration required for fleet inventory").promise(),
-                          config -> ClusterBootstrapConfigParser.parse(config.tomlContent())
-                                                                .async()
-                                                                .flatMap(parsed -> {
-                                                                             var pass = Promise.unitPromise();
+                          config -> inventorySources(config).async()
+                                                    .flatMap(this::inventory));
+    }
 
-                                                                             for (var source : parsed.sources()
-                                                                                                     .values()
-                                                                                                     .stream()
-                                                                                                     .filter(value -> value.type() != SourceType.SSH)
-                                                                                                     .sorted(java.util.Comparator.comparing(value -> value.name()
-                                                                                                                                                          .value()))
-                                                                                                     .toList()) {
-                                                                             pass = pass.flatMap(_ -> listInstances(Map.of("aether-source",
-                                                                                                                           source.name()
-                                                                                                                                 .value(),
-                                                                                                                           "aether-cluster",
-                                                                                                                           parsed.cluster()
-                                                                                                                                 .name()
-                                                                                                                                 .value())).mapToUnit());
-                                                                         }
+    private record InventorySource(String source, String cluster) {}
 
-                                                                             return pass.flatMap(_ -> markInventoryComplete());
-                                                                         }));
+    /// The sources a fleet inventory lists. A committed configuration names them (SSH sources are not
+    /// provisioned). The bootstrap seed declares none: its single implicit source is the local default it
+    /// provisions through, which [SourceComputeRegistry] resolves only to an explicitly local provider.
+    private static org.pragmatica.lang.Result<List<InventorySource>> inventorySources(AetherValue.ClusterConfigValue config) {
+        return config.tomlContent()
+                     .fold(() -> org.pragmatica.lang.Result.success(List.of(new InventorySource(SourceName.DEFAULT.value(),
+                                                                                                config.clusterName()))),
+                           toml -> ClusterBootstrapConfigParser.parse(toml).map(parsed -> parsed.sources()
+                                                                                                .values()
+                                                                                                .stream()
+                                                                                                .filter(value -> value.type() != SourceType.SSH)
+                                                                                                .sorted(java.util.Comparator.comparing(value -> value.name()
+                                                                                                                                                     .value()))
+                                                                                                .map(value -> new InventorySource(value.name()
+                                                                                                                                       .value(),
+                                                                                                                                  parsed.cluster()
+                                                                                                                                        .name()
+                                                                                                                                        .value()))
+                                                                                                .toList()));
+    }
+
+    private Promise<Unit> inventory(List<InventorySource> sources) {
+        var pass = Promise.unitPromise();
+
+        for (var source : sources) {
+            pass = pass.flatMap(_ -> listInstances(Map.of("aether-source",
+                                                          source.source(),
+                                                          "aether-cluster",
+                                                          source.cluster())).mapToUnit());
+        }
+
+        return pass.flatMap(_ -> markInventoryComplete());
     }
 
     private Promise<Unit> markInventoryComplete() {

@@ -124,7 +124,8 @@ record PlacementReconciler(NodeId self,
         return Option.option(snapshot.get(AetherKey.ClusterConfigKey.CURRENT))
                      .filter(AetherValue.ClusterConfigValue.class::isInstance)
                      .map(AetherValue.ClusterConfigValue.class::cast)
-                     .flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).option());
+                     .flatMap(AetherValue.ClusterConfigValue::tomlContent)
+                     .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).option());
     }
 
     @Override

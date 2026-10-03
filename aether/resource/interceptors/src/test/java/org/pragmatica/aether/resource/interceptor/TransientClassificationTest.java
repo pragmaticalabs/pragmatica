@@ -49,7 +49,8 @@ class TransientClassificationTest {
             new DatabaseConnectorError.TimedOut("query"),
             DatabaseConnectorError.PoolExhausted.INSTANCE,
             new HttpClientError.ConnectionFailed("refused", Option.none()),
-            new HttpClientError.Timeout("slow", Option.some(Duration.ofSeconds(1))),
+            new HttpClientError.ConnectionFailed("refused", Option.some(new java.net.ConnectException("refused"))),
+            new HttpClientError.ConnectionFailed("dns", Option.some(new java.net.UnknownHostException("nohost"))),
             new DHTError.PeerUnreachable(new NodeId("n1"), "down"),
             new DHTError.QuorumNotReached(2, 1),
             new DHTError.NoAvailableNodes(),
@@ -70,6 +71,10 @@ class TransientClassificationTest {
             new CapacityDenied("not capacity"),
             new DatabaseConnectorError.ConstraintViolation("pk", "dup"),
             new HttpClientError.RequestFailed(500, "boom"),
+            // A timed-out or reset request may already have executed on the server: retrying it under
+            // RetryOn.TRANSIENT could duplicate a non-idempotent call, so neither is classified transient.
+            new HttpClientError.Timeout("slow", Option.some(Duration.ofSeconds(1))),
+            new HttpClientError.ConnectionFailed("reset", Option.some(new java.io.IOException("Connection reset"))),
             new DHTError.StaleEpochWrite(0, 1, 1),
         };
 

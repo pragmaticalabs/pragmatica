@@ -10,6 +10,7 @@ import java.util.Set;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -52,14 +53,13 @@ public sealed interface ReplicationDefaultsParser {
     Set<String> CACHE_KEYS = Set.of(REPLICATION_FACTOR, CONFIRMATION_FACTOR);
     int MINIMUM_DEFAULT_FACTOR = 3;
 
-    /// The defaults committed in `tomlContent`. Blank content (a self-bootstrapped cluster's seed) is the
-    /// built-in default.
-    static Result<ReplicationDefaultsConfig> fromClusterToml(String tomlContent) {
-        return tomlContent.isBlank()
-               ? success(ReplicationDefaultsConfig.BUILT_IN)
-               : TomlParser.parse(tomlContent)
-                           .mapError(cause -> new ClusterConfigError.ParseFailed(cause.message()))
-                           .flatMap(ReplicationDefaultsParser::parse);
+    /// The defaults committed in `tomlContent`. The self-bootstrap seed carries no source configuration
+    /// ([Option#none()]) and is the built-in default.
+    static Result<ReplicationDefaultsConfig> fromClusterToml(Option<String> tomlContent) {
+        return tomlContent.fold(() -> success(ReplicationDefaultsConfig.BUILT_IN),
+                                toml -> TomlParser.parse(toml)
+                                                  .mapError(cause -> new ClusterConfigError.ParseFailed(cause.message()))
+                                                  .flatMap(ReplicationDefaultsParser::parse));
     }
 
     /// The `[replication]` sections of an already parsed document; absent sections are the built-in defaults.

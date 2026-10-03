@@ -119,7 +119,9 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static ClusterConfigResponse toConfigResponse(ClusterConfigValue config) {
-        return new ClusterConfigResponse(config.tomlContent(),
+        // HTTP boundary: the response keeps its `String` field, and the bootstrap seed (no source TOML)
+        // renders as "", which the CLI readers already report as "no stored config".
+        return new ClusterConfigResponse(config.tomlContent().or(""),
                                          config.clusterName(),
                                          config.version(),
                                          config.coreCount(),
@@ -436,36 +438,33 @@ public final class ClusterConfigRoutes implements RouteSource {
         return storeUpdatedConfig(desired, tomlContent, INITIAL_CONFIG_VERSION);
     }
 
-    private Promise<Object> processApply(ClusterConfigValue stored,
-                                         ClusterBootstrapConfig desired,
-                                         ApplyConfigRequest request) {
-        if (isBootstrapSeed(stored)) {
-            return storeUpdatedConfig(desired, request.tomlContent(), stored.configVersion() + 1);
-        }
-
-        return checkVersionAsync(stored.configVersion(),
-                                 request.expectedVersion()).flatMap(_ -> rebuildStoredConfigAsync(stored))
-                                .flatMap(storedConfig -> executeDiff(stored, storedConfig, desired, request));
-    }
-
-    /// The BootstrapModule self-seed is REPLACED, never diffed — package-visible so the decision can
-    /// be unit-tested without standing up a node + KV store.
+    /// The BootstrapModule self-seed is REPLACED, never diffed.
     ///
-    /// Every node self-seeds a `ClusterConfigValue` at formation carrying `tomlContent=""` and a
-    /// core-only topology, so a cluster has a committed config before the operator's TOML ever
-    /// arrives. That seed holds no diffable document: [#rebuildStoredConfigAsync] parses
-    /// `tomlContent`, and the empty string cannot clear the parser's top-level `config_version`
-    /// gate — so every apply against a freshly formed cluster failed at exactly that point. Combined
-    /// with the swallowed-failure fall-through this route used to have, the operator's real TOML
-    /// (worker counts included) was dropped while the POST answered success, and RFC-0017 worker
-    /// provisioning had nothing to reconcile.
+    /// Every node self-seeds a `ClusterConfigValue` at formation carrying no source TOML
+    /// ([ClusterConfigValue#tomlContent] is empty) and a core-only topology, so a cluster has a committed
+    /// config before the operator's TOML ever arrives. That seed holds no diffable document. When it was
+    /// the empty string, the diff path parsed it, the parser's top-level `config_version` gate refused it,
+    /// and every apply against a freshly formed cluster failed there; combined with the swallowed-failure
+    /// fall-through this route used to have, the operator's real TOML (worker counts included) was dropped
+    /// while the POST answered success. The typed shape (#1812) makes the seed a branch of this fold rather
+    /// than a predicate each reader re-derives.
     ///
     /// Replacement is what BootstrapModule's own comment — "Bootstrap replaces it with the real
     /// per-source spec at formation" — already promised; the version still advances by one, so the
     /// RFC-0018 successor fence is satisfied and the write is confirmed like any other.
-    static boolean isBootstrapSeed(ClusterConfigValue stored) {
+    private Promise<Object> processApply(ClusterConfigValue stored,
+                                         ClusterBootstrapConfig desired,
+                                         ApplyConfigRequest request) {
         return stored.tomlContent()
-                     .isBlank();
+                     .fold(() -> storeUpdatedConfig(desired,
+                                                    request.tomlContent(),
+                                                    stored.configVersion() + 1),
+                           toml -> checkVersionAsync(stored.configVersion(),
+                                                     request.expectedVersion()).flatMap(_ -> ClusterBootstrapConfigParser.parse(toml).async())
+                                                    .flatMap(storedConfig -> executeDiff(stored,
+                                                                                         storedConfig,
+                                                                                         desired,
+                                                                                         request)));
     }
 
     /// Pure decision for the #289 fence — package-visible so it can be unit-tested without standing up
@@ -563,13 +562,14 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private Result<List<KVCommand.ReadWitness<AetherKey>>> retirementGuards(Option<ClusterConfigValue> before,
                                                                             ClusterConfigValue after) {
-        var previous = before.flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).option())
+        var previous = before.flatMap(ClusterConfigValue::tomlContent)
+                             .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).option())
                              .map(ClusterBootstrapConfig::communities)
                              .or(Map.of());
-        var next = ClusterBootstrapConfigParser.parse(after.tomlContent())
-                                               .option()
-                                               .map(ClusterBootstrapConfig::communities)
-                                               .or(Map.of());
+        var next = after.tomlContent()
+                        .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).option())
+                        .map(ClusterBootstrapConfig::communities)
+                        .or(Map.of());
         var guards = new java.util.ArrayList<KVCommand.ReadWitness<AetherKey>>();
 
         for (var id : previous.keySet()) {
@@ -617,10 +617,6 @@ public final class ClusterConfigRoutes implements RouteSource {
         return ClusterBootstrapConfigParser.parse(tomlContent).flatMap(ClusterBootstrapConfigValidator::validate);
     }
 
-    private static Promise<ClusterBootstrapConfig> rebuildStoredConfigAsync(ClusterConfigValue stored) {
-        return ClusterBootstrapConfigParser.parse(stored.tomlContent()).async();
-    }
-
     private static Promise<Object> checkVersionAsync(long storedVersion, long expectedVersion) {
         if (expectedVersion != 0 && storedVersion != expectedVersion) {
             return new ClusterConfigError.VersionConflict(expectedVersion, storedVersion).promise();
@@ -638,7 +634,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                        .value()).findFirst().orElse("unknown");
         // KV boundary: `ClusterConfigValue` keeps a `String` cluster name (the `aether/slice` module
         // deliberately does not depend on this layer), so the parsed name is rendered here.
-        var configValue = new ClusterConfigValue(tomlContent,
+        var configValue = new ClusterConfigValue(Option.some(tomlContent),
                                                  cluster.name().value(),
                                                  cluster.version(),
                                                  topologyOf(desired),
@@ -699,11 +695,11 @@ public final class ClusterConfigRoutes implements RouteSource {
         var role = effectiveRole(nonBlank(request.role()));
         var source = nonBlank(request.source());
 
-        if (role.equals(org.pragmatica.aether.config.cluster.NodeRole.WORKER.value()) && ClusterBootstrapConfigParser.parse(stored.tomlContent())
-                                                                                                                     .option()
-                                                                                                                     .filter(value -> !value.communities()
-                                                                                                                                            .isEmpty())
-                                                                                                                     .isPresent()) {
+        if (role.equals(org.pragmatica.aether.config.cluster.NodeRole.WORKER.value()) && stored.tomlContent()
+                                                                                               .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).option())
+                                                                                               .filter(value -> !value.communities()
+                                                                                                                      .isEmpty())
+                                                                                               .isPresent()) {
             return new ClusterConfigError.ParseFailed("Explicit communities own worker capacity; change community.target_size").promise();
         }
 

@@ -17,7 +17,6 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -31,7 +30,6 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 import static org.awaitility.Awaitility.await;
 
 
@@ -227,11 +225,7 @@ class SurvivorLivenessAfterGracefulKillTest {
     }
 
     private void pinAutoHealOff() {
-        cluster.allNodes()
-               .forEach(node -> node.clusterTopologyManager()
-                                    .onPresent(ctm -> ctm.setAutoHealEnabled(false, PIN_REASON)
-                                                         .await(TimeSpan.timeSpan(30).seconds())
-                                                         .onFailure(cause -> fail("auto-heal pin failed: " + cause.message()))));
+        AutoHealPin.pinOff(cluster, PIN_REASON);
     }
 
     private boolean survivorsAgree(Predicate<AetherNode> condition) {

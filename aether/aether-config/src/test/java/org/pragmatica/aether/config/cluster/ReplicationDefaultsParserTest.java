@@ -7,14 +7,15 @@ package org.pragmatica.aether.config.cluster;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ReplicationDefaultsParserTest {
     @Test
-    void fromClusterToml_blankSeed_isTheBuiltInDefault() {
-        assertThat(ReplicationDefaultsParser.fromClusterToml("").unwrap()).isEqualTo(ReplicationDefaultsConfig.BUILT_IN);
+    void fromClusterToml_bootstrapSeed_isTheBuiltInDefault() {
+        assertThat(ReplicationDefaultsParser.fromClusterToml(Option.none()).unwrap()).isEqualTo(ReplicationDefaultsConfig.BUILT_IN);
     }
 
     @Test

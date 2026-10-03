@@ -257,7 +257,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 |---|---------|--------|-------------|
 | 59 | Graceful quorum degradation | Battle-tested | Control loop suspension on quorum loss, reconciliation on restoration, leader transition with state preservation |
 | 60 | Blueprint membership guard | Complete | `POST /api/scale` rejects slices not deployed via blueprint |
-| 61 | Health check endpoint | Battle-tested | `/api/health` with ready flag, quorum status, connected peers, node count |
+| 61 | Health check endpoint | Battle-tested | `/api/v1/health` with ready flag, quorum status, connected peers, node count |
 | 62 | Orphaned entry cleanup | Complete | CDM `reconcile()` cleans up orphaned UNLOADING entries after blueprint removal |
 | 88 | Inter-node mTLS | Complete | CertificateProvider SPI, SelfSignedCertificateProvider (BouncyCastle, HKDF-derived deterministic CA, EC P-256), automatic mTLS for all TCP transports |
 | 89 | SWIM gossip encryption | Complete | AES-256-GCM encryption for SWIM protocol messages with dual-key rotation support |
