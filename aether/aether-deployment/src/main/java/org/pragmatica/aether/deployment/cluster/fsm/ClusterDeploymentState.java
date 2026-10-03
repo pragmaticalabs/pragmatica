@@ -1088,13 +1088,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var observed = ctx.kvStore()
                               .getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class);
 
-            return observed.filter(value -> !value.tomlContent()
-                                                  .isBlank())
+            return observed.flatMap(AetherValue.ClusterConfigValue::tomlContent)
                            .fold(() -> Result.success(new PlacementConfiguration(observed,
                                                                                  Map.of())),
-                                 value -> org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(value.tomlContent())
-                                                                                                           .map(config -> new PlacementConfiguration(observed,
-                                                                                                                                                     config.communities())));
+                                 toml -> org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(toml)
+                                                                                                          .map(config -> new PlacementConfiguration(observed,
+                                                                                                                                                    config.communities())));
         }
 
         private void assignWorkerCommunity(NodeId node, PlacementConfiguration configuration) {

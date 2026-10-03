@@ -129,7 +129,7 @@ abstract class AbstractStreamOwnerFailover {
 
     /// Applied once, after the cluster is fully member-complete and before the slice is deployed. Default
     /// (unpinned) is a no-op — the DEFAULT membership variant leaves auto-heal on so phase 9 remains a
-    /// live SWIM sensor. The pinned variant disables auto-heal on every node's CTM here.
+    /// live SWIM sensor. The pinned variant pins the cluster-wide auto-heal switch off here ([AutoHealPin]).
     void pinMembership(EmberCluster cluster) {}
 
     /// True → phase 9 asserts RF-restoration convergence HARD (pinned variant). False → phase 9 is a

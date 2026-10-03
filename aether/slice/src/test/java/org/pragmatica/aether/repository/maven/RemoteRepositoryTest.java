@@ -61,7 +61,9 @@ class RemoteRepositoryTest {
         repository.locate(artifact)
                   .await()
                   .onSuccessRun(Assertions::fail)
-                  .onFailure(cause -> assertThat(cause.message()).containsAnyOf("Download failed", "HTTP operation failed"));
+                  // "HTTP operation failed: java.net.ConnectException" was the text of the CompletionException wrapper
+                  // that HttpClientError.fromException did not unwrap (#1033 fragment); a refused port now names itself.
+                  .onFailure(cause -> assertThat(cause.message()).containsAnyOf("Download failed", "Connection failed: Connection refused"));
     }
 
     @Test

@@ -8,6 +8,7 @@ package org.pragmatica.aether.slice.kvstore;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -74,7 +75,7 @@ class ClusterConfigKVTest {
                 1,
                 1711461000000L
             );
-            assertThat(value.tomlContent()).isEqualTo("[cluster]\nname = \"test\"");
+            assertThat(value.tomlContent()).isEqualTo(Option.some("[cluster]\nname = \"test\""));
             assertThat(value.clusterName()).isEqualTo("test");
             assertThat(value.version()).isEqualTo("0.21.1");
             assertThat(value.coreCount()).isEqualTo(5);
@@ -132,7 +133,7 @@ class ClusterConfigKVTest {
                                  assertThat(parsedValue.deploymentType()).isEqualTo("hetzner");
                                  assertThat(parsedValue.configVersion()).isEqualTo(3);
                                  assertThat(parsedValue.updatedAt()).isEqualTo(1711461000000L);
-                                 assertThat(parsedValue.tomlContent()).isEqualTo("name = \"test\"");
+                                 assertThat(parsedValue.tomlContent()).isEqualTo(Option.some("name = \"test\""));
                              });
         }
 
@@ -150,7 +151,25 @@ class ClusterConfigKVTest {
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  var parsedValue = (ClusterConfigValue) entries.values().iterator().next();
-                                 assertThat(parsedValue.tomlContent()).isEqualTo(tomlContent);
+                                 assertThat(parsedValue.tomlContent()).isEqualTo(Option.some(tomlContent));
+                             });
+        }
+
+        /// #1812: the bootstrap seed's "no source configuration" survives a backup round trip as the typed
+        /// empty value, never as a blank string a reader would have to recognise.
+        @Test
+        void backup_preservesBootstrapSeedAsNoSourceConfiguration() {
+            var key = ClusterConfigKey.CURRENT;
+            var seed = ClusterConfigValue.bootstrapSeed("prod", "1.0.0", CORE_5, 3, 9, "bootstrap-seed", 1);
+
+            BACKUP.encode(42L, Map.of(key, seed))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entries -> {
+                                 var parsedValue = (ClusterConfigValue) entries.values().iterator().next();
+                                 assertThat(parsedValue.tomlContent()).isEqualTo(Option.none());
+                                 assertThat(parsedValue.coreCount()).isEqualTo(5);
                              });
         }
     }

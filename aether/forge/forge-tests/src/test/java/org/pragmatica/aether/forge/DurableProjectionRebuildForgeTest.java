@@ -126,7 +126,7 @@ class DurableProjectionRebuildForgeTest {
     private static final Pattern COMMITTED_EPOCH = Pattern.compile("\"committedEpoch\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern GENERATION_FIELD = Pattern.compile("\"generation\"\\s*:\\s*(\\d+)");
 
-    private static final Pattern TOKEN_FIELD = Pattern.compile("\"token\"\\s*:\\s*\\{\\s*\"generation\"\\s*:\\s*(\\d+)\\s*,\\s*\"rewind\"\\s*:\\s*(\\d+)\\s*}");
+    private static final Pattern TOKEN_FIELD = Pattern.compile("\"token\"\\s*:\\s*\\{\\s*\"incarnation\"\\s*:\\s*(\\d+)\\s*,\\s*\"generation\"\\s*:\\s*(\\d+)\\s*,\\s*\"rewind\"\\s*:\\s*(\\d+)\\s*}");
 
     private static final Pattern THROUGH_FIELD = Pattern.compile("\"throughOffset\"\\s*:\\s*(\\d+)");
 
@@ -203,7 +203,7 @@ class DurableProjectionRebuildForgeTest {
                   .isEqualTo("LIVE");
         assertThat(firstString(COMMITTED_EPOCH, groupsBefore)).describedAs("never rewound (absent, or the unrewound epoch): %s",
                                                                            groupsBefore)
-                  .isIn("", "0/0");
+                  .isIn("", "0/0/0");
         // The head is derived, not assumed: the readiness gate's warm-up publish (seq 0, folds to 0) can land
         // more than once when its response is lost, so the partition holds seq 1..6 plus one or more zeros.
         var eventsBeforeRebuild = firstLong(LIVE_CURSOR, httpGet(consumerNode.mgmtPort(), GROUPS_PATH));
@@ -241,7 +241,7 @@ class DurableProjectionRebuildForgeTest {
         var token = TOKEN_FIELD.matcher(rebuild.body());
 
         assertThat(token.find()).describedAs("the rewind token is answered: %s", rebuild.body()).isTrue();
-        var tokenEpoch = token.group(1) + "/" + token.group(2);
+        var tokenEpoch = token.group(1) + "/" + token.group(2) + "/" + token.group(3);
 
         awaitModelOn(consumerNode.appPort(), MODEL_AFTER_REBUILD);
         await().atMost(DELIVERY_TIMEOUT)

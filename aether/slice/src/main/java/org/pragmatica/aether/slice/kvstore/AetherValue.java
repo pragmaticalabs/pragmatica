@@ -2010,7 +2010,16 @@ public sealed interface AetherValue {
         }
     }
 
-    record ClusterConfigValue(String tomlContent,
+    /// The committed cluster configuration.
+    ///
+    /// `tomlContent` is TYPED by whether an operator source configuration exists (#1812): [Option#none()]
+    /// is the self-bootstrap seed ([#bootstrapSeed]), written at formation before any `cluster apply`, and
+    /// [Option#some] carries the committed, parseable TOML. The seed used to be the empty string, so "no
+    /// config yet" and "config" shared one type and each reader distinguished them ad hoc: some guarded
+    /// with `isBlank()`, others parsed unguarded and failed on the seed with "no config_version", which
+    /// disabled provisioning on every seed-only cluster. A reader now cannot reach the TOML without
+    /// deciding what the seed means.
+    record ClusterConfigValue(Option<String> tomlContent,
                               String clusterName,
                               String version,
                               List<TopologyEntry> desiredTopology,
@@ -2111,6 +2120,26 @@ public sealed interface AetherValue {
                                           System.currentTimeMillis());
         }
 
+        /// The self-bootstrap seed: desired shape only, no operator source configuration.
+        public static ClusterConfigValue bootstrapSeed(String clusterName,
+                                                       String version,
+                                                       List<TopologyEntry> desiredTopology,
+                                                       int coreMin,
+                                                       int coreMax,
+                                                       String deploymentType,
+                                                       long configVersion) {
+            return new ClusterConfigValue(Option.none(),
+                                          clusterName,
+                                          version,
+                                          desiredTopology,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion,
+                                          System.currentTimeMillis());
+        }
+
+        /// A committed operator configuration; `tomlContent` is the applied, parsed-and-validated TOML.
         public static ClusterConfigValue clusterConfigValue(String tomlContent,
                                                             String clusterName,
                                                             String version,
@@ -2119,7 +2148,7 @@ public sealed interface AetherValue {
                                                             int coreMax,
                                                             String deploymentType,
                                                             long configVersion) {
-            return new ClusterConfigValue(tomlContent,
+            return new ClusterConfigValue(Option.some(tomlContent),
                                           clusterName,
                                           version,
                                           desiredTopology,
@@ -2139,7 +2168,7 @@ public sealed interface AetherValue {
                                                             String deploymentType,
                                                             long configVersion,
                                                             long updatedAt) {
-            return new ClusterConfigValue(tomlContent,
+            return new ClusterConfigValue(Option.some(tomlContent),
                                           clusterName,
                                           version,
                                           desiredTopology,
