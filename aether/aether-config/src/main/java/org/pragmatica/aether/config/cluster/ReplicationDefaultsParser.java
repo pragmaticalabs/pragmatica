@@ -12,8 +12,10 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.parse.TimeSpan.timeSpan;
 
 
 /// #1564: the cluster-wide replication defaults, the `[replication]` section of the COMMITTED cluster TOML
@@ -24,6 +26,7 @@ import static org.pragmatica.lang.Result.success;
 /// [replication]
 /// replication_factor = 3       # default 3; at least 3 — a lower factor must be declared on the resource itself
 /// confirmation_factor = 2      # default 2; 1 <= confirmation_factor <= replication_factor
+/// tombstone_retention = "1h"   # default 1h; at least 6m30s — how long the DHT keeps a removed key's tombstone
 ///
 /// [replication.cluster_events]
 /// confirmation_factor = 1      # default 1; the system:cluster-events stream's CF (its RF is the cluster size)
@@ -47,7 +50,12 @@ public sealed interface ReplicationDefaultsParser {
     String CACHE_SECTION = "cache";
     String REPLICATION_FACTOR = "replication_factor";
     String CONFIRMATION_FACTOR = "confirmation_factor";
-    Set<String> KEYS = Set.of(REPLICATION_FACTOR, CONFIRMATION_FACTOR);
+    String TOMBSTONE_RETENTION = "tombstone_retention";
+    Set<String> KEYS = Set.of(REPLICATION_FACTOR, CONFIRMATION_FACTOR, TOMBSTONE_RETENTION);
+    /// The floor of `tombstone_retention` (#1777 track 3): a stray copy is dropped at the retention less a margin of
+    /// two anti-entropy periods and an operation timeout (90 s), and that stray horizon must leave at least five
+    /// minutes for catch-up to read a displaced holder's copy.
+    TimeSpan MINIMUM_TOMBSTONE_RETENTION = TimeSpan.timeSpan(390).seconds();
     Set<String> CLUSTER_EVENTS_KEYS = Set.of(CONFIRMATION_FACTOR);
     Set<String> CACHE_KEYS = Set.of(REPLICATION_FACTOR, CONFIRMATION_FACTOR);
     int MINIMUM_DEFAULT_FACTOR = 3;
@@ -89,11 +97,17 @@ public sealed interface ReplicationDefaultsParser {
                                                          factor(doc,
                                                                 CACHE_SECTION,
                                                                 CONFIRMATION_FACTOR,
-                                                                builtIn.cacheConfirmationFactor()))
+                                                                builtIn.cacheConfirmationFactor()),
+                                                         retention(doc, builtIn.tombstoneRetention()))
                                                     .flatMap(ReplicationDefaultsParser::validated));
     }
 
-    private static Result<ReplicationDefaultsConfig> validated(int rf, int cf, int eventsCf, int cacheRf, int cacheCf) {
+    private static Result<ReplicationDefaultsConfig> validated(int rf,
+                                                               int cf,
+                                                               int eventsCf,
+                                                               int cacheRf,
+                                                               int cacheCf,
+                                                               TimeSpan retention) {
         if (rf < MINIMUM_DEFAULT_FACTOR) {
             return failed("[replication] replication_factor = " + rf
                          + " is below 3; a default must be at least 3 (a lower factor is declared on the resource itself)");
@@ -120,7 +134,31 @@ public sealed interface ReplicationDefaultsParser {
                          + ": 1 <= confirmation_factor <= replication_factor must hold");
         }
 
-        return success(new ReplicationDefaultsConfig(rf, cf, eventsCf, cacheRf, cacheCf));
+        if (retention.compareTo(MINIMUM_TOMBSTONE_RETENTION) < 0) {
+            return failed("[replication] tombstone_retention = " + retention
+                         + " is below the floor of 6m30s: a removed key's tombstone must outlive the stray horizon "
+                         + "(the retention less 90s) by at least five minutes");
+        }
+
+        return success(new ReplicationDefaultsConfig(rf, cf, eventsCf, cacheRf, cacheCf, retention));
+    }
+
+    private static Result<TimeSpan> retention(TomlDocument doc, TimeSpan fallback) {
+        return doc.hasSection(SECTION) && doc.keys(SECTION)
+                                             .contains(TOMBSTONE_RETENTION)
+               ? doc.getString(SECTION, TOMBSTONE_RETENTION)
+                    .toResult(new ClusterConfigError.ParseFailed("[replication] tombstone_retention must be a duration "
+                                                                + "string, e.g. \"1h\""))
+                    .flatMap(ReplicationDefaultsParser::parsedRetention)
+               : success(fallback);
+    }
+
+    private static Result<TimeSpan> parsedRetention(String raw) {
+        return timeSpan(raw).mapError(cause -> new ClusterConfigError.ParseFailed("[replication] tombstone_retention: "
+                                                                                 + cause.message()
+                                                                                 + " (was '" + raw
+                                                                                 + "')"))
+                       .map(parsed -> TimeSpan.fromDuration(parsed.duration()));
     }
 
     private static Result<Unit> refuseUnknownKeys(TomlDocument doc, String section, Set<String> known) {

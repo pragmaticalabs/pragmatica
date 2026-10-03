@@ -6266,6 +6266,9 @@ public interface AetherNode extends ManageableNode {
                        ? Result.success(declared)
                        : declared.withFactors(defaults.replicationFactor(), defaults.confirmationFactor());
 
+        // #1777 track 3: the tombstone retention is cluster-wide, like the factors — every replica must agree
+        // which tombstones have expired, since the anti-entropy digest leaves expired ones out
+        dhtNode.resolveTombstoneRetention(defaults.tombstoneRetention());
         resolved.onSuccess(dht -> logIfReplicationChanged(dhtNode, dht))
                 .onSuccess(dhtNode::resolveReplication)
                 .onFailure(cause -> LOG.error("DHT replication factors refused: {}",

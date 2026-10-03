@@ -43,14 +43,14 @@ import static org.pragmatica.lang.Unit.unit;
 /// [#nextReplacement] is atomic per candidate (`addressed.add`) and per budget unit.
 final class InFlightRead {
     private final byte[] key;
-    private final QuorumCollector<Option<byte[]>> collector;
+    private final QuorumCollector<Option<DHTMessage.KeyValue>> collector;
     private final long deadlineNanos;
     private final int maxReissues;
     private final AtomicInteger reissues = new AtomicInteger();
     private final Set<NodeId> addressed = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<NodeId, String> outstanding = new ConcurrentHashMap<>();
 
-    private InFlightRead(byte[] key, QuorumCollector<Option<byte[]>> collector, long deadlineNanos, int maxReissues) {
+    private InFlightRead(byte[] key, QuorumCollector<Option<DHTMessage.KeyValue>> collector, long deadlineNanos, int maxReissues) {
         this.key = key;
         this.collector = collector;
         this.deadlineNanos = deadlineNanos;
@@ -61,7 +61,7 @@ final class InFlightRead {
     ///                      read's original operation deadline)
     /// @param maxReissues   upper bound on replacement requests for this read
     static InFlightRead inFlightRead(byte[] key,
-                                     QuorumCollector<Option<byte[]>> collector,
+                                     QuorumCollector<Option<DHTMessage.KeyValue>> collector,
                                      long deadlineNanos,
                                      int maxReissues) {
         return new InFlightRead(key, collector, deadlineNanos, maxReissues);
@@ -71,7 +71,7 @@ final class InFlightRead {
         return key;
     }
 
-    QuorumCollector<Option<byte[]>> collector() {
+    QuorumCollector<Option<DHTMessage.KeyValue>> collector() {
         return collector;
     }
 

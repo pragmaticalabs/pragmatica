@@ -27,7 +27,7 @@ class AetherNodeDhtReplicationTest {
         var node = awaiting();
         var cache = new AtomicReference<>(DHTConfig.CACHE_DEFAULT);
 
-        AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(5, 3, 1, 2, 1),
+        AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(5, 3, 1, 2, 1, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
                                        node,
                                        DHTConfig.DEFAULT,
                                        DHTConfig.CACHE_DEFAULT,
@@ -40,6 +40,22 @@ class AetherNodeDhtReplicationTest {
         assertThat(cache.get().replicationFactor()).isEqualTo(2);
         assertThat(cache.get().writeQuorum()).isEqualTo(1);
         assertThat(cache.get().readQuorum()).isEqualTo(2);
+    }
+
+    /// #1777 track 3: the tombstone retention is cluster-wide like the factors — every replica must agree which
+    /// tombstones have expired.
+    @Test
+    void applyDhtReplication_committedTombstoneRetention_reachesTheNode() {
+        var node = awaiting();
+        var retention = org.pragmatica.lang.io.TimeSpan.timeSpan(2).hours();
+
+        AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(3, 2, 1, 1, 1, retention),
+                                       node,
+                                       DHTConfig.DEFAULT,
+                                       DHTConfig.CACHE_DEFAULT,
+                                       new AtomicReference<>());
+
+        assertThat(node.tombstoneRetention()).isEqualTo(retention);
     }
 
     @Test
@@ -61,7 +77,7 @@ class AetherNodeDhtReplicationTest {
     void applyDhtReplication_differentPlaceholders_resolveToTheSamePlacement() {
         var first = awaiting(DHTConfig.DEFAULT);
         var second = awaiting(DHTConfig.SINGLE_NODE);
-        var committed = new ReplicationDefaultsConfig(5, 3, 1, 1, 1);
+        var committed = new ReplicationDefaultsConfig(5, 3, 1, 1, 1, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION);
 
         AetherNode.applyDhtReplication(committed, first, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
         AetherNode.applyDhtReplication(committed, second, DHTConfig.SINGLE_NODE, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
