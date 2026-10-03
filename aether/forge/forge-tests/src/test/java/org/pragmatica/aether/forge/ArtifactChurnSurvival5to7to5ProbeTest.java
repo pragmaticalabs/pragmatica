@@ -86,7 +86,6 @@ import static org.pragmatica.lang.Option.some;
 /// the up-leg's two cores being configured ids inside the drain-safety grace, which left the leader as a victim.
 /// Since #1812 restored CTM provisioning, the up-leg's cores carry MINTED ids, which are drained first at any age,
 /// so the leader is not selected here and that tripwire could only report a false "#1089 landed".
-/// [LeaderDrainVictimTripwireTest] pins #1089 with a scenario where the leader is the only eligible candidate.
 ///
 /// Both the count and the POST target are the LEADER — the node whose own `isLeader()` holds
 /// (`EmberCluster.currentLeader()`), never an arbitrary map entry. After `addNode()` the first entry is
