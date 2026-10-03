@@ -165,6 +165,24 @@ class IsrOwnershipWriterTest {
             assertThat(committed(store)).as("a write decided on the superseded record does not overwrite the shrink")
                                         .isEqualTo(Option.some(ownersShrink));
         }
+
+        /// A superseded owner's ISR proposal fails its CAS: A, deposed by a failover to B, still proposes an ISR change
+        /// against the record it last held. The applier refuses it, and B's ownership and ISR stand.
+        @Test
+        void supersededOwner_isrProposalOnItsOldRecord_isRefusedByTheApplier() {
+            var store = store();
+            var heldByA = record(A, 3L, List.of(A, B, C), 4L);
+            var failedOverToB = writer.next(STREAM, PARTITION, Option.some(heldByA), B, GENERATION, List.of(B, C, D)).unwrap();
+
+            seed(store, new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+            seed(store, IsrOwnershipWriter.guarded(LEADER, STREAM, PARTITION, Option.none(), heldByA));
+            seed(store, IsrOwnershipWriter.guarded(LEADER, STREAM, PARTITION, Option.some(heldByA), failedOverToB));
+            assertThat(committed(store)).as("fixture control: the failover committed").isEqualTo(Option.some(failedOverToB));
+
+            seed(store, IsrOwnershipWriter.guarded(LEADER, STREAM, PARTITION, Option.some(heldByA), heldByA.withIsr(List.of(A))));
+
+            assertThat(committed(store)).as("the deposed owner's shrink to itself is refused").isEqualTo(Option.some(failedOverToB));
+        }
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
