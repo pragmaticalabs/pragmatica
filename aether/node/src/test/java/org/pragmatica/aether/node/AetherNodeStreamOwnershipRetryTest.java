@@ -99,6 +99,36 @@ class AetherNodeStreamOwnershipRetryTest {
         assertThat(retry.consecutiveFailures().get()).as("a successful write resets the backoff").isZero();
     }
 
+    /// A write that fails for good must cost a BOUNDED number of attempts per unit time: each failure arms exactly ONE
+    /// re-run (no fan-out), and the delays double to the cap, so ten minutes of virtual time hold at most a few dozen
+    /// attempts, not a spin.
+    @Test
+    void persistentlyFailingWrite_armsOneBackedOffRetryPerFailure_boundedPerUnitTime() {
+        var scheduled = new CopyOnWriteArrayList<Scheduled>();
+        var attempts = new AtomicInteger();
+        var retry = AetherNode.StreamOwnershipRetry.streamOwnershipRetry((task, delay) -> scheduled.add(new Scheduled(task, delay)),
+                                                                         () -> {});
+        var elapsedMillis = 0L;
+        var windowMillis = Duration.ofMinutes(10).toMillis();
+
+        retry.failed(1, Causes.cause("consensus unavailable"));
+        attempts.incrementAndGet();
+        while (true) {
+            assertThat(scheduled).as("each failure arms exactly one retry").hasSize(1);
+            var delay = scheduled.removeFirst().delay().millis();
+
+            elapsedMillis += delay;
+            if (elapsedMillis > windowMillis) {
+                break;
+            }
+            retry.failed(1, Causes.cause("consensus unavailable"));
+            attempts.incrementAndGet();
+        }
+
+        assertThat(attempts.get()).as("attempts in ten minutes of persistent failure are bounded by the backoff cap").isLessThanOrEqualTo(30);
+        assertThat(attempts.get()).as("and the retry keeps going: the cap bounds the rate, not the count").isGreaterThan(10);
+    }
+
     @Test
     void delayAfter_doublesFromTheBase_andIsCapped() {
         assertThat(AetherNode.StreamOwnershipRetry.delayAfter(0)).isEqualTo(AetherNode.STREAM_OWNERSHIP_RETRY_BASE);

@@ -28,5 +28,8 @@
   (not the owner field) reaches every partition after the leader-and-owner dies silently; `[unverified: it is NOT red at the
   base]` — on Ember a new leader already exists when the removal decision arrives, so the cloud's 35 s refusal window is not
   reproduced and may be failure-detection latency rather than a wedge. The leaderless-removal mechanism is pinned in-JVM only.
-- **Not changed:** a failed ownership batch write still waits for the next trigger (its log line says "re-driven on next
-  reconcile"). `[unverified: no retry timer was added]`.
+- **A failed ownership batch write re-arms the reconcile** (`StreamOwnershipRetry`): the failure changes no placement input, so no
+  trigger would re-run the pass and, with a steady leader and stable membership, the partition stayed write-refused. The delay
+  doubles from 500 ms to a 30 s cap and resets on the next success, so a persistently failing write costs at most a few dozen
+  attempts in ten minutes. `[verified: AetherNodeStreamOwnershipRetryTest]`. This closes the stable-cluster indefinite refusal;
+  `[unverified: the cloud's ~35 s window is not reproduced]`.
