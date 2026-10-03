@@ -495,7 +495,7 @@ Every node receives snapshots via ping and updates projections:
 | `HttpRouteRegistry` | `coreMembers` + `communities` for route presence | `NodeRoutesKey` watch stays, but ACTIVE transition is epoch-fenced |
 | `NodeDeploymentManager` | current `epoch` for ROUTING → ACTIVE gate | Timer-based ROUTING wait → epoch-fenced |
 | `QuicClusterNetwork` | informational only | No longer authoritative writer — emits only `TransportObservation` (local OBSERVATION stream); the cluster-canonical `MembershipDecision.NodeRemoved` comes exclusively from `TopologyObserver.publishMembershipDeltas`. See `membership-architecture-v2-spec.md` (typed-stream split). |
-| Dashboard / `/api/cluster/topology` | core+communities+partitions | Single source |
+| Dashboard / `/api/v1/cluster/topology` | core+communities+partitions | Single source |
 
 ## 13. What gets deleted
 

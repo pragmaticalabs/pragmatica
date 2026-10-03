@@ -14,6 +14,7 @@ Step-by-step runbooks for common operational tasks including incident response, 
 | [Scaling](scaling.md) | Manual scaling procedures for nodes and slices |
 | [Troubleshooting](troubleshooting.md) | Common issues and diagnostic steps |
 | [Deployment](deployment.md) | Deployment and upgrade procedures |
+| [Floating-IP Load Balancing](floating-ip-load-balancing.md) | DNS over a floating-IP pool: provisioning, DNS, TLS, firewall, pool changes, failover drill, troubleshooting. **Planned rc5 (#1867), not implemented.** |
 
 > **Planned (1.0.0-rc5, #1251 — not implemented):** the [cluster supervision spec](../../specs/cluster-supervision-spec.md) extracts these procedures into a typed catalog of bounded, executable runbooks with escalation. Until it ships, every procedure here is manual.
 
