@@ -2214,14 +2214,14 @@ class ClusterTopologyManagerActuatorTest {
         private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
-            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreTopology(coreCount), 3, 9, "test",
+            current.set(Option.some(new ClusterConfigValue(Option.none(), "", "1.0.0", coreTopology(coreCount), 3, 9, "test",
                                                            current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
                                                            System.currentTimeMillis())));
         }
 
         /// #1050 R4 — the activation replay scopes its listing by the committed cluster name, so its tests need one.
         void seedNamed(int coreCount, String clusterName) {
-            current.set(Option.some(new ClusterConfigValue("", clusterName, "1.0.0", coreTopology(coreCount), 3, 9, "test",
+            current.set(Option.some(new ClusterConfigValue(Option.none(), clusterName, "1.0.0", coreTopology(coreCount), 3, 9, "test",
                                                            current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
                                                            System.currentTimeMillis())));
         }

@@ -184,7 +184,7 @@ class ClusterDeploymentStateCommunityMintTest {
             zone = "b"
             """;
         kvStore.put(AetherKey.ClusterConfigKey.CURRENT,
-                    new AetherValue.ClusterConfigValue(toml, "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
+                    new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
         joinWorker(WORKER_1, "east");
         assertThat(directivesFor(WORKER_1)).isEmpty();
         kvStore.put(new AetherKey.NodePlacementKey(WORKER_1), new AetherValue.NodePlacementValue("east", Option.some("a"), "instance-1"));
@@ -213,7 +213,7 @@ class ClusterDeploymentStateCommunityMintTest {
             source = "east"
             """;
         kvStore.put(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(toml, "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
+            new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
         kvStore.put(new AetherKey.CommunityPlacementOperationKey("stable"),
             new AetherValue.CommunityPlacementOperationValue("late-create", "stable", WORKER_1, "east", Option.none(),
                 "binding", Option.none(), "", AetherValue.PlacementOperationPhase.AWAITING_READY,

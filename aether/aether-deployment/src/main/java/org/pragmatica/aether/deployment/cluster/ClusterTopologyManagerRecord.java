@@ -73,7 +73,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
@@ -85,7 +84,6 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_SOURCE;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
-import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -940,20 +938,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     /// #1049 — the in-flight ceiling for a replacement of `intendedRole`, resolved through the SAME
     /// [#cloudSourceFor] lookup as the replacement's zones, instance type and source name, so all four
-    /// ride one source profile. The ten-minute default applies when the persisted TOML is blank or
-    /// unparseable, or no cloud source backs the role (Docker / forge).
+    /// ride one source profile. The ten-minute default applies when there is no committed TOML (the
+    /// bootstrap seed) or it is unparseable, or no cloud source backs the role (Docker / forge).
     @Override
     public TimeSpan replacementCeiling(NodeRole intendedRole) {
         return persistedCloudSource(intendedRole).map(SourceProfile::effectiveReplacementCeiling)
                                    .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
     }
 
-    /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when the
-    /// TOML is blank or unparseable or no cloud source declares the role.
+    /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when there
+    /// is no committed TOML (the bootstrap seed) or it is unparseable or no cloud source declares the role.
     private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {
-        return option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or("")).filter(Verify.Is::present)
-                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole));
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> cloudSourceFor(config, intendedRole));
     }
 
     /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):
@@ -1036,15 +1033,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// #334 — the ordered zone list to rotate over for a replacement of `intendedRole`, reusing the
     /// SAME parse path as [#renderReplacementUserData]: the persisted cluster TOML re-parsed via
     /// [ClusterBootstrapConfigParser], the cloud [SourceProfile] backing the role, and its
-    /// [SourceProfile#effectiveZones]. Empty (single-attempt, no zone pin) when the persisted TOML
-    /// is blank/unparseable, no cloud source backs the role, or that source declares no zones.
+    /// [SourceProfile#effectiveZones]. Empty (single-attempt, no zone pin) when there is no committed
+    /// TOML (the bootstrap seed) or it is unparseable, no cloud source backs the role, or that source declares no zones.
     private List<String> replacementZones(NodeRole intendedRole, SourceName sourceName) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> sourceFor(config, sourceName, intendedRole))
-                     .map(SourceProfile::effectiveZones)
-                     .or(List.of());
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> sourceFor(config, sourceName, intendedRole))
+                            .map(SourceProfile::effectiveZones)
+                            .or(List.of());
+    }
+
+    /// The operator's committed cluster TOML; empty for an absent config and for the bootstrap seed, which
+    /// declares no source (#1812: [ClusterConfigValue#tomlContent] is typed, so there is no blank sentinel).
+    private Option<String> committedToml() {
+        return clusterConfigReader.get()
+                                  .flatMap(ClusterConfigValue::tomlContent);
     }
 
     private static Option<ClusterBootstrapConfig> parseConfig(String toml) {
@@ -1059,13 +1061,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// `[cloud.compute] server_type` then applies) when the TOML is unparseable or the role
     /// declares no instance type.
     private String roleInstanceType(NodeRole intendedRole, SourceName sourceName) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> sourceFor(config, sourceName, intendedRole))
-                     .flatMap(source -> Option.option(source.roles().get(intendedRole)))
-                     .flatMap(role -> role.instanceType())
-                     .or("default");
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> sourceFor(config, sourceName, intendedRole))
+                            .flatMap(source -> Option.option(source.roles().get(intendedRole)))
+                            .flatMap(role -> role.instanceType())
+                            .or("default");
     }
 
     /// RFC-0017 stage 5 — the source profile NAME backing a provision of `intendedRole`, resolved
@@ -1074,19 +1074,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// what the provider stamps as `aether-source`.
     ///
     /// Falls back to [ProvisionContext#DEFAULT_SOURCE_NAME] when no cloud source backs the role —
-    /// the TOML is blank/unparseable (tests, forge) or the provider is non-cloud (Docker) and has
+    /// there is no committed TOML (the bootstrap seed: tests, forge) or it is unparseable or the provider is non-cloud (Docker) and has
     /// no source concept at all. That fallback is honest rather than convenient: there is no source
     /// name to round-trip, and nothing lists those instances by a source-scoped selector. The
     /// worker reconcile path never relies on it — it passes the topology entry's own source name,
     /// which is authoritative and, under multi-source topologies, the only correct answer
     /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
     private SourceName replacementSourceName(NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole))
-                     .map(SourceProfile::name)
-                     .or(ProvisionContext.DEFAULT_SOURCE_NAME);
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> cloudSourceFor(config, intendedRole))
+                            .map(SourceProfile::name)
+                            .or(ProvisionContext.DEFAULT_SOURCE_NAME);
     }
 
     /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired
@@ -1324,11 +1322,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Override
     public boolean usesExplicitCommunities() {
-        return clusterConfigReader.get()
-                                  .flatMap(config -> ClusterBootstrapConfigParser.parse(config.tomlContent()).option())
-                                  .filter(config -> !config.communities()
-                                                           .isEmpty())
-                                  .isPresent();
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .filter(config -> !config.communities()
+                                                     .isEmpty())
+                            .isPresent();
     }
 
     private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual, long epoch) {
@@ -1447,17 +1444,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// as the renderer's `emitIdentityEnv` does, so it is not threaded here.
     ///
     /// Degrades to [Option#empty] (NO user-data → provider keeps its existing `config.userData()`
-    /// fallback) when the persisted TOML is blank/unparseable or no cloud source backs the role —
+    /// fallback) when there is no committed TOML (the bootstrap seed) or it is unparseable, or no cloud source backs the role —
     /// non-cloud (Docker/forge) providers inject identity from the [ProvisionContext] directly and
     /// never consult user-data, so an absent render is correct there.
     private Result<Option<String>> renderReplacementUserData(ProvisionContext context, NodeRole intendedRole) {
-        return clusterConfigReader.get()
-                                  .map(ClusterConfigValue::tomlContent)
-                                  .filter(toml -> !toml.isBlank())
-                                  .fold(() -> Result.success(Option.none()),
-                                        toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> renderFromConfig(config,
-                                                                                                                            context,
-                                                                                                                            intendedRole)));
+        return committedToml().fold(() -> Result.success(Option.none()),
+                                    toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> renderFromConfig(config,
+                                                                                                                        context,
+                                                                                                                        intendedRole)));
     }
 
     private Result<Option<String>> renderFromConfig(ClusterBootstrapConfig config,

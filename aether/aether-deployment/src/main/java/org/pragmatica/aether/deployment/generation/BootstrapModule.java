@@ -258,14 +258,13 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         // The self-bootstrap seed predates any source definition, so the topology entry carries an
         // empty source name. Bootstrap replaces it with the real per-source spec at formation.
         var seedTopology = List.of(new AetherValue.TopologyEntry("", AetherValue.TopologyEntry.CORE_ROLE, coreCount));
-        var seed = ClusterConfigValue.clusterConfigValue("",
-                                                         seedClusterName,
-                                                         "1.0.0",
-                                                         seedTopology,
-                                                         coreMin,
-                                                         coreMax,
-                                                         "bootstrap-seed",
-                                                         1L);
+        var seed = ClusterConfigValue.bootstrapSeed(seedClusterName,
+                                                    "1.0.0",
+                                                    seedTopology,
+                                                    coreMin,
+                                                    coreMax,
+                                                    "bootstrap-seed",
+                                                    1L);
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
 
         return Option.some(new ClusterConfigSeedPlan(command, coreCount, coreMin, coreMax));

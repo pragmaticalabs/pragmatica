@@ -4,6 +4,7 @@ package org.pragmatica.aether.worker.metadata;
 
 import java.util.Set;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -36,7 +37,7 @@ class WorkerMetadataIndexTest {
     @Test
     void rawProviderConfigurationNeverEntersWorkerProjection() {
         var index = WorkerMetadataIndex.workerMetadataIndex();
-        var configuration = new AetherValue.ClusterConfigValue("credentials = 'secret'",
+        var configuration = new AetherValue.ClusterConfigValue(Option.some("credentials = 'secret'"),
                                                                "cluster",
                                                                "1",
                                                                java.util.List.of(),

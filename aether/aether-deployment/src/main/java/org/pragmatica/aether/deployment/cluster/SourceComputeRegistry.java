@@ -93,36 +93,47 @@ public interface SourceComputeRegistry {
                         Option<ConfigurationProvider> protectedConfig,
                         Function<CloudConfig, Result<EnvironmentIntegration>> factory,
                         Map<SourceName, CachedProvider> providers) implements SourceComputeRegistry {
+            /// The operator's committed source TOML. Empty both when no configuration is committed and when
+            /// only the bootstrap seed is ([ClusterConfigValue#tomlContent] is typed): neither declares a
+            /// source, so both route to the explicitly local provider, never to a cloud fallback.
+            private Option<String> committedSources() {
+                return configuration.get()
+                                    .flatMap(ClusterConfigValue::tomlContent);
+            }
+
             @Override
             public boolean isAvailable() {
-                return localProvider.isPresent() || configuration.get()
-                                                                 .filter(value -> !value.tomlContent()
-                                                                                        .isBlank())
-                                                                 .isPresent();
+                return localProvider.isPresent() || committedSources().isPresent();
             }
 
             @Override
             public synchronized Result<ComputeProvider> resolve(SourceName source) {
-                return configuration.get()
-                                    .filter(value -> !value.tomlContent()
-                                                           .isBlank())
-                                    .fold(() -> localProvider.toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent")),
-                                          value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).flatMap(config -> resolveConfigured(config,
-                                                                                                                                               source)));
+                return committedSources().fold(() -> localProvider.toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent")),
+                                               toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> resolveConfigured(config,
+                                                                                                                                    source)));
             }
 
             @Override
             public synchronized Result<ComputeProvider> resolve(SourceName source, String expectedBinding) {
-                return configuration.get()
-                                    .toResult(EnvironmentError.operationNotSupported("Committed source configuration unavailable"))
-                                    .flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent()))
-                                    .flatMap(config -> Option.option(config.sources().get(source.value()))
-                                                             .toResult(EnvironmentError.operationNotSupported("Unknown compute source: " + source.value()))
-                                                             .flatMap(profile -> resolveBound(profile,
-                                                                                              config.cluster()
-                                                                                                    .name()
-                                                                                                    .value(),
-                                                                                              expectedBinding)));
+                return committedSources().fold(() -> localBinding(source).flatMap(actual -> actual.equals(expectedBinding)
+                                                                                            ? localProvider.toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent"))
+                                                                                            : bindingChanged(source)),
+                                               toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> Option.option(config.sources()
+                                                                                                                                      .get(source.value()))
+                                                                                                                        .toResult(EnvironmentError.operationNotSupported("Unknown compute source: " + source.value()))
+                                                                                                                        .flatMap(profile -> resolveBound(profile,
+                                                                                                                                                         config.cluster()
+                                                                                                                                                               .name()
+                                                                                                                                                               .value(),
+                                                                                                                                                         expectedBinding))));
+            }
+
+            /// With no committed sources only the explicitly local provider is provisionable, and only as
+            /// the default source; any other name has nothing to route to.
+            private Result<String> localBinding(SourceName source) {
+                return localProvider.filter(_ -> source.equals(SourceName.DEFAULT))
+                                    .toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent; no local provider for source " + source.value()))
+                                    .flatMap(_ -> SourceComputeRegistry.localSourceBinding(source));
             }
 
             private Result<ComputeProvider> resolveBound(SourceProfile profile, String clusterName, String expected) {
@@ -196,10 +207,9 @@ public interface SourceComputeRegistry {
 
             @Override
             public Result<String> binding(SourceName source) {
-                return configuration.get()
-                                    .toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent"))
-                                    .flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent()))
-                                    .flatMap(config -> bindingFor(config, source));
+                return committedSources().fold(() -> localBinding(source),
+                                               toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> bindingFor(config,
+                                                                                                                             source)));
             }
 
             private Result<String> bindingFor(ClusterBootstrapConfig config, SourceName source) {
@@ -219,13 +229,10 @@ public interface SourceComputeRegistry {
 
             @Override
             public Result<List<SourceName>> sources(Map<String, String> filter) {
-                return configuration.get()
-                                    .filter(value -> !value.tomlContent()
-                                                           .isBlank())
-                                    .fold(() -> localProvider.map(_ -> List.of(SourceName.DEFAULT))
-                                                             .toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent")),
-                                          value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).map(config -> matchingSources(config,
-                                                                                                                                         filter)));
+                return committedSources().fold(() -> localProvider.map(_ -> List.of(SourceName.DEFAULT))
+                                                                  .toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent")),
+                                               toml -> ClusterBootstrapConfigParser.parse(toml).map(config -> matchingSources(config,
+                                                                                                                              filter)));
             }
 
             @Override
@@ -297,6 +304,19 @@ public interface SourceComputeRegistry {
         appendSection(canonical, "cloud.credentials", section(source, "cloud.credentials"));
         appendSection(canonical, "cloud.compute", identityCompute(source));
         appendSection(canonical, "cloud.security", section(source, "cloud.security"));
+
+        return Result.lift(() -> java.security.MessageDigest.getInstance("SHA-256")).map(digest -> java.util.HexFormat.of()
+                                                                                                                      .formatHex(digest.digest(canonical.toString()
+                                                                                                                                                        .getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+    }
+
+    /// Binding of the explicitly local provider routed with no committed sources. Like every binding it is
+    /// opaque and stable; it differs from any declared source's binding, so a reservation made before the
+    /// first `cluster apply` is recognised as a different account afterwards, never silently re-bound.
+    static Result<String> localSourceBinding(SourceName source) {
+        var canonical = new StringBuilder();
+
+        appendBinding(canonical, "local", source.value());
 
         return Result.lift(() -> java.security.MessageDigest.getInstance("SHA-256")).map(digest -> java.util.HexFormat.of()
                                                                                                                       .formatHex(digest.digest(canonical.toString()

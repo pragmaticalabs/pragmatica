@@ -68,7 +68,7 @@ class HierarchicalCoreResizeTest {
             [source.default.core]
             count = 3
             """;
-        var after = new AetherValue.ClusterConfigValue(configuration, "resize", "1.0.0",
+        var after = new AetherValue.ClusterConfigValue(Option.some(configuration), "resize", "1.0.0",
             List.of(new AetherValue.TopologyEntry("default", "core", 3)), 3, 11,
             "forge", before.configVersion() + 1, System.currentTimeMillis());
         var id = UUID.randomUUID().toString();

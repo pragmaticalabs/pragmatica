@@ -6,6 +6,7 @@ package org.pragmatica.aether.config.cluster;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.RollbackConfig;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,8 +26,8 @@ class RollbackPolicyParserTest {
                                           """;
 
     @Test
-    void fromClusterToml_blankSeed_isTheBuiltInDefault_enabled() {
-        var policy = RollbackPolicyParser.fromClusterToml("").unwrap();
+    void fromClusterToml_bootstrapSeed_isTheBuiltInDefault_enabled() {
+        var policy = RollbackPolicyParser.fromClusterToml(Option.none()).unwrap();
 
         assertThat(policy).isEqualTo(RollbackConfig.rollbackConfig());
         assertThat(policy.enabled()).isTrue();
@@ -36,24 +37,24 @@ class RollbackPolicyParserTest {
 
     @Test
     void fromClusterToml_noRollbackSection_isTheBuiltInDefault_enabled() {
-        assertThat(RollbackPolicyParser.fromClusterToml(CLUSTER).unwrap()).isEqualTo(RollbackConfig.rollbackConfig());
+        assertThat(RollbackPolicyParser.fromClusterToml(Option.some(CLUSTER)).unwrap()).isEqualTo(RollbackConfig.rollbackConfig());
     }
 
     @Test
     void fromClusterToml_enabledFalse_turnsItOff() {
-        assertThat(RollbackPolicyParser.fromClusterToml(CLUSTER + "[rollback]\nenabled = false\n").unwrap().enabled()).isFalse();
+        assertThat(RollbackPolicyParser.fromClusterToml(Option.some(CLUSTER + "[rollback]\nenabled = false\n")).unwrap().enabled()).isFalse();
     }
 
     @Test
     void fromClusterToml_everyKey_isRead() {
-        var policy = RollbackPolicyParser.fromClusterToml(CLUSTER + """
+        var policy = RollbackPolicyParser.fromClusterToml(Option.some(CLUSTER + """
                                                                     [rollback]
                                                                     enabled = true
                                                                     trigger_on_all_instances_failed = false
                                                                     cooldown = "10m"
                                                                     max_rollbacks = 5
                                                                     bake_window = "30m"
-                                                                    """).unwrap();
+                                                                    """)).unwrap();
 
         assertThat(policy.triggerOnAllInstancesFailed()).isFalse();
         assertThat(policy.cooldown()).isEqualTo(TimeSpan.timeSpan(10).minutes());
