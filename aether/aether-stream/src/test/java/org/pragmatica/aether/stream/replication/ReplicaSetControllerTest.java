@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.some;
@@ -469,4 +470,92 @@ class ReplicaSetControllerTest {
         assertThat(passes).as("each reconcile pass is its own single flush").hasSize(2);
         assertThat(passes.get(1)).containsExactlyInAnyOrderElementsOf(expected);
     }
+
+    // ---- trigger coalescing (#1339 / #1732) ------------------------------------------------------
+
+    /// Executor that queues instead of running, so a test decides when the controller's passes execute.
+    private static final class QueuedExecutor implements java.util.concurrent.Executor {
+        final java.util.ArrayDeque<Runnable> queue = new java.util.ArrayDeque<>();
+
+        @Override public void execute(Runnable command) {
+            queue.add(command);
+        }
+
+        void drain() {
+            while (!queue.isEmpty()) {
+                queue.poll().run();
+            }
+        }
+    }
+
+    private static ReplicaSetController queuedController(ReplicaRegistry registry,
+                                                         Supplier<List<NodeId>> members,
+                                                         AtomicInteger passes,
+                                                         QueuedExecutor executor) {
+        return ReplicaSetController.replicaSetController(registry,
+                                                        node("n0"),
+                                                        members,
+                                                        () -> members.get().size(),
+                                                        appCatalog(2),
+                                                        (_, _) -> {},
+                                                        _ -> passes.incrementAndGet(),
+                                                        executor);
+    }
+
+    /// Placement-input triggers (voter install, leadership, ownership puts) can arrive in bursts — a reshuffle
+    /// commits one ownership record per moved partition. Queued triggers must collapse into one pass.
+    @Test
+    void reconcileCallsMadeWhileAPassIsQueued_coalesceIntoOnePass() {
+        var executor = new QueuedExecutor();
+        var passes = new AtomicInteger();
+        var ctrl = queuedController(ReplicaRegistry.replicaRegistry(), () -> nodes("n0", "n1", "n2"), passes, executor);
+
+        for (var i = 0; i < 25; i++) {
+            ctrl.reconcile();
+        }
+        assertThat(executor.queue).as("25 triggers before the first pass starts schedule ONE run").hasSize(1);
+
+        executor.drain();
+
+        assertThat(passes.get()).as("and that run is one pass").isEqualTo(1);
+    }
+
+    /// The completeness half of coalescing: a trigger that arrives AFTER a pass has begun reading its inputs
+    /// must not be absorbed by that pass — the input it announces may already have been read. The pending flag
+    /// is cleared before the inputs are read, so the in-flight call schedules exactly one more pass, and that
+    /// pass sees the changed input.
+    @Test
+    void reconcileCalledWhileAPassReadsItsInputs_runsExactlyOneMorePass_thatSeesTheChange() {
+        var executor = new QueuedExecutor();
+        var passes = new AtomicInteger();
+        var registry = ReplicaRegistry.replicaRegistry();
+        var members = new AtomicReference<>(nodes("n0", "n1"));
+        var triggeredMidPass = new java.util.concurrent.atomic.AtomicBoolean(false);
+        Supplier<List<NodeId>> supplier = () -> {
+            var snapshot = members.get();
+
+            if (triggeredMidPass.compareAndSet(false, true)) {
+                // The input changes right after this pass read it, and its trigger fires from inside the pass.
+                members.set(nodes("n0", "n1", "n2"));
+                queuedHolder.get().reconcile();
+            }
+
+            return snapshot;
+        };
+        var ctrl = queuedController(registry, supplier, passes, executor);
+
+        queuedHolder.set(ctrl);
+        ctrl.reconcile();
+        executor.drain();
+
+        assertThat(passes.get()).as("the mid-pass trigger is not swallowed by the pass that was already reading").isEqualTo(2);
+        var placed = new HashSet<NodeId>();
+
+        for (var p = 0; p < PARTITIONS; p++) {
+            registry.replicasFor(APP_STREAM, p).forEach(d -> placed.add(d.nodeId()));
+        }
+        assertThat(placed).as("the second pass saw the changed membership").contains(node("n2"));
+    }
+
+    private final AtomicReference<ReplicaSetController> queuedHolder = new AtomicReference<>();
 }
