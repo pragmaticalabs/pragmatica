@@ -963,8 +963,23 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createStream(StreamConfig config, CommitMode commitMode) {
-        return option(streams.get(config.name())).fold(() -> createFreshStream(config, commitMode),
+        return option(streams.get(config.name())).fold(() -> createAbsentStream(config, commitMode),
                                                        existing -> ensureConfigCommitted(config, existing, commitMode));
+    }
+
+    /// #1278 (rulings B/C): a name whose committed life this node has applied is ADOPTED — hydrated from the committed
+    /// config, never re-proposed. Only a name with no applied life (never created, or destroyed here) gets a fresh
+    /// proposal, which always carries a newly minted incarnation.
+    private Result<Unit> createAbsentStream(StreamConfig config, CommitMode commitMode) {
+        return option(appliedConfigs.get(config.name())).fold(() -> createFreshStream(config, commitMode),
+                                                              committed -> adoptCommittedLife(committed, commitMode));
+    }
+
+    /// A hydration that built no entry (native OOM, WAL refusal) has already been flagged; the caller may retry.
+    private Result<Unit> adoptCommittedLife(StreamConfig committed, CommitMode commitMode) {
+        return option(streams.compute(committed.name(),
+                                      (_, existing) -> reconcileCommittedConfig(committed, existing))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()))
+                     .flatMap(_ -> commitMode.alreadyCommitted());
     }
 
     /// Already materialized. A committed config short-circuits with NO consensus: SYNC reports the
@@ -998,8 +1013,17 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return checkReplicationMinimum(config).flatMap(_ -> checkRetentionCapacity(config))
                                       .flatMap(_ -> checkPartitionCaps(config))
-                                      .flatMap(_ -> adoptIncarnation(config))
+                                      .flatMap(_ -> adoptIfUnclustered(config))
                                       .flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// #1278 (ruling B): through a cluster a fresh create is only a PROPOSAL, so it adopts nothing — the footprint
+    /// moves to a life when that life's committed config applies ([#commitOwnLife], [#hydrateEntry]). Without a
+    /// cluster the create IS the commit.
+    private Result<Unit> adoptIfUnclustered(StreamConfig config) {
+        return clusterNode.isEmpty()
+               ? adoptIncarnation(config)
+               : success(unit());
     }
 
     /// #1564 engine backstop (R5): whichever path minted the config, its factors satisfy `1 <= CF <= RF`
@@ -1164,10 +1188,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// retry without blocking and reports plain success (the publish path proceeds to `publishLocal`; the
     /// next publish retries the commit if this one fails). Never re-materializes or re-reserves bytes.
     private Result<Unit> republishExistingConfig(StreamConfig config, StreamEntry entry, CommitMode commitMode) {
-        return publishStreamConfig(config, entry, commitMode).flatMap(_ -> commitMode.republished());
+        return publishStreamConfig(config.withIncarnation(entry.config().incarnation()),
+                                   entry,
+                                   commitMode).flatMap(_ -> commitMode.republished());
     }
 
+    /// #1278 (ruling C): the destroyed life stops being this node's applied life at once, not when the asynchronous
+    /// removal comes back, so a create that follows proposes a NEW life instead of adopting the one being removed.
     public Result<Unit> destroyStream(String streamName) {
+        appliedConfigs.remove(streamName);
+
         return option(streams.remove(streamName)).toResult(new StreamError.StreamNotFound(streamName))
                      .flatMap(this::closeAndRelease)
                      .onSuccess(_ -> forgetQuarantine(streamName))
@@ -1219,11 +1249,22 @@ public final class StreamPartitionManager implements AutoCloseable {
         return node.apply(putCommand(config))
                    .await(COMMIT_TIMEOUT)
                    .mapToUnit()
-                   .onSuccess(_ -> entry.markCommitted())
                    .onFailure(cause -> log.debug("Failed to publish stream config for {}: {}",
                                                  config.name(),
                                                  cause.message()))
-                   .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED);
+                   .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED)
+                   .flatMap(_ -> proposalOutcome(config, entry));
+    }
+
+    /// #1278 (ruling B): the consensus round resolving does not mean THIS proposal's life committed — the KV applier
+    /// refuses a second life over a committed one ([org.pragmatica.cluster.state.kvstore.IncarnationFenced]) without
+    /// a notification. The entry is latched committed only when its committed config applies here
+    /// ([#commitOwnLife]); a different applied life means another create won, which is a duplicate create.
+    private Result<Unit> proposalOutcome(StreamConfig config, StreamEntry entry) {
+        return option(appliedConfigs.get(config.name())).filter(applied -> applied.incarnation() != entry.config()
+                                                                                                         .incarnation())
+                     .fold(() -> success(unit()),
+                           _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
     }
 
     /// Async sibling of {@link #applyPutCommand}: fire the idempotent config `Put` WITHOUT awaiting
@@ -1234,7 +1275,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void applyPutCommandAsync(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config, StreamEntry entry) {
         node.apply(putCommand(config))
-            .onSuccess(_ -> entry.markCommitted())
             .onFailure(cause -> log.debug("Async stream config publish for {} not yet committed: {}",
                                           config.name(),
                                           cause.message()));
@@ -1342,8 +1382,57 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// management default (see {@link #adoptIfMoreDurable}).
     @NullReturn
     private StreamEntry reconcileCommittedConfig(StreamConfig config, StreamEntry existing) {
-        return option(existing).map(entry -> adoptIfMoreDurable(config, entry))
+        return option(existing).map(entry -> reconcileExisting(config, entry))
                      .or(() -> hydrateEntry(config));
+    }
+
+    /// #1278 (rulings A/B): the committed life is the only life. The local entry of THAT life becomes committed here
+    /// (and only here); a local entry of another life was a losing proposal — under ruling A it never accepted a
+    /// write — and is discarded for the committed one.
+    @NullReturn
+    private StreamEntry reconcileExisting(StreamConfig config, StreamEntry existing) {
+        if (config.incarnation() != existing.config().incarnation()) {
+            return replaceLosingLife(config, existing);
+        }
+
+        commitOwnLife(config, existing);
+
+        return adoptIfMoreDurable(config, existing);
+    }
+
+    @Contract
+    private void commitOwnLife(StreamConfig config, StreamEntry entry) {
+        if (entry.isCommitted()) {
+            return;
+        }
+
+        adoptIncarnation(config).onFailure(cause -> log.warn("Stream '{}' committed; reclaiming other lives of its name did"
+                                                            + " not complete: {}",
+                                                             config.name(),
+                                                             cause.message()));
+        entry.markCommitted();
+    }
+
+    @NullReturn
+    private StreamEntry replaceLosingLife(StreamConfig committed, StreamEntry local) {
+        if (local.isCommitted()) {
+            // Not reachable through the life fence: a committed life is replaced only after its removal applied,
+            // which removes the local entry first. Kept loud, and the WALs are kept for inspection.
+            log.error("Stream '{}' replaces COMMITTED local incarnation {} with committed incarnation {} without a removal",
+                      committed.name(),
+                      local.config().incarnation(),
+                      committed.incarnation());
+            releaseEntry(local);
+        } else {
+            log.info("Stream '{}' adopts the committed incarnation {}; this node's proposal {} lost and held no writes",
+                     committed.name(),
+                     committed.incarnation(),
+                     local.config().incarnation());
+            releaseEntry(local);
+            local.deleteWals();
+        }
+
+        return hydrateEntry(committed);
     }
 
     /// A committed config for an ALREADY-materialized stream. The publish auto-create path
@@ -1358,24 +1447,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// replaces).
     private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing) {
         return config.partitions() == existing.config()
-                                              .partitions() && (strongerDurability(config, existing.config()) || config.incarnation() != existing.config()
-                                                                                                                                                 .incarnation())
+                                              .partitions() && strongerDurability(config, existing.config())
                ? adoptConfig(config, existing)
                : existing;
     }
 
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
-        if (config.incarnation() != existing.config().incarnation()) {
-            // Two creates of the name raced (a local default and a committed config minted elsewhere): the committed
-            // life is the cluster's. Records this node took under the local life stay readable on the open rings but
-            // are not reopened after a restart -- [limit: concurrent first creates of one name, #1278 review].
-            log.warn("Stream '{}' adopts the committed incarnation {} over its local one {}",
-                     config.name(),
-                     config.incarnation(),
-                     existing.config().incarnation());
-            adoptIncarnation(config);
-        }
-
         log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}",
                  config.name(),
                  existing.config().replicationFactor(),
@@ -1383,10 +1460,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                  existing.config().confirmationFactor(),
                  config.confirmationFactor());
 
-        return existing.withConfig(strongerDurability(config, existing.config())
-                                   ? config
-                                   : existing.config()
-                                             .withIncarnation(config.incarnation()));
+        return existing.withConfig(config);
     }
 
     private static boolean strongerDurability(StreamConfig incoming, StreamConfig existing) {
@@ -1685,17 +1759,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       long timestamp,
                                       Epoch ownerEpoch,
                                       int minAcks) {
-        return resolveStreamEntry(streamName).flatMap(entry -> publishInSection(entry,
-                                                                                streamName,
-                                                                                partition,
-                                                                                payload,
-                                                                                timestamp,
-                                                                                ownerEpoch,
-                                                                                admitOwnerWrite(streamName,
-                                                                                                partition,
-                                                                                                minAcks).flatMap(_ -> provenanceAdmits(streamName,
-                                                                                                                                       partition,
-                                                                                                                                       some(ownerEpoch)))))
+        return resolveStreamEntry(streamName).flatMap(this::committedLife)
+                                 .flatMap(entry -> publishInSection(entry,
+                                                                    streamName,
+                                                                    partition,
+                                                                    payload,
+                                                                    timestamp,
+                                                                    ownerEpoch,
+                                                                    admitOwnerWrite(streamName, partition, minAcks).flatMap(_ -> provenanceAdmits(streamName,
+                                                                                                                                                  partition,
+                                                                                                                                                  some(ownerEpoch)))))
                                  .flatMap(this::awaitDurable)
                                  .onSuccess(offset -> ownerDurable(streamName, partition, offset))
                                  .fold(cause -> handleDrop(cause, streamName, partition),
@@ -2105,13 +2178,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  int minAcks) {
         var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
 
-        return resolveStreamEntry(streamName).flatMap(entry -> publishBatchInSection(entry,
-                                                                                     streamName,
-                                                                                     partition,
-                                                                                     payloads,
-                                                                                     timestamp,
-                                                                                     ownerEpoch,
-                                                                                     minAcks))
+        return resolveStreamEntry(streamName).flatMap(this::committedLife)
+                                 .flatMap(entry -> publishBatchInSection(entry,
+                                                                         streamName,
+                                                                         partition,
+                                                                         payloads,
+                                                                         timestamp,
+                                                                         ownerEpoch,
+                                                                         minAcks))
                                  .flatMap(this::awaitDurable)
                                  .onSuccess(offset -> ownerDurable(streamName, partition, offset));
     }
@@ -3575,6 +3649,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName));
     }
 
+    /// #1278 ruling A — THE accept gate: a write is accepted only into the life whose committed config this node has
+    /// applied. A proposed life (materialized locally, config not yet committed and applied here) refuses with the
+    /// retriable [StreamError.StreamConfigNotYetVisible] before anything reaches the ring, the WAL or a replica, so a
+    /// proposal that loses holds nothing to lose. Without a cluster the create is the commit ([#latchCommitted]).
+    private Result<StreamEntry> committedLife(StreamEntry entry) {
+        return entry.isCommitted()
+               ? success(entry)
+               : new StreamError.StreamConfigNotYetVisible(entry.config().name()).result();
+    }
+
     private static Result<Unit> checkEventSize(StreamEntry entry, byte[] payload) {
         if (payload.length > entry.config().maxEventSizeBytes()) {
             return new StreamError.EventTooLarge(payload.length,
@@ -3652,18 +3736,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                               .await(FOOTPRINT_TIMEOUT);
     }
 
-    /// The incarnation a fresh create gives `config` (#1278 review): the one already committed for the name, if any
-    /// (a republish or a create racing the committed config keeps the cluster's life), else a new one — but only
-    /// when the config is committed through a cluster. A manager without a cluster has no cluster-wide life to
-    /// distinguish, so the config keeps the incarnation it was built with.
+    /// The incarnation a fresh proposal carries (#1278, ruling C): always a newly minted one when the config is
+    /// committed through a cluster — a name with an applied life never reaches here ([#createAbsentStream]). A manager
+    /// without a cluster has no cluster-wide life to distinguish, so the config keeps the incarnation it was built with.
     private StreamConfig withIncarnation(StreamConfig config) {
         if (config.incarnation() != StreamConfig.NO_INCARNATION || clusterNode.isEmpty()) {
             return config;
         }
 
-        return config.withIncarnation(option(appliedConfigs.get(config.name())).map(StreamConfig::incarnation)
-                                            .filter(incarnation -> incarnation != StreamConfig.NO_INCARNATION)
-                                            .or(StreamPartitionManager::mintIncarnation));
+        return config.withIncarnation(mintIncarnation());
     }
 
     private static long mintIncarnation() {
