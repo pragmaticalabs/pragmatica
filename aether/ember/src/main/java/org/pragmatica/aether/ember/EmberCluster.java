@@ -235,6 +235,12 @@ public final class EmberCluster {
     /// materialization queue behind another).
     private final AtomicReference<StreamingConfig> streamingConfig = new AtomicReference<>(StreamingConfig.streamingConfig());
 
+    /// The DHT replication every node is created with. FULL by default — every node holds everything, which is
+    /// what the harness has always run — so an Ember green says NOTHING about placement-dependent DHT behaviour;
+    /// [#withDhtReplication] runs the production shape instead (#1777: a non-FULL DHT resolves its factors from
+    /// committed state, and a worker from its projection).
+    private final AtomicReference<DHTConfig> dhtReplication = new AtomicReference<>(DHTConfig.FULL);
+
     /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
     /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
@@ -462,6 +468,13 @@ public final class EmberCluster {
     @Contract
     public void withRaisedSwimTimeouts() {
         raisedSwimTimeouts.set(true);
+    }
+
+    /// TEST SEAM (#1777) — the DHT replication EVERY node is created with, in place of FULL. MUST be called before
+    /// [#start]. Harness-scoped; production paths never call this.
+    @Contract
+    public void withDhtReplication(DHTConfig config) {
+        dhtReplication.set(config);
     }
 
     /// TEST SEAM (#1735 sibling, F1a) — the `[streaming]` section for EVERY node in this cluster. MUST be called
@@ -1428,7 +1441,7 @@ public final class EmberCluster {
                                           SliceActionConfig.sliceActionConfig(),
                                           SliceConfig.sliceConfig(),
                                           mgmtPort,
-                                          DHTConfig.FULL,
+                                          dhtReplication.get(),
                                           DHTConfig.CACHE_DEFAULT,
                                           Option.empty(),
                                           quicTls,
