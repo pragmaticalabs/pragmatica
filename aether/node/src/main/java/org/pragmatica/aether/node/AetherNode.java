@@ -100,6 +100,7 @@ import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
+import org.pragmatica.aether.resource.interceptor.CacheDhtClient;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
@@ -3616,6 +3617,7 @@ public interface AetherNode extends ManageableNode {
                              .onPresent(spi -> registerRuntimeExtensions(spi,
                                                                          topicSubscriptionRegistry,
                                                                          sliceInvoker,
+                                                                         baseDhtClient,
                                                                          cacheDhtClient,
                                                                          contentStorage,
                                                                          kvStore,
@@ -9033,6 +9035,15 @@ public interface AetherNode extends ManageableNode {
         };
     }
 
+    /// #1777 (CTO ruling R2 / Q4): the bare `DHTClient` extension is the cluster's REPLICATED DHT at the committed
+    /// `[replication]` factors — what idempotency and every other namespace resolve. The cache namespace's lower `[cache]`
+    /// replication is a separate extension type ([CacheDhtClient]) that only the cache asks for. Registering the cache
+    /// client as `DHTClient`, as before, put idempotency's dedup records at RF 1.
+    static void registerDhtExtensions(SpiResourceProvider spi, DHTClient replicatedDhtClient, DHTClient cacheDhtClient) {
+        spi.registerExtension(DHTClient.class, replicatedDhtClient);
+        spi.registerExtension(CacheDhtClient.class, new CacheDhtClient(cacheDhtClient));
+    }
+
     private static Repository compositeRepository(List<Repository> repositories) {
         if (repositories.isEmpty()) {
             return artifact -> Causes.cause("No repositories configured").promise();
@@ -9044,13 +9055,14 @@ public interface AetherNode extends ManageableNode {
     private static void registerRuntimeExtensions(SpiResourceProvider spi,
                                                   TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                   SliceInvoker sliceInvoker,
+                                                  DHTClient replicatedDhtClient,
                                                   DHTClient cacheDhtClient,
                                                   StorageInstance contentStorage,
                                                   KVStore<AetherKey, AetherValue> kvStore,
                                                   OperatorWarningSink operatorWarningSink) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
-        spi.registerExtension(DHTClient.class, cacheDhtClient);
+        registerDhtExtensions(spi, replicatedDhtClient, cacheDhtClient);
         // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
         // Register a tiered content store so slice-facing ContentStore resources can provision.
         spi.registerExtension(StorageInstance.class, contentStorage);

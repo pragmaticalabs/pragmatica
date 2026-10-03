@@ -122,6 +122,63 @@ class AetherNodeDhtReplicationTest {
         assertThat(node.config().writeQuorum()).isEqualTo(3);
     }
 
+    /// #1777 (CTO ruling R2 / Q4): the bare `DHTClient` extension — what idempotency resolves — is the REPLICATED DHT at
+    /// the committed `[replication]` factors; the cache namespace's `[cache]` client is a separate extension type.
+    @Test
+    void registerDhtExtensions_bindsTheReplicatedClientAsDhtClient_andTheCacheClientSeparately() {
+        var node = awaiting();
+
+        AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(5, 3, 1, 1, 1),
+                                       node,
+                                       DHTConfig.DEFAULT,
+                                       DHTConfig.CACHE_DEFAULT,
+                                       new AtomicReference<>());
+        var replicated = org.pragmatica.dht.DistributedDHTClient.distributedDHTClient(node,
+                                                                                    (_, _) -> {},
+                                                                                    org.pragmatica.dht.OwnerEpochSource.zero());
+        var cache = replicated.scoped(() -> DHTConfig.CACHE_DEFAULT);
+        var captured = new AtomicReference<org.pragmatica.aether.slice.ProvisioningContext>();
+        var spi = org.pragmatica.aether.resource.SpiResourceProvider.spiResourceProvider(java.util.List.of(new CapturingFactory(captured)),
+                                                                                         (_, _) -> org.pragmatica.lang.Result.success("probe"));
+
+        AetherNode.registerDhtExtensions(spi, replicated, cache);
+        spi.provide(Probe.class, "probe", org.pragmatica.aether.slice.ProvisioningContext.provisioningContext()).await();
+
+        var dhtClient = captured.get().extension(org.pragmatica.dht.DHTClient.class).unwrap();
+        var cacheClient = captured.get().extension(org.pragmatica.aether.resource.interceptor.CacheDhtClient.class).unwrap().client();
+
+        assertThat(dhtClient.config().replicationFactor()).as("idempotency's DHT: the [replication] RF").isEqualTo(5);
+        assertThat(dhtClient.config().writeQuorum()).as("idempotency's DHT: the [replication] CF").isEqualTo(3);
+        assertThat(cacheClient.config().replicationFactor()).as("the cache namespace keeps its own").isEqualTo(1);
+    }
+
+    record Probe() {}
+
+    private record CapturingFactory(AtomicReference<org.pragmatica.aether.slice.ProvisioningContext> captured)
+                                   implements org.pragmatica.aether.resource.ResourceFactory<Probe, String> {
+        @Override
+        public Class<Probe> resourceType() {
+            return Probe.class;
+        }
+
+        @Override
+        public Class<String> configType() {
+            return String.class;
+        }
+
+        @Override
+        public org.pragmatica.lang.Promise<Probe> provision(String config) {
+            return org.pragmatica.lang.Promise.success(new Probe());
+        }
+
+        @Override
+        public org.pragmatica.lang.Promise<Probe> provision(String config, org.pragmatica.aether.slice.ProvisioningContext context) {
+            captured.set(context);
+
+            return provision(config);
+        }
+    }
+
     private static DHTNode awaiting() {
         return awaiting(DHTConfig.DEFAULT);
     }
