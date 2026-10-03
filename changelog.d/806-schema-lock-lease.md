@@ -19,15 +19,18 @@
   applier deletes such a value only for a witness EQUAL to it. `SchemaMigrationLockValue` implements it; no
   production code removes the lock any more (the stalled-migration reset in `ClusterDeploymentState` no longer
   does either: it ran only for an expired lock, which the next acquire takes over).
-- **[limit:] exclusivity is mechanism-backed at the KV level, timing-dependent at the database.** With
-  healthy consensus, no two nodes hold the lock at once (fenced version chain). Whether two nodes EXECUTE a
-  migration at once, when the holder stalls or is partitioned, depends on its renewals committing within 2/3 of
-  the TTL and on clock skew staying below that margin (`expiresAt` is the holder's clock, `isExpired` is the
-  taker's). A holder that loses its lease keeps running its script and stops renewing; it cannot be recalled.
-- **[limit:] the database history is a partial backstop only.** The `(version, type)` key collides only on the
-  versioned transactional path and only on dialects with transactional DDL; MySQL, MariaDB and Oracle commit DDL
-  implicitly, and the autocommit path and undo have no such backstop. Fencing on the database side (the
-  `lockVersion` written inside the history transaction, or an advisory lock) is the structural follow-up.
+- **[mechanism: fenced version chain + tombstone release + claim ownership] The STORED lock record has at most
+  one live holder under healthy consensus.** Scope: the record, not the work. A superseded holder learns it
+  lost the lock at its next tick, up to `LOCK_TTL_MS / 3` later, and keeps running its script meanwhile.
+- **[design intent — unverified] Exclusivity of database EXECUTION for a stalled or partitioned holder.** It
+  depends on the holder's renewals committing within 2/3 of the TTL and on clock skew staying below that margin
+  (`expiresAt` is the holder's clock, `isExpired` is the taker's). A holder that loses its lease cannot be
+  recalled. No test in this change exercises it.
+- **[unverified: reported by the v1860 review, not checked by this change] The database history is a partial
+  backstop only.** The `(version, type)` key collides only on the versioned transactional path and only on
+  dialects with transactional DDL; MySQL, MariaDB and Oracle commit DDL implicitly, and the autocommit path and
+  undo have no such backstop. Fencing on the database side (the `lockVersion` written inside the history
+  transaction, or an advisory lock) is the structural follow-up: #1865.
 - **#972** (unwitnessed `Remove` of a `VersionFenced` record) is covered by the mechanism, not by this change:
   the marker is opt-in because `DeploymentOutcomeValue` still has a witnessless remover
   (`BlueprintService.removeFromStore`).

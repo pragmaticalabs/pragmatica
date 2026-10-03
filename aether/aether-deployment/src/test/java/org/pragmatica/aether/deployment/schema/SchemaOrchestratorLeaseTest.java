@@ -184,7 +184,7 @@ class SchemaOrchestratorLeaseTest {
     /// it could land after the tombstone and leave a live lock nobody renews.
     @Test
     void releaseWaitsForAnInFlightRenewal() {
-        var migration = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
+        var migration = orchestrator(NODE_1, 60_000L).migrateIfNeeded(DATASOURCE);
 
         cluster.parkRenewals();
         time.advance(TICK_MS);
@@ -330,6 +330,12 @@ class SchemaOrchestratorLeaseTest {
     }
 
     private SchemaOrchestratorService orchestrator(NodeId self) {
+        return orchestrator(self, RENEWAL_TIMEOUT_MS);
+    }
+
+    /// Only the tests of a renewal that GIVES UP use the short real timeout; a test that holds a renewal in
+    /// flight across assertions must not race it, so it passes a timeout no real run reaches.
+    private SchemaOrchestratorService orchestrator(NodeId self, long renewalTimeoutMs) {
         Repository repository = _ -> NOT_IN_REPOSITORY.promise();
 
         return new SchemaOrchestratorServiceInstance(cluster,
@@ -340,7 +346,7 @@ class SchemaOrchestratorLeaseTest {
                                                      stubConnectionProvider(),
                                                      self,
                                                      Option.<MessageRouter> none(),
-                                                     new LeaseTiming(TTL_MS, RENEWAL_TIMEOUT_MS, time::now, time::schedule));
+                                                     new LeaseTiming(TTL_MS, renewalTimeoutMs, time::now, time::schedule));
     }
 
     /// A hand-stepped clock and scheduler: `advance` moves time forward one tick at a time and runs each
