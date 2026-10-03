@@ -52,6 +52,7 @@ class AetherNodeDhtReplicationTest {
         var retention = org.pragmatica.lang.io.TimeSpan.timeSpan(2).hours();
 
         AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(3, 2, 1, 1, 1, retention),
+                                       VERSION,
                                        node,
                                        DHTConfig.DEFAULT,
                                        DHTConfig.CACHE_DEFAULT,
