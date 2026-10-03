@@ -1760,20 +1760,21 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       long timestamp,
                                       Epoch ownerEpoch,
                                       int minAcks) {
-        return resolveStreamEntry(streamName).flatMap(this::committedLife)
-                                 .flatMap(entry -> publishInSection(entry,
-                                                                    streamName,
-                                                                    partition,
-                                                                    payload,
-                                                                    timestamp,
-                                                                    ownerEpoch,
-                                                                    admitOwnerWrite(streamName, partition, minAcks).flatMap(_ -> provenanceAdmits(streamName,
-                                                                                                                                                  partition,
-                                                                                                                                                  some(ownerEpoch)))))
-                                 .flatMap(this::awaitDurable)
-                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset))
-                                 .fold(cause -> handleDrop(cause, streamName, partition),
-                                       Result::success);
+        return resolveWritableEntry(streamName).flatMap(entry -> publishInSection(entry,
+                                                                                  streamName,
+                                                                                  partition,
+                                                                                  payload,
+                                                                                  timestamp,
+                                                                                  ownerEpoch,
+                                                                                  admitOwnerWrite(streamName,
+                                                                                                  partition,
+                                                                                                  minAcks).flatMap(_ -> provenanceAdmits(streamName,
+                                                                                                                                         partition,
+                                                                                                                                         some(ownerEpoch)))))
+                                   .flatMap(this::awaitDurable)
+                                   .onSuccess(offset -> ownerDurable(streamName, partition, offset))
+                                   .fold(cause -> handleDrop(cause, streamName, partition),
+                                         Result::success);
     }
 
     /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
@@ -2179,16 +2180,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  int minAcks) {
         var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
 
-        return resolveStreamEntry(streamName).flatMap(this::committedLife)
-                                 .flatMap(entry -> publishBatchInSection(entry,
-                                                                         streamName,
-                                                                         partition,
-                                                                         payloads,
-                                                                         timestamp,
-                                                                         ownerEpoch,
-                                                                         minAcks))
-                                 .flatMap(this::awaitDurable)
-                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset));
+        return resolveWritableEntry(streamName).flatMap(entry -> publishBatchInSection(entry,
+                                                                                       streamName,
+                                                                                       partition,
+                                                                                       payloads,
+                                                                                       timestamp,
+                                                                                       ownerEpoch,
+                                                                                       minAcks))
+                                   .flatMap(this::awaitDurable)
+                                   .onSuccess(offset -> ownerDurable(streamName, partition, offset));
     }
 
     private Result<LoggedAppend> publishBatchInSection(StreamEntry entry,
@@ -2383,14 +2383,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                         byte[] payload,
                                         long timestamp,
                                         Epoch ownerEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedInSection(entry,
-                                                                                         streamName,
-                                                                                         partition,
-                                                                                         payload,
-                                                                                         timestamp,
-                                                                                         ownerEpoch))
-                                 .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
-                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+        return resolveWritableEntry(streamName).flatMap(entry -> appendReplicatedInSection(entry,
+                                                                                           streamName,
+                                                                                           partition,
+                                                                                           payload,
+                                                                                           timestamp,
+                                                                                           ownerEpoch))
+                                   .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
+                                   .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// Offset-addressed replica append (#1505) stamped with the no-epoch floor ([Epoch#ZERO]), for callers that
@@ -2409,16 +2409,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                        byte[] payload,
                                        long timestamp,
                                        Epoch fenceEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
-                                                                                  streamName,
-                                                                                  partition,
-                                                                                  offset,
-                                                                                  payload,
-                                                                                  timestamp,
-                                                                                  fenceEpoch,
-                                                                                  none()))
-                                 .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
-                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+        return resolveWritableEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
+                                                                                    streamName,
+                                                                                    partition,
+                                                                                    offset,
+                                                                                    payload,
+                                                                                    timestamp,
+                                                                                    fenceEpoch,
+                                                                                    none()))
+                                   .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
+                                   .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// Offset-addressed replica append (#1505): the single offset authority shared by the replica's catch-up
@@ -2439,16 +2439,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                         byte[] payload,
                                         long timestamp,
                                         Epoch ownerEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
-                                                                                  streamName,
-                                                                                  partition,
-                                                                                  offset,
-                                                                                  payload,
-                                                                                  timestamp,
-                                                                                  ownerEpoch,
-                                                                                  some(ownerEpoch)))
-                                 .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
-                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+        return resolveWritableEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
+                                                                                    streamName,
+                                                                                    partition,
+                                                                                    offset,
+                                                                                    payload,
+                                                                                    timestamp,
+                                                                                    ownerEpoch,
+                                                                                    some(ownerEpoch)))
+                                   .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
+                                   .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
@@ -3648,6 +3648,15 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<StreamEntry> resolveStreamEntry(String streamName) {
         return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName));
+    }
+
+    /// #1278 ruling A — the ONE resolution every append uses: the owner paths ([#publishLocal] — which
+    /// `publishLocalAtFloor` and `publishForwarded` reach — and [#publishLocalBatchAtFloor]) and the replica paths
+    /// (every `appendRecovered` overload and `appendCaughtUp`). A replica holding a proposal that has not committed
+    /// must not ack a replicated record into it, any more than an owner may accept one. The only ring writes that
+    /// bypass it replay a life's own fsynced WAL while its ring is built, which accepts nothing new.
+    private Result<StreamEntry> resolveWritableEntry(String streamName) {
+        return resolveStreamEntry(streamName).flatMap(this::committedLife);
     }
 
     /// #1278 ruling A — THE accept gate: a write is accepted only into the life whose committed config this node has
