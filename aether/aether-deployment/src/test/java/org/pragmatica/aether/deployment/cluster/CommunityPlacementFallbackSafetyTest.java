@@ -123,7 +123,7 @@ class CommunityPlacementFallbackSafetyTest {
     private void initialize() {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(CONFIG, "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
         seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(OLD), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
         seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(OLD), new AetherValue.NodePlacementValue("pool", Option.some("old"), "old-instance")));
         ready.add(OLD);
@@ -208,7 +208,7 @@ class CommunityPlacementFallbackSafetyTest {
     void unavailableLocationMinimumCannotMoveToFallbackSource() {
         initialize();
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(CONFIG.replace("weight = 10", "weight = 10\nminimum = 1"),
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG.replace("weight = 10", "weight = 10\nminimum = 1")),
                 "test", "1.0.0", List.of(), 3, 3, "forge", 2, 0)));
         reconciler.reconcile().await().unwrap();
         createOutcome = org.pragmatica.aether.environment.EnvironmentError.capacityUnavailable("new",

@@ -6478,8 +6478,8 @@ public interface AetherNode extends ManageableNode {
                                 generationEpoch(incarnation, leaderTerm::current));
     }
 
-    /// #1573: the committed cluster-wide automatic-rollback policy. Absent or blank (seed) cluster TOML is the
-    /// built-in default (ON). The section was validated at apply, so a failure here means a document committed
+    /// #1573: the committed cluster-wide automatic-rollback policy. An absent config, or the bootstrap seed (which
+    /// carries no source TOML), is the built-in default (ON). The section was validated at apply, so a failure here means a document committed
     /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
     /// that cannot be read — and the failure is logged.
     private static RollbackConfig committedRollbackPolicy(Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader) {
