@@ -214,8 +214,7 @@ class BootstrapModuleTest {
         void onLeaderGained_existingClusterConfig_notOverwritten() {
             // Idempotency / single-writer safety: when ClusterConfigKey.CURRENT already exists,
             // leader-gain must NOT re-seed or overwrite it, regardless of the static baseline.
-            var existingConfig = ClusterConfigValue.clusterConfigValue("",
-                                                                        "existing-cluster",
+            var existingConfig = ClusterConfigValue.bootstrapSeed("existing-cluster",
                                                                         "1.0.0",
                                                                         coreTopology(7),
                                                                         7,

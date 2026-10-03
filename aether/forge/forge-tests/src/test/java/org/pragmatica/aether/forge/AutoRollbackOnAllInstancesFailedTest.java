@@ -336,8 +336,8 @@ class AutoRollbackOnAllInstancesFailedTest {
         assertThat(ClusterBootstrapConfigParser.parse(toml).fold(Cause::message, _ -> "valid"))
             .as("arming: the document passes apply validation")
             .isEqualTo("valid");
-        assertThat(RollbackPolicyParser.fromClusterToml(toml).map(RollbackConfig::enabled).or(true)).isFalse();
-        var value = new ClusterConfigValue(toml,
+        assertThat(RollbackPolicyParser.fromClusterToml(Option.some(toml)).map(RollbackConfig::enabled).or(true)).isFalse();
+        var value = new ClusterConfigValue(Option.some(toml),
                                            before.clusterName(),
                                            before.version(),
                                            before.desiredTopology(),
