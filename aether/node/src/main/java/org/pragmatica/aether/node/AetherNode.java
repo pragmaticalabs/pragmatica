@@ -4099,19 +4099,15 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                config)));
         // The candidate index replaces a per-edge KV scan (#1840), so a committed directive change must refresh
         // the nomination view itself: SWIM edges alone would leave it stale until the next edge.
-        Runnable refreshCommunityMembership = () -> Option.option(governorAnnouncerHolder.get())
-                                                          .onPresent(announcer -> announceCommunityMembership(announcer,
-                                                                                                              swimHealthDetector,
-                                                                                                              communityDirectory,
-                                                                                                              announcer.communityId()));
+        Runnable refreshCommunityMembership = () -> Option.option(governorAnnouncerHolder.get()).onPresent(announcer -> announceCommunityMembership(announcer,
+                                                                                                                                                    swimHealthDetector,
+                                                                                                                                                    communityDirectory,
+                                                                                                                                                    announcer.communityId()));
         var communityDirectoryRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                            .onPut(AetherKey.ActivationDirectiveKey.class,
                                                                   (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> {
-                                                                      communityDirectory.put(put.cause()
-                                                                                                .key()
-                                                                                                .nodeId(),
-                                                                                             put.cause()
-                                                                                                .value());
+                                                                      communityDirectory.put(put.cause().key().nodeId(),
+                                                                                             put.cause().value());
                                                                       refreshCommunityMembership.run();
                                                                   })
                                                            .onRemove(AetherKey.ActivationDirectiveKey.class,
@@ -4125,9 +4121,9 @@ public interface AetherNode extends ManageableNode {
 
         allEntries.addAll(communityDirectoryRouter.asRouteEntries());
         clusterNode.onStateRestored(() -> {
-                                        communityDirectory.restore(kvStore.snapshot());
-                                        refreshCommunityMembership.run();
-                                    });
+            communityDirectory.restore(kvStore.snapshot());
+            refreshCommunityMembership.run();
+        });
         Function<String, Option<AetherValue.GovernorAnnouncementValue>> governorLookup = community -> kvStore.getTyped(AetherKey.GovernorAnnouncementKey.forCommunity(community),
                                                                                                                        AetherValue.GovernorAnnouncementValue.class);
         var communityHealth = org.pragmatica.aether.worker.health.CommunityHealthIndex.communityHealthIndex(config.self(),

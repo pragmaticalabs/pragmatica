@@ -34,8 +34,7 @@ public final class CommunityMemberDirectory {
             communities.computeIfAbsent(value.communityId(), _ -> new HashSet<>()).add(node);
         }
 
-        if (AetherValue.ActivationDirectiveValue.WORKER.equals(value.role()) && !value.communityId()
-                                                                                       .isBlank()) {
+        if (AetherValue.ActivationDirectiveValue.WORKER.equals(value.role()) && !value.communityId().isBlank()) {
             candidates.computeIfAbsent(value.communityId(), _ -> new HashSet<>()).add(node);
         }
 
