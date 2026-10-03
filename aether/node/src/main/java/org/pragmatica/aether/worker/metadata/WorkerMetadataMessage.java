@@ -52,11 +52,21 @@ public sealed interface WorkerMetadataMessage extends ProtocolMessage {
     /// the core's committed cluster configuration a worker needs. The cluster TOML itself is never served to workers
     /// (#1390) — it carries infrastructure credential references — so a core derives this from it when it builds a
     /// worker's projection, and the worker applies it on every projection install.
+    ///
+    /// CTO ruling R1b: it also carries `configVersion`, the committed configuration version the factors come from (what
+    /// the worker reports as applied), and the latest committed replication change — `changeVersion` (`-1` when there is
+    /// none), its quorum floor, and whether it has settled — so a worker holds the transitional quorums exactly as long
+    /// as the cores do.
     @Codec
     record DhtReplication(int replicationFactor,
                           int confirmationFactor,
                           int cacheReplicationFactor,
-                          int cacheConfirmationFactor) {}
+                          int cacheConfirmationFactor,
+                          long configVersion,
+                          long changeVersion,
+                          int floorWriteQuorum,
+                          int floorReadQuorum,
+                          boolean changeSettled) {}
 
     record ChunkRequest(NodeId sender,
                         long requestId,

@@ -59,12 +59,30 @@ public final class DHTNode {
     /// Whether [#config] holds the committed factors yet. Until it does, every partition answers
     /// [Readiness#CATCHING_UP] and clients refuse quorum operations ([DHTError#REPLICATION_UNRESOLVED]).
     private final AtomicBoolean replicationResolved;
-    /// The quorum floor of a replication change still settling (#1777, CTO ruling R1): the old write and read quorums,
-    /// which this node keeps using — each raised to at least the new one — until its post-change catch-up completes.
-    /// Empty when no change is settling.
+    /// The quorum floor of the replication changes not yet settled (#1777, CTO rulings R1, R1b): the strictest old write
+    /// and read quorums, which this node keeps using — each raised to at least the new one — until the cluster COMMITS
+    /// that the change is settled ([#settleReplicationChange]). Never cleared by anything local. Empty when no change
+    /// is unsettled.
     private final AtomicReference<Option<QuorumFloor>> quorumFloor = new AtomicReference<>(Option.none());
+    /// The highest replication change the cluster has committed as settled.
+    private final AtomicLong settledVersion = new AtomicLong(NO_CHANGE);
+    /// The highest replication change whose writers-switched catch-up pass this node has started ([#writersSwitched]).
+    private final AtomicLong regatedVersion = new AtomicLong(NO_CHANGE);
+    /// The highest replication change whose writers-switched catch-up pass this node has completed.
+    private final AtomicLong caughtUpVersion = new AtomicLong(NO_CHANGE);
 
-    private record QuorumFloor(int writeQuorum, int readQuorum) {}
+    private final AtomicReference<Consumer<Long>> caughtUpListener = new AtomicReference<>(_ -> {});
+
+    /// The version no replication change carries.
+    public static final long NO_CHANGE = -1L;
+
+    private record QuorumFloor(long version, int writeQuorum, int readQuorum) {
+        QuorumFloor merge(QuorumFloor other) {
+            return new QuorumFloor(Math.max(version, other.version),
+                                   Math.max(writeQuorum, other.writeQuorum),
+                                   Math.max(readQuorum, other.readQuorum));
+        }
+    }
 
     /// Serializes the two mutations that change replica sets — a ring change and a replication change — so each
     /// diffs against the state the other left.
@@ -165,27 +183,18 @@ public final class DHTNode {
     }
 
     /// The replication this node currently places keys with (see [#resolveReplication]). While a replication change is
-    /// settling (#1777, CTO ruling R1) the quorums are the TRANSITIONAL ones — W_t = max(W_old, W_new) and
-    /// R_t = max(R_old, R_new), each capped at the new replication factor — and the placement is the new one. The view
-    /// is derived on read: it ends by itself the first time it is read with no partition pending here, i.e. once this
-    /// node's post-change catch-up has stored every key its old replica sets held.
+    /// unsettled (#1777, CTO rulings R1, R1b) the quorums are the TRANSITIONAL ones — W_t = max(W_old, W_new) and
+    /// R_t = max(R_old, R_new), each capped at the new replication factor — and the placement is the new one.
+    ///
+    /// The switch to the new quorums is cluster-wide and committed, never per node: it happens only when the cluster
+    /// commits the change as settled ([#settleReplicationChange]). A node that switched on its own completion would read
+    /// at R_new while another node still writes at W_old, and miss that write (v1882's lagging-writer probe).
     public DHTConfig config() {
         var current = config.get();
 
         return quorumFloor.get()
-                          .filter(_ -> settling())
                           .map(floor -> transitional(current, floor))
                           .or(current);
-    }
-
-    private boolean settling() {
-        if (catchUp.nonePending()) {
-            quorumFloor.set(Option.none());
-
-            return false;
-        }
-
-        return true;
     }
 
     private static DHTConfig transitional(DHTConfig current, QuorumFloor floor) {
@@ -200,10 +209,104 @@ public final class DHTNode {
                              current.retryPolicy());
     }
 
-    /// Whether a replication change is still settling on this node (#1777 R1, a gauge).
+    /// Whether a replication change is still unsettled on this node (#1777 R1b, a gauge).
     public boolean replicationChangeSettling() {
         return quorumFloor.get()
-                          .isPresent() && settling();
+                          .isPresent();
+    }
+
+    /// Keep the transitional quorums of a committed, unsettled replication change (#1777 R1b): `writeQuorum` and
+    /// `readQuorum` are the strictest old quorums the change carries. This is how a node that did not observe the change
+    /// itself — restarted after it, or a worker learning it from its projection — holds the same floor as the rest.
+    /// Ignored for a change already settled; merged with any floor already held, so consecutive changes keep the
+    /// strictest quorums of all of them.
+    @Contract
+    public void holdReplicationChange(long version, int writeQuorum, int readQuorum) {
+        synchronized (placementLock) {
+            if (version <= settledVersion.get()) {
+                return;
+            }
+
+            var held = new QuorumFloor(version, writeQuorum, readQuorum);
+
+            quorumFloor.set(Option.some(quorumFloor.get().map(floor -> floor.merge(held)).or(held)));
+        }
+    }
+
+    /// Every writer has applied replication change `version` (#1777 R1b: committed by the leader once every expected
+    /// member reported it), so from now on every write is acked at W_t or higher. A write acked at W_old before that may
+    /// sit on fewer replicas than R_new reaches, and a catch-up pass that ran BEFORE the last such write cannot have
+    /// copied it. So every partition this node replicates catches up again, in a FRESH pending spell — a round already
+    /// in flight began before this point and must not complete it — with the replica set at `sourceReplicationFactor`
+    /// as sources: the larger of the old and new factors, whose successor list contains both replica sets. Completion is
+    /// reported through [#onReplicationCaughtUp]. Idempotent per version; ignored for a settled change.
+    @Contract
+    public void writersSwitched(long version, int sourceReplicationFactor) {
+        synchronized (placementLock) {
+            if (version <= regatedVersion.get() || version <= settledVersion.get()) {
+                return;
+            }
+
+            regatedVersion.set(version);
+            if (!config.get().isFullReplication()) {
+                var current = config.get().effectiveReplicationFactor(ring.nodeCount());
+                var sources = Math.min(Math.max(sourceReplicationFactor, current), ring.nodeCount());
+
+                IntStream.range(0, Partition.MAX_PARTITIONS)
+                         .mapToObj(Partition::at)
+                         .filter(partition -> ring.nodesFor(partition, current)
+                                                  .contains(nodeId))
+                         .forEach(partition -> catchUp.markCatchingUpAfresh(partition,
+                                                                            ring.nodesFor(partition, sources)));
+            }
+        }
+
+        noteCaughtUp();
+    }
+
+    /// The cluster committed replication change `version` as settled (#1777 R1b): drop the floor of every change up to
+    /// it and use the new quorums. Monotone — a lower version than one already settled changes nothing.
+    @Contract
+    public void settleReplicationChange(long version) {
+        synchronized (placementLock) {
+            settledVersion.accumulateAndGet(version, Math::max);
+            quorumFloor.set(quorumFloor.get().filter(floor -> floor.version() > settledVersion.get()));
+        }
+    }
+
+    /// As [#settleReplicationChange(long)], for the latest committed change, which installed `settled`. A floor this node
+    /// raised itself is tagged with the configuration version it APPLIED, which can be later than the version the change
+    /// was committed under — a node that skipped configuration versions (a worker between projection polls, a node
+    /// restoring a later snapshot) applied the same factors at a later version. When this node already uses exactly the
+    /// settled factors, its floor belongs to this change and is dropped whatever its tag. A node on other factors keeps
+    /// its floor: a later change is on its way.
+    @Contract
+    public void settleReplicationChange(long version, DHTConfig settled) {
+        synchronized (placementLock) {
+            settledVersion.accumulateAndGet(version, Math::max);
+            var covered = !factorsDiffer(config.get(), settled);
+
+            quorumFloor.set(quorumFloor.get().filter(floor -> !covered && floor.version() > settledVersion.get()));
+        }
+    }
+
+    /// The highest replication change whose writers-switched catch-up pass completed here, or [#NO_CHANGE].
+    public long replicationCaughtUpVersion() {
+        return caughtUpVersion.get();
+    }
+
+    /// Called with the change version each time a writers-switched catch-up pass completes ([#writersSwitched]).
+    @Contract
+    public void onReplicationCaughtUp(Consumer<Long> listener) {
+        caughtUpListener.set(listener);
+    }
+
+    private void noteCaughtUp() {
+        var regated = regatedVersion.get();
+
+        if (catchUp.nonePending() && caughtUpVersion.getAndAccumulate(regated, Math::max) < regated) {
+            caughtUpListener.get().accept(regated);
+        }
     }
 
     /// Whether the committed replication factors have been applied ([#dhtNodeAwaitingReplication]).
@@ -223,14 +326,18 @@ public final class DHTNode {
     /// without the gate a read of R_new replicas can miss a value acked at W_old and answer "absent". Gated, a replica
     /// answers "absent" only after it has pulled the union of what its old replica set held, and until then this node
     /// uses the transitional quorums of [#config].
+    ///
+    /// `version` names the change (the committed configuration version that carries it), so the floor it installs is
+    /// dropped only by a settle of that change or a later one ([#settleReplicationChange]).
     @Contract
-    public void resolveReplication(DHTConfig resolved) {
+    public void resolveReplication(DHTConfig resolved, long version) {
         synchronized (placementLock) {
             if (resolved.isFullReplication() || config.get().isFullReplication()) {
                 config.set(resolved);
             } else {
                 var previous = config();
-                var changed = replicationResolved.get() && factorsDiffer(previous, resolved);
+                // the factors as applied, not the transitional view: re-applying the same factors is no change
+                var changed = replicationResolved.get() && factorsDiffer(config.get(), resolved);
                 var before = replicaSets();
 
                 config.set(resolved);
@@ -240,7 +347,7 @@ public final class DHTNode {
                     reopenEveryOwnedPartition(before, after);
                     // `previous` is the transitional view, so a change made while an earlier one is still settling keeps
                     // the strictest quorums of all of them
-                    quorumFloor.set(Option.some(floorOf(previous)));
+                    quorumFloor.set(Option.some(floorOf(previous, version)));
                 } else {
                     markGained(before, after);
                 }
@@ -251,14 +358,26 @@ public final class DHTNode {
 
             replicationResolved.set(true);
         }
+
+        noteCaughtUp();
     }
 
     private static boolean factorsDiffer(DHTConfig previous, DHTConfig resolved) {
         return previous.replicationFactor() != resolved.replicationFactor() || previous.writeQuorum() != resolved.writeQuorum() || previous.readQuorum() != resolved.readQuorum();
     }
 
-    private static QuorumFloor floorOf(DHTConfig config) {
-        return new QuorumFloor(config.writeQuorum(), config.readQuorum());
+    private QuorumFloor floorOf(DHTConfig config, long version) {
+        return new QuorumFloor(Math.max(version,
+                                        quorumFloor.get().map(QuorumFloor::version).or(version)),
+                               config.writeQuorum(),
+                               config.readQuorum());
+    }
+
+    /// [#resolveReplication(DHTConfig, long)] for a change no committed version names (tests, and nodes with nothing to
+    /// settle against): its floor is dropped by a settle of [#NO_CHANGE] or any later version.
+    @Contract
+    public void resolveReplication(DHTConfig resolved) {
+        resolveReplication(resolved, NO_CHANGE);
     }
 
     /// Every partition this node replicates after the change catches up again, from its replica set before it.
@@ -303,6 +422,8 @@ public final class DHTNode {
             forgetLost(after);
             recordPlacementChange(before, after);
         }
+
+        noteCaughtUp();
     }
 
     /// Mark every partition this node currently owns catching up — the boot state of a node whose store
@@ -416,6 +537,7 @@ public final class DHTNode {
     @Contract
     void markServing(Partition partition) {
         catchUp.markServing(partition);
+        noteCaughtUp();
     }
 
     int noteCatchUpRound(Partition partition) {

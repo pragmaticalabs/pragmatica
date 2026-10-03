@@ -26,7 +26,7 @@ class WorkerMetadataChannelTest {
     private static final NodeId CORE = new NodeId("core");
     private static final NodeId WORKER = new NodeId("worker");
     private static final NodeId FOREIGN = new NodeId("foreign");
-    private static final WorkerMetadataMessage.DhtReplication REPLICATION = new WorkerMetadataMessage.DhtReplication(3, 2, 1, 1);
+    private static final WorkerMetadataMessage.DhtReplication REPLICATION = new WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 1, -1, 0, 0, true);
 
     private static final WorkerMetadataLimits LIMITS = new WorkerMetadataLimits(64,
                                                                                 8192,
@@ -94,7 +94,7 @@ class WorkerMetadataChannelTest {
     @Test
     void liveReplicationChange_reachesTheWorkerOnItsNextPoll() {
         var fixture = new Fixture();
-        var raised = new WorkerMetadataMessage.DhtReplication(5, 3, 1, 1);
+        var raised = new WorkerMetadataMessage.DhtReplication(5, 3, 1, 1, 2, -1, 0, 0, true);
 
         fixture.seed(1, "initial");
         fixture.client.tick();

@@ -25,9 +25,15 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 /// partition yet lowers the read quorum below what the old writes were acked at; an RF decrease moves the replica set
 /// away from where the old copies are. Until the new replica set has been filled from the old one, a node reads and
 /// writes with the transitional quorums max(old, new), and every replica refuses "absent" (the catch-up gate).
+///
+/// CTO ruling R1b: the switch to the new quorums is cluster-wide and COMMITTED. A node keeps the transitional quorums
+/// until the cluster commits the change as settled, which it does only after every writer applied the change AND every
+/// replica completed a catch-up pass that began after that ([DHTNode#writersSwitched]). These tests drive the DHT half of
+/// that protocol by hand; the commit side is pinned in aether/node.
 class DHTReplicationChangeTest {
     private static final byte[] KEY = "change-key".getBytes(StandardCharsets.UTF_8);
     private static final byte[] VALUE = "v".getBytes(StandardCharsets.UTF_8);
+    private static final long CHANGE = 7L;
 
     /// RF3/CF1 -> RF3/CF2: old W1 R3, new W2 R2; W_old + R_new = 3 is not > 3. The write reached ONE replica.
     @Test
@@ -58,6 +64,11 @@ class DHTReplicationChangeTest {
         cluster.catchUp(3);
 
         assertThat(replicas).as("every key is on the new replica set").allMatch(cluster::holds);
+        assertThat(cluster.config(replicas.getFirst()).readQuorum()).as("caught up locally is not settled: still R_t")
+                                                                     .isEqualTo(3);
+
+        cluster.settle(CHANGE, 3);
+
         assertThat(cluster.config(replicas.getFirst()).readQuorum()).as("settled: the new read quorum").isEqualTo(2);
         assertThat(cluster.config(replicas.getFirst()).writeQuorum()).isEqualTo(2);
         assertThat(cluster.read(replicas.getFirst())).isEqualTo(Option.some("v"));
@@ -125,6 +136,129 @@ class DHTReplicationChangeTest {
         assertThat(cluster.config(node).readQuorum()).as("min(max(2, 4, 3), RF 3)").isEqualTo(3);
     }
 
+    /// v1882's round-2 probe (`probe-r2-lagging-writer.patch`), kept as its scenario: RF3, CF1 -> CF2. Two replicas
+    /// apply the change and finish their own catch-up; the third has not applied it and writes at W1, reaching only
+    /// itself. Under R1's per-node switch the appliers read at R_new = 2 and answered absent (red at 132bf80c9:
+    /// `Success(None())`). Under R1b nothing is settled until the cluster commits it, so the appliers still read at
+    /// R_t = max(3, 2) = 3 and reach the laggard.
+    @Test
+    void laggingWriter_atOldW_isReadByAnApplierThatCaughtUp_becauseNothingIsSettled() {
+        var cluster = new Cluster(3, factors(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var lagging = replicas.getLast();
+        var appliers = replicas.subList(0, 2);
+
+        appliers.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.catchUpOnly(appliers.toArray(NodeId[]::new));
+
+        appliers.forEach(id -> assertThat(cluster.readiness(id)).as("arming: caught up locally: " + id).isEqualTo(Readiness.SERVING));
+        appliers.forEach(id -> assertThat(cluster.config(id).readQuorum()).as("no committed settle: R_t on " + id).isEqualTo(3));
+        assertThat(cluster.config(lagging).writeQuorum()).as("arming: the laggard is still at W_old").isEqualTo(1);
+
+        cluster.putReachingOnly(lagging, lagging);
+
+        assertThat(cluster.read(appliers.getFirst())).as("a write acked by the lagging node never reads absent").isEqualTo(Option.some("v"));
+    }
+
+    /// The ordering the settle needs: a write acked at W_old AFTER the replicas' first catch-up pass sits on one replica
+    /// only, and no pass that ran before it can have copied it. Settling on "every writer applied" plus "every replica
+    /// caught up" — in either order — would let readers drop to R_new = 2 and miss it. The writers-switched pass begins
+    /// after the last writer applied the change, so it copies that write to every replica before the change settles.
+    @Test
+    void writeAtOldW_afterTheFirstPass_isOnEveryReplicaBeforeTheChangeSettles() {
+        var cluster = new Cluster(5, factors(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var lagging = replicas.getLast();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(lagging)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.catchUp(3);
+        cluster.putReachingOnly(lagging, lagging);
+        cluster.nodes.get(lagging).resolveReplication(factors(3, 2), CHANGE);
+        cluster.catchUp(3);
+
+        cluster.settle(CHANGE, 3);
+
+        assertThat(replicas).as("the writers-switched pass copied the late W_old write to every replica").allMatch(cluster::holds);
+        assertThat(cluster.config(replicas.getFirst()).readQuorum()).as("settled: R_new").isEqualTo(2);
+        replicas.forEach(id -> assertThat(cluster.read(id)).as("read at R_new on " + id).isEqualTo(Option.some("v")));
+    }
+
+    /// The settle is fenced on the change version: settling an older change leaves a newer one's floor in place, and a
+    /// committed floor for a change already settled is ignored.
+    @Test
+    void settle_isFencedOnTheChangeVersion_andMonotone() {
+        var cluster = new Cluster(3, factors(3, 1));
+        var id = cluster.anyId();
+        var node = cluster.nodes.get(id);
+
+        node.resolveReplication(factors(3, 2), CHANGE);
+        node.settleReplicationChange(CHANGE - 1);
+
+        assertThat(node.replicationChangeSettling()).as("a stale settle does not settle a newer change").isTrue();
+        assertThat(cluster.config(id).readQuorum()).isEqualTo(3);
+
+        node.settleReplicationChange(CHANGE);
+        node.holdReplicationChange(CHANGE, 1, 3);
+        node.settleReplicationChange(CHANGE - 1);
+
+        assertThat(node.replicationChangeSettling()).as("settled stays settled: a stale floor and a stale settle change nothing").isFalse();
+        assertThat(cluster.config(id).readQuorum()).isEqualTo(2);
+    }
+
+    /// A node that did not observe the change (restarted after it, or a worker) holds the committed floor it is handed.
+    @Test
+    void committedFloor_isHeldByANodeThatNeverSawTheChange() {
+        var cluster = new Cluster(3, factors(3, 2));
+        var id = cluster.anyId();
+        var node = cluster.nodes.get(id);
+
+        node.holdReplicationChange(CHANGE, 1, 3);
+
+        assertThat(cluster.config(id).readQuorum()).as("R_t = max(R_old 3, R_new 2)").isEqualTo(3);
+        assertThat(cluster.config(id).writeQuorum()).as("W_t = max(W_old 1, W_new 2)").isEqualTo(2);
+    }
+
+    /// The writers-switched pass is a NEW pending spell, even for a partition still pending from the first pass: a round
+    /// started before the switch may have copied before the last W_old write landed, so it must not complete the
+    /// partition (the anti-entropy completes a round only for the spell it began in).
+    @Test
+    void writersSwitched_startsAFreshSpell_soARoundFromBeforeCannotCompleteIt() {
+        var cluster = new Cluster(3, factors(3, 1));
+        var node = cluster.nodes.get(cluster.anyId());
+        var partition = node.partitionFor(KEY);
+
+        node.resolveReplication(factors(3, 2), CHANGE);
+        var firstPass = node.catchUpGeneration(partition);
+
+        assertThat(firstPass).as("arming: pending from the first pass").isNotZero();
+
+        node.writersSwitched(CHANGE, 3);
+
+        assertThat(node.catchUpGeneration(partition)).as("a new spell").isNotEqualTo(firstPass);
+    }
+
+    /// Caught up for a change is reported once, only for a pass that began after the writers switched.
+    @Test
+    void caughtUp_isReportedOncePerChange_afterTheWritersSwitchedPass() {
+        var cluster = new Cluster(3, factors(3, 1));
+        var reported = new java.util.ArrayList<Long>();
+
+        cluster.changeAll(factors(3, 2));
+        cluster.catchUp(3);
+        cluster.nodes.values().forEach(node -> node.onReplicationCaughtUp(reported::add));
+
+        assertThat(reported).as("the first pass alone reports nothing").isEmpty();
+
+        cluster.nodes.values().forEach(node -> node.writersSwitched(CHANGE, 3));
+        assertThat(cluster.nodes.values()).as("re-gated").allMatch(node -> !node.pendingPartitions().isEmpty());
+        cluster.catchUp(3);
+        cluster.nodes.values().forEach(node -> node.writersSwitched(CHANGE, 3));
+
+        assertThat(reported).as("one report per node, for this change").containsExactly(CHANGE, CHANGE, CHANGE);
+        assertThat(cluster.nodes.values()).allMatch(node -> node.replicationCaughtUpVersion() == CHANGE);
+    }
+
     private static DHTConfig factors(int replicationFactor, int confirmationFactor) {
         return DHTConfig.DEFAULT.withFactors(replicationFactor, confirmationFactor).unwrap();
     }
@@ -181,7 +315,17 @@ class DHTReplicationChangeTest {
         }
 
         void changeAll(DHTConfig config) {
-            nodes.values().forEach(node -> node.resolveReplication(config));
+            nodes.values().forEach(node -> node.resolveReplication(config, CHANGE));
+        }
+
+        /// The DHT half of a committed settle: every writer applied `version`, every replica runs the writers-switched
+        /// pass to completion, then the cluster settles it.
+        void settle(long version, int sourceReplicationFactor) {
+            nodes.values().forEach(node -> node.writersSwitched(version, sourceReplicationFactor));
+            catchUp(3);
+            assertThat(nodes.values()).as("arming: every replica completed the writers-switched pass")
+                                      .allMatch(node -> node.replicationCaughtUpVersion() == version);
+            nodes.values().forEach(node -> node.settleReplicationChange(version));
         }
 
         void catchUpOnly(NodeId... ids) {

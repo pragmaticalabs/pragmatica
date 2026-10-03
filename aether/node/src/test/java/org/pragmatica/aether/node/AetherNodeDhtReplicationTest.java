@@ -21,6 +21,7 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 /// cache namespace from `[cache]`, never from the node-local placeholder it boots with.
 class AetherNodeDhtReplicationTest {
     private static final NodeId SELF = new NodeId("node-0");
+    private static final long VERSION = 4L;
 
     @Test
     void applyDhtReplication_committedFactors_replaceThePlaceholder() {
@@ -28,6 +29,7 @@ class AetherNodeDhtReplicationTest {
         var cache = new AtomicReference<>(DHTConfig.CACHE_DEFAULT);
 
         AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(5, 3, 1, 2, 1, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
+                                       VERSION,
                                        node,
                                        DHTConfig.DEFAULT,
                                        DHTConfig.CACHE_DEFAULT,
@@ -63,7 +65,7 @@ class AetherNodeDhtReplicationTest {
         var node = awaiting();
         var cache = new AtomicReference<>(DHTConfig.DEFAULT);
 
-        AetherNode.applyDhtReplication(ReplicationDefaultsConfig.BUILT_IN, node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache);
+        AetherNode.applyDhtReplication(ReplicationDefaultsConfig.BUILT_IN, VERSION, node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache);
 
         assertThat(node.config().replicationFactor()).isEqualTo(3);
         assertThat(node.config().writeQuorum()).isEqualTo(2);
@@ -79,8 +81,8 @@ class AetherNodeDhtReplicationTest {
         var second = awaiting(DHTConfig.SINGLE_NODE);
         var committed = new ReplicationDefaultsConfig(5, 3, 1, 1, 1, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION);
 
-        AetherNode.applyDhtReplication(committed, first, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
-        AetherNode.applyDhtReplication(committed, second, DHTConfig.SINGLE_NODE, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
+        AetherNode.applyDhtReplication(committed, VERSION, first, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
+        AetherNode.applyDhtReplication(committed, VERSION, second, DHTConfig.SINGLE_NODE, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
 
         assertThat(first.config().replicationFactor()).isEqualTo(second.config().replicationFactor());
         assertThat(first.config().writeQuorum()).isEqualTo(second.config().writeQuorum());
@@ -91,7 +93,7 @@ class AetherNodeDhtReplicationTest {
     void applyDhtReplication_declaredFullReplication_isKept() {
         var node = DHTNode.dhtNode(SELF, memoryStorageEngine(), ring(), DHTConfig.FULL);
 
-        AetherNode.applyDhtReplication(ReplicationDefaultsConfig.BUILT_IN, node, DHTConfig.FULL, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
+        AetherNode.applyDhtReplication(ReplicationDefaultsConfig.BUILT_IN, VERSION, node, DHTConfig.FULL, DHTConfig.CACHE_DEFAULT, new AtomicReference<>());
 
         assertThat(node.config().isFullReplication()).isTrue();
     }
@@ -103,10 +105,16 @@ class AetherNodeDhtReplicationTest {
         var toml = "[replication]\nreplication_factor = 5\nconfirmation_factor = 3\n\n[cache]\nreplication_factor = 2\nconfirmation_factor = 1\n";
         var committed = new org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue(org.pragmatica.lang.Option.some(toml), "c", "1", java.util.List.of(), 5, 5, "forge", 1, 0);
 
-        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.none()).unwrap())
-            .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1));
-        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.some(committed)).unwrap())
-            .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 2, 1));
+        var unsettled = new org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationChangeValue(1, 5, 3, 1, 3, 5,
+                                                                                                    org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationStage.WRITERS_SWITCHED,
+                                                                                                    0, false);
+
+        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.none(), org.pragmatica.lang.Option.none()).unwrap())
+            .as("nothing committed: the built-in factors, no change to hold")
+            .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, -1, -1, 0, 0, true));
+        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.some(committed), org.pragmatica.lang.Option.some(unsettled)).unwrap())
+            .as("#1777 R1b: the committed version and the unsettled change's floor travel with the factors")
+            .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 2, 1, 1, 1, 1, 3, false));
     }
 
     /// #1777 track 1 (CTO ruling B), worker side: a projection's record resolves a worker's DHT that never restores
@@ -115,27 +123,57 @@ class AetherNodeDhtReplicationTest {
     void applyWorkerDhtReplication_resolvesAndReResolvesAWorkersDht() {
         var node = awaiting();
         var cache = new AtomicReference<>(DHTConfig.CACHE_DEFAULT);
+        var settlement = new RecordingSettlement();
 
         assertThat(node.replicationResolved()).as("control: a worker starts unresolved").isFalse();
 
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1),
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1, 1, 1, 2, 2, true),
                                              node,
                                              DHTConfig.DEFAULT,
                                              DHTConfig.CACHE_DEFAULT,
-                                             cache);
+                                             cache,
+                                             settlement);
 
         assertThat(node.replicationResolved()).isTrue();
         assertThat(node.config().replicationFactor()).isEqualTo(3);
         assertThat(cache.get().replicationFactor()).isEqualTo(2);
 
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 1, 1),
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 1, 1, 2, 2, 2, 2, false),
                                              node,
                                              DHTConfig.DEFAULT,
                                              DHTConfig.CACHE_DEFAULT,
-                                             cache);
+                                             cache,
+                                             settlement);
 
         assertThat(node.config().replicationFactor()).isEqualTo(5);
         assertThat(node.config().writeQuorum()).isEqualTo(3);
+        assertThat(node.config().readQuorum()).as("#1777 R1b: unsettled, so R_t = max(R_old 2, R_new 3)").isEqualTo(3);
+        assertThat(settlement.applied).as("the worker reports each configuration version it applied").containsExactly(1L, 2L);
+    }
+
+    /// #1777 R1b, worker side: a worker keeps the transitional quorums until its projection says the change settled —
+    /// never on its own — and drops them then, even when it applied the factors at a later configuration version than
+    /// the change was committed under (a worker between projection polls skips versions).
+    @Test
+    void applyWorkerDhtReplication_keepsTheFloorUntilTheProjectionSaysSettled() {
+        var node = awaiting();
+        var cache = new AtomicReference<>(DHTConfig.CACHE_DEFAULT);
+        var settlement = new RecordingSettlement();
+
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 1, 1, 1, 1, 1, 1, 3, true),
+                                             node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache, settlement);
+        // CF1 -> CF2 committed under version 3; this worker's next poll sees version 5, the change still unsettled
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 5, 3, 1, 3, false),
+                                             node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache, settlement);
+
+        assertThat(node.config().readQuorum()).as("unsettled: R_t = max(R_old 3, R_new 2)").isEqualTo(3);
+        assertThat(node.config().writeQuorum()).as("unsettled: W_t = max(W_old 1, W_new 2)").isEqualTo(2);
+
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 6, 3, 1, 3, true),
+                                             node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache, settlement);
+
+        assertThat(node.config().readQuorum()).as("settled: R_new").isEqualTo(2);
+        assertThat(node.replicationChangeSettling()).isFalse();
     }
 
     /// #1777 (CTO ruling R2 / Q4): the bare `DHTClient` extension — what idempotency resolves — is the REPLICATED DHT at
@@ -145,6 +183,7 @@ class AetherNodeDhtReplicationTest {
         var node = awaiting();
 
         AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(5, 3, 1, 1, 1, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
+                                       VERSION,
                                        node,
                                        DHTConfig.DEFAULT,
                                        DHTConfig.CACHE_DEFAULT,
@@ -169,6 +208,35 @@ class AetherNodeDhtReplicationTest {
     }
 
     record Probe() {}
+
+    /// Records what a node reports as applied; the rest of the settlement is not under test here.
+    static final class RecordingSettlement implements DhtReplicationSettlement {
+        final java.util.List<Long> applied = new java.util.ArrayList<>();
+
+        @Override
+        public void applied(long configVersion) {
+            applied.add(configVersion);
+        }
+
+        @Override
+        public void onConfigCommitted(org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue config) {}
+
+        @Override
+        public void onChangeCommitted(org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationChangeValue> before,
+                                      org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationChangeValue after) {}
+
+        @Override
+        public void reapply() {}
+
+        @Override
+        public void evaluate() {}
+
+        @Override
+        public void onDeparture(NodeId departed) {}
+
+        @Override
+        public void report() {}
+    }
 
     private record CapturingFactory(AtomicReference<org.pragmatica.aether.slice.ProvisioningContext> captured)
                                    implements org.pragmatica.aether.resource.ResourceFactory<Probe, String> {

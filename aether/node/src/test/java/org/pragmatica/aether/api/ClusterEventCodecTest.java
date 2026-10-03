@@ -367,7 +367,9 @@ class ClusterEventCodecTest {
                        new CommunityStateChanged(ts, sev, "CommunityStateChanged", d),
                        new CommunityMemberJoined(ts, sev, "CommunityMemberJoined", d),
                        new CommunityMemberLeft(ts, sev, "CommunityMemberLeft", d),
-                       new OperatorWarning(ts, sev, "OperatorWarning", d));
+                       new OperatorWarning(ts, sev, "OperatorWarning", d),
+                       new ClusterEvent.DhtReplicationUnsettled(ts, sev, "DhtReplicationUnsettled", d),
+                       new ClusterEvent.DhtReplicationSettled(ts, sev, "DhtReplicationSettled", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.
