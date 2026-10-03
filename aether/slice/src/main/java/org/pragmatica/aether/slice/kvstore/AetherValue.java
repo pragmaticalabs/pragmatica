@@ -33,6 +33,7 @@ import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
+import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -1698,6 +1699,10 @@ public sealed interface AetherValue {
     /// from the committed value ([#nextVersion]) and confirms after its apply resolves by re-reading
     /// the committed value and comparing it to the one it wrote ([VersionFenced]'s protocol).
     ///
+    /// #806: the holder renews the lease while it works (each renewal is the next `lockVersion` with a
+    /// later `expiresAt`), and the lock is a [WitnessedRemoval] — its release carries the value the holder
+    /// last wrote, so a holder whose claim was superseded cannot delete its successor's lock.
+    ///
     /// Wire-format note: this adds a record component to a committed AetherValue (generated codec and
     /// `KVStoreSerializer` text form both change), following the #805 `outcomeVersion` precedent. rc4
     /// promises no cross-rc wire compatibility; that contract is #434/#666's.
@@ -1705,7 +1710,7 @@ public sealed interface AetherValue {
                                     NodeId heldBy,
                                     long acquiredAt,
                                     long expiresAt,
-                                    long lockVersion) implements AetherValue, VersionFenced {
+                                    long lockVersion) implements AetherValue, WitnessedRemoval {
         /// The version a claim against an ABSENT key carries; the applier does not fence a first write.
         public static final long FIRST_VERSION = 1L;
 

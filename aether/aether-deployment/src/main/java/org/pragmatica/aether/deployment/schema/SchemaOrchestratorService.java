@@ -36,6 +36,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -69,6 +70,10 @@ public interface SchemaOrchestratorService {
         return baseline(datasourceName, version);
     }
 
+    /// #806: the LEASE length, not a bound on the migration. The holder renews it every third of this
+    /// while its attempt is in flight, so the lock lasts exactly as long as the operation does — no
+    /// relation to `SchemaPolicy#migrationTimeout` is needed — and a holder that dies stops renewing and
+    /// loses the lock within this long.
     long LOCK_TTL_MS = 5 * 60 * 1000L;
     int MAX_RETRIES = 3;
     long BACKOFF_BASE_MS = 5000;
@@ -123,6 +128,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final DatasourceConnectionProvider connectionProvider;
     private final NodeId self;
     private final Option<MessageRouter> router;
+    private final long leaseTtlMs;
 
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                                       KVStore<AetherKey, AetherValue> kvStore,
@@ -143,6 +149,19 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                       DatasourceConnectionProvider connectionProvider,
                                       NodeId self,
                                       Option<MessageRouter> router) {
+        this(cluster, kvStore, artifactStore, repository, schemaManager, connectionProvider, self, router, LOCK_TTL_MS);
+    }
+
+    SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
+                                      KVStore<AetherKey, AetherValue> kvStore,
+                                      ArtifactStore artifactStore,
+                                      Repository repository,
+                                      AetherSchemaManager schemaManager,
+                                      DatasourceConnectionProvider connectionProvider,
+                                      NodeId self,
+                                      Option<MessageRouter> router,
+                                      long leaseTtlMs) {
+        this.leaseTtlMs = leaseTtlMs;
         this.cluster = cluster;
         this.kvStore = kvStore;
         this.artifactStore = artifactStore;
@@ -279,7 +298,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                                                 operation,
                                                                                                 value,
                                                                                                 result))
-                                                               .flatMap(_ -> releaseLock(datasourceName))
+                                                               .flatMap(_ -> releaseLock(attemptToken))
                                                                .replaceResult(result -> finalizeAttempt(datasourceName,
                                                                                                         attemptToken,
                                                                                                         result)));
@@ -483,7 +502,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
         var attemptToken = new Object();
 
-        return acquireLock(datasourceName, attemptToken).flatMap(_ -> runMigration(datasourceName, value).flatMap(_ -> releaseLock(datasourceName))
+        return acquireLock(datasourceName, attemptToken).flatMap(_ -> runMigration(datasourceName, value).flatMap(_ -> releaseLock(attemptToken))
                                                                                   .replaceResult(result -> finalizeAttempt(datasourceName,
                                                                                                                            attemptToken,
                                                                                                                            result)));
@@ -492,7 +511,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private Result<Unit> finalizeAttempt(String datasourceName, Object attemptToken, Result<Unit> result) {
         inFlightMigrations.remove(datasourceName, attemptToken);
         if (result.isFailure()) {
-            releaseLockSilently(datasourceName);
+            releaseLockSilently(datasourceName, attemptToken);
         }
 
         return result;
@@ -678,14 +697,15 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return BACKOFF_BASE_MS * multiplier;
     }
 
-    private void releaseLockSilently(String datasourceName) {
-        releaseLock(datasourceName).onFailure(c -> log.error("Failed to release lock for '{}': {}",
+    private void releaseLockSilently(String datasourceName, Object attemptToken) {
+        releaseLock(attemptToken).onFailure(c -> log.error("Failed to release lock for '{}': {}",
                                                              datasourceName,
                                                              c.message()));
     }
 
     private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledRetries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Object, Lease> leases = new ConcurrentHashMap<>();
 
     /// Single-flight fence across BOTH dispatch paths (the backoff timer in [#scheduleRetry] and any
     /// external re-dispatch — manual retry route, rebuild recovery). `inFlightMigrations` alone only
@@ -729,7 +749,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName,
                                                                           self,
-                                                                          LOCK_TTL_MS,
+                                                                          leaseTtlMs,
                                                                           committed.map(SchemaMigrationLockValue::nextVersion)
                                                                                    .or(SchemaMigrationLockValue.FIRST_VERSION));
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
@@ -743,6 +763,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return cluster.apply(List.of(command))
                       .timeout(schemaManager.policy().migrationTimeout())
                       .flatMap(_ -> confirmLockClaim(datasourceName, lockKey, lockValue))
+                      .map(_ -> startLease(attemptToken, lockKey, lockValue))
                       .mapError(cause -> releaseFenceOnLockFailure(datasourceName, attemptToken, cause));
     }
 
@@ -777,12 +798,154 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                       .map(SchemaMigrationLockValue.class::cast);
     }
 
-    private Promise<Unit> releaseLock(String datasourceName) {
-        var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
-        KVCommand<AetherKey> command = new Remove<>(lockKey);
+    /// #806: the lease of ONE attempt, keyed by its token (never by datasource: a late `finalizeAttempt`
+    /// of a failed attempt must not stop the renewal of a later attempt that has since claimed the same
+    /// datasource). `held` is the last value this attempt CONFIRMED committed; `candidate` is the value
+    /// of a renewal Put still in flight, which may land after its submitter gave up on it. The monitor
+    /// serialises renewal start against release so a release never reads `renewing` between a renewal's
+    /// check of `released` and its publication of the Put.
+    private static final class Lease {
+        final SchemaMigrationLockKey key;
+        SchemaMigrationLockValue held;
+        SchemaMigrationLockValue candidate;
+        boolean released;
+        boolean lost;
+        ScheduledFuture<?> next;
+        Promise<Unit> renewing = Promise.unitPromise();
+
+        Lease(SchemaMigrationLockKey key, SchemaMigrationLockValue claimed) {
+            this.key = key;
+            this.held = claimed;
+            this.candidate = claimed;
+        }
+
+        synchronized boolean owns(SchemaMigrationLockValue committed) {
+            return committed.equals(held) || committed.equals(candidate);
+        }
+    }
+
+    private Unit startLease(Object attemptToken, SchemaMigrationLockKey lockKey, SchemaMigrationLockValue claimed) {
+        var lease = new Lease(lockKey, claimed);
+
+        leases.put(attemptToken, lease);
+        scheduleRenewal(lease);
+
+        return unit();
+    }
+
+    private void scheduleRenewal(Lease lease) {
+        synchronized (lease) {
+            if (!lease.released && !lease.lost) {
+                lease.next = SharedScheduler.schedule(() -> renew(lease), timeSpan(leaseTtlMs / 3).millis());
+            }
+        }
+    }
+
+    private void renew(Lease lease) {
+        synchronized (lease) {
+            if (lease.released) {
+                return;
+            }
+
+            lease.renewing = renewalPut(lease);
+        }
+
+        lease.renewing.onResultRun(() -> scheduleRenewal(lease));
+    }
+
+    /// One owner-fenced renewal: a Put of the next version in the chain, applied only if the committed
+    /// value is still the one this attempt holds. Never fails — a Put that errors or times out leaves
+    /// `held` as it was, and the next tick retries from there. A committed value that is NEITHER `held`
+    /// nor the in-flight `candidate` means a successor took the lock after the lease lapsed (this node
+    /// stalled for longer than the lease): the attempt keeps running — a script cannot be recalled from
+    /// the database — but stops renewing, says so, and its release will be refused by the applier.
+    private Promise<Unit> renewalPut(Lease lease) {
+        var committed = committedLock(lease.key);
+
+        if (committed.filter(lease::owns).isEmpty()) {
+            markLost(lease, committed);
+
+            return Promise.unitPromise();
+        }
+
+        var current = committed.or(lease.held);
+        var renewed = new SchemaMigrationLockValue(current.datasourceName(),
+                                                   self,
+                                                   current.acquiredAt(),
+                                                   System.currentTimeMillis() + leaseTtlMs,
+                                                   current.nextVersion());
+
+        synchronized (lease) {
+            lease.held = current;
+            lease.candidate = renewed;
+        }
+
+        KVCommand<AetherKey> command = new Put<>(lease.key, renewed);
+
+        return cluster.apply(List.of(command))
+                      .timeout(timeSpan(leaseTtlMs).millis())
+                      .fold(_ -> settleRenewal(lease, renewed));
+    }
+
+    private Promise<Unit> settleRenewal(Lease lease, SchemaMigrationLockValue renewed) {
+        committedLock(lease.key).filter(renewed::equals)
+                                .onPresent(_ -> adopt(lease, renewed));
+
+        return Promise.unitPromise();
+    }
+
+    private static void adopt(Lease lease, SchemaMigrationLockValue renewed) {
+        synchronized (lease) {
+            lease.held = renewed;
+        }
+    }
+
+    private void markLost(Lease lease, Option<SchemaMigrationLockValue> committed) {
+        synchronized (lease) {
+            lease.lost = true;
+        }
+
+        log.error("Schema migration lease for '{}' was lost: committed lock is {} — this attempt keeps running but no longer holds the lock",
+                  lease.key.datasourceName(),
+                  committed.map(Object::toString).or("absent"));
+    }
+
+    /// Release is a compare-and-delete: the Remove carries the value this attempt last wrote as its
+    /// witness ([WitnessedRemoval]), so a holder whose lease was superseded deletes nothing. It waits for
+    /// an in-flight renewal first — otherwise that Put could land after the Remove and resurrect the lock
+    /// until its expiry. The attempt's lease is looked up by token; an absent lease (already released, or
+    /// the claim never confirmed) is a no-op, which also makes a second release harmless.
+    private Promise<Unit> releaseLock(Object attemptToken) {
+        return Option.option(leases.remove(attemptToken))
+                     .map(this::releaseLease)
+                     .or(Promise::unitPromise);
+    }
+
+    private Promise<Unit> releaseLease(Lease lease) {
+        Promise<Unit> inFlight;
+
+        synchronized (lease) {
+            lease.released = true;
+            Option.option(lease.next).onPresent(SchemaOrchestratorServiceInstance::cancelFuture);
+            inFlight = lease.renewing;
+        }
+
+        return inFlight.fold(_ -> removeWitnessed(lease));
+    }
+
+    private Promise<Unit> removeWitnessed(Lease lease) {
+        var witness = witnessFor(lease);
+        KVCommand<AetherKey> command = new Remove<>(lease.key, Option.<Object> some(witness));
 
         return cluster.apply(List.of(command))
                       .mapToUnit();
+    }
+
+    private SchemaMigrationLockValue witnessFor(Lease lease) {
+        synchronized (lease) {
+            return committedLock(lease.key).filter(lease::owns)
+                                           .or(lease.held);
+        }
     }
 
     private Promise<Unit> updateStatus(String datasourceName, SchemaVersionValue current, SchemaStatus newStatus) {

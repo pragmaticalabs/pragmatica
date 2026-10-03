@@ -476,7 +476,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
     /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
     /// freely — preserving every existing unfenced remover (locks, blueprints, registry entries; no
-    /// production remover targets a fenced key today). The decision reads only committed storage and
+    /// production remover targets a fenced key today) — except a [WitnessedRemoval] value (#806), which is
+    /// deleted only by a witness EQUAL to it. The decision reads only committed storage and
     /// the command, so every replica accepts or rejects a delete identically inside the applier.
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();
@@ -490,6 +491,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                                               remove.witness());
             case OwnerFenced<?, ?> committed -> !newerOwnerWitness(committed, remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
+            case WitnessedRemoval committed -> !remove.witness().map(committed::equals).or(false);
             case null, default -> false;
         };
     }
