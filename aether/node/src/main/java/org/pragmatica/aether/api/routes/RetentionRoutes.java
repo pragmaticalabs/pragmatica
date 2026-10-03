@@ -170,11 +170,7 @@ public final class RetentionRoutes implements RouteSource {
     static RetentionResponse assembleRetention(WalSnapshot snapshot,
                                                SegmentIndex segmentIndex,
                                                KVStore<AetherKey, AetherValue> kvStore) {
-        return assembleRetention(snapshot,
-                                 segmentIndex,
-                                 kvStore,
-                                 StreamPartitionManager.walRecoveryHeadsLost(),
-                                 0L);
+        return assembleRetention(snapshot, segmentIndex, kvStore, StreamPartitionManager.walRecoveryHeadsLost(), 0L);
     }
 
     static RetentionResponse assembleRetention(WalSnapshot snapshot,

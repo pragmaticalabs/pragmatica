@@ -4892,8 +4892,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                           partition,
                                                           walFile,
                                                           base,
-                                                          fileRecords.getFirst()
-                                                                     .offset()));
+                                                          fileRecords.getFirst().offset()));
         }
 
         private static Result<Unit> headLost(StreamError.WalHeadLost lost) {

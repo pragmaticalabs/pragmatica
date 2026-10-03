@@ -340,19 +340,17 @@ public final class RetentionEnforcer implements AutoCloseable {
         var plans = index.listPartitionKeys()
                          .stream()
                          .map(key -> planReclaim(key, now))
-                         .filter(plan -> !plan.expired().isEmpty())
+                         .filter(plan -> !plan.expired()
+                                              .isEmpty())
                          .toList();
 
         if (plans.isEmpty()) {
             return Promise.success(0);
         }
 
-        return Promise.allOf(plans.stream()
-                                  .map(this::writeFloor)
-                                  .toList())
-                      .map(written -> reclaimDurable(written.stream()
-                                                            .flatMap(Result::stream)
-                                                            .toList()));
+        return Promise.allOf(plans.stream().map(this::writeFloor).toList()).map(written -> reclaimDurable(written.stream()
+                                                                                                                 .flatMap(Result::stream)
+                                                                                                                 .toList()));
     }
 
     private int reclaimDurable(List<ReclaimPlan> floored) {
@@ -367,9 +365,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     private int reclaimAll(List<ReclaimPlan> floored) {
-        var totalRemoved = floored.stream()
-                                  .mapToInt(this::reclaim)
-                                  .sum();
+        var totalRemoved = floored.stream().mapToInt(this::reclaim).sum();
 
         if (totalRemoved > 0) {
             log.info("Retention enforcement removed {} expired segment(s)", totalRemoved);
@@ -385,10 +381,7 @@ public final class RetentionEnforcer implements AutoCloseable {
             return new ReclaimPlan(streamName,
                                    partition,
                                    expired,
-                                   expired.stream()
-                                          .mapToLong(SegmentIndex.SegmentRef::endOffset)
-                                          .max()
-                                          .orElse(-1L));
+                                   expired.stream().mapToLong(SegmentIndex.SegmentRef::endOffset).max().orElse(-1L));
         }
     }
 
@@ -404,7 +397,9 @@ public final class RetentionEnforcer implements AutoCloseable {
             return Promise.success(plan);
         }
 
-        return storage.putRef(SegmentIndex.floorRefName(plan.streamName(), plan.partition(), plan.through()),
+        return storage.putRef(SegmentIndex.floorRefName(plan.streamName(),
+                                                        plan.partition(),
+                                                        plan.through()),
                               encodeFloor(plan.through()))
                       .map(_ -> plan)
                       .onFailure(cause -> logFloorWriteFailure(plan, cause));
@@ -421,10 +416,8 @@ public final class RetentionEnforcer implements AutoCloseable {
     private int reclaim(ReclaimPlan plan) {
         var previous = index.reclaimedThrough(plan.streamName(), plan.partition());
 
-        plan.expired()
-            .forEach(ref -> removeSegment(plan.streamName(), plan.partition(), ref));
+        plan.expired().forEach(ref -> removeSegment(plan.streamName(), plan.partition(), ref));
         index.recordReclaimed(plan.streamName(), plan.partition(), plan.through());
-
         if (previous >= 0 && previous < plan.through()) {
             dropFloor(plan.streamName(), plan.partition(), previous);
         }

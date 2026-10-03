@@ -27,7 +27,6 @@ public final class SegmentIndex {
     /// Per-partition CONTIGUOUS sealed watermark (#1234): every offset at or below it has been durably
     /// sealed. Advanced only by [#addSegment] and never lowered by [#removeSegment] — see [#lastSealedOffset].
     private final ConcurrentHashMap<PartitionKey, Long> sealedThrough = new ConcurrentHashMap<>();
-
     /// Per-partition reclaimed-through floor (#1278): the highest offset retention has deliberately reclaimed.
     /// Persisted as a `stream-floors/` ref before the segment refs it licenses are dropped, so a rebuild can tell
     /// a reclaimed prefix from one whose refs were lost.
@@ -254,7 +253,9 @@ public final class SegmentIndex {
     /// [#lastSealedOffset]): only a prefix retention recorded as reclaimed counts as sealed below the lowest
     /// surviving ref.
     private void anchorAtFloor(PartitionKey key, ConcurrentSkipListMap<Long, SegmentRef> map) {
-        sealedThrough.put(key, contiguousEnd(map, option(reclaimedThrough.get(key)).or(NOTHING_SEALED)));
+        sealedThrough.put(key,
+                          contiguousEnd(map,
+                                        option(reclaimedThrough.get(key)).or(NOTHING_SEALED)));
     }
 
     /// `stream-floors/<stream>/<partition>/<through>`; a partition may briefly hold two (the new one is written
@@ -267,8 +268,8 @@ public final class SegmentIndex {
         }
 
         Number.parseInt(parts[1]).onSuccess(partition -> Number.parseLong(parts[2]).onSuccess(through -> recordReclaimed(parts[0],
-                                                                                                                          partition,
-                                                                                                                          through)));
+                                                                                                                         partition,
+                                                                                                                         through)));
     }
 
     /// The ref recording that `(streamName, partition)` was reclaimed through `through` (#1278).
