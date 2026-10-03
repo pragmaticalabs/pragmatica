@@ -375,6 +375,8 @@ class StreamConfigReplicationTest {
                 manager.createStream(config)
                        .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected fresh create to succeed"));
                 assertThat(clusterNode.streamConfigPuts()).as("fresh create publishes exactly one config Put").hasSize(1);
+                // #1278 round 4: committed means the config Put APPLIED here, as the KV store notifies on local apply.
+                manager.onStreamConfigPut(new ValuePut<>(clusterNode.streamConfigPuts().getFirst(), Option.empty()));
 
                 manager.createStream(config)
                        .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_ALREADY_EXISTS"))

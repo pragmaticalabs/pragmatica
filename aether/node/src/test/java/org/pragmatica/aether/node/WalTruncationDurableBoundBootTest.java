@@ -151,10 +151,15 @@ class WalTruncationDurableBoundBootTest {
     private Path walFile() throws IOException {
         try (Stream<Path> files = Files.walk(tempDir)) {
             return files.filter(path -> path.getFileName().toString().equals(PARTITION + ".wal"))
-                        .filter(path -> path.getParent().getFileName().toString().equals(STREAM))
+                        .filter(path -> isStreamDir(path.getParent().getFileName().toString()))
                         .findFirst()
                         .orElseThrow(() -> new AssertionError("fixture: no " + STREAM + "/" + PARTITION + ".wal under " + tempDir));
         }
+    }
+
+    /// `<stream>` or, for a stream created through the cluster, `<stream>@<incarnation>` (#1278 review).
+    private static boolean isStreamDir(String name) {
+        return name.equals(STREAM) || name.startsWith(STREAM + "@");
     }
 
     /// The publish-path create: the ring is materialized locally before it returns and the config commit is

@@ -43,6 +43,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.groups.Tuple.tuple;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.api.routes.RetentionRoutes.RetentionInvariantWatch.retentionInvariantWatch;
 
@@ -236,13 +237,31 @@ class RetentionRoutesTest {
                 .isEqualTo(390L);
         }
 
-        /// #1258: the node-wide count of WAL recoveries that accepted a head gap as reclaimed history
-        /// reaches the operator surface, not only the WARN log.
+        /// #1278: the node-wide count of WAL recoveries refused for a lost head reaches the operator surface,
+        /// not only the ERROR log.
         @Test
-        void assembleRetention_reportsWalRecoveryHeadGapsAccepted() {
+        void assembleRetention_reportsWalRecoveryHeadsLost() {
             var response = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore(), 7L);
 
-            assertThat(response.walRecoveryHeadGapsAccepted()).isEqualTo(7L);
+            assertThat(response.walRecoveryHeadsLost()).isEqualTo(7L);
+        }
+
+        /// #1278: the persisted reclaimed-through floor is reported per partition, so an operator can see what
+        /// explains a WAL that starts above offset 0. A partition retention never reclaimed reports `-1`.
+        @Test
+        void assembleRetention_reportsReclaimedThroughPerPartition() {
+            var index = new SegmentIndex();
+
+            index.addSegment("alpha", 0, 0, 99);
+            index.addSegment("alpha", 0, 100, 199);
+            index.recordReclaimed("alpha", 0, 99);
+            index.addSegment("beta", 0, 0, 9);
+
+            var rows = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), index, emptyStore()).partitions();
+
+            assertThat(rows).extracting(RetentionPartitionView::stream, RetentionPartitionView::reclaimedThrough)
+                            .containsExactly(tuple("alpha", 99L),
+                                             tuple("beta", -1L));
         }
 
         /// #1345: the held-back counter reaches the operator surface through the manager overload the route
@@ -276,9 +295,22 @@ class RetentionRoutesTest {
                                                                      .isZero();
         }
 
-        /// #1258 round 3 nit: pins the PRODUCTION overload the route calls. A real WAL recovery accepts a
-        /// head gap (a WAL starting at offset 5 with nothing sealed), and the three-argument assembler must
-        /// report the node-wide count — forcing it to 0 there used to leave every test green.
+        /// The same field on a MATERIALIZED partition's row (built from the WAL snapshot, not from the index alone):
+        /// the two row builders are separate paths and each must carry the floor.
+        @Test
+        void assembleRetention_reportsReclaimedThrough_onAMaterializedPartitionRow() {
+            var index = new SegmentIndex();
+
+            index.recordReclaimed("alpha", 0, 99);
+            var snapshot = new WalSnapshot(List.of(new StreamWalView("alpha", List.of(wallessPartition(0)))));
+
+            assertThat(onlyRow(RetentionRoutes.assembleRetention(snapshot, index, emptyStore())).reclaimedThrough()).isEqualTo(99L);
+        }
+
+        /// #1258 round 3 nit, re-aimed by #1278: pins the PRODUCTION overload the route calls. A real WAL
+        /// recovery refuses a lost head (a WAL starting at offset 5 with nothing sealed or reclaimed), and the
+        /// three-argument assembler must report the node-wide count — forcing it to 0 there used to leave every
+        /// test green.
         @Test
         void assembleRetention_productionOverload_reportsTheRealRecoveryCounter(@TempDir Path walDir) {
             var wal = AppendLog.open(walDir.resolve("gapped").resolve("0.wal")).unwrap();
@@ -291,13 +323,13 @@ class RetentionRoutesTest {
                                                            1,
                                                            RetentionPolicy.retentionPolicy(1_000, 1024L * 1024, 3_600_000),
                                                            "earliest"))
-                   .onFailure(cause -> fail(cause.message()));
+                   .onSuccess(_ -> fail("a lost head must refuse recovery"));
             manager.close();
 
             var reported = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore())
-                                          .walRecoveryHeadGapsAccepted();
+                                          .walRecoveryHeadsLost();
 
-            assertThat(reported).isPositive().isEqualTo(StreamPartitionManager.walRecoveryHeadGapsAccepted());
+            assertThat(reported).isPositive().isEqualTo(StreamPartitionManager.walRecoveryHeadsLost());
         }
 
         @Test
@@ -551,6 +583,7 @@ class RetentionRoutesTest {
                                           15L,
                                           -1L,
                                           -1L,
+                                          -1L,
                                           CHECKPOINT,
                                           15L,
                                           true,
@@ -562,6 +595,7 @@ class RetentionRoutesTest {
                                           PARTITION,
                                           Option.none(),
                                           11L,
+                                          -1L,
                                           -1L,
                                           -1L,
                                           CHECKPOINT,

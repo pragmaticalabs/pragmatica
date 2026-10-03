@@ -25,7 +25,10 @@ public record StreamConfig(String name,
                            int replicationFactor,
                            int confirmationFactor,
                            StreamCompression compression,
-                           Option<String> encryptionKeyId) {
+                           Option<String> encryptionKeyId,
+                           long incarnation) {
+    /// No incarnation assigned: a config built by a factory, before a cluster create mints one.
+    public static final long NO_INCARNATION = 0L;
     private static final int DEFAULT_PARTITIONS = 4;
     /// `"earliest"` is the only value the system accepts, so it is the only honest default (#677).
     ///
@@ -55,7 +58,8 @@ public record StreamConfig(String name,
                                                                 DEFAULT_REPLICATION_FACTOR,
                                                                 DEFAULT_CONFIRMATION_FACTOR,
                                                                 StreamCompression.NONE,
-                                                                none());
+                                                                none(),
+                                                                NO_INCARNATION);
 
     /// This config under a different `name`, every other field carried over verbatim.
     ///
@@ -75,7 +79,27 @@ public record StreamConfig(String name,
                                 replicationFactor,
                                 confirmationFactor,
                                 compression,
-                                encryptionKeyId);
+                                encryptionKeyId,
+                                incarnation);
+    }
+
+    /// This config as one LIFE of its stream (#1278 review): `incarnation` identifies a cluster create of the name.
+    /// Minted once when a stream is created through the cluster and carried, unchanged, by every republish, so every
+    /// durable artifact of the stream (WAL directory, sealed-segment refs, reclaimed-through floors) is keyed by it,
+    /// and a node opens only the artifacts of the incarnation the committed config names — a stream destroyed and
+    /// created again under the same name never inherits the old life's records, watermark or floor.
+    public StreamConfig withIncarnation(long newIncarnation) {
+        return new StreamConfig(name,
+                                partitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                replicationFactor,
+                                confirmationFactor,
+                                compression,
+                                encryptionKeyId,
+                                newIncarnation);
     }
 
     /// The stored factors as a pair. The engine re-checks them with [ReplicationFactors#replicationFactors].
@@ -95,7 +119,8 @@ public record StreamConfig(String name,
                                 factors.replicationFactor(),
                                 factors.confirmationFactor(),
                                 compression,
-                                encryptionKeyId);
+                                encryptionKeyId,
+                                incarnation);
     }
 
     public static StreamConfig streamConfig(String name) {
@@ -108,7 +133,8 @@ public record StreamConfig(String name,
                                 DEFAULT_REPLICATION_FACTOR,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
-                                none());
+                                none(),
+                                NO_INCARNATION);
     }
 
     public static StreamConfig streamConfig(String name,
@@ -124,7 +150,8 @@ public record StreamConfig(String name,
                                 DEFAULT_REPLICATION_FACTOR,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
-                                none());
+                                none(),
+                                NO_INCARNATION);
     }
 
     public static StreamConfig streamConfig(String name,
@@ -141,7 +168,8 @@ public record StreamConfig(String name,
                                 DEFAULT_REPLICATION_FACTOR,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
-                                none());
+                                none(),
+                                NO_INCARNATION);
     }
 
     public static StreamConfig streamConfig(String name,
@@ -159,7 +187,8 @@ public record StreamConfig(String name,
                                 DEFAULT_REPLICATION_FACTOR,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
-                                none());
+                                none(),
+                                NO_INCARNATION);
     }
 
     public static StreamConfig streamConfig(String name,
@@ -178,7 +207,8 @@ public record StreamConfig(String name,
                                 DEFAULT_REPLICATION_FACTOR,
                                 confirmationFactor,
                                 StreamCompression.NONE,
-                                none());
+                                none(),
+                                NO_INCARNATION);
     }
 
     public static StreamConfig streamConfig(String name,
@@ -200,6 +230,7 @@ public record StreamConfig(String name,
                                 replicationFactor,
                                 confirmationFactor,
                                 compression,
-                                encryptionKeyId);
+                                encryptionKeyId,
+                                NO_INCARNATION);
     }
 }
