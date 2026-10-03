@@ -170,6 +170,9 @@ class DHTDurableDeleteTest {
             putThenRemoveMissing(cluster, key, displaced);
             cluster.advanceClockBy(TWO_HOURS);
             cluster.members().forEach(member -> member.node().resolveReplication(RF3));
+            // #1777 R1b: a replication change switches only on the cluster's committed settle; this test is about the
+            // stray horizon after it, so it settles the change at once (the DHT half of the committed settle)
+            cluster.members().forEach(member -> member.node().settleReplicationChange(DHTNode.NO_CHANGE));
 
             var replicas = cluster.replicasOf(key);
             var reader = replicas.getFirst();
@@ -188,6 +191,42 @@ class DHTDurableDeleteTest {
             assertThat(cluster.entryAt(displaced, key).isEmpty()).as("the stray copy was dropped").isTrue();
             assertThat(replicas).as("then the tombstone was collected").allMatch(id -> cluster.entryAt(id, key).isEmpty());
             assertThat(cluster.member(reader).client().get(key).await().unwrap().isPresent()).isFalse();
+        }
+
+        /// #1777 R1b: while a replication change is unsettled, a displaced holder keeps its stray copy past the stray
+        /// horizon — it may hold the only copy of a write a slower node acked at the old quorum, which the writers-switched
+        /// catch-up has yet to pull — and the tombstones it could outlive wait with it. Once the change settles, the stray
+        /// goes first and the tombstone only after the margin.
+        @Test
+        void unsettledChange_keepsStrays_andTombstonesWait_untilItSettles() {
+            var cluster = new DurableDeleteCluster(4, RF4);
+            var key = bytes("gc-unsettled");
+            var displaced = cluster.replicasOf(key).getLast();
+
+            putThenRemoveMissing(cluster, key, displaced);
+            cluster.advanceClockBy(TWO_HOURS);
+            cluster.members().forEach(member -> member.node().resolveReplication(RF3, 7L));
+
+            var replicas = cluster.replicasOf(key);
+
+            cluster.advanceClockBy(DHTNode.DEFAULT_TOMBSTONE_RETENTION.millis() + 1_000L);
+            cluster.synchronizeAll();
+            cluster.synchronizeAll();
+
+            assertThat(cluster.entryAt(displaced, key).isPresent()).as("unsettled: the stray copy is kept past the horizon").isTrue();
+            assertThat(replicas).as("unsettled: the tombstone waits").allMatch(id -> cluster.holdsTombstone(id, key));
+
+            cluster.members().forEach(member -> member.node().settleReplicationChange(7L));
+            cluster.synchronizeAll();
+
+            assertThat(cluster.entryAt(displaced, key).isEmpty()).as("settled: the stray goes").isTrue();
+            assertThat(replicas).as("settled within the margin: the tombstone still waits").allMatch(id -> cluster.holdsTombstone(id, key));
+
+            cluster.advanceClockBy(TWO_HOURS);
+            cluster.synchronizeAll();
+
+            assertThat(replicas).as("past the margin: collected").allMatch(id -> cluster.entryAt(id, key).isEmpty());
+            assertThat(cluster.member(replicas.getFirst()).client().get(key).await().unwrap().isPresent()).isFalse();
         }
 
         /// A catch-up that pulls an EXPIRED tombstone it has no entry for completes IN THAT ROUND: the tombstone is

@@ -648,6 +648,16 @@ public final class DHTAntiEntropy {
         var now = node.nowMillis();
 
         node.noteAgreement(partition, round.startedAtMillis());
+        // #1777 R1b: strays are kept while a replication change is unsettled (see purgeStrays), so a tombstone they could
+        // outlive waits until the change has settled here for a margin — the time every other replica needs to observe
+        // the same committed settle and drop its strays first
+        if (!node.replicationSettledSince(now - margin().millis())) {
+            log.debug("Partition {} agreed, but a replication change is unsettled or settled within the margin; tombstones wait",
+                      partition.value());
+
+            return;
+        }
+
         if (!node.holderSetStableSince(partition,
                                        now - node.tombstoneRetention().millis())) {
             log.debug("Partition {} agreed, but a holder left its replica set within the tombstone retention; "
@@ -674,6 +684,12 @@ public final class DHTAntiEntropy {
     /// track 3). The horizon is the tombstone retention less a margin of two anti-entropy periods and an
     /// operation timeout, so a stray copy is always gone before a tombstone that supersedes it may be collected.
     private void purgeStrays() {
+        // #1777 R1b: while a replication change is unsettled, a stray copy may hold the only copy of a write a slower node
+        // acked at the old quorum; the writers-switched catch-up pulls from it, so it stays until the change settles
+        if (node.replicationChangeSettling()) {
+            return;
+        }
+
         var horizon = Math.max(0L,
                                node.tombstoneRetention().millis() - margin().millis());
 

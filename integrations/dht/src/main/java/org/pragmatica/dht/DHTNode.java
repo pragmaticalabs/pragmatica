@@ -72,6 +72,8 @@ public final class DHTNode {
     private final AtomicLong caughtUpVersion = new AtomicLong(NO_CHANGE);
 
     private final AtomicReference<Consumer<Long>> caughtUpListener = new AtomicReference<>(_ -> {});
+    /// When this node last dropped a replication-change floor (wall clock), or `Long.MIN_VALUE` if never (#1777 track 3).
+    private final AtomicLong settledAtMillis = new AtomicLong(Long.MIN_VALUE);
 
     /// The version no replication change carries.
     public static final long NO_CHANGE = -1L;
@@ -270,7 +272,7 @@ public final class DHTNode {
     public void settleReplicationChange(long version) {
         synchronized (placementLock) {
             settledVersion.accumulateAndGet(version, Math::max);
-            quorumFloor.set(quorumFloor.get().filter(floor -> floor.version() > settledVersion.get()));
+            keepFloorIf(floor -> floor.version() > settledVersion.get());
         }
     }
 
@@ -286,8 +288,28 @@ public final class DHTNode {
             settledVersion.accumulateAndGet(version, Math::max);
             var covered = !factorsDiffer(config.get(), settled);
 
-            quorumFloor.set(quorumFloor.get().filter(floor -> !covered && floor.version() > settledVersion.get()));
+            keepFloorIf(floor -> !covered && floor.version() > settledVersion.get());
         }
+    }
+
+    /// Drop the floor unless `keep` holds for it, and remember when a floor was dropped: the tombstone collector waits a
+    /// margin past that point, for every replica to have stopped holding strays back (#1777 track 3).
+    private void keepFloorIf(java.util.function.Predicate<QuorumFloor> keep) {
+        var held = quorumFloor.get();
+        var kept = held.filter(keep);
+
+        quorumFloor.set(kept);
+        if (held.isPresent() && kept.isEmpty()) {
+            settledAtMillis.set(nowMillis());
+        }
+    }
+
+    /// Whether no replication change is unsettled here, and none was settled after `cutoffMillis` (#1777 track 3). While
+    /// a change is unsettled a stray copy may still be the only home of a write a slower node acked at the old quorum,
+    /// which the writers-switched catch-up has yet to pull, so strays are kept and tombstones wait.
+    boolean replicationSettledSince(long cutoffMillis) {
+        return quorumFloor.get()
+                          .isEmpty() && settledAtMillis.get() <= cutoffMillis;
     }
 
     /// The highest replication change whose writers-switched catch-up pass completed here, or [#NO_CHANGE].
