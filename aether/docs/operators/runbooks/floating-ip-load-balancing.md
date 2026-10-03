@@ -2,9 +2,11 @@
 
 > **Planned (1.0.0-rc5, #1867 — not implemented).** This runbook describes `load_balancer =
 > "floating_ip"` as specified in the
-> [floating-IP load-balancing spec](../../specs/floating-ip-load-balancing-spec.md). The commands
-> `aether ingress …`, the `[source.X.floating_ip]` table and the assignment table do not exist in
-> rc4. Numbers marked *estimate* are replaced with measured values by the Hetzner acceptance run
+> [floating-IP load-balancing spec](../../specs/floating-ip-load-balancing-spec.md). **No step in
+> this runbook is runnable on rc4** until the implementation lands: the `[source.X.floating_ip]`
+> table, the assignment table and its `/api/v1/ingress/floating-ips` endpoints, and the planned CLI
+> operations (an assignment-table read and rebalance-now, named by the implementation PR) do not
+> exist in rc4. Numbers marked *estimate* are replaced with measured values by the Hetzner acceptance run
 > (spec §14) before this runbook ships.
 >
 > This mode replaces rc4's `load_balancer = "elected"`, which never attached its floating IPs on
@@ -38,7 +40,7 @@ failure, then check it against eligible nodes `E`:
 | Want | Choose |
 |---|---|
 | One failure affects ≤ 1/3 of clients | `P ≥ 3`, and `E ≥ P` so each node holds ≤ 1 IP |
-| Even load across ingress nodes | `P` a multiple of `E`. The default `rebalance = "manual"` never moves an IP for balance by itself (a move resets every connection on it), so after failures and recoveries run `aether ingress rebalance` when you choose to; with the opt-in `on_imbalance` the cluster moves one IP at a time, paced by `rebalance_pacing`, when two nodes differ by 2 or more. Zone binding can leave it less even (spec §8.4) |
+| Even load across ingress nodes | `P` a multiple of `E`. The default `rebalance = "manual"` never moves an IP for balance by itself (a move resets every connection on it), so after failures and recoveries trigger rebalance-now (`POST /api/v1/ingress/floating-ips/rebalance`) when you choose to; with the opt-in `on_imbalance` the cluster moves one IP at a time, paced by `rebalance_pacing`, when two nodes differ by 2 or more. Zone binding can leave it less even (spec §8.4) |
 | Survive `k` node failures with all IPs served | `E − k ≥ 1`, and `(E − k) × maxIpsPerNode ≥ P` |
 
 `maxIpsPerNode` by provider: Hetzner no documented per-server limit (unverified); AWS, GCP and Azure **1** without guest network
@@ -98,7 +100,7 @@ Order matters because DNS must never point at an IP that the cluster cannot serv
 3. **Set up TLS** for the app listener on every eligible node (§4) and the **firewall** (§5).
 4. **Bootstrap** (`aether cluster bootstrap`). Preflight refuses IPs the account does not own or
    whose zone matches none of the source's zones.
-5. **Wait for convergence**: every IP shows `CONVERGED` in `aether ingress floating-ips`.
+5. **Wait for convergence**: every IP shows `CONVERGED` in the assignment table (`GET /api/v1/ingress/floating-ips`).
 6. **Test each IP directly** before DNS exists:
    ```bash
    for ip in 203.0.113.10 203.0.113.11; do
@@ -230,7 +232,7 @@ Give these to the teams that call the service:
 Run after bootstrap, after any pool change, and periodically (quarterly). Schedule it; it causes
 real client errors for one IP for the failover window.
 
-1. **Baseline.** `aether ingress floating-ips`: all `CONVERGED`. Note the holder of the IP you will
+1. **Baseline.** The assignment table (`GET /api/v1/ingress/floating-ips`): all `CONVERGED`. Note the holder of the IP you will
    test, `<ip>` → `<node>`.
 2. **Start a probe** against that IP from outside the cluster, recording failures with timestamps:
    ```bash
@@ -252,7 +254,7 @@ real client errors for one IP for the failover window.
 6. **Verify the table** shows the new holder `CONVERGED`, and the provider agrees
    (`hcloud floating-ip describe <id>` → `server`).
 7. Let auto-heal replace the killed node, or replace it yourself. It does not get its old IP back
-   by itself (the default `rebalance = "manual"`); run `aether ingress rebalance` when you accept
+   by itself (the default `rebalance = "manual"`); trigger rebalance-now (`POST /api/v1/ingress/floating-ips/rebalance`) when you accept
    resetting the connections on the IP that moves.
 
 Count what must NOT happen, not what should: a drill passes when the probe shows no failure outside
@@ -273,10 +275,13 @@ the windows above, not when it shows some successes.
 
 ### Read the assignment table
 
+Planned endpoint (rc5), on any node's management port; the request is routed to the leader:
+
 ```bash
-aether ingress floating-ips            # table
-aether ingress floating-ips -o json    # for scripts
+curl -s http://<node>:8080/api/v1/ingress/floating-ips | jq .
 ```
+
+The planned CLI assignment-table read shows the same data.
 
 | Status | Meaning | Do |
 |---|---|---|
@@ -346,7 +351,7 @@ a leader change, record the event sequence (`aether events`) and file an issue.
 | `load_balancer` | `none` | `none` \| `external` \| `floating_ip` |
 | `floating_ip.pool` | — | Pool addresses (IPv4 and/or IPv6) |
 | `floating_ip.eligible_roles` | `["worker"]` | Roles that may hold pool IPs |
-| `floating_ip.rebalance` | `manual` | `manual` \| `on_imbalance`. `manual`: IPs move for balance only on `aether ingress rebalance`, because a move resets every connection on that IP |
+| `floating_ip.rebalance` | `manual` | `manual` \| `on_imbalance`. `manual`: IPs move for balance only on a rebalance-now request, because a move resets every connection on that IP |
 | `floating_ip.rebalance_pacing` | `5m` | Minimum gap between automatic rebalance moves; applies only with `on_imbalance` |
 | `floating_ip.make_before_break_timeout` | `60s` | Max wait for moves before a drain proceeds |
 | `floating_ip.verify_interval` | `30s` | Provider verification period |

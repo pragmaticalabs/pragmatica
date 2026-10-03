@@ -332,7 +332,7 @@ Let `E` be eligible nodes for a source and `P` its pool. Target holding per node
 3. **Rebalance.** Default `rebalance = "manual"` (decision Q6): the platform does not move an IP
    for balance on its own initiative, because a move resets every open TCP/QUIC connection on that
    IP. An operator rebalances on purpose with `POST /api/v1/ingress/floating-ips/rebalance`
-   (`aether ingress rebalance`), which performs one step of the rule below. With
+   (and the matching planned CLI rebalance-now operation), which performs one step of the rule below. With
    `rebalance = "on_imbalance"` (operator opt-in) the leader performs the same step itself:
    if `max(count) − min(count) ≥ 2`, move ONE IP from a most-loaded node to a least-loaded node,
    then wait at least `rebalance_pacing` (default 5 min) before the next automatic move.
@@ -469,7 +469,7 @@ Costs to state everywhere this feature is described:
 | Layer | Surface |
 |---|---|
 | REST | `GET /api/v1/ingress/floating-ips` (leader-routed): per IP `source, family, committedHolder, epoch, reason, since, observedHolder, status, lastError`; status ∈ `CONVERGED` / `MOVING` / `DIVERGED` / `UNSERVED` / `UNVERIFIED`. `POST /api/v1/ingress/floating-ips/rebalance` runs one rebalance step now. (Operator move/pin: Q7.) |
-| CLI | `aether ingress floating-ips` (table; `-o json`), `aether ingress rebalance` |
+| CLI | Two planned operations: an assignment-table read (table and JSON output) and rebalance-now. The implementation PR names the subcommands under the quad rule. This spec deliberately writes no command line for them, so no document shows an invocation that rc4 does not have (the cli-docs gate checks every documented invocation against the real command tree). |
 | Docs | `management-api.md`, `cli.md`, `bootstrap-config.md` (`[source.X.floating_ip]`), feature catalog, this spec, the runbook |
 | Dashboard | An "Ingress" panel with the assignment table and per-IP status; on a cluster with no `floating_ip` source it shows the degenerate empty state, per the #494 ruling |
 | Events | `FloatingIpMoved{ip, from, to, reason, epoch}`, `FloatingIpMoveFailed{ip, target, cause}`, `FloatingIpUnserved{ip}`, `FloatingIpMakeBeforeBreakExpired{node, ips}` on the cluster event stream |
