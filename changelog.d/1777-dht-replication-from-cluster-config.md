@@ -34,6 +34,13 @@
     `writerTaughtTheOldChange_isFencedByReplicasOnTheNewOne`]. The roster is the leader's membership view: a wrong one
     only delays or hastens the settle.
   - The two events are published at most once per transition (missed if the cluster-events owner cannot publish then).
+  - A replica restarted after a change refuses writes until its state restore hands it the committed change: an unknown
+    fence refuses, never accepts [verified: DHTReplicationChangeTest
+    `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`].
+  - A node whose writes the fence keeps refusing for over 5 minutes, without it adopting the change, emits
+    `DHT_WRITER_STALE` itself, and `DHT_WRITER_STALE_RESOLVED` once it adopts (at most once each)
+    [verified: aether/node/src/test/java/org/pragmatica/aether/node/DhtWriterStaleWatchTest.java].
+  - Removes are not fenced in this change; the remove/tombstone fence lands with the durable deletes (#1777 track 3).
 - **Idempotency stores its dedup records in the replicated DHT at the `[replication]` factors**, not at the cache's
   RF 1. It was resolving the cache-scoped client.
   [verified: aether/resource/interceptors/src/test/java/org/pragmatica/aether/resource/interceptor/DhtNamespaceExtensionTest.java]
