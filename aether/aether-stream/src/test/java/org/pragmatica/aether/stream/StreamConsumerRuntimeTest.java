@@ -50,6 +50,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 
 class StreamConsumerRuntimeTest {
+    /// The cursor advances in deliverySucceeded, strictly AFTER the handler promise settles — so a handler-side
+    /// signal (delivered list) does not imply the cursor moved. Poll the cursor itself before asserting it.
+    static void awaitCursorAt(StreamConsumerRuntime rt, String stream, int partition, String group, long expected, long timeoutMs) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + timeoutMs;
+
+        while (rt.cursorPosition(stream, partition, group).or(-1L) != expected && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+    }
+
     private StreamPartitionManager manager;
     private StreamConsumerRuntime runtime;
 
@@ -135,8 +145,8 @@ class StreamConsumerRuntimeTest {
                               });
             manager.publishLocal("orders", 0, "event-1".getBytes(), 1000L);
             assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
-            // Allow a poll cycle for cursor update
-            Thread.sleep(150);
+            // The handler ran; the cursor advances after its promise settles: await the cursor itself.
+            awaitCursorAt(runtime, "orders", 0, "group-1", 1L, 5_000);
             var cursor = runtime.cursorPosition("orders", 0, "group-1");
 
             assertThat(cursor.isPresent()).isTrue();
@@ -451,6 +461,7 @@ class StreamConsumerRuntimeTest {
                 assertThat(observedRuntime.deadLetterHandler().read("orders", 10)).singleElement()
                           .extracting(DeadLetterEntry::offset)
                           .isEqualTo(0L);
+                awaitCursorAt(observedRuntime, "orders", 0, "group-dlq", 2L, 5_000);
                 assertThat(observedRuntime.cursorPosition("orders", 0, "group-dlq").or(-1L)).isEqualTo(2L);
             } finally {
                 observedRuntime.close();
@@ -777,6 +788,7 @@ class StreamConsumerRuntimeTest {
                 awaitContains(delivered, 2L);
                 assertThat(sink.thrown.get()).describedAs("control: the sink really threw").isEqualTo(1);
                 assertThat(delivered).containsExactly(1L, 2L);
+                awaitCursorAt(probeRuntime, "orders", 0, "group-f5", 3L, 5_000);
                 assertThat(probeRuntime.cursorPosition("orders", 0, "group-f5").or(-1L)).isEqualTo(3L);
             } finally {
                 probeRuntime.close();
@@ -2530,6 +2542,7 @@ class StreamConsumerRuntimeTest {
                       .containsExactly(0L, 1L);
             assertThat(peakInFlight.get()).describedAs("one group never has two deliveries in flight on one partition")
                       .isEqualTo(1);
+            awaitCursorAt(runtime, "orders", 0, "group-1", 2L, 5_000);
             assertThat(runtime.cursorPosition("orders", 0, "group-1").or(-1L)).isEqualTo(2L);
         }
 
@@ -2597,6 +2610,7 @@ class StreamConsumerRuntimeTest {
             assertThat(delivered).describedAs("offset 0: the failed attempt plus exactly one retry; nothing re-read it meanwhile")
                       .containsExactly(0L, 0L, 1L);
             assertThat(peakInFlight.get()).isEqualTo(1);
+            awaitCursorAt(runtime, "orders", 0, "group-1", 2L, 5_000);
             assertThat(runtime.cursorPosition("orders", 0, "group-1").or(-1L)).isEqualTo(2L);
         }
 
@@ -2692,6 +2706,8 @@ class StreamConsumerRuntimeTest {
                 releasing.publishLocal("s", 0, "local-0".getBytes(UTF_8), 1000L);
                 awaitSize(delivered, 1);
                 assertThat(delivered).describedAs("push delivery from the local ring").containsExactly(0L);
+                // The pass is still in flight until the cursor advances; release the ring only once it has.
+                awaitCursorAt(consumer, "s", 0, "group-1", 1L, 5_000);
 
                 role.set(Role.NONE);
                 releasing.reconcileReshuffle();

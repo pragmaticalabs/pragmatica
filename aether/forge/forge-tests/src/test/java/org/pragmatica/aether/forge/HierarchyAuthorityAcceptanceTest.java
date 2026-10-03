@@ -122,8 +122,9 @@ class HierarchyAuthorityAcceptanceTest {
         LifecycleAwait.nodeSettled("release one worker slot", cluster, cluster.killNode(workers.getLast().self().id(), false));
         var extra = LifecycleAwait.nodeSettled("admit CORE above desired count", cluster, cluster.addNode());
         var candidate = cluster.getNode(extra.id()).unwrap();
-        await().atMost(BUDGET.duration()).until(() -> leader().membershipFsm().memberDescriptor(extra).isPresent());
-        assertThat(leader().membershipFsm().memberDescriptor(extra).unwrap().role()).isEqualToIgnoringCase("CORE");
+        // One leader() per evaluation: a second call after the await may name a different node that has no descriptor yet.
+        await().atMost(BUDGET.duration()).until(() -> leader().membershipFsm().memberDescriptor(extra)
+                                                           .map(descriptor -> "CORE".equalsIgnoreCase(descriptor.role())).or(false));
         assertPromotionRefused(candidate, "WORKER");
         assertThat(leader().coreNodeIds()).hasSize(3);
     }

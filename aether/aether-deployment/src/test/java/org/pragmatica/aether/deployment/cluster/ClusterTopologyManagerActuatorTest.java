@@ -367,7 +367,7 @@ class ClusterTopologyManagerActuatorTest {
             assertThat(manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().isSuccess()).isTrue();
         }
         assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
-        await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.terminateCount.get() == 1);
+        awaitClearedExactlyOnce(PEER_D);
         settleFor(Duration.ofMillis(300));
         assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
         assertThat(drainCommandClearCalls).containsExactly(PEER_D);
@@ -382,7 +382,7 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(drainCommandClearCalls).containsExactly(PEER_D);
         manager.activate();
         manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().unwrap();
-        await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.terminateCount.get() == 1);
+        await().atMost(Duration.ofSeconds(5)).until(() -> drainCommandClearCalls.size() == 2);
         settleFor(Duration.ofMillis(300));
         assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
         assertThat(drainCommandSinkCalls).containsExactly(PEER_D, PEER_D);

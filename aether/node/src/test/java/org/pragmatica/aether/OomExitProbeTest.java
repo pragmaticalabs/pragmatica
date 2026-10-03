@@ -59,6 +59,9 @@ class OomExitProbeTest {
     void heapExhaustion_withoutTheFlag_isCaughtAndTheProcessStaysAlive(@TempDir Path dir) throws Exception {
         var out = dir.resolve("control.out");
         var child = launch(out, List.of());
+        // The asserted output is written by the child, whose start and heap exhaustion take as long as the box allows:
+        // await the line itself, then observe liveness for a fixed window AFTER it (#1855).
+        awaitOutputContains(out, OomExitProbeMain.CAUGHT);
         var exited = child.waitFor(CONTROL_OBSERVATION_SECONDS, TimeUnit.SECONDS);
         var output = drain(child, out);
 
@@ -69,6 +72,14 @@ class OomExitProbeTest {
                               output)
                   .isFalse();
         assertThat(output).doesNotContain(VM_TERMINATION_LINE);
+    }
+
+    private static void awaitOutputContains(Path out, String line) throws Exception {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(EXIT_DEADLINE_SECONDS);
+
+        while (System.nanoTime() < deadline && !(Files.exists(out) && Files.readString(out).contains(line))) {
+            Thread.sleep(25);
+        }
     }
 
     private static Process launch(Path out, List<String> extraJvmFlags) throws Exception {

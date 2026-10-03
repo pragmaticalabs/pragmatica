@@ -674,8 +674,11 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
+                // Await BOTH halves of the pair: emitFaultyEdgePair delivers Faulty then Departed
+                // one statement apart on the tick thread, so Faulty alone does not imply Departed.
                 await().atMost(Duration.ofSeconds(3))
-                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
+                                    && !observations.byType(SwimObservation.DepartedObserved.class).isEmpty());
 
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
                     .as("no live transport: the never-healthy ghost emits the FAULTY pair as today")

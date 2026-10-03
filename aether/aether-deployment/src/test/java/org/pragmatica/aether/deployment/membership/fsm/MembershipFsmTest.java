@@ -68,6 +68,8 @@ class MembershipFsmTest {
     private static void awaitDead(MembershipFsm manager, NodeId id) {
         await().atMost(2, TimeUnit.SECONDS)
              .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(id, "Dead"));
+        // listeners fire after Dead, under the member transition guard; this call takes it, so emissions are delivered
+        manager.onDrainAcknowledged(id);
     }
 
     @Nested
