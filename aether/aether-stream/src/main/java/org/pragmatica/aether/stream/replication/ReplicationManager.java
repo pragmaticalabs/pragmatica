@@ -10,6 +10,7 @@ import java.util.stream.IntStream;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -32,6 +33,17 @@ public interface ReplicationManager extends AutoCloseable {
     }
 
     EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
+
+    /// #1730: the partition's COMMITTED in-sync replica set (the owner included), read from the committed ownership
+    /// record. When present, a confirmation needs EVERY member other than the owner, and the pre-append floor is
+    /// the ISR's size (min-ISR = the confirmation factor). [Option#none] means the partition carries no committed
+    /// ISR (no record yet, or a record minted before #1730), and the any-`minAcks`-replicas rule applies.
+    @FunctionalInterface
+    interface InSyncReplicas {
+        Option<List<NodeId>> inSyncReplicas(String streamName, int partition);
+    }
+
+    InSyncReplicas UNMANAGED = (_, _) -> Option.none();
 
     /// Owner-side observer of the replica-ack stream (#1235). It is told of each ack BEFORE the registry
     /// records it (ruling after the #1279 review, N2): a waiter can be resolved from a registry read, so an
@@ -90,6 +102,10 @@ public interface ReplicationManager extends AutoCloseable {
     /// overlaid on the registry rows (never lowering a row), so an [AckObserver] running before the
     /// registry update sees the ack it is being told about.
     long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks);
+
+    /// Late-bind the committed ISR source (#1730). The default manages nothing.
+    @Contract
+    default void inSyncReplicaSource(InSyncReplicas source) {}
 
     /// Install the single [AckObserver] (#1235). The partition manager installs itself at construction.
     @Contract

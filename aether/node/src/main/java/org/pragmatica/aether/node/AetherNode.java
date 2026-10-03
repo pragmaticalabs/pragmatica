@@ -207,6 +207,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.forward.StreamForwardTransport;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
+import org.pragmatica.aether.stream.replication.IsrMonitor;
 import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.PartitionKey;
@@ -1111,6 +1112,11 @@ public interface AetherNode extends ManageableNode {
     /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
     /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
     TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// #1730: how often an owner re-evaluates its partitions' in-sync replica sets. Lag itself is bounded by
+    /// `[streaming] isr_lag_max`; this cadence only adds up to one interval to it.
+    TimeSpan ISR_MONITOR_INTERVAL = TimeSpan.timeSpan(1).seconds();
+    /// #1730: how soon a refused (moved-record) ownership write is re-decided.
+    TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
     /// third party, so partition ownership is polled; matching the reshuffle cadence keeps the
     /// handover window (during which the old and new owner may both deliver) at one tick.
@@ -1421,6 +1427,57 @@ public interface AetherNode extends ManageableNode {
     /// `PARTITION_NOT_LOCAL`, leaving RF≥2 structurally unreachable. Before the controller is bound / its
     /// first reconcile it falls back to the live placement projection ([#livePlacementMembers]), the SAME
     /// pre-reconcile fallback `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
+    /// #1730: the committed ISR of `(stream, partition)`; none for a record minted before #1730 (`isrVersion` 0),
+    /// which carries no committed ISR, and for a partition with no record.
+    static Option<List<NodeId>> committedIsr(KVStore<AetherKey, AetherValue> kvStore, String stream, int partition) {
+        return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                StreamPartitionOwnershipValue.class)
+                      .filter(record -> record.isrVersion() > 0)
+                      .map(StreamPartitionOwnershipValue::isr);
+    }
+
+    /// #1730: what the leader's ownership writer reads besides the committed record — the live placement members and
+    /// the placement a first record's ISR is minted from — both from the stream controller.
+    static StreamPartitionOwnershipWriter.IsrInputs streamIsrInputs(AtomicReference<ReplicaSetController> controllerRef) {
+        return new StreamPartitionOwnershipWriter.IsrInputs() {
+            @Override
+            public List<NodeId> liveMembers() {
+                return Option.option(controllerRef.get())
+                             .map(ReplicaSetController::reconciledMembers)
+                             .or(List.of());
+            }
+
+            @Override
+            public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                return Option.option(controllerRef.get())
+                             .map(controller -> controller.placementWithOwner(stream, partition, owner))
+                             .or(List.of(owner));
+            }
+        };
+    }
+
+    /// #1730: the partitions this node owns AND serves (activated for the committed record), with their record and
+    /// appended head — the ISR monitor's input.
+    static List<IsrMonitor.Owned> ownedPartitions(StreamPartitionManager manager,
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  OwnerActivation activation,
+                                                  NodeId self) {
+        return manager.materializedHeads()
+                      .stream()
+                      .flatMap(head -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(head.streamName(),
+                                                                                                                head.partition()),
+                                                        StreamPartitionOwnershipValue.class)
+                                              .filter(record -> record.owner()
+                                                                      .equals(self) && activation.isActivated(head.streamName(),
+                                                                                                              head.partition()))
+                                              .map(record -> new IsrMonitor.Owned(head.streamName(),
+                                                                                  head.partition(),
+                                                                                  record,
+                                                                                  head.head()))
+                                              .stream())
+                      .toList();
+    }
+
     static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
                                                Supplier<List<NodeId>> placementMembers) {
         return Option.option(controllerRef.get())
@@ -1634,6 +1691,7 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                             Runnable redrive,
                                              List<PartitionKey> reconciled) {
         // Entity arcs are excluded HERE, not in the controller's reconcile: their LOG replicas are
         // placed by the same reconcile as any stream's (wanted), but their OWNERSHIP has exactly one
@@ -1642,6 +1700,7 @@ public interface AetherNode extends ManageableNode {
         // catalog/membership edge and fight that reconcile record-for-record, parking arcs on
         // non-hosting nodes (which refuse every write) for up to one entity tick each time.
         applyStreamOwnershipBatch(applier,
+                                  redrive,
                                   writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled)));
     }
 
@@ -1650,15 +1709,34 @@ public interface AetherNode extends ManageableNode {
     /// is skipped rather than sent (an empty command batch would be rejected by consensus).
     @Contract
     private static void applyStreamOwnershipBatch(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                  Runnable redrive,
                                                   List<KVCommand<AetherKey>> commands) {
         if (commands.isEmpty()) {
             return;
         }
 
         applier.apply(commands)
+               .onSuccess(results -> redriveRefused(results, redrive))
                .onFailure(cause -> LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — re-driven on next reconcile",
                                             commands.size(),
                                             cause.message()));
+    }
+
+    /// #1730: ownership writes are guarded transactions, refused when the committed record moved under them (an owner
+    /// committed an ISR change first). A refusal is not a failure to wait out until the next membership edge: the
+    /// decision is re-made against the record that won, on the next reconcile.
+    @Contract
+    private static void redriveRefused(List<Object> results, Runnable redrive) {
+        var refused = results.stream()
+                             .filter(KVCommand.TransactionResult.class::isInstance)
+                             .map(KVCommand.TransactionResult.class::cast)
+                             .filter(result -> !result.accepted())
+                             .count();
+
+        if (refused > 0) {
+            LOG.debug("{} stream ownership write(s) refused on a moved record; re-deciding", refused);
+            redrive.run();
+        }
     }
 
     /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
@@ -5187,7 +5265,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                   partition),
                                                                                                                                           StreamPartitionOwnershipValue.class),
                                                                                                   (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
-                                                                                                                                                                                                                                         partition)));
+                                                                                                                                                                                                                                         partition)),
+                                                                                                  streamIsrInputs(clusterEventsControllerRef),
+                                                                                                  () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                         LeaderValue.class));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
                                                                                    placementMembers,
@@ -5199,6 +5280,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                            partition)),
                                                                                    (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
                                                                                                                                            clusterCommandApplier,
+                                                                                                                                           () -> SharedScheduler.schedule(() -> Option.option(clusterEventsControllerRef.get()).onPresent(ReplicaSetController::reconcile),
+                                                                                                                                                                          OWNERSHIP_REDRIVE_DELAY),
                                                                                                                                            reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
@@ -5212,6 +5295,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                         partition),
                                                                                                 StreamPartitionOwnershipValue.class)
                                                                                       .map(StreamPartitionOwnershipValue::owner));
+        // #1730: the committed ISR keeps its members placed (so they keep receiving the partition), and a CF >= 2
+        // confirmation needs every one of them. A record minted before #1730 (isrVersion 0) carries no committed ISR.
+        streamReplicaSetController.committedIsrSource((stream, partition) -> committedIsr(kvStore, stream, partition).or(List.of()));
+        streamReplicationManager.inSyncReplicaSource((stream, partition) -> committedIsr(kvStore, stream, partition));
         streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);
         // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
@@ -5290,7 +5377,24 @@ public interface AetherNode extends ManageableNode {
                                                                                               .suspectTimeout()));
 
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
-        streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);
+        // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
+        streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
+                                                                                      .orElse(() -> streamReplicaSetController.noInSyncReplica(stream,
+                                                                                                                                               partition)));
+        // #1730: the owner keeps its partitions' ISR current — a member lagging longer than [streaming] isr_lag_max
+        // leaves, a caught-up replica joins — through guarded consensus writes only (liveness; never safety).
+        var isrMonitor = IsrMonitor.isrMonitor(config.self(),
+                                               () -> ownedPartitions(streamPartitionManager,
+                                                                     kvStore,
+                                                                     ownerActivation,
+                                                                     config.self()),
+                                               streamReplicaRegistry,
+                                               () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
+                                               clusterCommandApplier,
+                                               streamingConfig.isrLagMax(),
+                                               System::nanoTime);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(isrMonitor::tick, ISR_MONITOR_INTERVAL));
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
@@ -5704,7 +5808,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                             (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                                                                                             partition),
                                                                                                                                                                                                                     StreamPartitionOwnershipValue.class),
-                                                                                                                                                                            entityArcOwner),
+                                                                                                                                                                            entityArcOwner,
+                                                                                                                                                                            streamIsrInputs(clusterEventsControllerRef),
+                                                                                                                                                                            () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                                                   LeaderValue.class)),
                                                                                             clusterCommandApplier,
                                                                                             ENTITY_RECONCILE_KICK);
         // A committed registration REMOVAL is a hosting-set shrink, which is the one edge the leader's mint

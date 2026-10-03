@@ -182,6 +182,7 @@ public final class ConfigLoader {
                                                 "streaming",
                                                 "segment_disk_max_bytes",
                                                 defaults.segmentDiskMaxBytes());
+        var isrLagMax = parseTimeSpan(doc, "streaming", "isr_lag_max", defaults.isrLagMax());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -189,7 +190,8 @@ public final class ConfigLoader {
                                                           defaults.readLinearization(),
                                                           reshuffleConcurrency,
                                                           caughtUpMaxLagOffsets)
-                                         .withSegmentDiskMaxBytes(segmentDiskMaxBytes));
+                                         .withSegmentDiskMaxBytes(segmentDiskMaxBytes)
+                                         .withIsrLagMax(isrLagMax));
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {
