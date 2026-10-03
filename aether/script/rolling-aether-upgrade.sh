@@ -32,8 +32,7 @@
 #      d. Waits for node to go offline
 #      e. (External: user restarts node with new binary)
 #      f. Waits for node to come back online (/health/ready)
-#      g. Activates the node
-#      h. Runs canary health check
+#      g. Runs canary health check
 #   3. Reports upgrade summary
 
 set -euo pipefail
@@ -138,7 +137,7 @@ discover_nodes() {
     log_step "Discovering cluster nodes from $CLUSTER..."
 
     local response
-    response=$(api_call GET "http://$CLUSTER/api/nodes/lifecycle")
+    response=$(api_call GET "http://$CLUSTER/api/v1/nodes/lifecycle")
 
     if [ -z "$response" ]; then
         log_error "Failed to discover nodes. Is the cluster running at $CLUSTER?"
@@ -171,7 +170,7 @@ wait_for_state() {
 
     while [ "$elapsed" -lt "$timeout" ]; do
         local response
-        response=$(api_call GET "http://$CLUSTER/api/nodes/lifecycle/$node_id" 2>/dev/null) || true
+        response=$(api_call GET "http://$CLUSTER/api/v1/nodes/lifecycle/$node_id" 2>/dev/null) || true
 
         if [ -n "$response" ]; then
             local state
@@ -203,7 +202,7 @@ node_endpoint() {
 }
 
 # A drain is complete ONLY when the drained node's OWN management address refuses connections (curl exit 7:
-# nothing listens, the process halted). Any HTTP answer, including a 404 from /api/nodes/lifecycle, proves the
+# nothing listens, the process halted). Any HTTP answer, including a 404 from /api/v1/nodes/lifecycle, proves the
 # node is alive: that route is leader-forwarded, and the leader's 404 is soft readiness state that drops a LIVE
 # node on a transient evict or on a leader change. A timeout (28), DNS failure (6) or reset (56) is not a halt
 # either. The server has no terminal lifecycle state to wait for (NodeReportedState is SYNCING/READY/DRAINING),
@@ -239,7 +238,7 @@ wait_for_ready() {
     # The node will appear in lifecycle as READY when ready
     while [ "$elapsed" -lt "$timeout" ]; do
         local response
-        response=$(api_call GET "http://$CLUSTER/api/nodes/lifecycle/$node_id" 2>/dev/null) || true
+        response=$(api_call GET "http://$CLUSTER/api/v1/nodes/lifecycle/$node_id" 2>/dev/null) || true
 
         if [ -n "$response" ]; then
             local state
@@ -267,7 +266,7 @@ canary_check() {
 
     # Verify node is still healthy
     local response
-    response=$(api_call GET "http://$CLUSTER/api/nodes/lifecycle/$node_id" 2>/dev/null) || true
+    response=$(api_call GET "http://$CLUSTER/api/v1/nodes/lifecycle/$node_id" 2>/dev/null) || true
 
     if [ -z "$response" ]; then
         log_error "  Canary FAILED: $node_id not responding"
@@ -297,7 +296,7 @@ upgrade_node() {
     # Step 1: Drain
     log_info "  Draining $node_id..."
     local drain_response
-    drain_response=$(api_call POST "http://$CLUSTER/api/nodes/drain/$node_id") || true
+    drain_response=$(api_call POST "http://$CLUSTER/api/v1/nodes/drain/$node_id") || true
 
     local success
     success=$(echo "$drain_response" | jq -r '.success' 2>/dev/null) || true
@@ -324,14 +323,12 @@ upgrade_node() {
     log_info "  Waiting for $node_id ($endpoint) to halt..."
     if ! wait_for_refusal "$endpoint" 120; then
         log_error "  Aborting: $node_id did not drain in time"
-        log_info "  Re-activating $node_id..."
-        api_call POST "http://$CLUSTER/api/nodes/activate/$node_id" > /dev/null 2>&1 || true
         return 1
     fi
 
     # Step 3: Shutdown
     log_info "  Shutting down $node_id..."
-    api_call POST "http://$CLUSTER/api/nodes/shutdown/$node_id" > /dev/null 2>&1 || true
+    api_call POST "http://$CLUSTER/api/v1/nodes/shutdown/$node_id" > /dev/null 2>&1 || true
 
     # Step 4: Wait for user to restart node with new binary
     echo ""
@@ -352,15 +349,12 @@ upgrade_node() {
         log_error ""
         log_error "Manual recovery required:"
         log_error "  1. Check $node_id logs and restart it"
-        log_error "  2. Once online, activate it: curl -X POST http://$CLUSTER/api/nodes/activate/$node_id"
-        log_error "  3. Re-run this script to continue with remaining nodes"
+        log_error "  2. Re-run this script to continue with remaining nodes"
         return 1
     fi
 
-    # Step 6: Activate
-    log_info "  Activating $node_id..."
-    api_call POST "http://$CLUSTER/api/nodes/activate/$node_id" > /dev/null 2>&1 || true
-
+    # Step 6 (was: activate): there is no activate route (ManagementRoute has none); a restarted node reports
+    # SYNCING then READY by itself.
     # Step 7: Wait for READY (NodeReportedState has no ON_DUTY)
     if ! wait_for_state "$node_id" "READY" 60; then
         log_warn "  $node_id not yet READY, but continuing..."

@@ -34,8 +34,8 @@
 - The old `ClusterHttpClientDrainStateTest` hand-fed `"state":"DECOMMISSIONED"`; the first replacement scripted a ready-made
   `ConnectionFailed` the real client never produced. The tests now script raw exceptions through the real mapping and run the
   real `JdkHttpOperations` against a closed socket and a live 404 listener.
-- [unverified: `rolling-aether-upgrade.sh` still calls unversioned `/api/nodes/...` paths and `/api/nodes/activate`; whether
-  they route was not checked.]
+- **`rolling-aether-upgrade.sh` called routes that do not exist:** `/api/nodes/...` (every `ManagementRoute` is under `/api/v1`;
+  no unversioned alias) and `/api/nodes/activate` (no such route). Paths are now `/api/v1/nodes/...` and the activate step is gone.
 - [unverified: destroy's serving-node match assumes a node's cluster-transport host equals the management endpoint's host;
   on a cluster where they differ (private transport, public management) nothing matches and the order is left as enumerated.]
 - [unverified: that a halted node's `MembershipFsm` reaches `Dead` within the drain wait on a live cluster: pinned with a
