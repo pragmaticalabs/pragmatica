@@ -6,6 +6,9 @@
 > `aether ingress …`, the `[source.X.floating_ip]` table and the assignment table do not exist in
 > rc4. Numbers marked *estimate* are replaced with measured values by the Hetzner acceptance run
 > (spec §14) before this runbook ships.
+>
+> This mode replaces rc4's `load_balancer = "elected"`, which never attached its floating IPs on
+> Hetzner and whose teardown detach was a no-op (#1870). Do not rely on `elected` in rc4.
 
 ## What this mode gives you, and what it does not
 
@@ -230,7 +233,7 @@ real client errors for one IP for the failover window.
 2. **Start a probe** against that IP from outside the cluster, recording failures with timestamps:
    ```bash
    while true; do
-     printf '%s ' "$(python3 -c 'import datetime;print(datetime.datetime.utcnow().strftime("%H:%M:%S.%f")[:12])')"   # date +%N is GNU-only
+     printf '%s ' "$(python3 -c 'import datetime;print(datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S.%f")[:12])')"   # date +%N is GNU-only
      curl -sS -m 2 --resolve app.example.com:443:<ip> https://app.example.com/<a-route> \
           -o /dev/null -w '%{http_code}\n' 2>&1 | tail -1
      sleep 0.2
