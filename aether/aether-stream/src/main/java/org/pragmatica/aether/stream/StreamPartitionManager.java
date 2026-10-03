@@ -40,6 +40,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
@@ -93,12 +94,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final int HELD_BACK_WARN_SAMPLE = 5;
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+    /// Bound on dropping or checking a stream's durable footprint (a local ref write and one forced snapshot).
+    private static final TimeSpan FOOTPRINT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
-
-    /// WAL recoveries (node-wide, since process start) refused because the WAL started above the durable sealed
-    /// watermark, which already counts every offset retention reclaimed (#1278, [StreamError.WalHeadLost]). Each is
-    /// also logged at ERROR naming the lost range. Any non-zero value is lost records.
+    /// Distinct lost WAL heads (node-wide, since process start): WAL recoveries refused because the WAL started above
+    /// the durable sealed watermark, which already counts every offset retention reclaimed (#1278,
+    /// [StreamError.WalHeadLost]). Counted once per WAL file and lost range, however often the refused recovery is
+    /// re-attempted; every attempt is logged at ERROR naming the range. Any non-zero value is lost records.
     private static final AtomicLong WAL_RECOVERY_HEADS_LOST = new AtomicLong();
+
+    /// The lost-head refusals already counted, by WAL file and the lost range: a refused partition is re-attempted on
+    /// every publish and every placement edge, and each re-attempt is the SAME loss, counted once.
+    private static final java.util.Set<StreamError.WalHeadLost> COUNTED_HEADS_LOST = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /// Absolute per-stream partition ceiling (#265 increment 4, spec §7/§10). Enforced PRE-COMMIT in
     /// {@link #createFreshStream} (mirroring the build-time `StreamConfigParser` check) and surfaced as the
@@ -322,10 +329,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// admission) and by owner-role reads ([#readServing], [#mayServeAsOwner]). Default: [#ADMIT_OWNER].
     /// Volatile: set once at wiring.
     private volatile OwnerServeGate ownerServeGate = ADMIT_OWNER;
-
     /// Why this node's owner promotion of a partition waits for an operator (#1555), read by the partition status
     /// view. Default: [#NO_BLOCK]. Volatile: set once at wiring.
     private volatile OwnerBlockSource ownerBlockSource = NO_BLOCK;
+
+    private volatile StreamFootprint streamFootprint = StreamFootprint.NONE;
 
     /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
@@ -793,6 +801,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerServeGate = gate;
     }
 
+    /// Late-bind the owner of this node's per-stream durable refs (#1278 review): a destroyed stream drops its sealed
+    /// segment refs and reclaimed-through floors through it, and a stream about to materialize finishes a destroy of
+    /// its name that a crash interrupted. Default: [StreamFootprint#NONE] (no storage of its own).
+    @Contract
+    public void streamFootprint(StreamFootprint footprint) {
+        this.streamFootprint = footprint;
+    }
+
     /// Late-bind the owner promotion block source (#1555). Set once at wiring.
     @Contract
     public void ownerBlockSource(OwnerBlockSource source) {
@@ -979,6 +995,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
         return checkReplicationMinimum(config).flatMap(_ -> checkRetentionCapacity(config))
                                       .flatMap(_ -> checkPartitionCaps(config))
+                                      .flatMap(_ -> finishPendingDestroy(config.name()))
                                       .flatMap(_ -> materializeFreshStream(config, commitMode));
     }
 
@@ -1384,6 +1401,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partitions materialize later through the single deferred-retry entry point once budget frees (see
     /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
     private StreamEntry hydrateEntry(StreamConfig config) {
+        finishPendingDestroy(config.name()).onFailure(cause -> log.error("Stream '{}' hydrates over an unfinished destroy of"
+                                                                        + " its name: {}",
+                                                                         config.name(),
+                                                                         cause.message()));
         reportOverCeilingIfViolating(config);
         var floorBytes = materializedFloorBytes(config);
 
@@ -3587,8 +3608,27 @@ public final class StreamPartitionManager implements AutoCloseable {
         entry.deleteWals();
         evictionListener.onStreamDeleted(entry.config().name());
         forgetHeldBack(entry);
+        forgetFootprint(entry.config().name());
 
         return success(unit());
+    }
+
+    /// A destroyed stream takes its durable footprint with it (#1278 review), as it takes its quarantine and WALs: a
+    /// stream later created under the same name must not anchor at a floor or sealed watermark it never had.
+    @Contract
+    private void forgetFootprint(String streamName) {
+        streamFootprint.forget(streamName)
+                       .await(FOOTPRINT_TIMEOUT)
+                       .onFailure(cause -> log.error("Stream '{}' was destroyed but its durable segment refs and floors could"
+                                                    + " not all be dropped: {}",
+                                                     streamName,
+                                                     cause.message()));
+    }
+
+    /// Before a stream materializes under `streamName`: finish a destroy of that name a crash interrupted.
+    private Result<Unit> finishPendingDestroy(String streamName) {
+        return streamFootprint.ensureForgotten(streamName)
+                              .await(FOOTPRINT_TIMEOUT);
     }
 
     /// The held-back bookkeeping ([#noteHeldBack]) is keyed per partition; a removed stream's keys would
@@ -4896,7 +4936,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         private static Result<Unit> headLost(StreamError.WalHeadLost lost) {
-            WAL_RECOVERY_HEADS_LOST.incrementAndGet();
+            if (COUNTED_HEADS_LOST.add(lost)) {
+                WAL_RECOVERY_HEADS_LOST.incrementAndGet();
+            }
 
             return lost.result();
         }

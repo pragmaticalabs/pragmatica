@@ -14,7 +14,13 @@
   the owner ruling of 2026-10-03. Retention reclaiming every segment of a partition restarts cleanly with no
   warning.
   - Operator action: keep the WAL file, then either restore the node's streams metadata snapshot if a newer
-    copy exists, or serve the partition from a replica that holds it.
+    copy exists, or serve the partition from a replica that holds it. Data written before this change has no
+    floor and refuses on every replica, so neither clears it: wipe and recreate the partition.
+  - `walRecoveryHeadsLost` counts each distinct lost head once, however often the refused recovery is
+    re-attempted.
+- **A destroyed stream drops its durable footprint** (sealed-segment refs and floors) behind a durable
+  tombstone, finished at boot if a crash interrupted it, so a stream recreated under the same name never
+  anchors at the old floor.
 - **BREAKING (Management API / CLI, `GET /api/storage/retention`):**
   - `walRecoveryHeadGapsAccepted` is replaced by `walRecoveryHeadsLost`, the count of `WalHeadLost` refusals.
   - Each partition row gains `reclaimedThrough`.

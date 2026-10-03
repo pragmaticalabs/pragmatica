@@ -138,16 +138,17 @@ public sealed interface StreamError extends Cause {
                    + " recorded as reclaimed by retention. Records are never renumbered, so the stream is not materialized"
                    + " here. Keep the file -- do not delete, truncate or move it: it holds offsets from %d on, and may be the"
                    + " only copy. Operator action: check whether this node's streams metadata snapshot lost segment refs"
-                   + " (restore it if a newer copy exists) or whether another replica holds this partition from offset %d;"
-                   + " the other nodes keep serving the stream when replicas >= 2").formatted(streamName,
-                                                                                              partition,
-                                                                                              sealedThrough,
-                                                                                              walFile,
-                                                                                              firstOffset,
-                                                                                              sealedThrough + 1,
-                                                                                              firstOffset - 1,
-                                                                                              firstOffset,
-                                                                                              sealedThrough + 1);
+                   + " (restore it if a newer copy exists) or whether another replica holds this partition from offset %d."
+                   + " Data written before #1278 has no reclaimed-through floor and refuses on every replica alike; it is"
+                   + " cleared only by wiping and recreating the partition").formatted(streamName,
+                                                                                       partition,
+                                                                                       sealedThrough,
+                                                                                       walFile,
+                                                                                       firstOffset,
+                                                                                       sealedThrough + 1,
+                                                                                       firstOffset - 1,
+                                                                                       firstOffset,
+                                                                                       sealedThrough + 1);
         }
     }
 

@@ -242,8 +242,16 @@ public final class SegmentIndex {
         partitions.clear();
         sealedThrough.clear();
         reclaimedThrough.clear();
-        refs.keySet().stream().filter(ref -> ref.startsWith(FLOORS_PREFIX)).forEach(this::parseFloorRef);
-        refs.keySet().stream().filter(ref -> ref.startsWith(STREAMS_PREFIX)).forEach(this::parseAndAddRef);
+        var destroyed = destroyedStreams(refs.keySet());
+
+        refs.keySet()
+            .stream()
+            .filter(ref -> ref.startsWith(FLOORS_PREFIX) && !destroyed.contains(streamOf(ref, FLOORS_PREFIX)))
+            .forEach(this::parseFloorRef);
+        refs.keySet()
+            .stream()
+            .filter(ref -> ref.startsWith(STREAMS_PREFIX) && !destroyed.contains(streamOf(ref, STREAMS_PREFIX)))
+            .forEach(this::parseAndAddRef);
         sealedThrough.clear();
         partitions.forEach(this::anchorAtFloor);
         reclaimedThrough.forEach(sealedThrough::putIfAbsent);
@@ -270,6 +278,53 @@ public final class SegmentIndex {
         Number.parseInt(parts[1]).onSuccess(partition -> Number.parseLong(parts[2]).onSuccess(through -> recordReclaimed(parts[0],
                                                                                                                          partition,
                                                                                                                          through)));
+    }
+
+    /// Streams whose destroy was in progress when the listing was taken (a `stream-tombstones/` ref, written durably
+    /// before any of the stream's refs is dropped): none of their surviving refs is rebuilt, so a crash in the middle of
+    /// a destroy never leaves a half-dropped footprint for a recreated stream of the same name to anchor at
+    /// ([StreamFootprint]).
+    public static java.util.Set<String> destroyedStreams(java.util.Collection<String> refNames) {
+        return refNames.stream()
+                       .filter(ref -> ref.startsWith(TOMBSTONES_PREFIX))
+                       .map(ref -> ref.substring(TOMBSTONES_PREFIX.length()))
+                       .collect(java.util.stream.Collectors.toSet());
+    }
+
+    private static String streamOf(String refName, String prefix) {
+        var rest = refName.substring(prefix.length());
+        var slash = rest.indexOf('/');
+
+        return slash < 0
+               ? rest
+               : rest.substring(0, slash);
+    }
+
+    /// Forget every in-memory fact about `streamName` — its segment refs, its sealed watermark and its reclaimed-through
+    /// floor — once its durable refs are dropped ([StreamFootprint]).
+    @Contract
+    public void forgetStream(String streamName) {
+        partitions.keySet().removeIf(key -> key.streamName()
+                                               .equals(streamName));
+        sealedThrough.keySet().removeIf(key -> key.streamName()
+                                                  .equals(streamName));
+        reclaimedThrough.keySet().removeIf(key -> key.streamName()
+                                                     .equals(streamName));
+    }
+
+    /// The prefix every sealed-segment ref of `streamName` starts with.
+    public static String segmentRefPrefix(String streamName) {
+        return STREAMS_PREFIX + streamName + "/";
+    }
+
+    /// The prefix every floor ref of `streamName` starts with, every partition included.
+    public static String floorRefPrefix(String streamName) {
+        return FLOORS_PREFIX + streamName + "/";
+    }
+
+    /// The ref marking `streamName`'s destroy as in progress.
+    public static String tombstoneRefName(String streamName) {
+        return TOMBSTONES_PREFIX + streamName;
     }
 
     /// The ref recording that `(streamName, partition)` was reclaimed through `through` (#1278).
@@ -313,6 +368,7 @@ public final class SegmentIndex {
 
     private static final String STREAMS_PREFIX = "streams/";
     private static final String FLOORS_PREFIX = "stream-floors/";
+    private static final String TOMBSTONES_PREFIX = "stream-tombstones/";
 
     public record PartitionKey(String streamName, int partition) {
         public static PartitionKey partitionKey(String streamName, int partition) {
