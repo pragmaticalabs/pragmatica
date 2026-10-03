@@ -106,8 +106,8 @@ class AutoRollbackOnAllInstancesFailedTest {
     @Timeout(600)
     void everyInstanceDefective_insideBakeWindow_rollsBackOnce_andRaisesEventAndAlert() {
         startDeployed();
-        assertThat(committedClusterToml()).as("arming: the built-in default — a blank (seed) cluster TOML, no [rollback]")
-                                          .isBlank();
+        assertThat(committedClusterToml().isEmpty()).as("arming: the built-in default — the bootstrap seed carries no cluster TOML, no [rollback]")
+                                          .isTrue();
         seedRollbackRecord(System.currentTimeMillis());
 
         probeUntil(this::rolledBack);
@@ -307,11 +307,10 @@ class AutoRollbackOnAllInstancesFailedTest {
                                            .isPresent();
     }
 
-    private String committedClusterToml() {
+    private Option<String> committedClusterToml() {
         return leader().kvStore()
                        .getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class)
-                       .map(ClusterConfigValue::tomlContent)
-                       .or("");
+                       .flatMap(ClusterConfigValue::tomlContent);
     }
 
     /// Commits a full, apply-valid cluster TOML carrying `rollbackSection` into the RUNNING cluster — a
