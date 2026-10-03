@@ -28,6 +28,11 @@ public final class SegmentIndex {
     /// sealed. Advanced only by [#addSegment] and never lowered by [#removeSegment] — see [#lastSealedOffset].
     private final ConcurrentHashMap<PartitionKey, Long> sealedThrough = new ConcurrentHashMap<>();
 
+    /// Per-partition reclaimed-through floor (#1278): the highest offset retention has deliberately reclaimed.
+    /// Persisted as a `stream-floors/` ref before the segment refs it licenses are dropped, so a rebuild can tell
+    /// a reclaimed prefix from one whose refs were lost.
+    private final ConcurrentHashMap<PartitionKey, Long> reclaimedThrough = new ConcurrentHashMap<>();
+
     public record SegmentRef(long startOffset,
                              long endOffset,
                              long maxTimestamp,
@@ -111,6 +116,18 @@ public final class SegmentIndex {
         option(partitions.get(key)).onPresent(map -> map.remove(startOffset));
     }
 
+    /// Record that retention reclaimed `(streamName, partition)` through `through`, AFTER its floor ref is
+    /// durable ([#floorRefName]). Never lowers the floor.
+    @Contract
+    public void recordReclaimed(String streamName, int partition, long through) {
+        reclaimedThrough.merge(PartitionKey.partitionKey(streamName, partition), through, Math::max);
+    }
+
+    /// The reclaimed-through floor of `(streamName, partition)`, or `-1` when retention never reclaimed any of it.
+    public long reclaimedThrough(String streamName, int partition) {
+        return option(reclaimedThrough.get(PartitionKey.partitionKey(streamName, partition))).or(NOTHING_SEALED);
+    }
+
     public List<SegmentRef> listSegments(String streamName, int partition) {
         return option(partitions.get(PartitionKey.partitionKey(streamName, partition))).map(map -> List.copyOf(map.values()))
                      .or(List.of());
@@ -129,13 +146,13 @@ public final class SegmentIndex {
     ///   - **Monotonic.** Retention reclaiming a sealed segment ([#removeSegment]) does not un-seal it. A
     ///     lowered watermark would make recovery seed a ring below a WAL already truncated past it, and the
     ///     replay would then assign the surviving records the wrong offsets.
-    ///   - **Anchored at offset 0 while the node runs, at the lowest surviving ref after a restart.**
-    ///     [#rebuildFromRefs] only sees the refs that survived, and a prefix reclaimed by retention is
-    ///     indistinguishable from one that was never sealed, so the rebuilt watermark starts at the lowest
-    ///     surviving ref and still stops at the first hole above it. A never-sealed prefix below every
-    ///     surviving ref is therefore not detected across a restart; [SegmentSealer] seals strictly in offset
-    ///     order (one seal in flight per partition), so it produces no such prefix. When retention has
-    ///     reclaimed EVERY ref of a partition nothing anchors the rebuild at all (#1278).
+    ///   - **Anchored at offset 0 while the node runs, at the persisted reclaimed-through floor after a
+    ///     restart (#1278).** Retention persists the floor before it drops the refs below it, so after a
+    ///     [#rebuildFromRefs] the watermark starts at the floor (or `-1` when nothing was ever reclaimed) and
+    ///     stops at the first hole above it. A prefix missing below the lowest surviving ref and above the
+    ///     floor was NOT reclaimed: its refs were lost, and the watermark stays below it (#1014), so recovery
+    ///     refuses a WAL compacted past it instead of treating the lost history as reclaimed. With every ref
+    ///     reclaimed the watermark is the floor itself.
     public long lastSealedOffset(String streamName, int partition) {
         return option(sealedThrough.get(PartitionKey.partitionKey(streamName, partition))).or(NOTHING_SEALED);
     }
@@ -225,15 +242,43 @@ public final class SegmentIndex {
     public void rebuildFromRefs(Map<String, BlockId> refs) {
         partitions.clear();
         sealedThrough.clear();
+        reclaimedThrough.clear();
+        refs.keySet().stream().filter(ref -> ref.startsWith(FLOORS_PREFIX)).forEach(this::parseFloorRef);
         refs.keySet().stream().filter(ref -> ref.startsWith(STREAMS_PREFIX)).forEach(this::parseAndAddRef);
-        partitions.forEach(this::anchorAtLowestRef);
+        sealedThrough.clear();
+        partitions.forEach(this::anchorAtFloor);
+        reclaimedThrough.forEach(sealedThrough::putIfAbsent);
     }
 
-    /// Re-anchor a rebuilt partition's watermark at its lowest surviving ref (see [#lastSealedOffset]):
-    /// the refs were added in listing order, anchored at offset 0, which a retention-reclaimed prefix would
-    /// otherwise pin at `-1` forever.
-    private void anchorAtLowestRef(PartitionKey key, ConcurrentSkipListMap<Long, SegmentRef> map) {
-        sealedThrough.put(key, contiguousEnd(map, map.firstKey() - 1));
+    /// Re-anchor a rebuilt partition's watermark at its persisted reclaimed-through floor (see
+    /// [#lastSealedOffset]): only a prefix retention recorded as reclaimed counts as sealed below the lowest
+    /// surviving ref.
+    private void anchorAtFloor(PartitionKey key, ConcurrentSkipListMap<Long, SegmentRef> map) {
+        sealedThrough.put(key, contiguousEnd(map, option(reclaimedThrough.get(key)).or(NOTHING_SEALED)));
+    }
+
+    /// `stream-floors/<stream>/<partition>/<through>`; a partition may briefly hold two (the new one is written
+    /// before the old one is dropped), and the highest wins.
+    private void parseFloorRef(String refName) {
+        var parts = refName.substring(FLOORS_PREFIX.length()).split("/");
+
+        if (parts.length != 3) {
+            return;
+        }
+
+        Number.parseInt(parts[1]).onSuccess(partition -> Number.parseLong(parts[2]).onSuccess(through -> recordReclaimed(parts[0],
+                                                                                                                          partition,
+                                                                                                                          through)));
+    }
+
+    /// The ref recording that `(streamName, partition)` was reclaimed through `through` (#1278).
+    public static String floorRefName(String streamName, int partition, long through) {
+        return floorRefPrefix(streamName, partition) + through;
+    }
+
+    /// The prefix every floor ref of `(streamName, partition)` starts with.
+    public static String floorRefPrefix(String streamName, int partition) {
+        return FLOORS_PREFIX + streamName + "/" + partition + "/";
     }
 
     private void parseAndAddRef(String refName) {
@@ -266,6 +311,7 @@ public final class SegmentIndex {
     }
 
     private static final String STREAMS_PREFIX = "streams/";
+    private static final String FLOORS_PREFIX = "stream-floors/";
 
     public record PartitionKey(String streamName, int partition) {
         public static PartitionKey partitionKey(String streamName, int partition) {

@@ -95,11 +95,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
 
-    /// WAL recoveries (node-wide, since process start) that accepted a gap BEFORE the first WAL record as
-    /// reclaimed history (#1258 review B2) — each is also WARNed with the range. Non-zero is expected after
-    /// retention reclaimed every sealed segment of a partition; an operator seeing it without such
-    /// retention is looking at lost records.
-    private static final AtomicLong WAL_RECOVERY_HEAD_GAPS = new AtomicLong();
+    /// WAL recoveries (node-wide, since process start) refused because the WAL started above the durable sealed
+    /// watermark, which already counts every offset retention reclaimed (#1278, [StreamError.WalHeadLost]). Each is
+    /// also logged at ERROR naming the lost range. Any non-zero value is lost records.
+    private static final AtomicLong WAL_RECOVERY_HEADS_LOST = new AtomicLong();
 
     /// Absolute per-stream partition ceiling (#265 increment 4, spec §7/§10). Enforced PRE-COMMIT in
     /// {@link #createFreshStream} (mirroring the build-time `StreamConfigParser` check) and surfaced as the
@@ -416,9 +415,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         replicationManager.observeAcks(this::onReplicaAck);
     }
 
-    /// See [#WAL_RECOVERY_HEAD_GAPS].
-    public static long walRecoveryHeadGapsAccepted() {
-        return WAL_RECOVERY_HEAD_GAPS.get();
+    /// See [#WAL_RECOVERY_HEADS_LOST].
+    public static long walRecoveryHeadsLost() {
+        return WAL_RECOVERY_HEADS_LOST.get();
     }
 
     public static StreamPartitionManager streamPartitionManager() {
@@ -4805,8 +4804,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// `fileRecords` is the whole file in offset order — the records at or below `base` too (lazy
-        /// truncation keeps them until compaction) — because only the file's LOWEST stored offset can tell
-        /// reclaimed history from a hole (see [#seedFor]). The tail placed is the records above `base`.
+        /// truncation keeps them until compaction) — because only the file's LOWEST stored offset can tell a
+        /// lost head from a hole (see [#requireHead]). The tail placed is the records above `base`.
         ///
         /// Recovery therefore holds the whole file in memory at boot, one partition at a time: the
         /// un-sealed tail plus any lazily truncated records below the floor, which compaction bounds at
@@ -4824,10 +4823,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               long base,
                                               List<WalRecord> fileRecords) {
             var tail = recordsAbove(fileRecords, base);
-            var seed = seedFor(streamName, partition, walFile, base, fileRecords);
 
-            return requireContiguous(streamName, partition, walFile, seed, tail).flatMap(_ -> seedRing(ring, seed))
-                                    .flatMap(_ -> appendTail(streamName, partition, walFile, ring, tail));
+            return requireHead(streamName, partition, walFile, base, fileRecords).flatMap(_ -> requireContiguous(streamName,
+                                                                                                                 partition,
+                                                                                                                 walFile,
+                                                                                                                 base,
+                                                                                                                 tail))
+                              .flatMap(_ -> seedRing(ring, base))
+                              .flatMap(_ -> appendTail(streamName, partition, walFile, ring, tail));
         }
 
         /// Every tail record must carry the offset the ring will assign it — `seed + 1, seed + 2, …`. The
@@ -4864,48 +4867,39 @@ public final class StreamPartitionManager implements AutoCloseable {
                    : success(unit());
         }
 
-        /// The ring seed: `base`, unless the file's LOWEST stored offset sits above `base + 1` (#1258 review
-        /// B2, R2-3). The lowest offset is the file's first record in offset order; for a file written by
-        /// the fixed writer, which refuses a non-increasing offset, it is also the first physical record.
-        /// The two differ only for an out-of-order file (pre-#1232, or a writer defect), and there the
-        /// lowest offset is the right evidence: frames `[5, 2]` at floor 1 still hold offset 2 = floor + 1,
-        /// so the missing 3 and 4 are a hole, where "first physical record 5" would call it reclaimed.
-        /// That head gap is indistinguishable today from retention having reclaimed the
-        /// partition's sealed segments — the durable floor then drops (to -1 when every segment is gone)
-        /// while WAL compaction already removed the records below the old floor — so it is accepted as
-        /// reclaimed history: the ring is seeded just below the first record, reads of the gap miss as
-        /// expired, and the range is WARNed and counted ([#WAL_RECOVERY_HEAD_GAPS]). When the file still
-        /// holds records at or below `floor + 1`, a missing offset above them is a HOLE, never reclaimed
-        /// history: the ring stays at `base` and [#placeRecord] refuses at the first missing offset.
-        private static long seedFor(String streamName,
-                                    int partition,
-                                    Path walFile,
-                                    long base,
-                                    List<WalRecord> fileRecords) {
+        /// The file's LOWEST stored offset must be at most `base + 1` (#1278). `base` already counts every offset
+        /// retention reclaimed: the sealed watermark is rebuilt from the persisted reclaimed-through floor
+        /// ([org.pragmatica.aether.stream.segment.SegmentIndex#lastSealedOffset]), and retention makes that floor
+        /// durable before it drops the refs it licenses. So a file starting above `base + 1` is not reclaimed
+        /// history: the offsets between were neither sealed under a surviving ref nor reclaimed, and the WAL
+        /// records that held them are gone -- a LOST head, refused with [StreamError.WalHeadLost] naming the range.
+        /// It used to be accepted with a WARN (#1258), when nothing could tell it from retention.
+        ///
+        /// The lowest offset is the file's first record in offset order; for a file written by the fixed writer,
+        /// which refuses a non-increasing offset, it is also the first physical record. The two differ only for an
+        /// out-of-order file (pre-#1232, or a writer defect), and there the lowest offset is the right evidence:
+        /// frames `[5, 2]` at floor 1 still hold offset 2 = floor + 1, so the missing 3 and 4 are a HOLE, refused
+        /// by [#requireContiguous] as [StreamError.WalReplayMismatch].
+        private static Result<Unit> requireHead(String streamName,
+                                                int partition,
+                                                Path walFile,
+                                                long base,
+                                                List<WalRecord> fileRecords) {
             return fileRecords.isEmpty() || fileRecords.getFirst()
                                                        .offset() <= base + 1
-                   ? base
-                   : acceptHeadGap(streamName,
-                                   partition,
-                                   walFile,
-                                   base,
-                                   fileRecords.getFirst().offset());
+                   ? success(unit())
+                   : headLost(new StreamError.WalHeadLost(streamName,
+                                                          partition,
+                                                          walFile,
+                                                          base,
+                                                          fileRecords.getFirst()
+                                                                     .offset()));
         }
 
-        private static long acceptHeadGap(String streamName, int partition, Path walFile, long base, long firstOffset) {
-            WAL_RECOVERY_HEAD_GAPS.incrementAndGet();
-            log.warn("Stream {} partition {}: WAL {} starts at offset {} but the durable sealed floor is {} — offsets [{}, {}] are"
-                    + " treated as reclaimed history (their sealed segments were removed by retention) and read as"
-                    + " expired. If no retention reclaimed this partition, those records are LOST.",
-                     streamName,
-                     partition,
-                     walFile,
-                     firstOffset,
-                     base,
-                     base + 1,
-                     firstOffset - 1);
+        private static Result<Unit> headLost(StreamError.WalHeadLost lost) {
+            WAL_RECOVERY_HEADS_LOST.incrementAndGet();
 
-            return firstOffset - 1;
+            return lost.result();
         }
 
         /// Place the recovered records by their STORED offsets (#1232): sorted by offset (stable, so a

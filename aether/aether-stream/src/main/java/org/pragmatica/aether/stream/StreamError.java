@@ -127,6 +127,30 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// #1278: the partition WAL starts above the durable sealed watermark, which already counts every offset
+    /// retention reclaimed (the persisted reclaimed-through floor), so the offsets between were neither sealed
+    /// under a surviving segment ref nor reclaimed: they are lost, and the partition is not materialized here.
+    record WalHeadLost(String streamName, int partition, Path walFile, long sealedThrough, long firstOffset) implements StreamError {
+        @Override
+        public String message() {
+            return ("WAL recovery refused for stream '%s' on this node: partition %d is sealed or reclaimed through offset %d,"
+                   + " but %s starts at offset %d, so offsets [%d, %d] are LOST -- neither held by a sealed segment ref nor"
+                   + " recorded as reclaimed by retention. Records are never renumbered, so the stream is not materialized"
+                   + " here. Keep the file -- do not delete, truncate or move it: it holds offsets from %d on, and may be the"
+                   + " only copy. Operator action: check whether this node's streams metadata snapshot lost segment refs"
+                   + " (restore it if a newer copy exists) or whether another replica holds this partition from offset %d;"
+                   + " the other nodes keep serving the stream when replicas >= 2").formatted(streamName,
+                                                                                              partition,
+                                                                                              sealedThrough,
+                                                                                              walFile,
+                                                                                              firstOffset,
+                                                                                              sealedThrough + 1,
+                                                                                              firstOffset - 1,
+                                                                                              firstOffset,
+                                                                                              sealedThrough + 1);
+        }
+    }
+
     record StreamNotFound(String streamName) implements StreamError {
         @Override
         public String message() {

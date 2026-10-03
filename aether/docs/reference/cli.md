@@ -2928,11 +2928,11 @@ Per `(stream, partition)` row (offsets are `-1` when the source/floor is absent)
 WAL counters (`sizeBytes`, replayable window `(truncatedUpto, lastOffset]`, fsync count/latency),
 `null` when the partition has no WAL; `ringTail` — earliest offset still in the in-memory ring;
 `sealedThrough` / `earliestSegment` — the durable sealed bound and the earliest retained sealed
-segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
+segment; `reclaimedThrough` — the highest offset retention reclaimed (`-1` when none); `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
 any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
-root is this node's total live WAL footprint; `walRecoveryHeadGapsAccepted` counts WAL recoveries that
-accepted a gap before a WAL file's first record as reclaimed history (non-zero without retention
-having reclaimed that partition means records were lost — the WARN log names the range);
+root is this node's total live WAL footprint; `walRecoveryHeadsLost` counts WAL recoveries refused because a WAL file
+started above the durable sealed watermark, which already counts what retention reclaimed (any
+non-zero value is lost records — the ERROR log names the range);
 `walReclamationHeldBackTicks` counts consecutive truncation ticks in which the on-disk sealed watermark
 sat below the live one without advancing (non-zero and climbing means the streams metadata snapshot
 cannot be written or read, and WAL reclamation is halted until it can). Full schema and the precise invariant in the

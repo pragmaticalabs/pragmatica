@@ -84,8 +84,8 @@ final class TieredReader implements TieredStreamReader {
 
     /// The watermark is monotonic and never passes a hole, so an unheld offset at or below it was sealed and
     /// since reclaimed; above it, nothing ever sealed it. After a restart the watermark is anchored at the
-    /// lowest surviving ref, so a reclaimed prefix still reads as reclaimed there (#1278 covers the case the
-    /// watermark cannot see: every ref of a partition reclaimed).
+    /// persisted reclaimed-through floor (#1278), so a reclaimed prefix still reads as reclaimed there, even
+    /// with every ref of the partition reclaimed.
     private Promise<List<RawEvent>> unheld(String streamName, int partition, long fromOffset, long nextSealed) {
         return fromOffset <= index.lastSealedOffset(streamName, partition)
                ? new StreamError.CursorExpired(fromOffset, nextSealed).promise()

@@ -2384,6 +2384,7 @@ the view actionable (see recovery below).
       },
       "ringTail": 1650,
       "sealedThrough": 1502,
+      "reclaimedThrough": -1,
       "earliestSegment": 0,
       "checkpointFloor": 1502,
       "coveredFrom": 0,
@@ -2391,7 +2392,7 @@ the view actionable (see recovery below).
       "violation": ""
     }
   ],
-  "walRecoveryHeadGapsAccepted": 0,
+  "walRecoveryHeadsLost": 0,
   "walReclamationHeldBackTicks": 0
 }
 ```
@@ -2399,7 +2400,7 @@ the view actionable (see recovery below).
 | Field | Description |
 |-------|-------------|
 | `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
-| `walRecoveryHeadGapsAccepted` | WAL recoveries on this node, since process start, that accepted a gap BEFORE a WAL file's first record as reclaimed history (the partition's sealed segments were removed by retention after the WAL was compacted). Each one is also logged at WARN, naming the stream, partition and offset range. Expected after retention reclaimed a partition's every sealed segment; otherwise the records in that range are lost. A gap BETWEEN records, or a duplicate offset, is never accepted: it refuses the stream on the node with an ERROR |
+| `walRecoveryHeadsLost` | WAL recoveries on this node, since process start, REFUSED because a WAL file started above the partition's durable sealed watermark (#1278, `WalHeadLost`). That watermark already counts every offset retention reclaimed (the persisted `reclaimedThrough` floor), so any non-zero value is lost records: the ERROR log names the stream, partition and offset range, and the stream is not materialized on this node. Recovery: keep the WAL file; restore the streams metadata snapshot if a newer copy exists, or rely on a replica holding the partition from the lost offset. A gap BETWEEN records, or a duplicate offset, refuses too (`WalReplayMismatch`) and is not counted here |
 | `walReclamationHeldBackTicks` | Consecutive WAL-truncation ticks (30 s each) in which some partition's sealed watermark ON DISK — the refs in the latest streams metadata snapshot, which is the only bound truncation may use (#1345) — sat below its live watermark without advancing. `0` while the snapshot keeps up. Climbing means WAL reclamation is halted because the streams snapshot cannot be written or read (disk full, permissions, a torn newest file); the WAL grows, bounded by the disk. The tick WARNs from the second such tick and every 10 after, naming the partitions and their WAL bytes. Recovery: make the streams snapshot directory writable and `LATEST` readable; the next snapshot advances the bound and the counter resets |
 | `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
 | `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
@@ -2413,6 +2414,7 @@ the view actionable (see recovery below).
 | `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **restart the node** — reopen re-scans the file and trims to the valid prefix; nothing acked is lost |
 | `ringTail` | Earliest offset still in the in-memory ring (`-1` when the materialized ring is EMPTY — has never held a record, e.g. right after a restart; a partition with no ring at all appears only as a segment-only row or not at all) |
 | `sealedThrough` | The durable sealed bound — what WAL truncation chases (`-1` when nothing is sealed) |
+| `reclaimedThrough` | The persisted reclaimed-through floor (#1278): the highest offset retention reclaimed for this partition, `-1` when it never reclaimed any. Written durably before the segment refs it licenses are dropped; after a restart the sealed bound is rebuilt from it, so a WAL starting at `reclaimedThrough + 1` is reclaimed history, not a lost head |
 | `earliestSegment` | Earliest sealed-segment start offset still retained (`-1` when no segments are retained) |
 | `checkpointFloor` | The entity checkpoint (`throughOffset`, from replicated KV); `-1` when no fold has ever checkpointed, or the stream is not an entity log |
 | `coveredFrom` | The MINIMUM start offset across local sources (`earliestSegment`, `ringTail`, WAL window start); `-1` when this node holds nothing replayable — which under a committed checkpoint is itself a violation (restarted-empty) |

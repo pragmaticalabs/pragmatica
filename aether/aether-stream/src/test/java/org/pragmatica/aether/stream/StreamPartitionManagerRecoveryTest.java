@@ -226,16 +226,34 @@ class StreamPartitionManagerRecoveryTest {
         assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 4L, 5L);
     }
 
-    /// #1258 review B2 (CTO ruling): a gap BEFORE the first WAL record is indistinguishable today from
-    /// retention having reclaimed every sealed segment (the sealed floor then drops to -1 while compaction
-    /// already removed the records below the old floor). It is accepted: the ring is seeded just below
-    /// the first record, the records land at their stored offsets, and the head gap is counted and WARNed.
+    /// #1278 (owner ruling 2026-10-03, superseding #1258's accept-with-WARN): a WAL whose first record sits above
+    /// `sealed + 1` lost its head. The sealed watermark already counts every offset retention reclaimed (the persisted
+    /// floor), so nothing licenses the gap. Recovery refuses with the typed [StreamError.WalHeadLost], names the
+    /// lost range, counts it, and materializes nothing.
     @Test
-    void rebuild_acceptsLeadingGap_asReclaimedHistory_whenSealedFloorRegressed() throws IOException {
+    void rebuild_refusesLostHead_whenWalStartsAboveTheSealedWatermark() throws IOException {
         writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
-        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
 
-        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        assertHeadLost(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)), -1L, 5L);
+    }
+
+    /// The same shape above a non-negative watermark: offset 3 is neither sealed nor in the file.
+    @Test
+    void rebuild_refusesLostHead_aboveSealedBound() throws IOException {
+        writeRawWal(frame(4, "v4"), frame(5, "v5"));
+
+        assertHeadLost(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 2L, 4L);
+    }
+
+    /// Control for the two above: the watermark covers the reclaimed prefix (what a persisted floor of 4 rebuilds
+    /// to), so the same file is reclaimed history -- accepted at its stored offsets, offsets below read as expired,
+    /// and nothing counted as lost.
+    @Test
+    void rebuild_acceptsWal_startingDirectlyAboveTheReclaimedWatermark() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(4L));
         createStream(recovered);
 
         var events = readFrom(recovered, 5);
@@ -243,35 +261,22 @@ class StreamPartitionManagerRecoveryTest {
         assertThat(events).extracting(RawEvent::offset).containsExactly(5L, 6L, 7L);
         assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v5");
         assertCursorExpired(recovered, 0);
-        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).isEqualTo(1);
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).isZero();
 
         recovered.close();
     }
 
     /// #1258 review round 2 (R2-3, reviewer probe D): the file still physically holds records at and below
-    /// the floor (lazy truncation), so a missing offset right above the floor is a HOLE, not reclaimed
-    /// history. A leading gap is accepted only when the file's LOWEST stored offset is above floor + 1.
+    /// the floor (lazy truncation), so a missing offset right above the floor is a HOLE, refused as
+    /// [StreamError.WalReplayMismatch], never as a lost head.
     @Test
     void rebuild_failsLoudly_whenHoleSitsDirectlyAboveTheFloor_andEarlierRecordsExist() throws IOException {
         writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(4, "v4"), frame(5, "v5"));
-        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
 
         assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 3L, 4L);
-        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("not counted as reclaimed")
-                                                                                         .isZero();
-    }
-
-    @Test
-    void rebuild_acceptsLeadingGap_aboveSealedBound() throws IOException {
-        writeRawWal(frame(4, "v4"), frame(5, "v5"));
-
-        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L));
-        createStream(recovered);
-
-        assertThat(readFrom(recovered, 4)).extracting(RawEvent::offset).containsExactly(4L, 5L);
-        assertCursorExpired(recovered, 3);
-
-        recovered.close();
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).as("a hole, not a lost head")
+                                                                                   .isZero();
     }
 
     // === helpers ===
@@ -343,6 +348,32 @@ class StreamPartitionManagerRecoveryTest {
                                                                                                                          expectedOffset,
                                                                                                                          foundOffset)));
         manager.close();
+    }
+
+    private void assertHeadLost(StreamPartitionManager manager, long sealedThrough, long firstOffset) {
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
+
+        manager.createStream(StreamConfig.streamConfig(STREAM))
+               .onSuccess(_ -> fail("recovery must refuse a WAL whose head is neither sealed nor reclaimed"))
+               .onFailure(cause -> assertThat(cause.stream().toList()).singleElement()
+                                                                      .isInstanceOfSatisfying(StreamError.WalHeadLost.class,
+                                                                                              lost -> assertLost(lost,
+                                                                                                                 sealedThrough,
+                                                                                                                 firstOffset)));
+        assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("nothing materialized").isFalse();
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).as("counted for the operator")
+                                                                                   .isEqualTo(1);
+        manager.close();
+    }
+
+    private void assertLost(StreamError.WalHeadLost lost, long sealedThrough, long firstOffset) {
+        assertThat(lost.partition()).isEqualTo(PARTITION);
+        assertThat(lost.sealedThrough()).isEqualTo(sealedThrough);
+        assertThat(lost.firstOffset()).isEqualTo(firstOffset);
+        assertThat(lost.walFile()).isEqualTo(walFile());
+        assertThat(lost.message()).as("names the lost range")
+                                  .contains("offsets [" + (sealedThrough + 1) + ", " + (firstOffset - 1) + "] are LOST");
+        assertThat(lost.message()).as("advice that cannot discard the surviving tail").contains("do not delete");
     }
 
     private void assertMismatch(StreamError.WalReplayMismatch mismatch, long expectedOffset, long foundOffset) {

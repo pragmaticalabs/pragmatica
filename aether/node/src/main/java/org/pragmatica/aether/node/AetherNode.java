@@ -5000,6 +5000,7 @@ public interface AetherNode extends ManageableNode {
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
                                                                                                                       partition),
+                                                                          RetentionEnforcer.FloorDurability.snapshotted(streamStorageSetup.snapshotManager()),
                                                                           streamSegmentReader,
                                                                           streamSegmentTierPressure,
                                                                           PressureRelief.snapshotBounded(streamStorageSetup.snapshotManager(),

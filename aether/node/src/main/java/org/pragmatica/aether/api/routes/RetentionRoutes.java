@@ -90,6 +90,9 @@ public final class RetentionRoutes implements RouteSource {
     /// @param wal            the WAL's live counters, absent when this partition has no WAL
     /// @param ringTail       earliest offset still in the in-memory ring
     /// @param sealedThrough  the durable sealed bound — what WAL truncation chases
+    /// @param reclaimedThrough the persisted reclaimed-through floor: the highest offset retention reclaimed
+    ///                       (#1278), `-1` when nothing was reclaimed. A WAL starting at or below `reclaimedThrough + 1`
+    ///                       is reclaimed history; one starting above `sealedThrough + 1` is a lost head
     /// @param earliestSegment earliest sealed-segment start offset still retained
     /// @param checkpointFloor entity checkpoint (`throughOffset`), `-1` when none
     /// @param coveredFrom    the MINIMUM start offset across local sources, `-1` when this node
@@ -102,6 +105,7 @@ public final class RetentionRoutes implements RouteSource {
                                   Option<WalDetail> wal,
                                   long ringTail,
                                   long sealedThrough,
+                                  long reclaimedThrough,
                                   long earliestSegment,
                                   long checkpointFloor,
                                   long coveredFrom,
@@ -121,11 +125,11 @@ public final class RetentionRoutes implements RouteSource {
                      double fsyncMaxMicros,
                      boolean failStopped) {}
 
-    /// @param walRecoveryHeadGapsAccepted node-wide count, since process start, of WAL recoveries that
-    ///                                    accepted a gap before the file's first record as reclaimed
-    ///                                    history (#1258) — expected after retention reclaimed a
-    ///                                    partition's every sealed segment; otherwise those records are
-    ///                                    lost, and the WARN naming the range says which
+    /// @param walRecoveryHeadsLost        node-wide count, since process start, of WAL recoveries refused
+    ///                                    because the file started above the durable sealed watermark, which
+    ///                                    already counts what retention reclaimed (#1278, `WalHeadLost`) — any
+    ///                                    non-zero value is lost records, and the ERROR naming the range says
+    ///                                    which
     /// @param walReclamationHeldBackTicks consecutive WAL-truncation ticks (30 s each) in which some
     ///                                    partition's sealed watermark ON DISK sat below its live watermark
     ///                                    without advancing (#1345): `0` while the streams metadata snapshot
@@ -134,7 +138,7 @@ public final class RetentionRoutes implements RouteSource {
     ///                                    partitions and bytes
     record RetentionResponse(long walTotalBytes,
                              List<RetentionPartitionView> partitions,
-                             long walRecoveryHeadGapsAccepted,
+                             long walRecoveryHeadsLost,
                              long walReclamationHeldBackTicks) {}
 
     @Override
@@ -149,14 +153,14 @@ public final class RetentionRoutes implements RouteSource {
     }
 
     /// The production assembler: the WAL snapshot and the held-back counter come from the SAME manager, the
-    /// head-gap counter from its process-wide accumulator.
+    /// lost-head counter from its process-wide accumulator.
     static RetentionResponse assembleRetention(StreamPartitionManager manager,
                                                SegmentIndex segmentIndex,
                                                KVStore<AetherKey, AetherValue> kvStore) {
         return assembleRetention(manager.walSnapshot(),
                                  segmentIndex,
                                  kvStore,
-                                 StreamPartitionManager.walRecoveryHeadGapsAccepted(),
+                                 StreamPartitionManager.walRecoveryHeadsLost(),
                                  manager.walReclamationHeldBackTicks());
     }
 
@@ -169,21 +173,21 @@ public final class RetentionRoutes implements RouteSource {
         return assembleRetention(snapshot,
                                  segmentIndex,
                                  kvStore,
-                                 StreamPartitionManager.walRecoveryHeadGapsAccepted(),
+                                 StreamPartitionManager.walRecoveryHeadsLost(),
                                  0L);
     }
 
     static RetentionResponse assembleRetention(WalSnapshot snapshot,
                                                SegmentIndex segmentIndex,
                                                KVStore<AetherKey, AetherValue> kvStore,
-                                               long walRecoveryHeadGapsAccepted) {
-        return assembleRetention(snapshot, segmentIndex, kvStore, walRecoveryHeadGapsAccepted, 0L);
+                                               long walRecoveryHeadsLost) {
+        return assembleRetention(snapshot, segmentIndex, kvStore, walRecoveryHeadsLost, 0L);
     }
 
     static RetentionResponse assembleRetention(WalSnapshot snapshot,
                                                SegmentIndex segmentIndex,
                                                KVStore<AetherKey, AetherValue> kvStore,
-                                               long walRecoveryHeadGapsAccepted,
+                                               long walRecoveryHeadsLost,
                                                long walReclamationHeldBackTicks) {
         var rows = new HashMap<PartitionCoordinate, RetentionPartitionView>();
 
@@ -199,7 +203,7 @@ public final class RetentionRoutes implements RouteSource {
 
         return new RetentionResponse(walTotalBytes(snapshot),
                                      partitions,
-                                     walRecoveryHeadGapsAccepted,
+                                     walRecoveryHeadsLost,
                                      walReclamationHeldBackTicks);
     }
 
@@ -229,6 +233,7 @@ public final class RetentionRoutes implements RouteSource {
                           view.wal(),
                           view.ringTailOffset(),
                           view.sealedThroughOffset(),
+                          segmentIndex.reclaimedThrough(stream, view.partition()),
                           earliestSegmentOffset(segmentIndex, stream, view.partition()),
                           checkpointFloor(kvStore, stream, view.partition())));
     }
@@ -246,6 +251,7 @@ public final class RetentionRoutes implements RouteSource {
                                            Option.none(),
                                            - 1L,
                                            segmentIndex.lastSealedOffset(key.streamName(), key.partition()),
+                                           segmentIndex.reclaimedThrough(key.streamName(), key.partition()),
                                            earliestSegmentOffset(segmentIndex, key.streamName(), key.partition()),
                                            checkpointFloor(kvStore, key.streamName(), key.partition())));
     }
@@ -254,6 +260,7 @@ public final class RetentionRoutes implements RouteSource {
                                                    Option<WalStats> wal,
                                                    long ringTail,
                                                    long sealedThrough,
+                                                   long reclaimedThrough,
                                                    long earliestSegment,
                                                    long checkpointFloor) {
         var coveredFrom = coveredFrom(wal, ringTail, earliestSegment);
@@ -268,6 +275,7 @@ public final class RetentionRoutes implements RouteSource {
                                           wal.map(RetentionRoutes::toWalDetail),
                                           ringTail,
                                           sealedThrough,
+                                          reclaimedThrough,
                                           earliestSegment,
                                           checkpointFloor,
                                           coveredFrom,
