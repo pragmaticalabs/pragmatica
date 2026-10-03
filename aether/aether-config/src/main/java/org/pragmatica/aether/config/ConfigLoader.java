@@ -83,7 +83,8 @@ public final class ConfigLoader {
             mergeCliOverrides(overrides, builder);
 
             return refuseRemovedTargetRf(doc).flatMap(_ -> parseReadLinearization(doc))
-                                             .map(mode -> applyReadLinearization(builder.build(), mode));
+                                        .map(mode -> applyReadLinearization(builder.build(),
+                                                                            mode));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
@@ -94,12 +95,12 @@ public final class ConfigLoader {
     /// could differ between nodes, which then disagree on placement — so a config that still sets it is refused,
     /// naming where the setting lives now, rather than silently ignored.
     private static Result<Unit> refuseRemovedTargetRf(TomlDocument doc) {
-        return doc.getString("dht.replication", "target_rf").isPresent() || doc.getInt("dht.replication",
-                                                                                         "target_rf")
-                                                                                 .isPresent()
+        return doc.getString("dht.replication", "target_rf")
+                  .isPresent() || doc.getInt("dht.replication", "target_rf")
+                                     .isPresent()
                ? ConfigError.invalidConfig("[dht.replication] target_rf is removed: the DHT replication factor and "
-                                           + "confirmation factor come from the cluster's [replication] section "
-                                           + "(replication_factor, confirmation_factor)").result()
+                                          + "confirmation factor come from the cluster's [replication] section "
+                                          + "(replication_factor, confirmation_factor)").result()
                : Result.unitResult();
     }
 

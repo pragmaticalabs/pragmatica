@@ -69,7 +69,7 @@ public sealed interface ReplicationDefaultsParser {
         return refuseUnknownKeys(doc, SECTION, KEYS).flatMap(_ -> refuseUnknownKeys(doc,
                                                                                     CLUSTER_EVENTS_SECTION,
                                                                                     CLUSTER_EVENTS_KEYS))
-                                                    .flatMap(_ -> refuseUnknownKeys(doc, CACHE_SECTION, CACHE_KEYS))
+                                .flatMap(_ -> refuseUnknownKeys(doc, CACHE_SECTION, CACHE_KEYS))
                                 .flatMap(_ -> Result.all(factor(doc,
                                                                 SECTION,
                                                                 REPLICATION_FACTOR,

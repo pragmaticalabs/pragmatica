@@ -660,8 +660,7 @@ public interface AetherNode extends ManageableNode {
         // this node can read only once its consensus state is restored. Until then the node places nothing and its
         // clients refuse (retryable); [#resolveDhtReplication] applies the factors. FULL replication (the Ember
         // harness) has no placement and needs none.
-        var dhtNode = config.artifactRepo()
-                            .isFullReplication()
+        var dhtNode = config.artifactRepo().isFullReplication()
                       ? DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo())
                       : DHTNode.dhtNodeAwaitingReplication(config.self(),
                                                            dhtStorage,
@@ -4851,7 +4850,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                              leaderReconciler))
                                                  // #1777 track 1: a committed `[replication]` change re-places the DHT live
                                                  .onPut(AetherKey.ClusterConfigKey.class,
-                                                        _ -> resolveDhtReplication(kvStore, dhtNode, config, cacheDhtConfig))
+                                                        _ -> resolveDhtReplication(kvStore,
+                                                                                   dhtNode,
+                                                                                   config,
+                                                                                   cacheDhtConfig))
                                                  .build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
@@ -6252,11 +6254,13 @@ public interface AetherNode extends ManageableNode {
 
         resolved.onSuccess(dht -> logIfReplicationChanged(dhtNode, dht))
                 .onSuccess(dhtNode::resolveReplication)
-                .onFailure(cause -> LOG.error("DHT replication factors refused: {}", cause.message()));
+                .onFailure(cause -> LOG.error("DHT replication factors refused: {}",
+                                              cause.message()));
         declaredCache.withFactors(defaults.cacheReplicationFactor(),
                                   defaults.cacheConfirmationFactor())
                      .onSuccess(cacheDhtConfig::set)
-              .onFailure(cause -> LOG.error("DHT cache replication factors refused: {}", cause.message()));
+                     .onFailure(cause -> LOG.error("DHT cache replication factors refused: {}",
+                                                   cause.message()));
     }
 
     @Contract

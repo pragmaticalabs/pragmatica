@@ -423,7 +423,8 @@ public final class DistributedDHTClient implements DHTClient {
 
     // --- Private helpers ---
     private long readDeadlineNanos() {
-        return System.nanoTime() + config.get().operationTimeout()
+        return System.nanoTime() + config.get()
+                                         .operationTimeout()
                                          .nanos();
     }
 
@@ -628,8 +629,10 @@ public final class DistributedDHTClient implements DHTClient {
                                    int rSetLive,
                                    int probed,
                                    int probesFailed) {
-        var rSetSize = node.ring().nodesFor(key,
-                                            config.get().effectiveReplicationFactor(node.ring().nodeCount())).size();
+        var rSetSize = node.ring()
+                           .nodesFor(key,
+                                     config.get().effectiveReplicationFactor(node.ring().nodeCount()))
+                           .size();
         var candidates = node.ring().nodeCount() - rSetLive;
 
         return ResolveMiss.resolveMiss(hex(key),

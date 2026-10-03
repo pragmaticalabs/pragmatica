@@ -297,7 +297,8 @@ public final class DHTNode {
         var joinedSinceBoot = (int) members.stream().filter(member -> !boot.contains(member)).count();
         var unconfirmed = (int) members.stream().filter(this::unconfirmed).count();
 
-        return config.get().effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot + unconfirmed;
+        return config.get()
+                     .effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot + unconfirmed;
     }
 
     private boolean unconfirmed(NodeId member) {
