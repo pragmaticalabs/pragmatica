@@ -95,6 +95,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final int HELD_BACK_WARN_SAMPLE = 5;
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+    /// #1278 ruling F: how long the publish auto-create path waits for its proposed config to commit and apply here.
+    /// Inside the 5 s forward timeout that made this path asynchronous; past it the publish refuses retriably.
+    private static final TimeSpan PUBLISH_COMMIT_WAIT = TimeSpan.timeSpan(2).seconds();
     /// Bound on dropping or checking a stream's durable footprint (a local ref write and one forced snapshot).
     private static final TimeSpan FOOTPRINT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
@@ -1267,17 +1270,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                            _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
     }
 
-    /// Async sibling of {@link #applyPutCommand}: fire the idempotent config `Put` WITHOUT awaiting
-    /// consensus (the publish-path decoupling — Fix #2). Latch the entry committed on the async success
-    /// and log a transient failure (retried by the next publish's already-materialized-but-uncommitted
-    /// path). Returns `Result.unitResult()` immediately so the publish HTTP path is never blocked by a
-    /// still-catching-up leader's backpressured commit.
-    @Contract
-    private void applyPutCommandAsync(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config, StreamEntry entry) {
-        node.apply(putCommand(config))
-            .onFailure(cause -> log.debug("Async stream config publish for {} not yet committed: {}",
-                                          config.name(),
-                                          cause.message()));
+    /// Async sibling of {@link #applyPutCommand}: fire the idempotent config `Put` (the publish-path decoupling — Fix
+    /// #2) and hand back its round. Nothing is latched here: the entry becomes committed when its committed config
+    /// applies ([#commitOwnLife]); a transient failure is logged and the next publish re-proposes.
+    private Promise<List<Object>> applyPutCommandAsync(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config) {
+        return node.<Object> apply(putCommand(config))
+                   .onFailure(cause -> log.debug("Async stream config publish for {} not yet committed: {}",
+                                                 config.name(),
+                                                 cause.message()));
     }
 
     private static List<KVCommand<AetherKey>> putCommand(StreamConfig config) {
@@ -1287,15 +1287,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         return List.of(new KVCommand.Put<AetherKey, AetherValue>(key, value));
     }
 
-    /// Fire-and-forget wrapper around {@link #applyPutCommandAsync}: fire the decoupled config `Put`
-    /// and return `Result.unitResult()` immediately. Keeps the publish path off the consensus critical
-    /// path while preserving the `Result<Unit>` shape the create chain composes over.
+    /// Publish-path commit (#1278 ruling F): fire the config `Put` and wait at most [#PUBLISH_COMMIT_WAIT] for it to
+    /// commit and apply here, so the first publish to a new stream normally lands in its committed life. The outcome
+    /// is not read: the accept gate ([#committedLife]) decides from the applied life, and a commit slower than the
+    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it.
     private Result<Unit> fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node,
                                          StreamConfig config,
                                          StreamEntry entry) {
-        applyPutCommandAsync(node, config, entry);
-
-        return success(unit());
+        return applyPutCommandAsync(node, config).await(PUBLISH_COMMIT_WAIT)
+                                   .fold(_ -> success(unit()),
+                                         _ -> success(unit()));
     }
 
     /// Commit strategy threaded through the shared create/materialize chain so `createStream` (explicit

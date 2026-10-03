@@ -627,6 +627,23 @@ class StreamPartitionManagerTest {
             withNode.close();
         }
 
+        /// #1278 ruling F: the publish auto-create path waits (bounded) for its proposal to commit and apply, so the first
+        /// publish to a new stream lands in its committed life instead of refusing.
+        @Test
+        void ensureStreamMaterialized_waitsForASlowCommit_soTheFirstPublishIsAccepted() {
+            var node = new StubClusterNode(StubApply.DELAYED);
+            var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+
+            node.deliverCommittedTo(withNode::onStreamConfigPut);
+            withNode.ensureStreamMaterialized(StreamConfig.streamConfig("slow-commit"))
+                    .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+            var published = withNode.publishLocal("slow-commit", 0, "event".getBytes(), 1000L);
+
+            assertThat(published.isSuccess()).as("first publish after a 200 ms commit: %s", published).isTrue();
+
+            withNode.close();
+        }
+
         /// #1278 ruling A, replacing `publishLocal_succeeds_afterMaterializeWithStalledCommit`, which specified the
         /// defect: a record accepted into a life whose config never committed is lost when another life commits.
         @Test
@@ -744,7 +761,9 @@ class StreamPartitionManagerTest {
     enum StubApply {
         NEVER,
         SUCCESS,
-        FAILURE
+        FAILURE,
+        /// Commits 200 ms later on another thread: delivers the committed notification, then resolves.
+        DELAYED
     }
 
     /// Minimal `ClusterNode` stub for the consensus-commit decoupling tests. Only `apply` is exercised;
@@ -782,9 +801,24 @@ class StreamPartitionManagerTest {
 
             return switch (behavior) {
                 case NEVER -> Promise.promise();
+                case DELAYED -> Promise.promise(promise -> Thread.ofVirtual()
+                                                                 .start(() -> {
+                                                                     sleepQuietly(200L);
+                                                                     deliverCommitted(commands);
+                                                                     promise.succeed(List.of());
+                                                                 }));
                 case SUCCESS -> Promise.success(List.of());
                 case FAILURE -> new StubCommitError().promise();
             };
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static void sleepQuietly(long millis) {
+            try {
+                Thread.sleep(millis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         @SuppressWarnings({"unchecked", "rawtypes"})
