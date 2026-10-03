@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 
@@ -30,6 +31,7 @@ import org.pragmatica.lang.Option;
 /// announces nothing. The committed flag is the dedupe: it survives a leader change and a restart.
 public interface StreamFailoverAnnouncer {
     /// Announce every refusal/resolution transition among `commands` whose transaction the applier ACCEPTED.
+    @Contract
     void announce(List<KVCommand<AetherKey>> commands, List<Object> results);
 
     StreamFailoverAnnouncer NONE = (_, _) -> {};
