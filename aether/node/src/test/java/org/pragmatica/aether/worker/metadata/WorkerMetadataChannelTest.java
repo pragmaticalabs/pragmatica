@@ -135,8 +135,10 @@ class WorkerMetadataChannelTest {
                                                                      valid.clusterIncarnation(),
                                                                      stripped,
                                                                      ""));
+        fixture.pump();
 
         assertThat(fixture.client.hasFreshProjection()).isFalse();
+        assertThat(fixture.worker.snapshot()).as("nothing of the refused cut became visible").isEmpty();
         assertThat(fixture.received).isEmpty();
     }
 
