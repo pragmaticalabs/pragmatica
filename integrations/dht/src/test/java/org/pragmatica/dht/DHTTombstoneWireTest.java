@@ -69,18 +69,20 @@ class DHTTombstoneWireTest {
 
     @Test
     void removeRequest_stamp_survivesTheWire() {
-        var decoded = roundTrip(new DHTMessage.RemoveRequest("r", NODE, KEY, 99L, 4L, 5L, 6L));
+        var decoded = roundTrip(new DHTMessage.RemoveRequest("r", NODE, KEY, 99L, 4L, 5L, 6L, 11L));
 
         assertThat(decoded.version()).isEqualTo(99L);
         assertThat(decoded.epochIncarnation()).isEqualTo(4L);
         assertThat(decoded.epochTerm()).isEqualTo(5L);
         assertThat(decoded.epochCounter()).isEqualTo(6L);
+        assertThat(decoded.replicationVersion()).as("#1777 R1c: the replication-change stamp").isEqualTo(11L);
         assertThat(decoded.key()).isEqualTo(KEY);
     }
 
     @Test
     void removeResponse_fenced_survivesTheWire() {
-        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, true)).fenced()).isTrue();
+        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, true, false)).fenced()).isTrue();
+        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, false, true)).replicationStale()).isTrue();
     }
 
     @Test

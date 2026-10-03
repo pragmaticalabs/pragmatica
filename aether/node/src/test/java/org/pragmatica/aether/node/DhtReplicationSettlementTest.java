@@ -36,7 +36,8 @@ class DhtReplicationSettlementTest {
             var baseline = DhtReplicationSettlement.nextChange(Option.none(), 1, 3, 2, NOW).unwrap();
 
             assertThat(baseline.stage()).isEqualTo(DhtReplicationStage.SETTLED);
-            assertThat(baseline.version()).isEqualTo(1);
+            assertThat(baseline.version()).as("R1c: the baseline is no change, so it fences no writer")
+                                          .isEqualTo(org.pragmatica.dht.DHTNode.NO_CHANGE);
         }
 
         @Test
@@ -121,7 +122,7 @@ class DhtReplicationSettlementTest {
             assertThat(advance(applying(), reports, Set.of())).matches(Option::isEmpty);
         }
 
-        /// Members whose departure is committed are excluded: a dead worker and a dead core no longer hold the change.
+        /// Members the membership view holds Dead are excluded: a dead worker and a dead core no longer hold the change.
         @Test
         void departedMembers_areNotWaitedFor() {
             var reports = Map.of(CORE_A, report(N, N, true), CORE_B, report(N, N, true),

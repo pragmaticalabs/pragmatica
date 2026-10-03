@@ -328,10 +328,21 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
 - **Transitional quorums:** every node, workers included, writes to max(old, new) and reads from max(old, new)
   replicas, capped at the new factor, until the cluster COMMITS that the change has settled. No node switches on its
   own.
-- **When it settles:** the leader commits three stages in one consensus record. First every core and every worker that
-  is not confirmed departed reports that it applied the change. Then every core runs a fresh catch-up pass, which
-  copies any write a slower node made at the old quorum before it applied the change. When every core reports that pass
+- **When it settles:** the leader commits three stages in one consensus record. First every member reports that it
+  applied the change. The members are the cores, the workers the leader's membership view counts, and anyone who
+  reported; the leader's view drops a member it holds `Dead`. Then every core runs a fresh catch-up pass, which copies
+  any write a slower node made at the old quorum before it applied the change. When every core reports that pass
   complete, the change is settled and the new quorums apply.
+- **Write fence:** every put carries the replication change its writer had applied when it started. A replica that has
+  applied a newer change refuses the put with the retryable `ReplicationChangeStale`, and the writer retries once it
+  has applied the change too. A put that was in flight across the whole change, or a writer the roster missed, can
+  therefore never land an old-quorum write after the settle
+  [verified: DHTReplicationChangeTest `straddlingPut_…`, `writerExcludedFromTheSettle_…`, `writerTaughtTheOldChange_…`, in-JVM].
+  The fence is keyed on the change a replica has APPLIED, not on the writers-switched stage: every old-quorum write a
+  replica accepts then predates its report, so every core's writers-switched pass pulls it
+  [verified: `wOldWriteLandingBetweenAReplicasApplyAndItsWritersSwitched_isRefused`].
+- **The roster is the leader's membership view, not a committed fact.** A wrong roster only delays the settle (a member
+  that is gone but still counted) or hastens it (a live writer held `Dead`); the write fence keeps both safe.
 - **What a read returns while unsettled:** a value acknowledged under the old factors reads as the value or a
   retryable `NotCaughtUp`, never "absent". This includes a value written at the old quorum by a node that had not
   applied the change yet
@@ -339,12 +350,11 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   A partition that is catching up refuses reads until it has caught up, and the catch-up runs twice per change.
 - **Liveness cost:** a member that never reports keeps the change unsettled. Reads then stay at the stricter
   transitional quorum: they fail sooner when replicas are down, but they never return a false "absent". A member stops
-  being waited for once its departure is confirmed (membership `Dead`).
+  being waited for once the leader's membership view holds it `Dead`. During the change, a put from a writer that has
+  not applied it yet is refused (retryable) by replicas that have.
 - **Operator event:** a change still unsettled after 5 minutes emits `DHT_REPLICATION_UNSETTLED` (WARNING). When it
-  settles, or a newer change replaces it, `DHT_REPLICATION_SETTLED` (INFO) follows. See the management API event list.
-- **Limit:** a worker that the leader's membership has not seen yet, and that has not filed a report, is not waited
-  for. It can still write at the old quorum if it learned the old factors from a core that had not applied the change.
-  [unverified: no test drives this window].
+  settles, or a newer change replaces it, `DHT_REPLICATION_SETTLED` (INFO) follows. Each is published at most once: it
+  is missed if the cluster-events owner cannot publish at that moment. See the management API event list.
 
 Idempotency's dedup records live in this replicated DHT; only the cache uses `[cache]`. A node refuses DHT operations
 (retryable `ReplicationUnresolved`) until it

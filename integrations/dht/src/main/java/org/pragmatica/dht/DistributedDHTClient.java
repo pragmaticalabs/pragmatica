@@ -207,7 +207,8 @@ public final class DistributedDHTClient implements DHTClient {
         return new WriteStamp(node.hlcClock().now().packed(),
                               ownerEpochSource.currentEpochIncarnation(),
                               ownerEpochSource.currentEpochTerm(),
-                              ownerEpochSource.currentEpochCounter());
+                              ownerEpochSource.currentEpochCounter(),
+                              node.replicationFence());
     }
 
     /// A put with an explicit stamp. The fallback read's re-homing uses it with the copy's ORIGINAL stamp (#1777
@@ -244,8 +245,13 @@ public final class DistributedDHTClient implements DHTClient {
                                                   Promise::success));
     }
 
-    /// The version and owner epoch one put is stamped with — what a rollback must match exactly.
-    private record WriteStamp(long version, long epochIncarnation, long epochTerm, long epochCounter) {}
+    /// The version and owner epoch one put is stamped with — what a rollback must match exactly — and the replication
+    /// change its quorum was sized under (#1777 R1c), read when the put starts.
+    private record WriteStamp(long version,
+                              long epochIncarnation,
+                              long epochTerm,
+                              long epochCounter,
+                              long replicationVersion) {}
 
     /// A put that lost its quorum to owner-epoch fences is INDETERMINATE (#1818, the owner's fence ruling):
     /// this node's own store may have accepted it because its high-water lags, and anti-entropy copies bypass
@@ -456,11 +462,18 @@ public final class DistributedDHTClient implements DHTClient {
         if (response.success()) {
             collector.onSuccess(unit());
         } else {
-            failCollector(collector,
-                          response.fenced()
-                          ? DHTError.replicaFenced(response.sender())
-                          : DHTError.OPERATION_TIMEOUT);
+            failCollector(collector, putRefusal(response));
         }
+    }
+
+    private static Cause putRefusal(DHTMessage.PutResponse response) {
+        if (response.fenced()) {
+            return DHTError.replicaFenced(response.sender());
+        }
+
+        return response.replicationStale()
+               ? DHTError.replicaOnNewerReplication(response.sender())
+               : DHTError.OPERATION_TIMEOUT;
     }
 
     /// Handle a remove response from a remote node.
@@ -477,6 +490,9 @@ public final class DistributedDHTClient implements DHTClient {
         if (response.fenced()) {
             failCollector(collector,
                           DHTError.replicaFenced(response.sender()));
+        } else if (response.replicationStale()) {
+            failCollector(collector,
+                          DHTError.replicaOnNewerReplication(response.sender()));
         } else {
             collector.onSuccess(response.found());
         }
@@ -812,7 +828,10 @@ public final class DistributedDHTClient implements DHTClient {
                           new WriteStamp(entry.version(),
                                          entry.epochIncarnation(),
                                          entry.epochTerm(),
-                                         entry.epochCounter())).map(_ -> Option.some(value))
+                                         entry.epochCounter(),
+
+        // the re-homing is this node's write now, sized under the change it applied
+        node.replicationFence())).map(_ -> Option.some(value))
                          .recover(_ -> Option.some(value));
     }
 
@@ -931,7 +950,8 @@ public final class DistributedDHTClient implements DHTClient {
                                                   stamp.version(),
                                                   stamp.epochIncarnation(),
                                                   stamp.epochTerm(),
-                                                  stamp.epochCounter()),
+                                                  stamp.epochCounter(),
+                                                  stamp.replicationVersion()),
                         correlationId,
                         collector);
     }
@@ -947,7 +967,8 @@ public final class DistributedDHTClient implements DHTClient {
                                                      stamp.version(),
                                                      stamp.epochIncarnation(),
                                                      stamp.epochTerm(),
-                                                     stamp.epochCounter()),
+                                                     stamp.epochCounter(),
+                                                     stamp.replicationVersion()),
                         correlationId,
                         collector);
     }

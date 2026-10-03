@@ -62,7 +62,11 @@ import org.slf4j.LoggerFactory;
 /// writing at W_old after a core's catch-up pass leaves the value on one replica that no completed pass has copied.
 ///
 /// **Who is expected.** The DHT replicas this node's ring names (cores), the leader's membership view of workers, and
-/// every member that has filed a report — minus every member whose departure is committed (`MembershipState.Dead`).
+/// every member that has filed a report — minus every member the leader's membership view holds `Dead`. This is a soft
+/// view, not a committed roster, and it decides only WHEN a change settles: a wrong roster delays or hastens the settle.
+/// Safety comes from the replication-change fence (CTO ruling R1c): every put carries the writer's applied change, and a
+/// replica that has applied a newer one refuses it, so a writer the roster missed cannot land an old-quorum write after
+/// the settle.
 /// A member that never reports holds the change unsettled: readers stay on R_t, which is safe and never a false
 /// absent, at the cost of the stricter read quorum (an unavailable read rather than a wrong one). After
 /// [#OVERDUE_AFTER_MS] the leader commits the change overdue and the operator gets `DHT_REPLICATION_UNSETTLED`; it
@@ -94,8 +98,10 @@ public interface DhtReplicationSettlement {
                                                         int rf,
                                                         int cf,
                                                         long now) {
+        // the baseline is not a change: it carries no version, so it fences no writer (#1777 R1c) — a writer that has
+        // seen no change record yet stamps the same NO_CHANGE
         if (committed.isEmpty()) {
-            return Option.some(new DhtReplicationChangeValue(configVersion,
+            return Option.some(new DhtReplicationChangeValue(DHTNode.NO_CHANGE,
                                                              rf,
                                                              cf,
                                                              cf,
@@ -139,7 +145,7 @@ public interface DhtReplicationSettlement {
 
     /// The next stage of `change` given the members' reports, or nothing when it cannot advance. `cores` are the DHT
     /// replicas, `workers` the other writers; a reporter whose report says `replica` counts as a core too. Members with a
-    /// committed departure are not waited for. Also commits `overdue` once the change has been unsettled for longer than
+    /// `Dead` in the leader's membership view are not waited for. Also commits `overdue` once the change has been unsettled for longer than
     /// [#OVERDUE_AFTER_MS]; settling clears it.
     static Option<DhtReplicationChangeValue> advance(DhtReplicationChangeValue change,
                                                      Map<NodeId, DhtReplicationReportValue> reports,
@@ -217,7 +223,8 @@ public interface DhtReplicationSettlement {
 
     /// The operator event a committed transition of the change record calls for: entering the overdue condition, or
     /// leaving it — by settling, or by being superseded by a newer change. Derived from the committed old and new values,
-    /// so every node derives the same event and the cluster-events owner gate publishes it once; the committed flag is
+    /// so every node derives the same event and the cluster-events owner gate publishes it AT MOST ONCE (missed if the owner
+    /// cannot publish at that moment); the committed flag is
     /// the per-change dedupe, which survives a leader change.
     static Option<OperationalEvent> transition(Option<DhtReplicationChangeValue> before,
                                                DhtReplicationChangeValue after) {
@@ -262,11 +269,19 @@ public interface DhtReplicationSettlement {
             return;
         }
 
+        declared.withFactors(change.replicationFactor(),
+                             change.confirmationFactor())
+                .onSuccess(factors -> applyAtFactors(dhtNode, factors, change))
+                .onFailure(cause -> LOG.error("DHT replication change {} carries refused factors: {}",
+                                              change.version(),
+                                              cause.message()));
+    }
+
+    private static void applyAtFactors(DHTNode dhtNode, DHTConfig factors, DhtReplicationChangeValue change) {
+        // R1c: a node already on the change's factors stamps and fences its writes at the committed version
+        dhtNode.adoptReplicationChange(change.version(), factors);
         switch (change.stage()) {
-            case SETTLED -> declared.withFactors(change.replicationFactor(), change.confirmationFactor()).onSuccess(settled -> dhtNode.settleReplicationChange(change.version(),
-                                                                                                                                                               settled)).onFailure(cause -> LOG.error("DHT replication change {} carries refused factors: {}",
-                                                                                                                                                                                                      change.version(),
-                                                                                                                                                                                                      cause.message()));
+            case SETTLED -> dhtNode.settleReplicationChange(change.version(), factors);
             case WRITERS_SWITCHED -> {
                 dhtNode.holdReplicationChange(change.version(), change.floorWriteQuorum(), change.floorReadQuorum());
                 dhtNode.writersSwitched(change.version(), change.sourceReplicationFactor());
@@ -310,7 +325,7 @@ public interface DhtReplicationSettlement {
     void report();
 
     /// The inputs of a running settlement. `submit` applies commands through this node's cluster path (a worker
-    /// forwards to a core). `departed` answers whether a member's departure is committed.
+    /// forwards to a core). `departed` answers whether the leader's membership view holds a member `Dead`.
     record Inputs(NodeId self,
                   boolean replica,
                   KVStore<AetherKey, AetherValue> kvStore,
@@ -418,7 +433,7 @@ public interface DhtReplicationSettlement {
                                        DhtReplicationChangeValue.class);
             }
 
-            /// The reports of members not confirmed departed. A departed member's report is dropped here, by the leader, so
+            /// The reports of members the membership view does not hold `Dead`. A departed member's report is dropped here, by the leader, so
             /// it cannot hold a later change for a leader whose membership view never saw that member die.
             private Map<NodeId, DhtReplicationReportValue> liveReports() {
                 var reports = reports();

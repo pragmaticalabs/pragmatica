@@ -79,6 +79,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// `epochCounter`) — the fencing token each replica enforces against its per-partition
     /// high-water (#345 piece 1c). The `Epoch` type that mints these lives in the BSL-1.1
     /// `aether/slice` module, so only the primitives cross this Apache-2.0 wire.
+    ///
+    /// `replicationVersion` (#1777, CTO ruling R1c) is the writer's applied replication change ([DHTNode#replicationFence])
+    /// when it started the put: the quorum it waits for was sized under that change's factors. A replica that has applied a
+    /// newer change refuses the write ([PutResponse#replicationStale]).
     record PutRequest(String requestId,
                       NodeId sender,
                       byte[] key,
@@ -86,7 +90,8 @@ public sealed interface DHTMessage extends ProtocolMessage {
                       long version,
                       long epochIncarnation,
                       long epochTerm,
-                      long epochCounter) implements DHTMessage {
+                      long epochCounter,
+                      long replicationVersion) implements DHTMessage {
         public PutRequest {
             key = key.clone();
             value = value.clone();
@@ -96,7 +101,16 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// Response to a put request. `fenced` (#1818, the owner's fence ruling) marks a refusal by the owner-epoch
     /// fence: the writer's epoch is older than this replica's high-water. The writer's put may still have been
     /// applied elsewhere, so a quorum lost to fenced refusals is indeterminate, not a definite failure.
-    record PutResponse(String requestId, NodeId sender, boolean success, boolean superseded, boolean fenced) implements DHTMessage {}
+    ///
+    /// `replicationStale` (#1777, CTO ruling R1c) marks a refusal by the replication-change fence: the put was stamped with
+    /// an older replication change than this replica has applied, so its quorum was sized under factors the cluster has
+    /// left. The writer applies the newer change and retries.
+    record PutResponse(String requestId,
+                       NodeId sender,
+                       boolean success,
+                       boolean superseded,
+                       boolean fenced,
+                       boolean replicationStale) implements DHTMessage {}
 
     /// Request to remove a value: the replica stores a TOMBSTONE stamped like a put (#1777 track 3), so the remove
     /// supersedes every older copy of the value wherever anti-entropy, migration or a hand-off carries it, and is
@@ -107,7 +121,8 @@ public sealed interface DHTMessage extends ProtocolMessage {
                          long version,
                          long epochIncarnation,
                          long epochTerm,
-                         long epochCounter) implements DHTMessage {
+                         long epochCounter,
+                         long replicationVersion) implements DHTMessage {
         public RemoveRequest {
             key = key.clone();
         }
@@ -115,11 +130,12 @@ public sealed interface DHTMessage extends ProtocolMessage {
 
     /// Response to a remove request. `found` means a live value was superseded here. `fenced` marks a refusal by
     /// the owner-epoch fence, exactly as for a [PutResponse]: a remove whose quorum is lost to fences is
-    /// indeterminate.
-    record RemoveResponse(String requestId, NodeId sender, boolean found, boolean fenced) implements DHTMessage {
+    /// indeterminate. `replicationStale` marks a refusal by the replication-change fence, exactly as for a [PutResponse]
+    /// (#1777, CTO ruling R1c): a tombstone is a write, and one sized under factors the cluster has left is refused too.
+    record RemoveResponse(String requestId, NodeId sender, boolean found, boolean fenced, boolean replicationStale) implements DHTMessage {
         /// An answer that was not fenced.
         public RemoveResponse(String requestId, NodeId sender, boolean found) {
-            this(requestId, sender, found, false);
+            this(requestId, sender, found, false, false);
         }
     }
 
