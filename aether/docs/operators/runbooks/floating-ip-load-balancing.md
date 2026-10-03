@@ -23,8 +23,10 @@ DNS integration and does not change your records.
 | One public endpoint set for the whole cluster, served by regular nodes | Health-based DNS steering or even traffic spread across IPs |
 | An assignment table you can inspect and verify against the provider console | Cross-region failover: pool IPs are bound to a zone/region |
 
-Failover window per IP = **detection + departure commit + one provider move**. *Estimate*:
-12–20 s for a dead node with default SWIM timeouts (suspect timeout 10 s); for an unready node,
+Failover window per IP = **detection + departure commit + one provider move**. The cluster acts
+only on a committed death, never on a SWIM suspicion (spec decision Q9), so the failover time is the
+detection time: the SWIM suspect timeout (default 10 s, `[timeouts.swim] suspect_timeout`) plus the
+departure commit, plus one move. *Estimate*: 12–20 s for a dead node with defaults; for an unready node,
 `readiness_grace` (5 s) plus one move. During that window, roughly *(IPs held by the failed node) /
 (pool size)* of new connections fail — more or less, because DNS spread is uneven.
 
@@ -36,7 +38,7 @@ failure, then check it against eligible nodes `E`:
 | Want | Choose |
 |---|---|
 | One failure affects ≤ 1/3 of clients | `P ≥ 3`, and `E ≥ P` so each node holds ≤ 1 IP |
-| Even load across ingress nodes | `P` a multiple of `E`. With `rebalance = "on_imbalance"` the cluster moves one IP at a time, paced, only when two nodes differ by 2 or more IPs; zone binding and `manual` mode can leave it less even (spec §8.4) |
+| Even load across ingress nodes | `P` a multiple of `E`. The default `rebalance = "manual"` never moves an IP for balance by itself (a move resets every connection on it), so after failures and recoveries run `aether ingress rebalance` when you choose to; with the opt-in `on_imbalance` the cluster moves one IP at a time, paced by `rebalance_pacing`, when two nodes differ by 2 or more. Zone binding can leave it less even (spec §8.4) |
 | Survive `k` node failures with all IPs served | `E − k ≥ 1`, and `(E − k) × maxIpsPerNode ≥ P` |
 
 `maxIpsPerNode` by provider: Hetzner no documented per-server limit (unverified); AWS, GCP and Azure **1** without guest network
@@ -173,9 +175,9 @@ Every eligible node terminates TLS for every pool IP, because any of them can be
 
 ## 6. Adding and removing pool IPs
 
-> rc4's `aether cluster apply` rejects source-field changes; the pool change path is an open owner
-> decision (spec Q3). The procedure below assumes `apply` accepts pool changes, and on Hetzner a
-> rolling replacement of eligible nodes to install the new aliases.
+> rc4's `aether cluster apply` rejects source-field changes. Decided for rc5 (spec decision Q3):
+> `apply` accepts pool changes as a leader-committed config write, and on Hetzner new aliases reach
+> existing nodes by rolling replacement. The procedure below is written for that.
 
 **Add an IP** (DNS goes last):
 
@@ -249,8 +251,9 @@ real client errors for one IP for the failover window.
    window. Compare with the documented window; record both in your ops log.
 6. **Verify the table** shows the new holder `CONVERGED`, and the provider agrees
    (`hcloud floating-ip describe <id>` → `server`).
-7. Let auto-heal replace the killed node, or replace it yourself; it does not get its old IP back
-   unless the pool is imbalanced by two or more.
+7. Let auto-heal replace the killed node, or replace it yourself. It does not get its old IP back
+   by itself (the default `rebalance = "manual"`); run `aether ingress rebalance` when you accept
+   resetting the connections on the IP that moves.
 
 Count what must NOT happen, not what should: a drill passes when the probe shows no failure outside
 the windows above, not when it shows some successes.
@@ -343,8 +346,8 @@ a leader change, record the event sequence (`aether events`) and file an issue.
 | `load_balancer` | `none` | `none` \| `external` \| `floating_ip` |
 | `floating_ip.pool` | — | Pool addresses (IPv4 and/or IPv6) |
 | `floating_ip.eligible_roles` | `["worker"]` | Roles that may hold pool IPs |
-| `floating_ip.rebalance` | `on_imbalance` | `on_imbalance` \| `manual` |
-| `floating_ip.rebalance_pacing` | `5m` | Minimum gap between automatic rebalance moves |
+| `floating_ip.rebalance` | `manual` | `manual` \| `on_imbalance`. `manual`: IPs move for balance only on `aether ingress rebalance`, because a move resets every connection on that IP |
+| `floating_ip.rebalance_pacing` | `5m` | Minimum gap between automatic rebalance moves; applies only with `on_imbalance` |
 | `floating_ip.make_before_break_timeout` | `60s` | Max wait for moves before a drain proceeds |
 | `floating_ip.verify_interval` | `30s` | Provider verification period |
 | `floating_ip.readiness_grace` | `5s` | Non-READY duration before a move |

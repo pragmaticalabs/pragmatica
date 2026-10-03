@@ -162,7 +162,8 @@ eligible-role set is a validation error at parse/preflight. [mechanism: PF-28..P
 the current parser silently defaulting.)
 
 FIP-12. **Rate of provider calls is bounded.** Moves are event-driven; verification reads are one
-pool listing per `verify_interval`, not one per IP; rebalance moves are paced (§8.4). 429 responses
+pool listing per `verify_interval`, not one per IP; rebalance moves happen only on operator request or, when an operator opts into
+`on_imbalance`, paced (§8.4). 429 responses
 back off per #1839. [design intent — unverified: budget fit against provider limits, §11]
 
 ## 5. Facts and owners
@@ -218,8 +219,8 @@ load_balancer = "floating_ip"
 [source.eu-workers.floating_ip]
 pool = ["203.0.113.10", "203.0.113.11", "2001:db8:1::10"]
 eligible_roles = ["worker"]           # default ["worker"]; "core" allowed; "spot" refused
-rebalance = "on_imbalance"            # "on_imbalance" (default) | "manual"
-rebalance_pacing = "5m"               # §8.4 rule 3
+rebalance = "manual"                  # "manual" (default, decision Q6) | "on_imbalance"
+rebalance_pacing = "5m"               # §8.4 rule 3; applies only when rebalance = "on_imbalance"
 make_before_break_timeout = "60s"     # FIP-08
 verify_interval = "30s"               # FIP-05
 readiness_grace = "5s"                # §8.2
@@ -228,7 +229,7 @@ readiness_grace = "5s"                # §8.2
 - `pool` entries are single addresses. IPv4 and IPv6 may be mixed. For a Hetzner IPv6 floating IP
   (a /64), the entry is the one address inside the /64 that DNS publishes; the provider matches it
   by containment (fixes B7).
-- `load_balancer_ips` is removed. (Owner question Q2: keep the old key name instead.)
+- `load_balancer_ips` is removed (decision Q2; pre-GA, no migration).
 - Spot nodes are not eligible (PF-31 refuses `spot` in `eligible_roles`): a spot reclaim is a death
   with no make-before-break.
 
@@ -291,7 +292,7 @@ One pass:
 | Self-drain | holder's pong reports DRAINING with no held drain command (quorum loss / core absence) | move its IPs at once, no grace. This fires at or after drain start: up to the 30 s drain grace the holder answers 503 (B16), so this case is not make-before-break |
 | Unready | holder reported non-READY on an authoritative view for ≥ `readiness_grace` | move its IPs; a node that returns to READY becomes eligible again but does not get its IPs back (stickiness) |
 | Drain / shutdown | drain sink (B16), before release to the target | make-before-break (§8.3) |
-| Join / ready | an eligible node becomes eligible | rebalance check (§8.4) |
+| Join / ready | an eligible node becomes eligible | assign any `UNSERVED` IP (§8.4 rule 1); with `rebalance = "on_imbalance"` also a rebalance check (rule 3) |
 | Config | `ClusterConfigKey` change touching a pool | assign new IPs, delete removed keys |
 | Verify tick | every `verify_interval` | FIP-05 correction; also catches an unready transition missed by an event |
 
@@ -310,7 +311,7 @@ At `requestDrainThroughFsm(target)` on the leader:
 3. Release the drain when the provider reports a new holder for each of those IPs, or when
    `make_before_break_timeout` expires. Expiry releases anyway, logs at WARN, emits
    `FloatingIpMakeBeforeBreakExpired`, and the remaining IPs move by the death trigger later.
-   (Owner question Q10: refuse the drain instead.)
+   (Decision Q10: a provider outage must not block drains.)
 4. The server-side drain route goes through this sink (B16) [mechanism: `NodeLifecycleRoutes` → `drainCommandSink` → `requestDrainThroughFsm`]. Whether every other leader-initiated drain (surplus trim, community-placement terminate, upgrade) reaches it is [unverified]; the implementation PR enumerates them, and any path that bypasses the sink gets the self-drain trigger's at-or-after behaviour. CLI rolling restart is currently broken by #1868.
 
 [limit: leader-local-gate] The pending drain lives in leader memory (B16). If the leader changes
@@ -328,12 +329,15 @@ Let `E` be eligible nodes for a source and `P` its pool. Target holding per node
 1. **Unserved first**: an IP whose holder is ineligible moves to the eligible node with the fewest
    IPs; ties go to the lowest `NodeId` (deterministic, so tests can name the expected holder).
 2. **Stickiness**: an IP whose holder is eligible does not move, except under rule 3.
-3. **Rebalance** (`rebalance = "on_imbalance"`): if `max(count) − min(count) ≥ 2`, move ONE IP from a
-   most-loaded node to a least-loaded node, then wait at least `rebalance_pacing` (default 5 min)
-   before the next rebalance move. A difference of 1 is unavoidable and does not trigger a move [mechanism: the rule's
-   threshold is `≥ 2`].
-   Each rebalance move resets that IP's connections, so it is paced and can be switched off
-   (`manual`).
+3. **Rebalance.** Default `rebalance = "manual"` (decision Q6): the platform does not move an IP
+   for balance on its own initiative, because a move resets every open TCP/QUIC connection on that
+   IP. An operator rebalances on purpose with `POST /api/v1/ingress/floating-ips/rebalance`
+   (`aether ingress rebalance`), which performs one step of the rule below. With
+   `rebalance = "on_imbalance"` (operator opt-in) the leader performs the same step itself:
+   if `max(count) − min(count) ≥ 2`, move ONE IP from a most-loaded node to a least-loaded node,
+   then wait at least `rebalance_pacing` (default 5 min) before the next automatic move.
+   `rebalance_pacing` has no effect in `manual` mode. A difference of 1 is unavoidable and does not
+   trigger a move [mechanism: the rule's threshold is `≥ 2`].
 4. **Zone**: rules 1–3 consider only nodes whose zone is compatible with the IP.
 5. **Families**: IPv4 and IPv6 are balanced as separate pools, so one node does not end up holding
    both families while another holds neither.
@@ -418,7 +422,7 @@ validation (PF-29). There is no silent fallback to `none` and no no-op provider 
 persistent alias for each pool address (a netplan drop-in or an `ip addr add … dev eth0` unit that
 survives reboot). Because bootstrap and leader-provisioned replacements share the renderer, both get
 it. A pool address added later is not on existing nodes; those nodes stay ineligible for it
-(FIP-10) until replaced (runbook §6) or until an in-place alias path exists (Q3).
+(FIP-10) until replaced by rolling replacement (decision Q3; runbook §6).
 
 [unverified: hazard-h3-source-address] HTTP/3 runs over UDP on a wildcard-bound socket. On an alias
 address the kernel can choose the primary address as the reply source unless the server sets the
@@ -434,7 +438,7 @@ stop advertising HTTP/3 on pool IPs until fixed.
 | Holder VM lost | Packets to its IPs are dropped: clients wait for their connect timeout | same as above | automatic |
 | Holder alive, not READY | Requests may fail or be slow | `readiness_grace` + one assign | automatic; the node gets no IPs back automatically (stickiness) |
 | Planned drain / upgrade | Connections on moved IPs reset; new connections succeed | `make_before_break_timeout` at most | automatic; on expiry see §8.3 |
-| Rebalance move | Connections on that IP reset | one IP per `rebalance_pacing` | set `rebalance = "manual"` to stop |
+| Rebalance move | Connections on that IP reset | one IP per operator request; with `on_imbalance`, one per `rebalance_pacing` | `manual` (the default) makes every move an operator action |
 | Leader change | None by itself (FIP-06) | — | — |
 | Holder on the minority side of a partition | App routing quiesces on quorum loss (B14); the holder then self-drains (B16); the majority leader moves its IPs on the DRAINING pong or the departure | split detection + one assign [design intent — unverified] | automatic |
 | Holder self-drains (quorum/core loss) | 503 from the holder until the move | ≤ 30 s drain grace, typically one assign after the DRAINING pong [design intent — unverified] | automatic |
@@ -476,7 +480,7 @@ Costs to state everywhere this feature is described:
 Pre-GA; no compatibility path. The implementation PR removes, and the reviewer checks with a
 repo-wide grep for `ELECTED`, `"elected"` and `elected LB` that nothing remains outside archives:
 
-- `LoadBalancerMode.ELECTED`; the forge default (B9) becomes `none` (Q8);
+- `LoadBalancerMode.ELECTED`; the forge default (B9) becomes `none` (decision Q8);
 - validator `validateElectedLbRestriction` (PF-17) and `validateElectedLbHasNonSpot` (PF-14), and
   their tests in `ClusterBootstrapConfigValidatorTest`; PF-18 stays (firewall rules, B10);
 - `BootstrapPhasePost.activateElectedLoadBalancers` and helpers (bootstrap attach is replaced by
@@ -508,7 +512,7 @@ Each unit/in-JVM test names the production line it pins and is shown red with th
 | T3 | non-authoritative readiness view after leader change moves nothing | FIP-06 |
 | T4 | drain: `DRAIN` is released only after the provider fake reports the new holder; reverting the gate releases it first | FIP-08 |
 | T5 | drain timeout: provider fake never confirms → drain released at the timeout, event emitted | §8.3 step 3 |
-| T6 | balance: 5 IPs, 2 nodes → 3/2; a third node joins → exactly one move, then none within pacing | §8.4 rule 3 |
+| T6 | balance: 5 IPs, 2 nodes → 3/2; a third node joins → with the default `manual`, zero moves; one rebalance-now call → exactly one move; with `on_imbalance`, exactly one move, then none within pacing | §8.4 rule 3, decision Q6 |
 | T7 | stickiness: a recovered node gets no IP back without imbalance ≥ 2 | §8.4 rule 2 |
 | T8 | stale leader: a transaction carrying the previous `LeaderValue` is refused and its provider call is never issued | FIP-02, FIP-04 |
 | T9 | competing planners from one prior value: exactly one commit accepted | FIP-01 |
@@ -548,7 +552,7 @@ run:
 4. Guest alias rendering + pong alias report + T11, T17.
 5. Observability quad (§12).
 6. Runbook finalised with measured windows; Hetzner acceptance run.
-7. AWS/GCP/Azure providers, per Q1.
+7. AWS provider (decision Q1: next after Hetzner); GCP and Azure later, with their limits documented.
 
 ## 16. Corrections to #1867's stated assumptions
 
@@ -564,17 +568,21 @@ run:
 | "Failing READINESS" via `/health/ready` | `/health/ready` stays UP through a drain (#1869); the trigger has to use the leader's pong view (B15), not the HTTP probe. |
 | "Make-before-break on drain and rolling upgrade" | Only drains issued through the leader's sink can be held; self-drain is at-or-after (B16), and CLI rolling restart times out today (#1868). |
 
-## 17. Owner questions
+## 17. Decisions
 
-| # | Question | Recommendation |
-|---|---|---|
-| Q1 | rc5 provider scope: Hetzner only (others refused by PF-29) or all four? | Hetzner-first; AWS next (single-request move); GCP/Azure after, with their one-IP-per-node and two-request limits documented |
-| Q2 | Config shape: new `[source.X.floating_ip]` sub-table, or keep `load_balancer_ips`? | sub-table |
-| Q3 | Changing the pool at runtime: extend `cluster apply` to accept pool changes as a leader-committed config write, or a dedicated endpoint? And new aliases on existing Hetzner nodes: rolling replacement, or a root-owned alias agent installed by cloud-init? | extend `apply`; rolling replacement for rc5 |
-| Q4 | A source whose eligible roles have no nodes (e.g. core-only clusters): refuse, or fall back to cores? | refuse (PF-31); operators opt cores in explicitly |
-| Q5 | Should readiness include "app HTTP is bound and answering", beyond lifecycle ACTIVE? | yes, as a pong field; out of rc5 if it grows |
-| Q6 | Rebalance default: `on_imbalance` (paced) or `manual`? | `on_imbalance` with 5 min pacing |
-| Q7 | Operator move/pin endpoint in rc5? | no; rebalance-now only |
-| Q8 | Forge/Docker default after `elected` goes: `none`, or `floating_ip` with the no-op provider for dev parity? | `none` |
-| Q9 | Act on SUSPECT (faster, more false moves) or only on committed death? | committed death |
-| Q10 | Make-before-break timeout: release the drain (default here) or refuse it? | release, with the event |
+All of §17's former open questions are decided (owner, 2026-10-03, recorded on #1867:
+https://github.com/pragmaticalabs/pragmatica/issues/1867#issuecomment-5968385373). No open questions
+remain.
+
+| # | Question | Ruling | By |
+|---|---|---|---|
+| Q1 | rc5 provider scope | Hetzner first, then AWS (single-request move). GCP and Azure later, with their one-IP-per-node and two-request limits documented. PF-29 refuses the rest until then. | owner, 2026-10-03 |
+| Q2 | Config shape | New `[source.X.floating_ip]` sub-table; `load_balancer_ips` is not kept (pre-GA, no migration). | owner, 2026-10-03 |
+| Q3 | Pool changes at runtime; new aliases on existing Hetzner nodes | `cluster apply` is extended to accept pool changes as a leader-committed config write. New aliases reach existing Hetzner nodes by rolling replacement in rc5. | owner, 2026-10-03 |
+| Q4 | Source with no nodes in its eligible roles | Refused at validation (PF-31). Cores are used only if the operator opts them in explicitly. | owner, 2026-10-03 |
+| Q5 | Readiness beyond lifecycle ACTIVE | Yes, but #1869 is the prerequisite: readiness must first reflect a drain. "App HTTP bound and answering" follows later as a pong field. Until then the readiness trigger uses the leader's pong view (B15). | owner, 2026-10-03 |
+| Q6 | Rebalance default | **`manual`.** A move resets every open TCP/QUIC connection on the IP, so the platform does not trade live connections for balance on its own initiative; operators rebalance on purpose. `on_imbalance` remains an opt-in, governed by `rebalance_pacing`. | owner, 2026-10-03 |
+| Q7 | Operator move/pin endpoint | Not in rc5; rebalance-now only. | owner, 2026-10-03 |
+| Q8 | Forge/Docker default after `elected` | `none`. | owner, 2026-10-03 |
+| Q9 | SUSPECT or committed death | Committed death only, never SUSPECT. Failover time is therefore detection time (SWIM suspect timeout, default 10 s, plus the departure commit) plus one move; the runbook states it. | owner, 2026-10-03 |
+| Q10 | Make-before-break timeout | Release the drain and emit `FloatingIpMakeBeforeBreakExpired`. A provider outage must not block drains. | owner, 2026-10-03 |
