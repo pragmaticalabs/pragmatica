@@ -98,7 +98,8 @@ public sealed interface ReplicationDefaultsParser {
                                                                 CACHE_SECTION,
                                                                 CONFIRMATION_FACTOR,
                                                                 builtIn.cacheConfirmationFactor()),
-                                                         retention(doc, builtIn.tombstoneRetention()))
+                                                         retention(doc,
+                                                                   builtIn.tombstoneRetention()))
                                                     .flatMap(ReplicationDefaultsParser::validated));
     }
 
@@ -154,8 +155,7 @@ public sealed interface ReplicationDefaultsParser {
     }
 
     private static Result<TimeSpan> parsedRetention(String raw) {
-        return timeSpan(raw).mapError(cause -> new ClusterConfigError.ParseFailed("[replication] tombstone_retention: "
-                                                                                 + cause.message()
+        return timeSpan(raw).mapError(cause -> new ClusterConfigError.ParseFailed("[replication] tombstone_retention: " + cause.message()
                                                                                  + " (was '" + raw
                                                                                  + "')"))
                        .map(parsed -> TimeSpan.fromDuration(parsed.duration()));

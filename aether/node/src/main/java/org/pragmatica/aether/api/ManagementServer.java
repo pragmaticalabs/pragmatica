@@ -708,7 +708,7 @@ class ManagementServerImpl implements ManagementServer {
     /// tombstones cannot be collected yet (memory, not data, is what that costs).
     private void registerDhtTombstoneMetrics() {
         var agreementWindow = org.pragmatica.lang.io.TimeSpan.timeSpan(3 * DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL.millis())
-                                                            .millis();
+                                                             .millis();
 
         observability.gauge("aether.dht.tombstones", dhtGauge(DHTNode::tombstoneCount));
         observability.gauge("aether.dht.tombstones.collected", dhtGauge(DHTNode::collectedTombstoneCount));

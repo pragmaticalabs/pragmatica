@@ -6265,7 +6265,6 @@ public interface AetherNode extends ManageableNode {
         var resolved = declared.isFullReplication()
                        ? Result.success(declared)
                        : declared.withFactors(defaults.replicationFactor(), defaults.confirmationFactor());
-
         // #1777 track 3: the tombstone retention is cluster-wide, like the factors — every replica must agree
         // which tombstones have expired, since the anti-entropy digest leaves expired ones out
         dhtNode.resolveTombstoneRetention(defaults.tombstoneRetention());

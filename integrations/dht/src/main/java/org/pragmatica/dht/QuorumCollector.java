@@ -77,8 +77,8 @@ public final class QuorumCollector<T> {
     /// version: a live value and a tombstone are ordered alike, so a replica that missed a remove loses to one that
     /// holds its tombstone. An empty answer (no entry) never replaces an entry.
     public static QuorumCollector<Option<DHTMessage.KeyValue>> newestEntryCollector(int quorum,
-                                                                                   int total,
-                                                                                   Promise<Option<DHTMessage.KeyValue>> promise) {
+                                                                                    int total,
+                                                                                    Promise<Option<DHTMessage.KeyValue>> promise) {
         return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), QuorumCollector::newestEntry);
     }
 
@@ -201,16 +201,18 @@ public final class QuorumCollector<T> {
         return fenced.get();
     }
 
+    /// `existing` is the accumulator's value, absent until the first answer.
     private T select(T existing, T incoming) {
-        return existing == null
-               ? incoming
-               : selector.apply(existing, incoming);
+        return Option.option(existing)
+                     .map(held -> selector.apply(held, incoming))
+                     .or(incoming);
     }
 
     /// A present value — a tombstone is present as an entry but is no value, so it names no late-value source.
     private static boolean isLiveValue(Object value) {
-        return value instanceof Option<?> option && option.filter(present -> !(present instanceof DHTMessage.KeyValue kv && kv.tombstone()))
-                                                          .isPresent();
+        return value instanceof Option<?> option
+               && option.filter(present -> !(present instanceof DHTMessage.KeyValue kv && kv.tombstone()))
+                        .isPresent();
     }
 
     private static Option<DHTMessage.KeyValue> newestEntry(Option<DHTMessage.KeyValue> existing,

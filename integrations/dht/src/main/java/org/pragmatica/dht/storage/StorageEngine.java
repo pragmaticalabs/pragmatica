@@ -153,9 +153,9 @@ public interface StorageEngine {
     /// @return the number of entries dropped.
     default Promise<Integer> dropPartition(ConsistentHashRing<?> ring, Partition partition) {
         return entriesForPartition(ring, partition).flatMap(entries -> Promise.allOf(entries.stream()
-                                                                                             .map(entry -> remove(entry.key()))
-                                                                                             .toList()))
-                                                   .map(List::size);
+                                                                                            .map(entry -> remove(entry.key()))
+                                                                                            .toList()))
+                                  .map(List::size);
     }
 
     /// Collect the tombstones of `partition` stamped at or before `expiredAtOrBeforeMillis` (HLC physical time,
