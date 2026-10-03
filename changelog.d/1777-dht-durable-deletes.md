@@ -18,4 +18,8 @@
   [verified: DHTDurableDeleteTest `unsettledChange_keepsStrays_andTombstonesWait_untilItSettles`, in-JVM 4-node]
   [mechanism: assumes every node observes the committed settle within that margin, the same view-lag assumption
   the stray horizon already makes].
+- A remove is a write, and it carries the replication-change fence of #1777 R1c like a put: a tombstone from a writer
+  still on an older `[replication]` change is refused with the retryable `ReplicationChangeStale` by every replica that
+  applied the newer one [verified: DHTReplicationChangeTest
+  `removeFromAWriterOnTheOldChange_isRefused_untilItAppliesTheChange`, in-JVM 5-node].
 - [limit: the deposed-writer residual from #1820 stays open; tombstones do not close it (owner ruling Q8).]
