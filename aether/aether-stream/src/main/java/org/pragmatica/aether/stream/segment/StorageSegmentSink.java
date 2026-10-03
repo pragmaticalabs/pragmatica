@@ -29,24 +29,6 @@ import static org.pragmatica.lang.Unit.unit;
 public final class StorageSegmentSink implements SegmentSink {
     private static final Logger log = LoggerFactory.getLogger(StorageSegmentSink.class);
 
-    /// Makes the metadata writes made before it durable (#1441). A seal WITHOUT a log calls it after the ref is
-    /// written and before the seal resolves: with a log, the log holds every record above the last metadata
-    /// snapshot until that snapshot is on disk (#1345), so recovery replays them; without one, the ref is the only
-    /// record that the range was sealed, and a crash before the next periodic snapshot loses it.
-    @FunctionalInterface
-    public interface RefDurability {
-        /// Every metadata write made before this call is durable once it succeeds.
-        Result<Unit> persist();
-        /// For a store that is its own durable truth (in-memory, tests): nothing to do.
-        RefDurability LIVE = Result::unitResult;
-
-        /// Force a metadata snapshot to disk: the refs written before it are in it.
-        static RefDurability snapshotted(SnapshotManager snapshots) {
-            return () -> snapshots.snapshotNow()
-                                  .mapToUnit();
-        }
-    }
-
     private final StorageInstance storage;
     private final SegmentIndex index;
     private final CompressionCodec compressionCodec;
@@ -119,10 +101,13 @@ public final class StorageSegmentSink implements SegmentSink {
         var originalSize = raw.length;
         var compressed = compressionCodec.compress(raw).or(raw);
         var processedData = applyEncryption(compressed);
+        var incarnation = index.incarnationOf(segment.streamName());
 
         return store(segment,
+                     incarnation,
                      log,
                      processedData.data()).map(_ -> updateIndex(segment,
+                                                                incarnation,
                                                                 originalSize,
                                                                 processedData.encrypted()))
                     .onSuccess(_ -> logSealed(segment));
@@ -145,16 +130,19 @@ public final class StorageSegmentSink implements SegmentSink {
                   .toList();
     }
 
-    private Promise<BlockId> store(SealedSegment segment, Option<AppendLog> log, byte[] block) {
-        return log.fold(() -> storeWithoutLog(segment, block),
-                        wal -> storage.seal(wal, segment.startOffset(), segment.endOffset(), refName(segment), block));
+    /// Stored under the life of the stream (`incarnation`) the seal started in (#1278 review): a seal still in flight
+    /// when its stream is destroyed or recreated lands under the OLD life's name, which nothing reads again.
+    private Promise<BlockId> store(SealedSegment segment, long incarnation, Option<AppendLog> log, byte[] block) {
+        var refName = refName(segment, incarnation);
+
+        return log.fold(() -> storeWithoutLog(refName, block),
+                        wal -> storage.seal(wal, segment.startOffset(), segment.endOffset(), refName, block));
     }
 
     /// A failed [RefDurability#persist] fails the seal, so the segment is not indexed and the sealer retries it;
     /// re-storing the same block under the same name is a no-op on its count (see [StorageInstance#putRef]).
-    private Promise<BlockId> storeWithoutLog(SealedSegment segment, byte[] block) {
-        return storage.putRef(refName(segment),
-                              block)
+    private Promise<BlockId> storeWithoutLog(String refName, byte[] block) {
+        return storage.putRef(refName, block)
                       .flatMap(id -> refDurability.persist()
                                                   .map(_ -> id)
                                                   .async());
@@ -187,8 +175,9 @@ public final class StorageSegmentSink implements SegmentSink {
         return result;
     }
 
-    private Unit updateIndex(SealedSegment segment, int originalSize, boolean encrypted) {
+    private Unit updateIndex(SealedSegment segment, long incarnation, int originalSize, boolean encrypted) {
         index.addSegment(segment.streamName(),
+                         incarnation,
                          segment.partition(),
                          segment.startOffset(),
                          segment.endOffset(),
@@ -209,11 +198,15 @@ public final class StorageSegmentSink implements SegmentSink {
                   segment.eventCount());
     }
 
+    /// The ref of `segment` in incarnation `0` (a stream with no cluster-minted life).
     static String refName(SealedSegment segment) {
-        return "streams/" + segment.streamName()
-             + "/" + segment.partition()
-             + "/" + segment.startOffset()
-             + "-" + segment.endOffset();
+        return refName(segment, 0L);
+    }
+
+    static String refName(SealedSegment segment, long incarnation) {
+        return SegmentIndex.buildRefName(SegmentIndex.durableName(segment.streamName(), incarnation),
+                                         segment.partition(),
+                                         SegmentIndex.SegmentRef.segmentRef(segment.startOffset(), segment.endOffset()));
     }
 
     private record ProcessedData(byte[] data, boolean encrypted) {

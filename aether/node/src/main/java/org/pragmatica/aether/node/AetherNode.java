@@ -231,10 +231,11 @@ import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.RefDurability;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.SegmentTierPressure;
-import org.pragmatica.aether.stream.segment.PressureRelief;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
@@ -5103,7 +5104,7 @@ public interface AetherNode extends ManageableNode {
         // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex,
-                                                                                                    StorageSegmentSink.RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
+                                                                                                    RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
                                                               streamMaxMemoryBytes);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
@@ -5113,9 +5114,16 @@ public interface AetherNode extends ManageableNode {
                                                                                    streamOwnerEpochSource,
                                                                                    streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
-                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
+                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager(),
+                                                                                                                                streamSegmentIndex::adoptions));
 
         streamPartitionManagerRef.set(streamPartitionManager);
+        // #1278 review: each stream's durable refs (sealed segments, reclaimed-through floors) and WAL are keyed by its
+        // incarnation; the manager adopts the committed life before a stream materializes, so another life of the
+        // name is never read, and reclaims the other lives' refs best-effort.
+        streamPartitionManager.streamFootprint(StreamFootprint.streamFootprint(streamStorage,
+                                                                               streamStorageSetup.metadataStore(),
+                                                                               streamSegmentIndex));
         // #1596: provenance failures this node detects (an N13 mismatch at catch-up, a log holding records with no
         // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
         // gate and cold-restart detection raise and read.
@@ -5204,10 +5212,10 @@ public interface AetherNode extends ManageableNode {
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
                                                                                                                       partition),
+                                                                          streamStorageSetup.snapshotManager(),
+                                                                          streamStorageSetup.garbageCollector(),
                                                                           streamSegmentReader,
-                                                                          streamSegmentTierPressure,
-                                                                          PressureRelief.snapshotBounded(streamStorageSetup.snapshotManager(),
-                                                                                                         streamStorageSetup.garbageCollector()));
+                                                                          streamSegmentTierPressure);
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
