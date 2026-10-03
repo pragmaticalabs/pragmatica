@@ -83,8 +83,7 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<Option<DHTMessage.KeyValue>> getEntry(byte[] key) {
         var bkey = new ByteArrayKey(key);
 
-        return Promise.success(Option.option(data.get(bkey))
-                                     .map(entry -> toKeyValue(bkey, entry)));
+        return Promise.success(Option.option(data.get(bkey)).map(entry -> toKeyValue(bkey, entry)));
     }
 
     @Override
@@ -129,7 +128,12 @@ public final class MemoryStorageEngine implements StorageEngine {
 
         var supersededLive = new AtomicBoolean();
         var written = storeVersioned(key,
-                                     new VersionedEntry(NO_VALUE, version, epochIncarnation, epochTerm, epochCounter, true),
+                                     new VersionedEntry(NO_VALUE,
+                                                        version,
+                                                        epochIncarnation,
+                                                        epochTerm,
+                                                        epochCounter,
+                                                        true),
                                      true,
                                      true,
                                      supersededLive);
@@ -176,8 +180,7 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<Integer> dropPartition(ConsistentHashRing<?> ring, Partition partition) {
         var dropped = new AtomicInteger();
 
-        data.keySet()
-            .removeIf(key -> inPartition(ring, key, partition) && dropped.incrementAndGet() > 0);
+        data.keySet().removeIf(key -> inPartition(ring, key, partition) && dropped.incrementAndGet() > 0);
 
         return Promise.success(dropped.get());
     }
@@ -190,10 +193,15 @@ public final class MemoryStorageEngine implements StorageEngine {
 
         data.entrySet()
             .stream()
-            .filter(e -> e.getValue().tombstone() && HlcTimestamp.physicalMillis(e.getValue().version()) <= expiredAtOrBeforeMillis)
-            .filter(e -> inPartition(ring, e.getKey(), partition))
+            .filter(e -> e.getValue()
+                          .tombstone() && HlcTimestamp.physicalMillis(e.getValue().version()) <= expiredAtOrBeforeMillis)
+            .filter(e -> inPartition(ring,
+                                     e.getKey(),
+                                     partition))
             .toList()
-            .forEach(e -> collectIfStill(e.getKey(), e.getValue(), collected));
+            .forEach(e -> collectIfStill(e.getKey(),
+                                         e.getValue(),
+                                         collected));
 
         return Promise.success(collected.get());
     }
@@ -340,7 +348,9 @@ public final class MemoryStorageEngine implements StorageEngine {
         return replaced(existing, incoming, supersededLive);
     }
 
-    private static VersionedEntry replaced(VersionedEntry existing, VersionedEntry incoming, AtomicBoolean supersededLive) {
+    private static VersionedEntry replaced(VersionedEntry existing,
+                                           VersionedEntry incoming,
+                                           AtomicBoolean supersededLive) {
         supersededLive.set(existing.live());
 
         return incoming;
@@ -375,9 +385,7 @@ public final class MemoryStorageEngine implements StorageEngine {
 
     @Override
     public Promise<Boolean> exists(byte[] key) {
-        return Promise.success(Option.option(data.get(new ByteArrayKey(key)))
-                                     .filter(VersionedEntry::live)
-                                     .isPresent());
+        return Promise.success(Option.option(data.get(new ByteArrayKey(key))).filter(VersionedEntry::live).isPresent());
     }
 
     @Override
@@ -404,8 +412,10 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<List<byte[]>> keys() {
         return Promise.success(data.entrySet()
                                    .stream()
-                                   .filter(e -> e.getValue().live())
-                                   .map(e -> e.getKey().data())
+                                   .filter(e -> e.getValue()
+                                                 .live())
+                                   .map(e -> e.getKey()
+                                              .data())
                                    .map(byte[]::clone)
                                    .toList());
     }
@@ -419,7 +429,9 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition partition) {
         return Promise.success(data.entrySet()
                                    .stream()
-                                   .filter(e -> inPartition(ring, e.getKey(), partition))
+                                   .filter(e -> inPartition(ring,
+                                                            e.getKey(),
+                                                            partition))
                                    .map(MemoryStorageEngine::toKeyValue)
                                    .toList());
     }

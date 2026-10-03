@@ -204,9 +204,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     /// A put stamped with this node's HLC time and current owner epoch — what every client write carries.
     private WriteStamp freshStamp() {
-        return new WriteStamp(node.hlcClock()
-                                  .now()
-                                  .packed(),
+        return new WriteStamp(node.hlcClock().now().packed(),
                               ownerEpochSource.currentEpochIncarnation(),
                               ownerEpochSource.currentEpochTerm(),
                               ownerEpochSource.currentEpochCounter());
@@ -216,9 +214,7 @@ public final class DistributedDHTClient implements DHTClient {
     /// track 3): re-stamping a stranded copy as new would let it beat a later remove's tombstone.
     private Promise<Unit> putStamped(byte[] key, byte[] value, WriteStamp stamp) {
         var targets = targetNodes(key);
-        var quorum = config.get()
-                           .effectiveWriteQuorum(node.ring()
-                                                     .nodeCount());
+        var quorum = config.get().effectiveWriteQuorum(node.ring().nodeCount());
 
         return targets.isEmpty() || quorumUnreachable(targets, quorum)
                ? DHTError.quorumNotReached(quorum,
@@ -242,7 +238,9 @@ public final class DistributedDHTClient implements DHTClient {
                       .fold(result -> result.fold(cause -> afterFailedWrite(key,
                                                                             stamp,
                                                                             localPut,
-                                                                            indeterminateIfFenced(cause, quorum, collector)),
+                                                                            indeterminateIfFenced(cause,
+                                                                                                  quorum,
+                                                                                                  collector)),
                                                   Promise::success));
     }
 
@@ -268,11 +266,14 @@ public final class DistributedDHTClient implements DHTClient {
     /// The rollback after an indeterminate put OR remove (#1777 track 3) is the same exact-stamp HARD delete of
     /// this node's own accept — never a tombstone: a tombstone at the failed write's stamp would beat the PREVIOUS
     /// value on every replica it reaches and delete the key cluster-wide, an outcome nobody asked for.
-    private <T> Promise<T> afterFailedWrite(byte[] key, WriteStamp stamp, Option<Promise<Boolean>> localWrite, Cause cause) {
+    private <T> Promise<T> afterFailedWrite(byte[] key,
+                                            WriteStamp stamp,
+                                            Option<Promise<Boolean>> localWrite,
+                                            Cause cause) {
         return cause instanceof DHTError.WriteIndeterminate
                ? localWrite.map(local -> rollBackLocalAccept(key, stamp, local))
                            .or(Promise.success(false))
-                           .fold(_ -> cause.<T>promise())
+                           .fold(_ -> cause.<T> promise())
                : cause.promise();
     }
 
@@ -330,7 +331,9 @@ public final class DistributedDHTClient implements DHTClient {
                       .fold(result -> result.fold(cause -> afterFailedWrite(key,
                                                                             stamp,
                                                                             localRemove,
-                                                                            indeterminateIfFenced(cause, quorum, collector)),
+                                                                            indeterminateIfFenced(cause,
+                                                                                                  quorum,
+                                                                                                  collector)),
                                                   Promise::success));
     }
 
@@ -393,7 +396,13 @@ public final class DistributedDHTClient implements DHTClient {
                                                        long epochTerm,
                                                        long epochCounter) {
         return tombstone
-               ? Option.some(new DHTMessage.KeyValue(NO_BYTES, NO_BYTES, version, epochIncarnation, epochTerm, epochCounter, true))
+               ? Option.some(new DHTMessage.KeyValue(NO_BYTES,
+                                                     NO_BYTES,
+                                                     version,
+                                                     epochIncarnation,
+                                                     epochTerm,
+                                                     epochCounter,
+                                                     true))
                : value.map(present -> new DHTMessage.KeyValue(NO_BYTES,
                                                               present,
                                                               version,
@@ -466,7 +475,8 @@ public final class DistributedDHTClient implements DHTClient {
     @SuppressWarnings("JBCT-RET-07")
     private static void recordRemove(QuorumCollector<Boolean> collector, DHTMessage.RemoveResponse response) {
         if (response.fenced()) {
-            failCollector(collector, DHTError.replicaFenced(response.sender()));
+            failCollector(collector,
+                          DHTError.replicaFenced(response.sender()));
         } else {
             collector.onSuccess(response.found());
         }
@@ -573,7 +583,9 @@ public final class DistributedDHTClient implements DHTClient {
 
     /// Same `@Contract` void-mutator suppression as [#failCollector].
     @SuppressWarnings("JBCT-RET-07")
-    private static void countReplacementAnswer(InFlightRead read, NodeId replacement, Option<DHTMessage.KeyValue> value) {
+    private static void countReplacementAnswer(InFlightRead read,
+                                               NodeId replacement,
+                                               Option<DHTMessage.KeyValue> value) {
         if (value.isPresent()) {
             read.collector().onSuccess(value, replacement.id());
         } else {
@@ -730,8 +742,8 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private List<Promise<Option<DHTMessage.KeyValue>>> probeAll(byte[] key,
-                                                   List<NodeId> fallbackTargets,
-                                                   AtomicInteger probesFailed) {
+                                                                List<NodeId> fallbackTargets,
+                                                                AtomicInteger probesFailed) {
         return fallbackTargets.stream()
                               .map(target -> probeTarget(target, key, probesFailed))
                               .toList();
@@ -770,7 +782,9 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     /// A stranded TOMBSTONE resolves "absent" and is not re-homed: the key was removed (#1777 track 3).
-    private Promise<Option<byte[]>> resolveFallbackOutcome(byte[] key, Option<DHTMessage.KeyValue> found, ResolveMiss miss) {
+    private Promise<Option<byte[]>> resolveFallbackOutcome(byte[] key,
+                                                           Option<DHTMessage.KeyValue> found,
+                                                           ResolveMiss miss) {
         return found.fold(() -> reportUnresolved(miss),
                           entry -> entry.tombstone()
                                    ? Promise.success(Option.none())
@@ -799,7 +813,7 @@ public final class DistributedDHTClient implements DHTClient {
                                          entry.epochIncarnation(),
                                          entry.epochTerm(),
                                          entry.epochCounter())).map(_ -> Option.some(value))
-                                                               .recover(_ -> Option.some(value));
+                         .recover(_ -> Option.some(value));
     }
 
     /// All-miss after the bounded probe: report loudly (P3/P4 — never silent) and resolve empty.

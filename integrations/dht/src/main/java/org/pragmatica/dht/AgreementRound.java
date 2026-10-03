@@ -71,6 +71,8 @@ final class AgreementRound {
 
     /// Whether the round has agreed, claimed once.
     boolean agreed() {
-        return awaited.isEmpty() && !refused.get() && decided.compareAndSet(false, true);
+        return awaited.isEmpty()
+               && !refused.get()
+               && decided.compareAndSet(false, true);
     }
 }

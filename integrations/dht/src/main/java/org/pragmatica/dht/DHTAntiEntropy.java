@@ -594,13 +594,15 @@ public final class DHTAntiEntropy {
                                  partition)
             .onSuccess(entries -> {
                            var digest = computeDigest(entries);
-                           var round = AgreementRound.agreementRound(partition, startedAt, coReplicas(nodes));
+                           var round = AgreementRound.agreementRound(partition,
+                                                                     startedAt,
+                                                                     coReplicas(nodes));
 
                            agreements.put(partitionIndex, round);
                            sendDigestToPeers(partitionIndex, nodes, digest, round);
                            if (round.agreed()) {
-                               onAgreed(round);
-                           }
+                           onAgreed(round);
+                       }
                        });
     }
 
@@ -647,10 +649,9 @@ public final class DHTAntiEntropy {
 
         node.noteAgreement(partition, round.startedAtMillis());
         if (!node.holderSetStableSince(partition,
-                                       now - node.tombstoneRetention()
-                                                 .millis())) {
+                                       now - node.tombstoneRetention().millis())) {
             log.debug("Partition {} agreed, but a holder left its replica set within the tombstone retention; "
-                      + "tombstones wait",
+                     + "tombstones wait",
                       partition.value());
 
             return;
@@ -673,19 +674,16 @@ public final class DHTAntiEntropy {
     /// track 3). The horizon is the tombstone retention less a margin of two anti-entropy periods and an
     /// operation timeout, so a stray copy is always gone before a tombstone that supersedes it may be collected.
     private void purgeStrays() {
-        var horizon = Math.max(0L, node.tombstoneRetention().millis() - margin().millis());
+        var horizon = Math.max(0L,
+                               node.tombstoneRetention().millis() - margin().millis());
 
-        node.strayPartitionsSince(node.nowMillis() - horizon)
-            .forEach(node::dropStray);
+        node.strayPartitionsSince(node.nowMillis() - horizon).forEach(node::dropStray);
     }
 
     /// Two anti-entropy periods and an operation timeout: the slack between a stray copy's purge and the earliest
     /// collection of a tombstone it could outlive — view lag between nodes and copies in flight (#1777 track 3).
     TimeSpan margin() {
-        return TimeSpan.timeSpan(2 * antiEntropyInterval.millis() + config.get()
-                                                                         .operationTimeout()
-                                                                         .millis())
-                       .millis();
+        return TimeSpan.timeSpan(2 * antiEntropyInterval.millis() + config.get().operationTimeout().millis()).millis();
     }
 
     /// A refused send is never silent (issue #420): the transport's refusal is logged at WARN and the
@@ -731,8 +729,7 @@ public final class DHTAntiEntropy {
     @Contract
     public void onDigestResponse(DHTMessage.DigestResponse response) {
         node.noteHeardFrom(response.sender());
-        Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> voteAndCompare(pending,
-                                                                                                       response));
+        Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> voteAndCompare(pending, response));
         Option.option(catchUpDigests.remove(response.requestId())).onPresent(pending -> onCatchUpDigest(pending,
                                                                                                         response));
     }
@@ -747,7 +744,9 @@ public final class DHTAntiEntropy {
 
         Option.option(agreementVotes.remove(response.requestId()))
               .filter(round -> agreements.get(pending.partitionIndex()) == round)
-              .filter(round -> round.answer(pending.peer(), response.readiness(), matches))
+              .filter(round -> round.answer(pending.peer(),
+                                            response.readiness(),
+                                            matches))
               .onPresent(this::onAgreed);
     }
 

@@ -165,7 +165,12 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
 
         /// A live entry.
-        public KeyValue(byte[] key, byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {
+        public KeyValue(byte[] key,
+                        byte[] value,
+                        long version,
+                        long epochIncarnation,
+                        long epochTerm,
+                        long epochCounter) {
             this(key, value, version, epochIncarnation, epochTerm, epochCounter, false);
         }
 

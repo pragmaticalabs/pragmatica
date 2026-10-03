@@ -50,7 +50,10 @@ final class InFlightRead {
     private final Set<NodeId> addressed = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<NodeId, String> outstanding = new ConcurrentHashMap<>();
 
-    private InFlightRead(byte[] key, QuorumCollector<Option<DHTMessage.KeyValue>> collector, long deadlineNanos, int maxReissues) {
+    private InFlightRead(byte[] key,
+                         QuorumCollector<Option<DHTMessage.KeyValue>> collector,
+                         long deadlineNanos,
+                         int maxReissues) {
         this.key = key;
         this.collector = collector;
         this.deadlineNanos = deadlineNanos;

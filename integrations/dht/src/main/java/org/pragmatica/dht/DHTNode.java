@@ -71,8 +71,10 @@ public final class DHTNode {
     /// them. The rest are unconfirmed and lengthen the boot walk ([#previousHolders]).
     private final Set<NodeId> heardFrom = ConcurrentHashMap.newKeySet();
     private final AtomicLong belowHighWaterCopies = new AtomicLong();
+
     /// How long a tombstone is kept (#1777 track 3): the cluster's committed `[replication] tombstone_retention`.
     private final AtomicReference<TimeSpan> tombstoneRetention = new AtomicReference<>(DEFAULT_TOMBSTONE_RETENTION);
+
     /// Wall-clock time in milliseconds, comparable with the HLC physical time a tombstone is stamped with.
     private final AtomicReference<LongSupplier> wallClock = new AtomicReference<>(System::currentTimeMillis);
     /// When this node stopped replicating each partition it still holds copies of (#1777 track 3): a stray copy
@@ -384,8 +386,10 @@ public final class DHTNode {
     private void recordPlacementChange(List<List<NodeId>> before, List<List<NodeId>> after) {
         var now = nowMillis();
 
-        IntStream.range(0, Partition.MAX_PARTITIONS)
-                 .forEach(index -> recordPlacementChange(index, before.get(index), after.get(index), now));
+        IntStream.range(0, Partition.MAX_PARTITIONS).forEach(index -> recordPlacementChange(index,
+                                                                                            before.get(index),
+                                                                                            after.get(index),
+                                                                                            now));
     }
 
     private void recordPlacementChange(int index, List<NodeId> before, List<NodeId> after, long now) {
@@ -482,14 +486,18 @@ public final class DHTNode {
         var readiness = readinessFor(request.key());
 
         storage.getEntry(request.key())
-               .onSuccess(entry -> responseHandler.accept(getResponse(request.requestId(), entry, readiness)))
+               .onSuccess(entry -> responseHandler.accept(getResponse(request.requestId(),
+                                                                      entry,
+                                                                      readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
                                                                                  nodeId,
                                                                                  Option.none(),
                                                                                  readiness)));
     }
 
-    private DHTMessage.GetResponse getResponse(String requestId, Option<DHTMessage.KeyValue> entry, Readiness readiness) {
+    private DHTMessage.GetResponse getResponse(String requestId,
+                                               Option<DHTMessage.KeyValue> entry,
+                                               Readiness readiness) {
         return entry.map(kv -> new DHTMessage.GetResponse(requestId,
                                                           nodeId,
                                                           kv.tombstone()
@@ -501,7 +509,10 @@ public final class DHTNode {
                                                           kv.epochIncarnation(),
                                                           kv.epochTerm(),
                                                           kv.epochCounter()))
-                    .or(() -> new DHTMessage.GetResponse(requestId, nodeId, Option.none(), readiness));
+                    .or(() -> new DHTMessage.GetResponse(requestId,
+                                                         nodeId,
+                                                         Option.none(),
+                                                         readiness));
     }
 
     /// Handle a put request (for message routing integration).
@@ -545,9 +556,9 @@ public final class DHTNode {
                                                                                         nodeId,
                                                                                         found)))
                .onFailure(cause -> responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(),
-                                                                                    nodeId,
-                                                                                    false,
-                                                                                    cause instanceof DHTError.StaleEpochWrite)));
+                                                                                        nodeId,
+                                                                                        false,
+                                                                                        cause instanceof DHTError.StaleEpochWrite)));
     }
 
     /// Handle an exists request (for message routing integration), carrying this node's [Readiness] for
@@ -558,7 +569,9 @@ public final class DHTNode {
         var readiness = readinessFor(request.key());
 
         storage.getEntry(request.key())
-               .onSuccess(entry -> responseHandler.accept(existsResponse(request.requestId(), entry, readiness)))
+               .onSuccess(entry -> responseHandler.accept(existsResponse(request.requestId(),
+                                                                         entry,
+                                                                         readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
                                                                                     nodeId,
                                                                                     false,
@@ -678,7 +691,8 @@ public final class DHTNode {
     private Promise<Boolean> applyReplica(DHTMessage.KeyValue kv) {
         var belowHighWater = storage.belowHighWater(kv.key(), kv.epochIncarnation(), kv.epochTerm(), kv.epochCounter());
 
-        return storage.putReplica(kv, !expiredTombstone(kv))
+        return storage.putReplica(kv,
+                                  !expiredTombstone(kv))
                       .onSuccess(written -> noteBelowHighWater(kv, written && belowHighWater));
     }
 
@@ -746,7 +760,7 @@ public final class DHTNode {
     private void notePurgedStray(Partition partition, int dropped) {
         purgedStrayPartitions.incrementAndGet();
         log.info("Dropped {} stray entries of partition {}: this node stopped replicating it more than the stray "
-                 + "horizon ago",
+                + "horizon ago",
                  dropped,
                  partition.value());
     }
@@ -789,11 +803,11 @@ public final class DHTNode {
     /// a co-replica is silent, diverged or catching up.
     public int unagreedPartitions(TimeSpan window) {
         var cutoff = nowMillis() - window.millis();
-        var replicationFactor = config.get()
-                                      .effectiveReplicationFactor(ring.nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(ring.nodeCount());
 
         return (int) IntStream.range(0, Partition.MAX_PARTITIONS)
-                              .filter(index -> ring.nodesFor(Partition.at(index), replicationFactor)
+                              .filter(index -> ring.nodesFor(Partition.at(index),
+                                                             replicationFactor)
                                                    .contains(nodeId))
                               .filter(index -> Option.option(agreedAt.get(index))
                                                      .filter(at -> at > cutoff)
@@ -812,10 +826,9 @@ public final class DHTNode {
             var _ = storage.clear();
 
             lostAt.clear();
-            catchUp.pendingPartitions()
-                   .forEach(catchUp::markServing);
+            catchUp.pendingPartitions().forEach(catchUp::markServing);
             log.warn("This node was removed from the DHT ring while running: dropped its {} stored entries; it "
-                     + "rejoins empty and catches up",
+                    + "rejoins empty and catches up",
                      dropped);
         }
     }
