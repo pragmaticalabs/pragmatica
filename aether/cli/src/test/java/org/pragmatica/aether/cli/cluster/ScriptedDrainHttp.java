@@ -84,6 +84,24 @@ final class ScriptedDrainHttp implements HttpOperations {
         this.lifecycleScript = List.of(lifecycleScript);
     }
 
+    private final Map<String, String> transportAddresses = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /// `GET /api/v1/nodes/endpoint/{id}` answers `NodeEndpointResponse(nodeId, address, reachable)`
+    /// (ManagementApiResponses.java:47-60) — the node's cluster-transport `host:port`.
+    ScriptedDrainHttp withTransportAddress(String nodeId, String hostPort) {
+        transportAddresses.put(nodeId, hostPort);
+
+        return this;
+    }
+
+    /// Node ids in the order their drain was requested.
+    List<String> drainOrder() {
+        return requests.stream()
+                       .filter(r -> r.startsWith("POST /api/v1/nodes/drain/"))
+                       .map(r -> r.substring("POST /api/v1/nodes/drain/".length()))
+                       .toList();
+    }
+
     List<String> requests() {
         return List.copyOf(requests);
     }
@@ -100,11 +118,28 @@ final class ScriptedDrainHttp implements HttpOperations {
     public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
         requests.add(request.method() + " " + request.uri().getPath());
 
+        var path = request.uri().getPath();
         var step = request.method().equals("POST")
-                   ? drainResponse
-                   : nextLifecycleStep();
+                   ? postStep(path)
+                   : path.startsWith("/api/v1/nodes/endpoint/")
+                     ? endpointStep(path.substring("/api/v1/nodes/endpoint/".length()))
+                     : nextLifecycleStep();
 
         return respond(step);
+    }
+
+    private Step postStep(String path) {
+        return path.startsWith("/api/v1/nodes/drain/")
+               ? drainResponse
+               : new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+    }
+
+    private Step endpointStep(String nodeId) {
+        var address = transportAddresses.get(nodeId);
+
+        return address == null
+               ? new Step.Reply(503, "{}")
+               : new Step.Reply(200, "{\"nodeId\":\"" + nodeId + "\",\"address\":\"" + address + "\",\"reachable\":true}");
     }
 
     private Step nextLifecycleStep() {

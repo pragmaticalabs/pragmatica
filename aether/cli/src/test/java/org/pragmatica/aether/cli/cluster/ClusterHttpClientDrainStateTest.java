@@ -122,6 +122,22 @@ class ClusterHttpClientDrainStateTest {
                     "a slow node and a halted node both time out only one of them is gone");
     }
 
+    /// Through the cluster endpoint (a member other than the target) the lifecycle GET's 404 is membership's
+    /// committed departure; everything else, a refused connection to that other member included, is not.
+    @Test
+    void isDeparted_onlyTheCommittedDeparture404() {
+        var body = ((ScriptedDrainHttp.Step.Reply) notFound(NODE)).body();
+
+        assertTrue(DrainCompletion.isDeparted(new HttpError.ApiError(404, body).result()));
+        for (var status : new int[]{400, 401, 409, 500, 503}) {
+            assertFalse(DrainCompletion.isDeparted(new HttpError.ApiError(status, "{}").result()),
+                        "HTTP " + status + " is not a committed departure (503 is 'readiness unknown')");
+        }
+        assertFalse(DrainCompletion.isDeparted(HttpClientError.ConnectionFailed.connectionFailed("refused", new ConnectException("refused")).<String>result()),
+                    "a refusal from the cluster endpoint is another member's, not the target's");
+        assertFalse(DrainCompletion.isDeparted(Result.success("{\"state\":\"DRAINING\"}")));
+    }
+
     @Test
     void isComplete_malformedBody_isNotComplete() {
         assertFalse(DrainCompletion.isComplete(Result.success("not json")));

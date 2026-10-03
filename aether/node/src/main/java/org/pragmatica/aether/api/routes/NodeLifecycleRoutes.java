@@ -50,7 +50,6 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// has no terminal value (a halting node simply stops reporting), so the shutdown route uses
     /// this label for the audit + `NodeLifecycleChanged` event surface only.
     private static final String STOPPED_STATE = "STOPPED";
-
     /// `MembershipFsm.memberStates()` reports `getClass().getSimpleName()`; `MembershipState.Dead` is the terminal,
     /// committed departure of an identity.
     private static final String MEMBERSHIP_DEAD = "Dead";
@@ -226,12 +225,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return readinessUnavailableError().promise();
         }
 
-        return NodeId.nodeId(nodeIdStr).async().flatMap(this::lifecycleEntryOrVerdict);
+        return NodeId.nodeId(nodeIdStr)
+                     .async()
+                     .flatMap(this::lifecycleEntryOrVerdict);
     }
 
     private Promise<LifecycleEntry> lifecycleEntryOrVerdict(NodeId nodeId) {
-        return readLifecycleState(nodeId).map(state -> Promise.success(new LifecycleEntry(nodeId.id(), state.name(), 0L)))
-                                         .or(() -> absentFromReadinessView(nodeId));
+        return readLifecycleState(nodeId).map(state -> Promise.success(new LifecycleEntry(nodeId.id(),
+                                                                                          state.name(),
+                                                                                          0L)))
+                                 .or(() -> absentFromReadinessView(nodeId));
     }
 
     private Promise<LifecycleEntry> absentFromReadinessView(NodeId nodeId) {

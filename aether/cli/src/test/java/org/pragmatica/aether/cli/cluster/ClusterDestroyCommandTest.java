@@ -695,12 +695,15 @@ class ClusterDestroyCommandTest {
             assertEquals(1, results.size(), "precondition: one node was processed");
             assertFalse(results.getFirst().success(),
                         "precondition: the stubbed drain POST fails, so the 120s poll loop is never entered");
-            assertTrue(stdout().contains("Draining 1 node(s): drain requests only, no wait"),
-                       () -> "the phase line must say the drain is requested, not awaited; got:\n" + stdout());
-            assertTrue(stdout().contains("Draining node core-0 (request only: completion cannot be observed"
-                                         + " through the cluster endpoint)"),
-                       () -> "and each node must say why there is no wait, so a short drain phase is not read as"
-                             + " a completed drain; got:\n" + stdout());
+            assertTrue(stdout().contains("Draining 1 node(s), up to " + ClusterDestroyCommand.DRAIN_TIMEOUT_SECONDS + "s each"),
+                       () -> "the phase line must name the per-node budget and the worst-case total; got:\n" + stdout());
+            assertTrue(stdout().contains("Draining node core-0 (waiting up to "
+                                         + ClusterDestroyCommand.DRAIN_TIMEOUT_SECONDS
+                                         + "s for the drain to complete, polling every "
+                                         + ClusterDestroyCommand.DRAIN_POLL_INTERVAL_MS
+                                         + "ms)"),
+                       () -> "and each node must name its own ceiling BEFORE its wait begins — this is the line "
+                             + "that turns a two-minute silence into a stated wait; got:\n" + stdout());
             assertFalse(stdout().contains("Nothing to drain"),
                         () -> "the empty-list wording must not appear for a non-empty list, or the two branches "
                               + "are indistinguishable; got:\n" + stdout());
@@ -797,9 +800,8 @@ class ClusterDestroyCommandTest {
                 assertTrue(stdout().contains("node enumeration waits up to "
                                              + ClusterHttpClient.REQUEST_TIMEOUT.get().toSeconds() + "s"),
                            () -> "with the enumeration ceiling read from the timeout in force; got:\n" + stdout());
-                assertTrue(stdout().contains("drains are requested without a wait"),
-                           () -> "and that drains are not awaited, so the estimate does not promise a drain wait; got:\n"
-                                 + stdout());
+                assertTrue(stdout().contains("each node's drain up to " + ClusterDestroyCommand.DRAIN_TIMEOUT_SECONDS + "s"),
+                           () -> "and the drain ceiling read from the constant that enforces it; got:\n" + stdout());
                 assertPhasesInOrder();
             } finally {
                 ClusterDestroyCommand.registryRemover = originalRemover;

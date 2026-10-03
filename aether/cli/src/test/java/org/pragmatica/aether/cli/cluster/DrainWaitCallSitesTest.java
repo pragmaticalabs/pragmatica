@@ -50,14 +50,13 @@ import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 /// the server never emits, so each of these call sites timed out (120 s) and aborted the operation behind it.
 /// Each test drives one site against a scripted endpoint and asserts the site went PAST the wait. The
 /// WaveExecutor sites poll the drained node ITSELF, so their script ends in a refused connection (the halt),
-/// with a relayed 404 before it that must NOT end the wait; destroy and `drain --wait` have no target address,
-/// so after an accepted drain they report "not observable" and make no poll. The `@Timeout` is the red signal: with the old wait the
-/// site blocks for its whole 120 s budget and the test is killed long before.
+/// with a relayed 404 before it that must NOT end the wait. Destroy and `drain --wait` poll through the cluster
+/// endpoint (a member other than the target), where the lifecycle GET's 404 is membership's committed departure;
+/// the serving node itself is drained last and completes on its own address refusing. The `@Timeout` is the red
+/// signal: with the old wait the site blocks for its whole 120 s budget and the test is killed long before.
 ///
-/// Sites reached here: `WaveExecutor.drainAndStopSshNodes` (scale-down) and `WaveExecutor.drainSshNode`
-/// (rolling restart), `ClusterDestroyCommand.drainSingleNode`, `ClusterDrainCommand --wait`.
-/// NOT reached by a test: `drainAndDestroyComputeNode` and `drainOldNodes`, which sit behind cloud
-/// provisioning; they share `ClusterHttpClient.drainNodeAndAwait`, the only drain-then-wait entry point.
+/// Sites reached here: all four `WaveExecutor` sites (scale-down, SSH rolling restart, compute rolling restart,
+/// `drainOldNodes`), `ClusterDestroyCommand`, `ClusterDrainCommand --wait`.
 @Timeout(value = 40, unit = TimeUnit.SECONDS)
 class DrainWaitCallSitesTest {
     private static final String UNRESOLVABLE_HOST = "drain-test.invalid";
@@ -130,27 +129,66 @@ class DrainWaitCallSitesTest {
         assertThat(failureText(result)).doesNotContain("did not complete drain");
     }
 
-    /// Through the cluster endpoint there is no sound completion signal (the leader's 404 is soft state; a
-    /// refusal there is another member's), so after an ACCEPTED drain destroy reports "accepted, not observable"
-    /// at once instead of polling for a verdict it cannot reach. The stale 404 that would have ended the old wait
-    /// (and the refusal that would have ended the previous one) must change nothing: no lifecycle poll is made.
+    /// `unknown` (503) is the answer for a LIVE member missing from the soft readiness view (a transient evict, a new
+    /// leader): it must not end the wait. Only the committed departure (404) does.
     @Test
-    void destroyDrain_afterAnAcceptedDrain_reportsNotObservable_withoutPolling() {
-        var http = drainsThenDisappears();
+    void drainCommandWait_completesOnlyOnTheCommittedDeparture_notOnAnUnknown503() {
+        var http = new ScriptedDrainHttp(drainAccepted(NODE),
+                                         lifecycle(NODE, "DRAINING"),
+                                         new ScriptedDrainHttp.Step.Reply(503, "{}"),
+                                         notFound(NODE));
         ClusterHttpClient.HTTP_OPS_REF.set(http);
         ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
 
-        var results = new ClusterDestroyCommand().drainAllNodes(List.of(NODE));
+        var exit = new CommandLine(new ClusterDrainCommand()).execute(NODE, "--wait", "--yes", "--timeout", "30");
 
-        assertThat(results).hasSize(1);
-        assertThat(results.getFirst().success()).as("an unobserved drain must not be reported as a completed one").isFalse();
-        assertThat(results.getFirst().reason()).contains("not observable");
-        assertThat(http.drainPosts()).isEqualTo(1);
-        assertThat(http.lifecycleGets()).as("no soft-state verdict is sought").isZero();
+        assertThat(exit).isEqualTo(ExitCode.SUCCESS);
+        assertThat(http.lifecycleGets()).as("polled past DRAINING and the 503, to the 404").isEqualTo(3);
     }
 
     @Test
-    void destroyDrain_aRefusedDrain_isReportedAsRefused_notAsUnobservable() {
+    void drainCommandWait_aRefusedConnectionOnTheClusterEndpoint_isNotDeparture() {
+        var http = new ScriptedDrainHttp(drainAccepted(NODE), connectionRefused(), notFound(NODE));
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
+
+        var exit = new CommandLine(new ClusterDrainCommand()).execute(NODE, "--wait", "--yes", "--timeout", "30");
+
+        assertThat(exit).isEqualTo(ExitCode.SUCCESS);
+        assertThat(http.lifecycleGets()).as("a refusal from some other member says nothing about the target").isEqualTo(2);
+    }
+
+    /// B: every drain and shutdown is relayed through the current endpoint, so draining THAT node first strands all
+    /// later requests. The serving node is found by matching the endpoint host to a node's transport host, and goes
+    /// last; a non-serving node completes on the committed departure (404), the serving node on its own address
+    /// refusing; nodes whose departure was observed get no shutdown request.
+    @Test
+    void destroy_drainsTheServingNodeLast_andSendsNoShutdownToDepartedNodes() {
+        var http = new ScriptedDrainHttp(drainAccepted("core-0"), notFound("core-1"), notFound("core-2"), connectionRefused())
+            .withTransportAddress("core-0", "10.255.255.1:5000")
+            .withTransportAddress("core-1", "10.255.255.2:5000")
+            .withTransportAddress("core-2", "10.255.255.3:5000");
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
+
+        var outcome = new ClusterDestroyCommand().drainAndShutdown(List.of("core-0", "core-1", "core-2"));
+
+        assertThat(http.drainOrder()).as("core-0 serves the requests, so it is drained last").containsExactly("core-1", "core-2", "core-0");
+        assertThat(outcome.drains()).allMatch(ClusterDestroyCommand.NodeResult::success);
+        assertThat(http.requests()).as("a departed node is not sent a shutdown through a possibly-halted endpoint")
+                                   .noneMatch(r -> r.startsWith("POST /api/v1/nodes/shutdown/"));
+    }
+
+    @Test
+    void destroy_servingNodeLast_leavesTheOrderAloneWhenTheServingNodeIsUnknown() {
+        assertThat(ClusterDestroyCommand.servingNodeLast(List.of("a", "b", "c"), org.pragmatica.lang.Option.none()))
+            .containsExactly("a", "b", "c");
+        assertThat(ClusterDestroyCommand.servingNodeLast(List.of("a", "b", "c"), org.pragmatica.lang.Option.some("a")))
+            .containsExactly("b", "c", "a");
+    }
+
+    @Test
+    void destroyDrain_aRefusedDrain_isReportedAsRefused() {
         var http = new ScriptedDrainHttp(new ScriptedDrainHttp.Step.Reply(409, "{\"detail\":\"must be READY\"}"), notFound(NODE));
         ClusterHttpClient.HTTP_OPS_REF.set(http);
         ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
@@ -159,32 +197,6 @@ class DrainWaitCallSitesTest {
 
         assertThat(results.getFirst().success()).isFalse();
         assertThat(results.getFirst().reason()).contains("refused with HTTP 409");
-    }
-
-    @Test
-    void drainCommandWait_afterAnAcceptedDrain_failsTypedNotObservable_withoutPolling() {
-        var http = drainsThenDisappears();
-        ClusterHttpClient.HTTP_OPS_REF.set(http);
-        ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
-        var err = new ByteArrayOutputStream();
-        System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
-
-        var exit = new CommandLine(new ClusterDrainCommand()).execute(NODE, "--wait", "--yes");
-
-        assertThat(exit).as("--wait cannot be honoured, so it must not exit 0").isNotEqualTo(ExitCode.SUCCESS);
-        assertThat(err.toString(StandardCharsets.UTF_8)).contains("cannot be observed");
-        assertThat(http.lifecycleGets()).isZero();
-    }
-
-    @Test
-    void drainCommandWithoutWait_afterAnAcceptedDrain_succeeds() {
-        var http = drainsThenDisappears();
-        ClusterHttpClient.HTTP_OPS_REF.set(http);
-        ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
-
-        var exit = new CommandLine(new ClusterDrainCommand()).execute(NODE, "--yes");
-
-        assertThat(exit).isEqualTo(ExitCode.SUCCESS);
         assertThat(http.lifecycleGets()).isZero();
     }
 

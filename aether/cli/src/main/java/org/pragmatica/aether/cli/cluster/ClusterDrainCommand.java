@@ -12,6 +12,7 @@ import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -21,18 +22,24 @@ import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_DRAIN;
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_GET;
 
 
 @Command(name = "drain", description = "Drain a node (evacuate slices)")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})
 class ClusterDrainCommand implements Callable<Integer> {
+    private static final int POLL_INTERVAL_MS = 2000;
+    private static final int DEFAULT_TIMEOUT_SECONDS = 120;
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Parameters(index = "0", description = "Node ID to drain")
     private String nodeId;
 
-    @Option(names = "--wait", description = "Fail unless completion can be observed: through the cluster endpoint it cannot, so this reports why after the drain is accepted")
+    @Option(names = "--wait", description = "Wait for the drain to complete (membership commits the node's departure)")
     private boolean waitForCompletion;
+
+    @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)")
+    private int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
 
     @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
     private boolean skipConfirmation;
@@ -72,9 +79,7 @@ class ClusterDrainCommand implements Callable<Integer> {
 
         System.out.printf("Drain initiated for node %s (state: %s)%n", nodeId, state);
         if (waitForCompletion) {
-            System.err.println(new DrainCompletion.NotObservable(nodeId).message());
-
-            return ExitCode.ERROR;
+            return pollUntilDrained();
         }
 
         return ExitCode.SUCCESS;
@@ -90,6 +95,49 @@ class ClusterDrainCommand implements Callable<Integer> {
         System.err.printf("Failed to drain: %s%n", message);
 
         return ExitCode.ERROR;
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private int pollUntilDrained() {
+        System.out.printf("Waiting for node %s to finish draining (timeout: %ds)...%n", nodeId, timeoutSeconds);
+        var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+
+        while (System.currentTimeMillis() < deadline) {
+            var lifecycle = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET, List.of(nodeId));
+
+            if (DrainCompletion.isDeparted(lifecycle)) {
+                System.out.printf("Node %s has departed (membership committed its departure).%n", nodeId);
+
+                return ExitCode.SUCCESS;
+            }
+
+            System.out.printf("  Current state: %s%n", describeState(lifecycle));
+            sleepQuietly();
+        }
+
+        System.err.printf("Timeout: node %s did not finish draining within %ds.%n", nodeId, timeoutSeconds);
+
+        return ExitCode.TIMEOUT;
+    }
+
+    private static String describeState(Result<String> lifecycle) {
+        return lifecycle.flatMap(MAPPER::readTree)
+                        .map(ClusterDrainCommand::extractState)
+                        .or("UNKNOWN");
+    }
+
+    private static String extractState(JsonNode node) {
+        return node.path("state")
+                   .asText("UNKNOWN");
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static void sleepQuietly() {
+        try {
+            Thread.sleep(POLL_INTERVAL_MS);
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private int onFailure(Cause cause) {
