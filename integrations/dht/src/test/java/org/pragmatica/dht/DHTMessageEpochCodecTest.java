@@ -47,7 +47,7 @@ class DHTMessageEpochCodecTest {
     @Test
     void putRequest_roundTrip_preservesEpochPrimitives() {
         var codec = codec();
-        var original = new DHTMessage.PutRequest("req-1", new NodeId("n1"), bytes("k"), bytes("v"), 4242L, 0L, 7L, 3L);
+        var original = new DHTMessage.PutRequest("req-1", new NodeId("n1"), bytes("k"), bytes("v"), 4242L, 0L, 7L, 3L, 9L);
         var buf = Unpooled.buffer();
 
         try {
@@ -55,6 +55,7 @@ class DHTMessageEpochCodecTest {
             DHTMessage.PutRequest decoded = codec.read(buf);
 
             assertThat(decoded.version()).isEqualTo(4242L);
+            assertThat(decoded.replicationVersion()).as("#1777 R1c: the replication-change stamp survives the wire").isEqualTo(9L);
             assertThat(decoded.epochTerm()).isEqualTo(7L);
             assertThat(decoded.epochCounter()).isEqualTo(3L);
             assertThat(decoded.key()).isEqualTo(bytes("k"));

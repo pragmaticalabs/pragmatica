@@ -73,6 +73,12 @@ public final class DHTNode {
     /// The version no replication change carries.
     public static final long NO_CHANGE = -1L;
 
+    /// The replication change this node has applied (#1777, CTO ruling R1c): the version every put it coordinates is stamped
+    /// with, and below which it refuses a put ([#handlePutRequest]). Raised when this node applies a change of the factors
+    /// ([#resolveReplication]), and aligned to the committed change's version once that record arrives
+    /// ([#adoptReplicationChange]), so every node that uses the same factors stamps and fences at the same version.
+    private final AtomicLong replicationFence = new AtomicLong(NO_CHANGE);
+
     private record QuorumFloor(long version, int writeQuorum, int readQuorum) {
         QuorumFloor merge(QuorumFloor other) {
             return new QuorumFloor(Math.max(version, other.version),
@@ -268,6 +274,25 @@ public final class DHTNode {
         }
     }
 
+    /// The replication change this node has applied, which its puts are stamped with (#1777 R1c).
+    public long replicationFence() {
+        return replicationFence.get();
+    }
+
+    /// The cluster's committed replication change is `version`, which installed `factors` (#1777 R1c). When this node uses
+    /// exactly those factors it has applied that change, and takes its version as its fence — which can LOWER a fence it
+    /// raised itself at a later configuration version it applied the same factors under (a node that skipped versions), so
+    /// every node on the same factors stamps and fences alike. A node on other factors keeps its fence: either it has not
+    /// applied this change yet, or a later change is on its way.
+    @Contract
+    public void adoptReplicationChange(long version, DHTConfig factors) {
+        synchronized (placementLock) {
+            if (!factorsDiffer(config.get(), factors)) {
+                replicationFence.set(version);
+            }
+        }
+    }
+
     /// The highest replication change whose writers-switched catch-up pass completed here, or [#NO_CHANGE].
     public long replicationCaughtUpVersion() {
         return caughtUpVersion.get();
@@ -322,6 +347,7 @@ public final class DHTNode {
                 var after = replicaSets();
 
                 if (changed) {
+                    replicationFence.set(version);
                     reopenEveryOwnedPartition(before, after);
                     // `previous` is the transitional view, so a change made while an earlier one is still settling keeps
                     // the strictest quorums of all of them
@@ -651,8 +677,20 @@ public final class DHTNode {
     /// replica enforces the fence against its own per-partition high-water (#345 piece 1c). A
     /// stale-epoch reject surfaces as a failed `putVersioned` promise → `PutResponse(success=false,
     /// superseded=false)`, exactly the deposed-owner rejection the client re-resolves against.
+    ///
+    /// The replication-change fence (#1777, CTO ruling R1c) comes first: a put stamped with an older replication change
+    /// than this node has applied had its quorum sized under factors the cluster has left — it may have been in flight
+    /// across the whole change, past the settle — so it is refused (`replicationStale`) and the writer retries under the
+    /// newer change. A put this node accepted BEFORE it applied the change is safe: every core's writers-switched
+    /// catch-up begins only after every member, this one included, reported the change applied, so it pulls that copy.
     @Contract
     public void handlePutRequest(DHTMessage.PutRequest request, Consumer<DHTMessage.PutResponse> responseHandler) {
+        if (request.replicationVersion() < replicationFence.get()) {
+            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(), nodeId, false, false, false, true));
+
+            return;
+        }
+
         storage.putVersioned(request.key(),
                              request.value(),
                              request.version(),
@@ -663,12 +701,14 @@ public final class DHTNode {
                                                                                        nodeId,
                                                                                        true,
                                                                                        !written,
+                                                                                       false,
                                                                                        false)))
                .onFailure(cause -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                                                      nodeId,
                                                                                      false,
                                                                                      false,
-                                                                                     cause instanceof DHTError.StaleEpochWrite)));
+                                                                                     cause instanceof DHTError.StaleEpochWrite,
+                                                                                     false)));
     }
 
     /// Handle a remove request (for message routing integration).

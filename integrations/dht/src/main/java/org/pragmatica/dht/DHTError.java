@@ -108,6 +108,37 @@ public sealed interface DHTError extends Cause {
         }
     }
 
+    /// One replica's refusal of a put stamped with an older replication change than it has applied (#1777, CTO ruling
+    /// R1c). The write as a whole fails [ReplicationChangeStale] if quorum becomes unreachable because of it.
+    static DHTError replicaOnNewerReplication(NodeId replica) {
+        return new ReplicaOnNewerReplication(replica);
+    }
+
+    record ReplicaOnNewerReplication(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " refused the write: it has applied a newer replication change";
+        }
+    }
+
+    /// A put that did not reach its quorum because replicas that applied a newer replication change refused it (#1777,
+    /// CTO ruling R1c). Its quorum was sized under factors the cluster has left; replicas that had not applied the change
+    /// yet may hold it, and the catch-up that follows the change carries those copies, so the outcome is unknown, not a
+    /// failure. Retriable: the retry is stamped, and sized, under the change as this node has applied it by then.
+    static DHTError replicationChangeStale(int required, int achieved, int refused) {
+        return new ReplicationChangeStale(required, achieved, refused);
+    }
+
+    record ReplicationChangeStale(int required, int achieved, int refused) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Write refused by the replication-change fence: required " + required
+                 + " acks, got " + achieved
+                 + ", " + refused
+                 + " replicas have applied a newer replication change; retry once this node has applied it";
+        }
+    }
+
     record QuorumNotReached(int required, int achieved) implements DHTError, Cause.Transient {
         @Override
         public String message() {

@@ -238,6 +238,105 @@ class DHTReplicationChangeTest {
         assertThat(node.catchUpGeneration(partition)).as("a new spell").isNotEqualTo(firstPass);
     }
 
+    /// CTO ruling R1c, v1882's round-3 straddle (`probe-r3-straddle.patch`): a non-replica writer starts a put at W_old;
+    /// it stays in flight while every node applies the change, the writers switch, every replica completes its pass and
+    /// the change settles; then it lands on ONE replica. Red at e067c2a8b: that replica acked it, the put succeeded at
+    /// W1, and a read at R_new returned None. The put carries the replication change it was sized under, so the replica,
+    /// which has applied a newer one, refuses it; the writer retries under the change and the value is readable.
+    @Test
+    void straddlingPut_startedUnderTheOldFactors_isRefusedAfterTheChange_andTheRetrySucceeds() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+
+        cluster.holdPuts = true;
+        var straddling = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        assertThat(cluster.held).as("arming: the W_old put is in flight to every replica").hasSize(3);
+
+        cluster.changeAll(factors(3, 2));
+        cluster.settle(CHANGE, 3);
+        cluster.deliverHeldTo(replicas.getLast());
+
+        var outcome = straddling.await();
+
+        assertThat(outcome.isSuccess()).as("the straddling put is not acknowledged: " + outcome).isFalse();
+        assertThat(cluster.holds(replicas.getLast())).as("the replica refused it").isFalse();
+
+        assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).as("the retry, under the applied change").isTrue();
+        replicas.forEach(id -> assertThat(cluster.read(id)).as("readable at R_new on " + id).isEqualTo(Option.some("v")));
+    }
+
+    /// A writer the roster wrongly excluded (falsely confirmed departed, so the change settled without its report) still
+    /// writes under the old factors. Every replica that applied the change refuses it with the typed, retriable
+    /// `ReplicationChangeStale`; once the writer applies the change, its retry succeeds and reads at R_new.
+    @Test
+    void writerExcludedFromTheSettle_isRefused_untilItAppliesTheChange() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+
+        var refused = cluster.client(writer).put(KEY, VALUE).await();
+
+        boolean stale = refused.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("typed, retriable refusal: " + refused).isTrue();
+        assertThat(replicas).as("no replica took the W_old write").noneMatch(cluster::holds);
+
+        cluster.nodes.get(writer).resolveReplication(factors(3, 2), CHANGE);
+
+        assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).isTrue();
+        replicas.forEach(id -> assertThat(cluster.read(id)).isEqualTo(Option.some("v")));
+    }
+
+    /// A worker that learned the OLD factors from a core that had not applied the change yet stamps its puts with the old
+    /// change it adopted; replicas on the new change refuse them.
+    @Test
+    void writerTaughtTheOldChange_isFencedByReplicasOnTheNewOne() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+
+        cluster.nodes.get(writer).adoptReplicationChange(CHANGE - 2, factors(3, 1));
+        replicas.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+
+        assertThat(cluster.nodes.get(writer).replicationFence()).as("arming: the writer is on the old change").isEqualTo(CHANGE - 2);
+        assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).as("fenced").isFalse();
+        assertThat(replicas).noneMatch(cluster::holds);
+    }
+
+    /// Why the fence is keyed on the change a replica has APPLIED, not on the writers-switched stage it has observed.
+    /// Keyed on writers-switched, a replica that has applied the change but not yet observed that stage would still
+    /// accept a W_old write — after its co-replicas' writers-switched passes completed, so no pass carries it to them,
+    /// and once the change settles a read at R_new over those co-replicas misses it. Keyed on application, every W_old
+    /// write a replica accepts predates that replica's report, hence the writers-switched commit, hence every pass.
+    @Test
+    void wOldWriteLandingBetweenAReplicasApplyAndItsWritersSwitched_isRefused() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var late = replicas.getFirst();
+        var writer = cluster.nonReplicaOf(replicas);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        others.stream().filter(id -> !id.equals(late)).forEach(id -> cluster.nodes.get(id).writersSwitched(CHANGE, 3));
+        cluster.catchUpOnly(others.stream().filter(id -> !id.equals(late)).toArray(NodeId[]::new));
+
+        var acked = cluster.putReachingOnlyOutcome(writer, late);
+
+        cluster.nodes.get(late).writersSwitched(CHANGE, 3);
+        cluster.catchUp(3);
+        others.forEach(id -> cluster.nodes.get(id).settleReplicationChange(CHANGE));
+
+        assertThat(acked).as("a W_old write landing on an applied replica is refused").isFalse();
+        replicas.stream().filter(id -> !id.equals(late))
+                .forEach(id -> assertThat(cluster.read(id).isPresent() || !acked).as("no acked write reads absent at " + id).isTrue());
+    }
+
     /// Caught up for a change is reported once, only for a pass that began after the writers switched.
     @Test
     void caughtUp_isReportedOncePerChange_afterTheWritersSwitchedPass() {
@@ -263,12 +362,23 @@ class DHTReplicationChangeTest {
         return DHTConfig.DEFAULT.withFactors(replicationFactor, confirmationFactor).unwrap();
     }
 
+    /// The old factors with a short operation timeout, so a put whose replies never all arrive fails fast.
+    private static DHTConfig shortTimeout(int replicationFactor, int confirmationFactor) {
+        return DHTConfig.dhtConfig(replicationFactor,
+                                   confirmationFactor,
+                                   replicationFactor - confirmationFactor + 1,
+                                   org.pragmatica.lang.io.TimeSpan.timeSpan(500).millis())
+                        .unwrap();
+    }
+
     private static final class Cluster {
         final Map<NodeId, DHTNode> nodes = new LinkedHashMap<>();
         final Map<NodeId, DHTAntiEntropy> antiEntropies = new LinkedHashMap<>();
         final Map<NodeId, DistributedDHTClient> clients = new LinkedHashMap<>();
         final AtomicInteger fallbackResolutions = new AtomicInteger();
         volatile Set<NodeId> dropPutsTo = Set.of();
+        volatile boolean holdPuts;
+        final List<Map.Entry<NodeId, DHTMessage.PutRequest>> held = new java.util.ArrayList<>();
 
         Cluster(int size, DHTConfig config) {
             var ids = IntStream.range(0, size).mapToObj(i -> new NodeId("node-" + i)).toList();
@@ -328,6 +438,30 @@ class DHTReplicationChangeTest {
             nodes.values().forEach(node -> node.settleReplicationChange(version));
         }
 
+        void deliverHeldTo(NodeId target) {
+            held.stream()
+                .filter(entry -> entry.getKey().equals(target))
+                .forEach(entry -> nodes.get(target).handlePutRequest(entry.getValue(), resp -> route(entry.getValue().sender(), resp)));
+        }
+
+        /// The DHT half of a committed settle, over `members` only (the rest were excluded from the roster).
+        void settleOnly(long version, int sourceReplicationFactor, List<NodeId> members) {
+            members.forEach(id -> nodes.get(id).writersSwitched(version, sourceReplicationFactor));
+            catchUpOnly(members.toArray(NodeId[]::new));
+            members.forEach(id -> nodes.get(id).settleReplicationChange(version));
+        }
+
+        /// Put through `writer` while every node except `reaching` drops the request; whether it was acknowledged.
+        boolean putReachingOnlyOutcome(NodeId writer, NodeId... reaching) {
+            var reached = Set.of(reaching);
+
+            dropPutsTo = Set.copyOf(nodes.keySet().stream().filter(id -> !reached.contains(id)).toList());
+            var outcome = clients.get(writer).put(KEY, VALUE).await();
+            dropPutsTo = Set.of();
+
+            return outcome.isSuccess();
+        }
+
         void catchUpOnly(NodeId... ids) {
             for (int round = 0; round < 3; round++) {
                 for (var id : ids) {
@@ -382,7 +516,9 @@ class DHTReplicationChangeTest {
                 case DHTMessage.GetRequest r -> node.handleGetRequest(r, resp -> route(r.sender(), resp));
                 case DHTMessage.GetResponse r -> client.onGetResponse(r);
                 case DHTMessage.PutRequest r -> {
-                    if (!dropPutsTo.contains(target)) {
+                    if (holdPuts) {
+                        held.add(Map.entry(target, r));
+                    } else if (!dropPutsTo.contains(target)) {
                         node.handlePutRequest(r, resp -> route(r.sender(), resp));
                     }
                 }

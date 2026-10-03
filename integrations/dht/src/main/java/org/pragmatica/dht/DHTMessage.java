@@ -63,6 +63,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// `epochCounter`) — the fencing token each replica enforces against its per-partition
     /// high-water (#345 piece 1c). The `Epoch` type that mints these lives in the BSL-1.1
     /// `aether/slice` module, so only the primitives cross this Apache-2.0 wire.
+    ///
+    /// `replicationVersion` (#1777, CTO ruling R1c) is the writer's applied replication change ([DHTNode#replicationFence])
+    /// when it started the put: the quorum it waits for was sized under that change's factors. A replica that has applied a
+    /// newer change refuses the write ([PutResponse#replicationStale]).
     record PutRequest(String requestId,
                       NodeId sender,
                       byte[] key,
@@ -70,7 +74,8 @@ public sealed interface DHTMessage extends ProtocolMessage {
                       long version,
                       long epochIncarnation,
                       long epochTerm,
-                      long epochCounter) implements DHTMessage {
+                      long epochCounter,
+                      long replicationVersion) implements DHTMessage {
         public PutRequest {
             key = key.clone();
             value = value.clone();
@@ -80,7 +85,16 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// Response to a put request. `fenced` (#1818, the owner's fence ruling) marks a refusal by the owner-epoch
     /// fence: the writer's epoch is older than this replica's high-water. The writer's put may still have been
     /// applied elsewhere, so a quorum lost to fenced refusals is indeterminate, not a definite failure.
-    record PutResponse(String requestId, NodeId sender, boolean success, boolean superseded, boolean fenced) implements DHTMessage {}
+    ///
+    /// `replicationStale` (#1777, CTO ruling R1c) marks a refusal by the replication-change fence: the put was stamped with
+    /// an older replication change than this replica has applied, so its quorum was sized under factors the cluster has
+    /// left. The writer applies the newer change and retries.
+    record PutResponse(String requestId,
+                       NodeId sender,
+                       boolean success,
+                       boolean superseded,
+                       boolean fenced,
+                       boolean replicationStale) implements DHTMessage {}
 
     /// Request to remove a value.
     record RemoveRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
