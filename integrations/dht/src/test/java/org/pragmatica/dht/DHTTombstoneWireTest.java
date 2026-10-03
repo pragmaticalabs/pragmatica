@@ -81,8 +81,9 @@ class DHTTombstoneWireTest {
 
     @Test
     void removeResponse_fenced_survivesTheWire() {
-        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, true, false)).fenced()).isTrue();
-        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, false, true)).replicationStale()).isTrue();
+        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, true, false, false)).fenced()).isTrue();
+        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, false, true, false)).replicationStale()).isTrue();
+        assertThat(roundTrip(new DHTMessage.RemoveResponse("r", NODE, false, false, false, true)).fenceUnknown()).isTrue();
     }
 
     @Test

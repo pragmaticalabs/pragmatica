@@ -104,14 +104,16 @@ public sealed interface DHTMessage extends ProtocolMessage {
     ///
     /// `replicationStale` (#1777, CTO ruling R1c) marks a refusal by the replication-change fence: the put was stamped with
     /// an older replication change than this replica has applied, so its quorum was sized under factors the cluster has
-    /// left; or this replica does not know the committed change yet (restarted, before its state restore), so it cannot
-    /// tell. The writer retries — under the newer change once it has applied it.
+    /// left. The writer retries under the newer change once it has applied it. `fenceUnknown` marks the other refusal of
+    /// that fence: this replica does not know the committed change yet (restarted, before its state restore and catch-up),
+    /// so it can judge no stamp — a plain retriable refusal that says nothing about the WRITER (v1882 round 5).
     record PutResponse(String requestId,
                        NodeId sender,
                        boolean success,
                        boolean superseded,
                        boolean fenced,
-                       boolean replicationStale) implements DHTMessage {}
+                       boolean replicationStale,
+                       boolean fenceUnknown) implements DHTMessage {}
 
     /// Request to remove a value: the replica stores a TOMBSTONE stamped like a put (#1777 track 3), so the remove
     /// supersedes every older copy of the value wherever anti-entropy, migration or a hand-off carries it, and is
@@ -133,10 +135,16 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// the owner-epoch fence, exactly as for a [PutResponse]: a remove whose quorum is lost to fences is
     /// indeterminate. `replicationStale` marks a refusal by the replication-change fence, exactly as for a [PutResponse]
     /// (#1777, CTO ruling R1c): a tombstone is a write, and one sized under factors the cluster has left is refused too.
-    record RemoveResponse(String requestId, NodeId sender, boolean found, boolean fenced, boolean replicationStale) implements DHTMessage {
+    /// `fenceUnknown` is the replica not knowing the committed change yet, as for a [PutResponse].
+    record RemoveResponse(String requestId,
+                          NodeId sender,
+                          boolean found,
+                          boolean fenced,
+                          boolean replicationStale,
+                          boolean fenceUnknown) implements DHTMessage {
         /// An answer that was not fenced.
         public RemoveResponse(String requestId, NodeId sender, boolean found) {
-            this(requestId, sender, found, false, false);
+            this(requestId, sender, found, false, false, false);
         }
     }
 

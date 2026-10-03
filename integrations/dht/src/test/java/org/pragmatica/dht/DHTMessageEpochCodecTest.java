@@ -72,10 +72,15 @@ class DHTMessageEpochCodecTest {
         var buf = Unpooled.buffer();
 
         try {
-            codec.write(buf, new DHTMessage.PutResponse("req-2", new NodeId("n2"), false, false, false, true));
-            codec.write(buf, new DHTMessage.PutResponse("req-3", new NodeId("n2"), false, false, true, false));
+            codec.write(buf, new DHTMessage.PutResponse("req-2", new NodeId("n2"), false, false, false, true, false));
+            codec.write(buf, new DHTMessage.PutResponse("req-3", new NodeId("n2"), false, false, true, false, false));
+            codec.write(buf, new DHTMessage.PutResponse("req-4", new NodeId("n2"), false, false, false, false, true));
             DHTMessage.PutResponse stale = codec.read(buf);
             DHTMessage.PutResponse fenced = codec.read(buf);
+            DHTMessage.PutResponse unknown = codec.read(buf);
+
+            assertThat(unknown.fenceUnknown()).as("v1882 r5: an unknown fence is its own refusal").isTrue();
+            assertThat(unknown.replicationStale()).isFalse();
 
             assertThat(stale.replicationStale()).isTrue();
             assertThat(stale.fenced()).isFalse();

@@ -40,6 +40,7 @@ public final class QuorumCollector<T> {
     /// Slots refused by an owner-epoch fence (#1818, the owner's fence ruling).
     private final AtomicInteger fenced = new AtomicInteger(0);
     private final AtomicInteger replicationStale = new AtomicInteger(0);
+    private final AtomicInteger fenceUnknown = new AtomicInteger(0);
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
     /// Picks the answer kept when two replicas answered: a present value over an absent one, or — for stamped
@@ -140,6 +141,10 @@ public final class QuorumCollector<T> {
             replicationStale.incrementAndGet();
         }
 
+        if (cause instanceof DHTError.ReplicaFenceUnknown) {
+            fenceUnknown.incrementAndGet();
+        }
+
         var failures = failureCount.incrementAndGet();
 
         if (total - failures < quorum) {
@@ -159,6 +164,10 @@ public final class QuorumCollector<T> {
 
         if (replicationStale.get() > 0) {
             return DHTError.replicationChangeStale(quorum, successCount.get(), replicationStale.get());
+        }
+
+        if (fenceUnknown.get() > 0) {
+            return DHTError.replicationFenceUnknown(quorum, successCount.get(), fenceUnknown.get());
         }
 
         return refusals.get() > 0

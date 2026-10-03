@@ -328,6 +328,8 @@ class DHTReplicationChangeTest {
         assertThat(fresh.acceptsWrites()).as("resolved but not adopted: still unknown").isFalse();
         fresh.adoptReplicationChange(CHANGE, factors(3, 2));
         fresh.settleReplicationChange(CHANGE, factors(3, 2));
+        assertThat(fresh.acceptsWrites()).as("adopted, but not confirmed caught up: still unknown").isFalse();
+        fresh.confirmReplicationFence();
 
         assertThat(fresh.acceptsWrites()).isTrue();
         assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).as("the retry, stamped under the change").isTrue();
@@ -346,13 +348,56 @@ class DHTReplicationChangeTest {
 
         fresh.handleRemoveRequest(new DHTMessage.RemoveRequest("r", replicas.getFirst(), KEY, 1L, 0L, 0L, 0L, CHANGE), response::set);
 
-        assertThat(response.get().replicationStale()).as("unknown fence: refused").isTrue();
+        assertThat(response.get().fenceUnknown()).as("unknown fence: refused").isTrue();
 
         fresh.resolveReplication(factors(3, 1), CHANGE);
         fresh.adoptReplicationChange(CHANGE, factors(3, 1));
+        fresh.confirmReplicationFence();
         fresh.handleRemoveRequest(new DHTMessage.RemoveRequest("r2", replicas.getFirst(), KEY, 2L, 0L, 0L, 0L, CHANGE), response::set);
 
-        assertThat(response.get().replicationStale()).as("known fence: accepted").isFalse();
+        assertThat(response.get().fenceUnknown() || response.get().replicationStale()).as("known fence: accepted").isFalse();
+    }
+
+    /// v1882 round 5 (`probe-r5-restart-and-stale-record.patch`): two replicas restart; a HEALTHY writer on the current
+    /// change is refused by their UNKNOWN fences. That says nothing about the writer, so it records no staleness; once
+    /// the replicas know the change its next put succeeds. Red at 3cd00b197: the unknown-fence refusal recorded
+    /// `Some(7)` and nothing cleared it, so DHT_WRITER_STALE would have fired five minutes later for a healthy node.
+    @Test
+    void healthyWriterRefusedByUnknownFences_recordsNoStaleness() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+
+        cluster.changeAll(factors(3, 2));
+        cluster.settle(CHANGE, 3);
+        var restarted = List.of(replicas.get(1), replicas.get(2)).stream().map(cluster::restart).toList();
+
+        var refused = cluster.client(writer).put(KEY, VALUE).await();
+        boolean unknown = refused.fold(cause -> cause instanceof DHTError.ReplicationFenceUnknown, _ -> false);
+
+        assertThat(unknown).as("a plain retriable refusal: " + refused).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("the writer is not stale").isEqualTo(Option.none());
+
+        restarted.forEach(fresh -> {
+            fresh.resolveReplication(factors(3, 2), CHANGE);
+            fresh.adoptReplicationChange(CHANGE, factors(3, 2));
+            fresh.confirmReplicationFence();
+        });
+
+        assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).isEqualTo(Option.none());
+    }
+
+    /// Any accepted write ends a stale-refusal episode: the writer's writes are fine again (v1882 round 5).
+    @Test
+    void acceptedWrite_clearsARecordedStaleRefusal() {
+        var cluster = new Cluster(3, shortTimeout(3, 1));
+        var writer = cluster.anyId();
+
+        cluster.nodes.get(writer).noteStaleRefusal(CHANGE - 1, 1_000L);
+        assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).isTrue();
+
+        assertThat(cluster.nodes.get(writer).staleRefusal()).isEqualTo(Option.none());
     }
 
     /// A worker that learned the OLD factors from a core that had not applied the change yet stamps its puts with the old

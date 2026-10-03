@@ -117,8 +117,7 @@ public sealed interface DHTError extends Cause {
     record ReplicaOnNewerReplication(NodeId replica) implements DHTError, Cause.Transient {
         @Override
         public String message() {
-            return "Replica " + replica.id()
-                 + " refused the write: it has applied a newer replication change, or has not yet learned the committed one";
+            return "Replica " + replica.id() + " refused the write: it has applied a newer replication change";
         }
     }
 
@@ -137,6 +136,36 @@ public sealed interface DHTError extends Cause {
                  + " acks, got " + achieved
                  + ", " + refused
                  + " replicas have applied a newer replication change; retry once this node has applied it";
+        }
+    }
+
+    /// One replica's refusal of a write because it does not know the committed replication change yet (restarted, before
+    /// its state restore and consensus catch-up; v1882 round 4). Says nothing about the writer.
+    static DHTError replicaFenceUnknown(NodeId replica) {
+        return new ReplicaFenceUnknown(replica);
+    }
+
+    record ReplicaFenceUnknown(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id()
+                 + " refused the write: it does not know the committed replication change yet";
+        }
+    }
+
+    /// A write that did not reach its quorum because replicas that do not know the committed replication change yet
+    /// refused it. Retriable; the writer is not stale.
+    static DHTError replicationFenceUnknown(int required, int achieved, int refused) {
+        return new ReplicationFenceUnknown(required, achieved, refused);
+    }
+
+    record ReplicationFenceUnknown(int required, int achieved, int refused) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Write refused: required " + required
+                 + " acks, got " + achieved
+                 + ", " + refused
+                 + " replicas do not know the committed replication change yet; retry";
         }
     }
 
