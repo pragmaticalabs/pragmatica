@@ -179,6 +179,39 @@ class DrainWaitCallSitesTest {
                                    .noneMatch(r -> r.startsWith("POST /api/v1/nodes/shutdown/"));
     }
 
+    /// The usual AWS case: the transport address is a private IP, the endpoint a public one, so nothing matches. The
+    /// fallback (enumerated order) is kept, but never silently.
+    @Test
+    void destroy_noHostMatch_warnsLoudly_andKeepsTheEnumeratedOrder() {
+        var http = new ScriptedDrainHttp(drainAccepted("core-0"), notFound("core-0"), notFound("core-1"))
+            .withTransportAddress("core-0", "172.31.0.10:5000")
+            .withTransportAddress("core-1", "172.31.0.11:5000");
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://203.0.113.7:8080");
+        var err = new ByteArrayOutputStream();
+        System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        new ClusterDestroyCommand().drainAndShutdown(List.of("core-0", "core-1"));
+
+        assertThat(err.toString(StandardCharsets.UTF_8)).contains("WARNING").contains("could not be identified").contains("deletes the VMs");
+        assertThat(http.drainOrder()).containsExactly("core-0", "core-1");
+    }
+
+    @Test
+    void destroy_aMatchedServingNode_emitsNoUnidentifiedWarning() {
+        var http = new ScriptedDrainHttp(drainAccepted("core-0"), notFound("core-1"), connectionRefused())
+            .withTransportAddress("core-0", "10.255.255.1:5000")
+            .withTransportAddress("core-1", "10.255.255.2:5000");
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://10.255.255.1:8080");
+        var err = new ByteArrayOutputStream();
+        System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        new ClusterDestroyCommand().drainAndShutdown(List.of("core-0", "core-1"));
+
+        assertThat(err.toString(StandardCharsets.UTF_8)).doesNotContain("could not be identified");
+    }
+
     @Test
     void destroy_servingNodeLast_leavesTheOrderAloneWhenTheServingNodeIsUnknown() {
         assertThat(ClusterDestroyCommand.servingNodeLast(List.of("a", "b", "c"), org.pragmatica.lang.Option.none()))

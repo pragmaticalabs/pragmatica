@@ -785,10 +785,28 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// departure the drain wait observed is not sent a shutdown through an endpoint that may be that halted node.
     DrainShutdownOutcome drainAndShutdown(List<String> nodeIds) {
         var servingNode = servingNodeId(nodeIds);
+
+        warnServingNodeUnidentified(nodeIds, servingNode);
         var ordered = servingNodeLast(nodeIds, servingNode);
         var drainResults = drainAllNodes(ordered, servingNode);
 
         return new DrainShutdownOutcome(drainResults, shutdownAllNodes(ordered, departedNodes(drainResults)));
+    }
+
+    /// With several nodes and no host match, the node relaying these requests may be drained mid-list, and every later
+    /// drain and shutdown then goes to a halted process while cloud cleanup still deletes the VMs. The usual cause is a
+    /// transport address that differs from the management endpoint (a private IP behind a public endpoint, e.g. AWS).
+    /// Never silent: say so and name the consequence.
+    @Contract
+    static void warnServingNodeUnidentified(List<String> nodeIds, org.pragmatica.lang.Option<String> servingNode) {
+        if (nodeIds.size() > 1 && servingNode.isEmpty()) {
+            System.err.println("  WARNING: the node serving this destroy's requests could not be identified (no node's"
+                              + " transport host matches the management endpoint, e.g. a private transport address behind"
+                              + " a public endpoint). Nodes are drained in enumerated order, so that node may be drained"
+                              + " before the others: later drain and shutdown requests can then fail while cloud cleanup"
+                              + " still deletes the VMs. Verify the cluster is gone, or re-run with --cluster pointing at"
+                              + " an endpoint whose host matches a node's transport host.");
+        }
     }
 
     private static java.util.Set<String> departedNodes(List<NodeResult> drainResults) {

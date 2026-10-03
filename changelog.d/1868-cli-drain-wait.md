@@ -36,6 +36,7 @@
   real `JdkHttpOperations` against a closed socket and a live 404 listener.
 - **`rolling-aether-upgrade.sh` called routes that do not exist:** `/api/nodes/...` (every `ManagementRoute` is under `/api/v1`;
   no unversioned alias) and `/api/nodes/activate` (no such route). Paths are now `/api/v1/nodes/...` and the activate step is gone.
+- **destroy warns loudly when it cannot identify the serving node** (e.g. AWS: private transport IP behind a public endpoint) and names the consequence; re-routing through the sibling endpoints is a follow-up ticket.
 - [unverified: destroy's serving-node match assumes a node's cluster-transport host equals the management endpoint's host;
   on a cluster where they differ (private transport, public management) nothing matches and the order is left as enumerated.]
 - [unverified: that a halted node's `MembershipFsm` reaches `Dead` within the drain wait on a live cluster: pinned with a
