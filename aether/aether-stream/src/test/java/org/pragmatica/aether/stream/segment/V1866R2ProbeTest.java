@@ -133,6 +133,8 @@ class V1866R2ProbeTest {
         var inMemoryAfterDestroy = index.reclaimedThrough(STREAM, PARTITION);
 
         footprint.adopt(STREAM, NEW_LIFE).await();
+        assertThat(index.reclaimedThrough(STREAM, PARTITION)).as("3b: the destroyed life's floor is not back in memory in the new life")
+                                                             .isEqualTo(-1L);
         seal(sink, 0, 9);
         enforce(storage, index, RefDurability.LIVE);
 
@@ -142,6 +144,34 @@ class V1866R2ProbeTest {
                                           .containsKey(SegmentIndex.floorRefName(SegmentIndex.durableName(STREAM, NEW_LIFE),
                                                                                  PARTITION,
                                                                                  9));
+    }
+
+    /// Attack 3, recreate variant: the stream is destroyed AND recreated while an old-life retention pass waits for its
+    /// floor to become durable, and the new life seals its own 0-9. The stale pass must not reclaim anything in the new
+    /// life: dropping "its" 0-9 would remove the new life's segment from the index.
+    @Test
+    void destroyAndRecreateDuringRetentionPass_staleReclaimNeverTouchesTheNewLife() {
+        var storage = storage();
+        var index = new SegmentIndex();
+        var sink = storageSegmentSink(storage, index);
+        var footprint = footprint(storage, index);
+
+        footprint.adopt(STREAM, OLD_LIFE).await();
+        seal(sink, 0, 9);
+        seal(sink, 10, 19);
+        enforce(storage, index, () -> {
+            footprint.forget(STREAM).await();
+            footprint.adopt(STREAM, NEW_LIFE).await();
+            seal(sink, 0, 9);
+
+            return Result.unitResult();
+        });
+
+        assertThat(index.listSegments(STREAM, PARTITION)).extracting(SegmentIndex.SegmentRef::startOffset)
+                                                         .as("the new life's own segment is still indexed")
+                                                         .containsExactly(0L);
+        assertThat(index.reclaimedThrough(STREAM, PARTITION)).as("no floor of the old pass in the new life").isEqualTo(-1L);
+        assertThat(metadata.listAllRefs()).containsKey("streams/" + SegmentIndex.durableName(STREAM, NEW_LIFE) + "/0/0-9");
     }
 
     /// Attack 3, durable variant: the destroy completes between the floor's block write and its ref repoint, so the
