@@ -61,11 +61,7 @@ public final class DHTNode {
     /// Empty when no change is settling.
     private final AtomicReference<Option<QuorumFloor>> quorumFloor = new AtomicReference<>(Option.none());
 
-    private record QuorumFloor(int writeQuorum, int readQuorum) {
-        QuorumFloor max(QuorumFloor other) {
-            return new QuorumFloor(Math.max(writeQuorum, other.writeQuorum), Math.max(readQuorum, other.readQuorum));
-        }
-    }
+    private record QuorumFloor(int writeQuorum, int readQuorum) {}
 
     /// Serializes the two mutations that change replica sets — a ring change and a replication change — so each
     /// diffs against the state the other left.
@@ -218,10 +214,9 @@ public final class DHTNode {
 
                 if (changed) {
                     reopenEveryOwnedPartition(before, after);
-                    quorumFloor.set(Option.some(quorumFloor.get()
-                                                           .filter(_ -> !catchUp.nonePending())
-                                                           .map(floor -> floor.max(floorOf(previous)))
-                                                           .or(floorOf(previous))));
+                    // `previous` is the transitional view, so a change made while an earlier one is still settling keeps
+                    // the strictest quorums of all of them
+                    quorumFloor.set(Option.some(floorOf(previous)));
                 } else {
                     markGained(before, after);
                 }
