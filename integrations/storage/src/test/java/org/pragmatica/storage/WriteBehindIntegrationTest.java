@@ -89,7 +89,8 @@ class WriteBehindIntegrationTest {
                              .fold(c -> { fail("put failed: " + c.message()); return null; },
                                    blockId -> blockId);
 
-            awaitAtLeast(slowTier::usedBytes, 1);
+            // MemoryTier.put reserves usedBytes BEFORE it stores the block: await the block itself, not the byte count.
+            awaitAtLeast(() -> slowTier.exists(id).await().or(false) ? 1 : 0, 1);
             assertThat(slowTier.usedBytes()).isGreaterThan(0);
 
             // Remove from fast tier to force waterfall read from slow tier

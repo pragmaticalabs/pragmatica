@@ -145,8 +145,8 @@ class StreamConsumerRuntimeTest {
                               });
             manager.publishLocal("orders", 0, "event-1".getBytes(), 1000L);
             assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
-            // Allow a poll cycle for cursor update
-            Thread.sleep(150);
+            // The handler ran; the cursor advances after its promise settles: await the cursor itself.
+            awaitCursorAt(runtime, "orders", 0, "group-1", 1L, 5_000);
             var cursor = runtime.cursorPosition("orders", 0, "group-1");
 
             assertThat(cursor.isPresent()).isTrue();
@@ -2706,6 +2706,8 @@ class StreamConsumerRuntimeTest {
                 releasing.publishLocal("s", 0, "local-0".getBytes(UTF_8), 1000L);
                 awaitSize(delivered, 1);
                 assertThat(delivered).describedAs("push delivery from the local ring").containsExactly(0L);
+                // The pass is still in flight until the cursor advances; release the ring only once it has.
+                awaitCursorAt(consumer, "s", 0, "group-1", 1L, 5_000);
 
                 role.set(Role.NONE);
                 releasing.reconcileReshuffle();
