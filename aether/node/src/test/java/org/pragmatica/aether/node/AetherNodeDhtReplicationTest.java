@@ -80,6 +80,48 @@ class AetherNodeDhtReplicationTest {
         assertThat(node.config().isFullReplication()).isTrue();
     }
 
+    /// #1777 track 1 (CTO ruling B), core side: the worker projection's record is the committed `[replication]` and
+    /// `[cache]` factors — the built-in ones while nothing is committed.
+    @Test
+    void workerDhtReplication_isDerivedFromTheCommittedSections() {
+        var toml = "[replication]\nreplication_factor = 5\nconfirmation_factor = 3\n\n[cache]\nreplication_factor = 2\nconfirmation_factor = 1\n";
+        var committed = new org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue(toml, "c", "1", java.util.List.of(), 5, 5, "forge", 1, 0);
+
+        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.none()).unwrap())
+            .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1));
+        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.some(committed)).unwrap())
+            .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 2, 1));
+    }
+
+    /// #1777 track 1 (CTO ruling B), worker side: a projection's record resolves a worker's DHT that never restores
+    /// consensus state — and a later record re-resolves it live (owner ruling Q1).
+    @Test
+    void applyWorkerDhtReplication_resolvesAndReResolvesAWorkersDht() {
+        var node = awaiting();
+        var cache = new AtomicReference<>(DHTConfig.CACHE_DEFAULT);
+
+        assertThat(node.replicationResolved()).as("control: a worker starts unresolved").isFalse();
+
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1),
+                                             node,
+                                             DHTConfig.DEFAULT,
+                                             DHTConfig.CACHE_DEFAULT,
+                                             cache);
+
+        assertThat(node.replicationResolved()).isTrue();
+        assertThat(node.config().replicationFactor()).isEqualTo(3);
+        assertThat(cache.get().replicationFactor()).isEqualTo(2);
+
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 1, 1),
+                                             node,
+                                             DHTConfig.DEFAULT,
+                                             DHTConfig.CACHE_DEFAULT,
+                                             cache);
+
+        assertThat(node.config().replicationFactor()).isEqualTo(5);
+        assertThat(node.config().writeQuorum()).isEqualTo(3);
+    }
+
     private static DHTNode awaiting() {
         return awaiting(DHTConfig.DEFAULT);
     }

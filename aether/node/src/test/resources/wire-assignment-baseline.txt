@@ -273,6 +273,7 @@ SHAPE org.pragmatica.aether.worker.health.CommunityHealthMessage$Report (sender:
 SHAPE org.pragmatica.aether.worker.health.CommunityHealthMessage$Request (sender:org.pragmatica.consensus.NodeId,communityId:java.lang.String,governorTerm:long,incarnation:java.lang.String,sequence:long)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$Chunk (sender:org.pragmatica.consensus.NodeId,requestId:long,incarnation:java.lang.String,generation:long,scope:java.lang.String,hash:java.lang.String,offset:int,bytes:byte[],error:java.lang.String)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ChunkRequest (sender:org.pragmatica.consensus.NodeId,requestId:long,incarnation:java.lang.String,generation:long,scope:java.lang.String,hash:java.lang.String,offset:int)
+SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$DhtReplication (replicationFactor:int,confirmationFactor:int,cacheReplicationFactor:int,cacheConfirmationFactor:int)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$Manifest (sender:org.pragmatica.consensus.NodeId,requestId:long,incarnation:java.lang.String,generation:long,committedRevision:long,clusterIncarnation:long,scopes:java.util.List<org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ScopeContent>,error:java.lang.String)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ManifestRequest (sender:org.pragmatica.consensus.NodeId,requestId:long,minimumRevision:long,knownIncarnation:long)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ScopeContent (scope:java.lang.String,hash:java.lang.String,length:int)
@@ -635,6 +636,7 @@ TAG  org.pragmatica.aether.worker.health.CommunityHealthMessage$Report 1702
 TAG  org.pragmatica.aether.worker.health.CommunityHealthMessage$Request 1701
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$Chunk 1699
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ChunkRequest 1698
+TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$DhtReplication 2119
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$Manifest 1696
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ManifestRequest 1695
 TAG  org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ScopeContent 1697

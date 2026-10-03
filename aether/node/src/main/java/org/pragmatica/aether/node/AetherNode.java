@@ -31,6 +31,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.net.InetSocketAddress;
 
+import org.pragmatica.aether.worker.metadata.WorkerMetadataMessage;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
@@ -4117,7 +4118,19 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
                                                                                                                       org.pragmatica.aether.worker.metadata.WorkerMetadataLimits.DEFAULT,
-                                                                                                                      epochSources.incarnation()::current);
+                                                                                                                      epochSources.incarnation()::current,
+                                                                                                                      // #1777 track 1 (CTO ruling B): a worker never
+                                                                                                                      // restores consensus state and is never served the
+                                                                                                                      // cluster TOML, so the core derives the DHT
+                                                                                                                      // replication into every projection, and the worker
+                                                                                                                      // applies it on every install — live changes included
+                                                                                                                      () -> workerDhtReplication(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                                                                  AetherValue.ClusterConfigValue.class)),
+                                                                                                                      replication -> applyWorkerDhtReplication(replication,
+                                                                                                                                                               dhtNode,
+                                                                                                                                                               config.artifactRepo(),
+                                                                                                                                                               config.cache(),
+                                                                                                                                                               cacheDhtConfig));
 
         workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection);
         allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest.class,
@@ -6261,6 +6274,35 @@ public interface AetherNode extends ManageableNode {
                      .onSuccess(cacheDhtConfig::set)
                      .onFailure(cause -> LOG.error("DHT cache replication factors refused: {}",
                                                    cause.message()));
+    }
+
+    /// #1777 track 1 (CTO ruling B), core side: the DHT replication a worker's projection carries, derived from this
+    /// core's committed `[replication]` and `[cache]` sections — the narrow subset, never the TOML itself (#1390).
+    static Result<WorkerMetadataMessage.DhtReplication> workerDhtReplication(Option<AetherValue.ClusterConfigValue> committed) {
+        return ClusterReplication.defaults(committed)
+                                 .map(defaults -> new WorkerMetadataMessage.DhtReplication(defaults.replicationFactor(),
+                                                                                           defaults.confirmationFactor(),
+                                                                                           defaults.cacheReplicationFactor(),
+                                                                                           defaults.cacheConfirmationFactor()));
+    }
+
+    /// #1777 track 1 (CTO ruling B), worker side: apply a projection's DHT replication exactly as a core applies its
+    /// committed configuration — the same resolution and, on a change, the same catch-up diff.
+    @Contract
+    static void applyWorkerDhtReplication(WorkerMetadataMessage.DhtReplication replication,
+                                          DHTNode dhtNode,
+                                          DHTConfig declared,
+                                          DHTConfig declaredCache,
+                                          AtomicReference<DHTConfig> cacheDhtConfig) {
+        applyDhtReplication(new ReplicationDefaultsConfig(replication.replicationFactor(),
+                                                          replication.confirmationFactor(),
+                                                          ReplicationDefaultsConfig.BUILT_IN.clusterEventsConfirmationFactor(),
+                                                          replication.cacheReplicationFactor(),
+                                                          replication.cacheConfirmationFactor()),
+                            dhtNode,
+                            declared,
+                            declaredCache,
+                            cacheDhtConfig);
     }
 
     @Contract

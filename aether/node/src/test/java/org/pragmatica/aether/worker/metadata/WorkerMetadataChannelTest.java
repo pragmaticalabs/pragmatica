@@ -26,6 +26,7 @@ class WorkerMetadataChannelTest {
     private static final NodeId CORE = new NodeId("core");
     private static final NodeId WORKER = new NodeId("worker");
     private static final NodeId FOREIGN = new NodeId("foreign");
+    private static final WorkerMetadataMessage.DhtReplication REPLICATION = new WorkerMetadataMessage.DhtReplication(3, 2, 1, 1);
 
     private static final WorkerMetadataLimits LIMITS = new WorkerMetadataLimits(64,
                                                                                 8192,
@@ -73,6 +74,72 @@ class WorkerMetadataChannelTest {
         assertThat(fixture.client.hasFreshProjection()).isTrue();
     }
 
+    /// #1777 track 1 (CTO ruling B): a worker never restores consensus state and is never served the cluster TOML, so
+    /// the DHT replication it resolves from must arrive in its projection — derived by the core at capture time.
+    @Test
+    void projection_carriesTheCoreDerivedDhtReplication_andTheWorkerAppliesIt() {
+        var fixture = new Fixture();
+
+        fixture.seed(1, "initial");
+        fixture.client.tick();
+        fixture.pump();
+
+        assertThat(fixture.client.hasFreshProjection()).isTrue();
+        assertThat(fixture.received).containsExactly(REPLICATION);
+    }
+
+    /// Owner ruling Q1 makes `[replication]` live: a committed change must reach a worker without a restart. The core
+    /// derives the record per manifest from its committed state, so the changed record changes its scope's content
+    /// hash, and the worker's next poll installs it. An unchanged record installs nothing.
+    @Test
+    void liveReplicationChange_reachesTheWorkerOnItsNextPoll() {
+        var fixture = new Fixture();
+        var raised = new WorkerMetadataMessage.DhtReplication(5, 3, 1, 1);
+
+        fixture.seed(1, "initial");
+        fixture.client.tick();
+        fixture.pump();
+        fixture.client.tick();
+        fixture.pump();
+
+        assertThat(fixture.received).as("no change, no re-apply").containsExactly(REPLICATION);
+
+        fixture.replication.set(raised);
+        fixture.seed(2, "replication changed");
+        fixture.client.tick();
+        fixture.pump();
+
+        assertThat(fixture.received).containsExactly(REPLICATION, raised);
+    }
+
+    /// A manifest without the DHT replication is refused: a worker never installs a projection its DHT cannot resolve
+    /// from.
+    @Test
+    void manifestWithoutDhtReplication_isRefused() {
+        var fixture = new Fixture();
+
+        fixture.seed(1, "initial");
+        fixture.client.tick();
+        fixture.deliverRequest();
+        var valid = (WorkerMetadataMessage.Manifest) fixture.responses.remove();
+        var stripped = valid.scopes()
+                            .stream()
+                            .filter(scope -> !scope.scope().equals(WorkerMetadataIndex.DHT_REPLICATION))
+                            .toList();
+
+        fixture.client.onManifest(new WorkerMetadataMessage.Manifest(valid.sender(),
+                                                                     valid.requestId(),
+                                                                     valid.incarnation(),
+                                                                     valid.generation(),
+                                                                     valid.committedRevision(),
+                                                                     valid.clusterIncarnation(),
+                                                                     stripped,
+                                                                     ""));
+
+        assertThat(fixture.client.hasFreshProjection()).isFalse();
+        assertThat(fixture.received).isEmpty();
+    }
+
     @Test
     void unauthorizedWorkerCannotAllocateManifestAndForeignCoreCannotInstallProjection() {
         var fixture = new Fixture();
@@ -116,7 +183,7 @@ class WorkerMetadataChannelTest {
                                               _ -> List.of(),
                                               LIMITS,
                                               (_, _) -> {},
-                                              () -> 0L);
+                                              () -> 0L, () -> org.pragmatica.lang.Result.success(REPLICATION));
 
         for (int index = 0; index < 100; index++) {
             server.onManifestRequest(new WorkerMetadataMessage.ManifestRequest(new NodeId("worker-" + index), 1, 0, 0L));
@@ -230,7 +297,7 @@ class WorkerMetadataChannelTest {
                                               _ -> List.of(),
                                               LIMITS,
                                               (_, _) -> {},
-                                              () -> 0L);
+                                              () -> 0L, () -> org.pragmatica.lang.Result.success(REPLICATION));
 
         server.onManifestRequest(request);
         var response = (WorkerMetadataMessage.Manifest) replies.getFirst();
@@ -413,6 +480,8 @@ class WorkerMetadataChannelTest {
         final ArrayDeque<ProtocolMessage> requests = new ArrayDeque<>();
         final ArrayDeque<ProtocolMessage> responses = new ArrayDeque<>();
         final AtomicInteger ready = new AtomicInteger();
+        final java.util.concurrent.atomic.AtomicReference<WorkerMetadataMessage.DhtReplication> replication = new java.util.concurrent.atomic.AtomicReference<>(REPLICATION);
+        final List<WorkerMetadataMessage.DhtReplication> received = new ArrayList<>();
 
         final java.util.concurrent.atomic.AtomicBoolean directoryAccepted = new java.util.concurrent.atomic.AtomicBoolean(true);
 
@@ -435,7 +504,7 @@ class WorkerMetadataChannelTest {
                                                                      _ -> List.of(),
                                                                      serverLimits,
                                                                      (_, reason) -> coreRejections.add(reason),
-                                                                     () -> 0L);
+                                                                     () -> 0L, () -> org.pragmatica.lang.Result.success(replication.get()));
 
         client = new WorkerMetadataClient(WORKER,
                                                                      worker,
@@ -450,7 +519,7 @@ class WorkerMetadataChannelTest {
                                                                      _ -> {},
                                                                      ready::incrementAndGet,
                                                                      errors::add,
-                                                                     clientLimits);
+                                                                     clientLimits, received::add);
         }
 
         void seed(long revision, String value) {

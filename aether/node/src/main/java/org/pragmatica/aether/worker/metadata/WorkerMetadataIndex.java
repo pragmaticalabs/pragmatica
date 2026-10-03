@@ -25,6 +25,9 @@ public final class WorkerMetadataIndex {
     public static final String GLOBAL = "global";
     public static final String DIRECTORY = "directory";
     public static final String ENDPOINT_DIRECTORY = "endpoint-directory";
+    /// The derived DHT replication record (#1777 track 1): not a KV scope — built from the committed cluster
+    /// configuration for every projection, like the directories.
+    public static final String DHT_REPLICATION = "dht-replication";
 
     private final Map<StructuredKey, Object> values = new HashMap<>();
     private final Map<String, Map<StructuredKey, Object>> scopes = new HashMap<>();

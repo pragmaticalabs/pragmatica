@@ -585,6 +585,8 @@ public interface SystemTags {
         // first-committed content digest per artifact file (#1778)
         pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
         pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // the DHT replication a worker's projection carries (#1777 track 1) — next free after 2118
+        pin(table, 2119, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication");
         // ---- 2119..16383 RESERVED ----
         rejectDuplicateTags(table);
 

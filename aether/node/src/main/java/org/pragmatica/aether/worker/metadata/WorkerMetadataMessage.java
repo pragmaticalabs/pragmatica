@@ -48,6 +48,16 @@ public sealed interface WorkerMetadataMessage extends ProtocolMessage {
     @Codec
     record ScopeContent(String scope, String hash, int length) {}
 
+    /// The DHT replication a worker resolves its DHT client from (#1777 track 1, CTO ruling B): the narrow subset of
+    /// the core's committed cluster configuration a worker needs. The cluster TOML itself is never served to workers
+    /// (#1390) — it carries infrastructure credential references — so a core derives this from it when it builds a
+    /// worker's projection, and the worker applies it on every projection install.
+    @Codec
+    record DhtReplication(int replicationFactor,
+                          int confirmationFactor,
+                          int cacheReplicationFactor,
+                          int cacheConfirmationFactor) {}
+
     record ChunkRequest(NodeId sender,
                         long requestId,
                         String incarnation,
