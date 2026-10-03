@@ -4741,10 +4741,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                          .onFailure(_ -> wals.forEach(StreamEntry::closeWal));
         }
 
-        /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
-        /// ([Option#none]). The WAL is attached to the ring's eviction listener FIRST (#1234): replay can evict,
-        /// and those hand-overs must already see the partition as WAL-backed. The fresh ring is seeded above the durable last-sealed offset and only records
-        /// with `offset > lastSealedOffset` are appended (AppendLog.replay already filters them).
+        /// Replay one partition's WAL tail into its ring, or, when the partition has no WAL ([Option#none]), seed
+        /// the ring at the last-sealed offset. The WAL is attached to the ring's eviction listener FIRST (#1234):
+        /// replay can evict, and those hand-overs must already see the partition as WAL-backed. The fresh ring is
+        /// seeded above the durable last-sealed offset and only records with `offset > lastSealedOffset` are
+        /// appended (AppendLog.replay already filters them).
+        ///
+        /// #1441: the seed is not a WAL concern. Sealing does not depend on the WAL, so a no-WAL partition (a node
+        /// built outside `Main` whose WAL dir is unwritable, or `aether.allowNonDurableStreams`) has sealed
+        /// segments too; left unseeded, its ring restarts at head -1 and re-assigns offsets the durable tier
+        /// already holds.
         private static Result<Unit> recoverPartition(String streamName,
                                                      int partition,
                                                      OffHeapRingBuffer ring,
@@ -4757,7 +4763,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                      w,
                                                                                                                      ring,
                                                                                                                      trimFailed)))
-                      .or(() -> success(unit()));
+                      .or(() -> seedRing(ring, lastSealedOffset.lastSealedOffset(streamName, partition)));
         }
 
         /// #1638 S1, trim at open: once the ring holds the recovered head, drop every provenance entry above it -- one a
