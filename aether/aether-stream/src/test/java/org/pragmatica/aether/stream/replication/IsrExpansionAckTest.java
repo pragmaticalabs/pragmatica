@@ -39,6 +39,7 @@ class IsrExpansionAckTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int CF2_PEERS = 1;
+    private static final int CF3_PEERS = 2;
     private static final long IN_FLIGHT = 5L;
 
     private final ScheduledExecutorService neverFires = Executors.newSingleThreadScheduledExecutor();
@@ -120,5 +121,20 @@ class IsrExpansionAckTest {
         manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT));
 
         assertThat(ack.isResolved()).isTrue();
+    }
+
+    /// The reverse direction: a SHRINK committed while an ack is in flight. Judged at resolution against the shrunk ISR,
+    /// the ack still needs min-ISR = CF members ([DefaultReplicationManager] `isrAckSet`): at CF 3 an ISR shrunk to
+    /// the owner and one peer cannot complete a confirmation, so the publish stays unacknowledged (it times out as
+    /// outcome-unknown) rather than resolving on the one peer left.
+    @Test
+    void shrinkBelowMinIsrWhileInFlight_ackNeverResolves_onTheRemainingPeer() {
+        committed.set(base.withIsr(List.of(OWNER, NEAR, JOINER)));
+        var ack = manager.awaitReplication(STREAM, PARTITION, IN_FLIGHT, CF3_PEERS);
+
+        committed.set(base.withIsr(List.of(OWNER, NEAR)));
+        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT));
+
+        assertThat(ack.isResolved()).as("one peer left in the ISR, CF 3 needs two").isFalse();
     }
 }
