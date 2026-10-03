@@ -20,6 +20,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -49,7 +50,15 @@ public final class DHTNode {
     private final NodeId nodeId;
     private final StorageEngine storage;
     private final ConsistentHashRing<NodeId> ring;
-    private final DHTConfig config;
+    /// The replication this node places keys and sizes quorums with. Live (#1777 track 1): the cluster's
+    /// committed `[replication]` factors arrive after boot and may change at runtime ([#resolveReplication]).
+    private final AtomicReference<DHTConfig> config;
+    /// Whether [#config] holds the committed factors yet. Until it does, every partition answers
+    /// [Readiness#CATCHING_UP] and clients refuse quorum operations ([DHTError#REPLICATION_UNRESOLVED]).
+    private final AtomicBoolean replicationResolved;
+    /// Serializes the two mutations that change replica sets — a ring change and a replication change — so each
+    /// diffs against the state the other left.
+    private final Object placementLock = new Object();
     private final HlcClock hlcClock;
     private final CatchUpState catchUp = CatchUpState.catchUpState();
     /// The ring members when [#beginCatchUp] ran: the joins observed since boot are the current members
@@ -64,11 +73,13 @@ public final class DHTNode {
                     StorageEngine storage,
                     ConsistentHashRing<NodeId> ring,
                     DHTConfig config,
+                    boolean replicationResolved,
                     HlcClock hlcClock) {
         this.nodeId = nodeId;
         this.storage = storage;
         this.ring = ring;
-        this.config = config;
+        this.config = new AtomicReference<>(config);
+        this.replicationResolved = new AtomicBoolean(replicationResolved);
         this.hlcClock = hlcClock;
     }
 
@@ -84,7 +95,19 @@ public final class DHTNode {
                                   ConsistentHashRing<NodeId> ring,
                                   DHTConfig config,
                                   HlcClock hlcClock) {
-        return new DHTNode(nodeId, storage, ring, config, hlcClock);
+        return new DHTNode(nodeId, storage, ring, config, true, hlcClock);
+    }
+
+    /// Create a DHT node whose replication factors are not known yet (#1777 track 1): `placeholder` is used for
+    /// the boot catch-up walk and for its timeout and retry policy only. The node answers every partition
+    /// [Readiness#CATCHING_UP], and quorum clients refuse, until [#resolveReplication] supplies the cluster's
+    /// committed factors.
+    public static DHTNode dhtNodeAwaitingReplication(NodeId nodeId,
+                                                     StorageEngine storage,
+                                                     ConsistentHashRing<NodeId> ring,
+                                                     DHTConfig placeholder,
+                                                     HlcClock hlcClock) {
+        return new DHTNode(nodeId, storage, ring, placeholder, false, hlcClock);
     }
 
     /// Create a new DHT node with an internally created HLC clock.
@@ -99,7 +122,7 @@ public final class DHTNode {
                                   DHTConfig config) {
         var clock = HlcClock.hlcClock(nodeId);
 
-        return new DHTNode(nodeId, storage, ring, config, clock);
+        return new DHTNode(nodeId, storage, ring, config, true, clock);
     }
 
     /// Get the node's identifier.
@@ -112,9 +135,38 @@ public final class DHTNode {
         return storage;
     }
 
-    /// Get the configuration.
+    /// The replication this node currently places keys with (see [#resolveReplication]).
     public DHTConfig config() {
-        return config;
+        return config.get();
+    }
+
+    /// Whether the committed replication factors have been applied ([#dhtNodeAwaitingReplication]).
+    public boolean replicationResolved() {
+        return replicationResolved.get();
+    }
+
+    /// Apply the cluster's committed replication (#1777 track 1) — the first time, and on every later change.
+    /// Like a ring change, a replication change moves replica sets: every partition this node GAINS by it starts
+    /// catching up, with the previous replica set recorded as its sources, and a pending partition it loses is
+    /// forgotten. So a raised replication factor is re-placed through the same catch-up gate as a join, and a read
+    /// in the window refuses rather than answers "absent". FULL replication has no placement to diff.
+    @Contract
+    public void resolveReplication(DHTConfig resolved) {
+        synchronized (placementLock) {
+            if (resolved.isFullReplication() || config.get().isFullReplication()) {
+                config.set(resolved);
+            } else {
+                var before = replicaSets();
+
+                config.set(resolved);
+                var after = replicaSets();
+
+                markGained(before, after);
+                forgetLost(after);
+            }
+
+            replicationResolved.set(true);
+        }
     }
 
     /// Get the consistent hash ring.
@@ -134,19 +186,21 @@ public final class DHTNode {
     /// node is a replica of everything, and anti-entropy does not run in that mode.
     @Contract
     public void changeRing(Consumer<ConsistentHashRing<NodeId>> change) {
-        if (config.isFullReplication()) {
+        synchronized (placementLock) {
+            if (config.get().isFullReplication()) {
+                change.accept(ring);
+
+                return;
+            }
+
+            var before = replicaSets();
+
             change.accept(ring);
+            var after = replicaSets();
 
-            return;
+            markGained(before, after);
+            forgetLost(after);
         }
-
-        var before = replicaSets();
-
-        change.accept(ring);
-        var after = replicaSets();
-
-        markGained(before, after);
-        forgetLost(after);
     }
 
     /// Mark every partition this node currently owns catching up — the boot state of a node whose store
@@ -160,11 +214,11 @@ public final class DHTNode {
     /// ring the cluster actually has, which this node only learns as `NodeJoined` decisions arrive.
     @Contract
     public void beginCatchUp() {
-        if (config.isFullReplication()) {
+        if (config.get().isFullReplication()) {
             return;
         }
 
-        var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(ring.nodeCount());
 
         bootMembers.set(Set.copyOf(ring.nodes()));
         IntStream.range(0, Partition.MAX_PARTITIONS)
@@ -174,9 +228,12 @@ public final class DHTNode {
                  .forEach(catchUp::markCatchingUpSinceBoot);
     }
 
-    /// Whether this node's answers for `partition` are authoritative.
+    /// Whether this node's answers for `partition` are authoritative. Before the committed replication is known no
+    /// answer is: the node cannot tell which partitions it replicates, and an empty store is no evidence of absence.
     public Readiness readiness(Partition partition) {
-        return catchUp.readiness(partition);
+        return replicationResolved.get()
+               ? catchUp.readiness(partition)
+               : Readiness.CATCHING_UP;
     }
 
     /// Whether this node's answers for the partition holding `key` are authoritative.
@@ -240,7 +297,7 @@ public final class DHTNode {
         var joinedSinceBoot = (int) members.stream().filter(member -> !boot.contains(member)).count();
         var unconfirmed = (int) members.stream().filter(this::unconfirmed).count();
 
-        return config.effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot + unconfirmed;
+        return config.get().effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot + unconfirmed;
     }
 
     private boolean unconfirmed(NodeId member) {
@@ -269,7 +326,7 @@ public final class DHTNode {
     }
 
     private List<List<NodeId>> replicaSets() {
-        var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(ring.nodeCount());
 
         return IntStream.range(0, Partition.MAX_PARTITIONS)
                         .mapToObj(index -> ring.nodesFor(Partition.at(index),
@@ -343,7 +400,7 @@ public final class DHTNode {
     /// Check if this node is responsible for a key (as primary or replica).
     public boolean isResponsibleFor(byte[] key) {
         return ring.nodesFor(key,
-                             config.replicationFactor())
+                             config.get().replicationFactor())
                    .contains(nodeId);
     }
 
@@ -520,7 +577,7 @@ public final class DHTNode {
     /// placement function every other caller uses (issue #420).
     private boolean isReplicaOf(NodeId candidate, Partition partition) {
         return ring.nodesFor(partition,
-                             config.effectiveReplicationFactor(ring.nodeCount()))
+                             config.get().effectiveReplicationFactor(ring.nodeCount()))
                    .contains(candidate);
     }
 

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -55,7 +56,9 @@ public final class DistributedDHTClient implements DHTClient {
 
     private final DHTNode node;
     private final DHTNetwork network;
-    private final DHTConfig config;
+    /// The replication this client places keys and sizes quorums with: the node's live, committed replication for
+    /// the base client (#1777 track 1), or a namespace's own declaration for a scoped one.
+    private final Supplier<DHTConfig> config;
     private final OwnerEpochSource ownerEpochSource;
     private final ResolveFallbackObserver fallbackObserver;
     /// Pending operations indexed by correlation ID.
@@ -65,7 +68,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     private DistributedDHTClient(DHTNode node,
                                  DHTNetwork network,
-                                 DHTConfig config,
+                                 Supplier<DHTConfig> config,
                                  OwnerEpochSource ownerEpochSource,
                                  ResolveFallbackObserver fallbackObserver) {
         this.node = node;
@@ -81,7 +84,11 @@ public final class DistributedDHTClient implements DHTClient {
     /// @param network DHT network for inter-node messaging
     /// @param config  DHT configuration (replication factor, quorum sizes)
     public static DistributedDHTClient distributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DistributedDHTClient(node, network, config, OwnerEpochSource.zero(), ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        () -> config,
+                                        OwnerEpochSource.zero(),
+                                        ResolveFallbackObserver.noop());
     }
 
     /// Create a distributed DHT client that stamps every put with the node's current owner epoch
@@ -95,7 +102,17 @@ public final class DistributedDHTClient implements DHTClient {
                                                             DHTNetwork network,
                                                             DHTConfig config,
                                                             OwnerEpochSource ownerEpochSource) {
-        return new DistributedDHTClient(node, network, config, ownerEpochSource, ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node, network, () -> config, ownerEpochSource, ResolveFallbackObserver.noop());
+    }
+
+    /// Create a distributed DHT client that follows the node's LIVE replication ([DHTNode#config]): the cluster's
+    /// committed `[replication]` factors, re-read on every operation so a committed change takes effect without a
+    /// restart (#1777 track 1). Stamps every put with the node's current owner epoch like
+    /// [#distributedDHTClient(DHTNode, DHTNetwork, DHTConfig, OwnerEpochSource)].
+    public static DistributedDHTClient distributedDHTClient(DHTNode node,
+                                                            DHTNetwork network,
+                                                            OwnerEpochSource ownerEpochSource) {
+        return new DistributedDHTClient(node, network, node::config, ownerEpochSource, ResolveFallbackObserver.noop());
     }
 
     /// Return a client that reports resolve-time alternate-target fallback outcomes (issue #428, C2)
@@ -110,23 +127,33 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public DHTClient scoped(DHTConfig scopedConfig) {
+        return scoped(() -> scopedConfig);
+    }
+
+    /// A client for a namespace with its own declared replication, read on every operation so a committed change
+    /// of the declaration takes effect without a restart (#1777 track 1, e.g. the cache's `[cache]` factors).
+    public DistributedDHTClient scoped(Supplier<DHTConfig> scopedConfig) {
         return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource, fallbackObserver);
     }
 
     @Override
     public DHTConfig config() {
-        return config;
+        return config.get();
     }
 
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveReadQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -144,7 +171,7 @@ public final class DistributedDHTClient implements DHTClient {
         targets.forEach(read::markAddressed);
         targets.forEach(target -> dispatchRead(read, target));
 
-        return promise.timeout(config.operationTimeout())
+        return promise.timeout(config.get().operationTimeout())
                       .withResult(_ -> unsubscribe.run())
                       .flatMap(quorumResult -> resolveOrFallback(key,
                                                                  quorumResult,
@@ -154,13 +181,17 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveWriteQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -182,7 +213,7 @@ public final class DistributedDHTClient implements DHTClient {
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
 
-        return promise.timeout(config.operationTimeout())
+        return promise.timeout(config.get().operationTimeout())
                       .fold(result -> result.fold(cause -> afterFailedPut(key,
                                                                           stamp,
                                                                           localPut,
@@ -237,13 +268,17 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public Promise<Boolean> remove(byte[] key) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveWriteQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -262,18 +297,22 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise.timeout(config.operationTimeout());
+        return promise.timeout(config.get().operationTimeout());
     }
 
     @Override
     public Promise<Boolean> exists(byte[] key) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveReadQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -292,7 +331,7 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise.timeout(config.operationTimeout());
+        return promise.timeout(config.get().operationTimeout());
     }
 
     @Override
@@ -384,7 +423,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     // --- Private helpers ---
     private long readDeadlineNanos() {
-        return System.nanoTime() + config.operationTimeout()
+        return System.nanoTime() + config.get().operationTimeout()
                                          .nanos();
     }
 
@@ -474,7 +513,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     private List<NodeId> targetNodes(byte[] key) {
         var ringTargets = node.ring().nodesFor(key,
-                                               config.effectiveReplicationFactor(node.ring().nodeCount()));
+                                               config.get().effectiveReplicationFactor(node.ring().nodeCount()));
 
         return filterByLiveness(ringTargets);
     }
@@ -540,7 +579,7 @@ public final class DistributedDHTClient implements DHTClient {
                                                            QuorumCollector<Option<byte[]>> rSetCollector,
                                                            int rSetLive) {
         var _ = rSetCollector.allReplied()
-                             .timeout(config.operationTimeout())
+                             .timeout(config.get().operationTimeout())
                              .onResultRun(() -> fallbackObserver.onUnresolvedAfterFallback(missReport(key,
                                                                                                       rSetCollector,
                                                                                                       rSetLive,
@@ -590,7 +629,7 @@ public final class DistributedDHTClient implements DHTClient {
                                    int probed,
                                    int probesFailed) {
         var rSetSize = node.ring().nodesFor(key,
-                                            config.effectiveReplicationFactor(node.ring().nodeCount())).size();
+                                            config.get().effectiveReplicationFactor(node.ring().nodeCount())).size();
         var candidates = node.ring().nodeCount() - rSetLive;
 
         return ResolveMiss.resolveMiss(hex(key),
@@ -627,7 +666,7 @@ public final class DistributedDHTClient implements DHTClient {
             sendRemoteGet(target, key, collector);
         }
 
-        return probe.timeout(config.operationTimeout())
+        return probe.timeout(config.get().operationTimeout())
                     .recover(cause -> degradeAndCount(cause, probesFailed));
     }
 

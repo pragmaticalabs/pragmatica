@@ -271,6 +271,7 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
+import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
@@ -312,6 +313,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
@@ -654,7 +656,18 @@ public interface AetherNode extends ManageableNode {
                                    .equals(config.self()) || !configuredWorker(config))
               .filter(peer -> "core".equalsIgnoreCase(peer.labels().getOrDefault(NodeInfo.LABEL_ROLE, "core")))
               .forEach(peer -> dhtRing.addNode(peer.id()));
-        var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
+        // #1777 track 1: the DHT's replication factors come from the cluster's COMMITTED `[replication]` section, which
+        // this node can read only once its consensus state is restored. Until then the node places nothing and its
+        // clients refuse (retryable); [#resolveDhtReplication] applies the factors. FULL replication (the Ember
+        // harness) has no placement and needs none.
+        var dhtNode = config.artifactRepo()
+                            .isFullReplication()
+                      ? DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo())
+                      : DHTNode.dhtNodeAwaitingReplication(config.self(),
+                                                           dhtStorage,
+                                                           dhtRing,
+                                                           config.artifactRepo(),
+                                                           HlcClock.hlcClock(config.self()));
         // #1777 track 2: the store starts empty, so every partition this core owns starts catching up — it
         // refuses rather than answers "absent" until anti-entropy has filled it from the nodes that may hold
         // its data (the 1 s catch-up tick armed below with the node's other periodic work).
@@ -1844,7 +1857,6 @@ public interface AetherNode extends ManageableNode {
         var periodicTasks = PeriodicTasks.periodicTasks();
         var baseDhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
                                                                       dhtNetwork,
-                                                                      config.artifactRepo(),
                                                                       KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
                                                                                                             BootstrapModule.CORE_PARTITION_ID));
         // An all-miss resolve reads as a bare "absent" everywhere above the client; this observer writes the WARN that
@@ -1855,7 +1867,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                 LOG::warn,
                                                                                                                                 LOG::debug,
                                                                                                                                 LOG::info));
-        var cacheDhtClient = baseDhtClient.scoped(config.cache());
+        // The cache namespace declares its own replication in the committed `[cache]` section (#1777 track 1),
+        // re-read on every operation; `config.cache()` supplies its timeout and retry policy, and its factors
+        // until the committed ones are resolved.
+        var cacheDhtConfig = new AtomicReference<>(config.cache());
+        var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
         // #253 BLOCKING #1 (2026-09-04 ruling): a configured storage instance that fails to create
         // is a boot failure -- `createAll` now returns `Result` and this aborts naming the instance
@@ -1963,13 +1979,12 @@ public interface AetherNode extends ManageableNode {
                                                // silently — omitting it is a compile error, not a
                                                // slice that deploys and then fails at load.
                                               );
-        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
+        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork);
         // #1818 round 3: departure pushes are accepted only from departing senders. The predicate needs the
         // ClusterSyncCollector, built further down, so it is resolved through this holder (strict until then).
         var departingSendersRef = new AtomicReference<Predicate<NodeId>>(_ -> false);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode,
                                                            dhtNetwork,
-                                                           config.artifactRepo(),
                                                            sender -> departingSendersRef.get()
                                                                                         .test(sender));
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer, dhtAntiEntropy);
@@ -2810,6 +2825,10 @@ public interface AetherNode extends ManageableNode {
         clusterNode.onStateRestored(() -> refreshCommittedLeader(kvStore, clusterNode.leaderManager()));
         clusterNode.onStateRestored(() -> restoreRetirementIndex(kvStore, communityRetirements));
         restoreRetirementIndex(kvStore, communityRetirements);
+        // #1777 track 1: restored state is when the committed `[replication]` / `[cache]` factors become readable —
+        // or are known to be absent, which means the built-in ones. Later commits re-resolve through the
+        // ClusterConfigKey put below.
+        clusterNode.onStateRestored(() -> resolveDhtReplication(kvStore, dhtNode, config, cacheDhtConfig));
         var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> retirementCandidates(communityRetirements.including(cdmDrainingNodesRef.get()
                                                                                                                                             .get()),
@@ -4830,6 +4849,9 @@ public interface AetherNode extends ManageableNode {
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,
                                                                                                                                                                              leaderReconciler))
+                                                 // #1777 track 1: a committed `[replication]` change re-places the DHT live
+                                                 .onPut(AetherKey.ClusterConfigKey.class,
+                                                        _ -> resolveDhtReplication(kvStore, dhtNode, config, cacheDhtConfig))
                                                  .build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
@@ -6192,6 +6214,61 @@ public interface AetherNode extends ManageableNode {
                                 + " — correct [replication.cluster_events] and re-apply the cluster config")
                     .onFailure(failure -> LOG.warn("Cluster-events refusal alert injection failed: {}",
                                                    failure.message()));
+    }
+
+    /// #1777 track 1: apply the cluster's committed DHT replication — `[replication]` for the DHT itself (W = CF,
+    /// R = RF − CF + 1, re-placed through the catch-up gate when it changes) and `[cache]` for the cache namespace.
+    /// No committed config means the built-in factors. A committed config that does not parse was refused at
+    /// apply, so failing here is a defect: it is logged at ERROR and the node keeps what it had — still refusing,
+    /// if nothing was resolved yet, rather than guessing a factor. FULL replication is a harness declaration and is
+    /// kept as declared.
+    @Contract
+    private static void resolveDhtReplication(KVStore<AetherKey, AetherValue> kvStore,
+                                              DHTNode dhtNode,
+                                              AetherNodeConfig config,
+                                              AtomicReference<DHTConfig> cacheDhtConfig) {
+        ClusterReplication.defaults(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                     AetherValue.ClusterConfigValue.class))
+                          .onSuccess(defaults -> applyDhtReplication(defaults,
+                                                                     dhtNode,
+                                                                     config.artifactRepo(),
+                                                                     config.cache(),
+                                                                     cacheDhtConfig))
+                          .onFailure(cause -> LOG.error("DHT replication not resolved from the committed cluster configuration: {}",
+                                                        cause.message()));
+    }
+
+    /// `declared` and `declaredCache` supply the timeout and retry policy; their factors are replaced by the
+    /// committed ones, except a declared FULL replication (the Ember harness), which has no placement to resolve.
+    @Contract
+    static void applyDhtReplication(ReplicationDefaultsConfig defaults,
+                                    DHTNode dhtNode,
+                                    DHTConfig declared,
+                                    DHTConfig declaredCache,
+                                    AtomicReference<DHTConfig> cacheDhtConfig) {
+        var resolved = declared.isFullReplication()
+                       ? Result.success(declared)
+                       : declared.withFactors(defaults.replicationFactor(), defaults.confirmationFactor());
+
+        resolved.onSuccess(dht -> logIfReplicationChanged(dhtNode, dht))
+                .onSuccess(dhtNode::resolveReplication)
+                .onFailure(cause -> LOG.error("DHT replication factors refused: {}", cause.message()));
+        declaredCache.withFactors(defaults.cacheReplicationFactor(),
+                                  defaults.cacheConfirmationFactor())
+                     .onSuccess(cacheDhtConfig::set)
+              .onFailure(cause -> LOG.error("DHT cache replication factors refused: {}", cause.message()));
+    }
+
+    @Contract
+    private static void logIfReplicationChanged(DHTNode dhtNode, DHTConfig resolved) {
+        var current = dhtNode.config();
+
+        if (!dhtNode.replicationResolved() || current.replicationFactor() != resolved.replicationFactor() || current.writeQuorum() != resolved.writeQuorum()) {
+            LOG.info("DHT replication: replication factor {}, write quorum {}, read quorum {}",
+                     resolved.replicationFactor(),
+                     resolved.writeQuorum(),
+                     resolved.readQuorum());
+        }
     }
 
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —

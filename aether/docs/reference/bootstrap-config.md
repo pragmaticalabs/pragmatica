@@ -315,6 +315,35 @@ Every key is typed and validated when the TOML is applied; a mistyped value, an 
 naming the key. A core scale that would drop the desired core count below the `cluster_events` CF is refused
 the same way (`ClusterEventsFactorsRefused`).
 
+**The DHT (#1777 track 1).** The DHT takes its factors from this same section: a write is acknowledged by
+`confirmation_factor` replicas and a read asks `replication_factor - confirmation_factor + 1`, so every read meets
+at least one replica that acknowledged the last write when the replica set has not changed
+[mechanism: R + W = RF + 1 > RF]. A ring smaller than `replication_factor` holds every key on every node, with the
+quorums capped at the ring size. Unlike a stream, the DHT applies a changed value **live**: the keyspace is re-placed
+through the catch-up gate, and in that window a read on a partition with new replicas answers the value or a
+retryable `NotCaughtUp`, never "absent". A node refuses DHT operations (retryable `ReplicationUnresolved`) until it
+has read the committed value after its consensus state is restored. The node-local `[dht.replication] target_rf`
+is removed; a node config that still sets it is refused.
+
+### `[cache]` — DHT cache replication (cluster-wide, #1777)
+
+The DHT cache namespace declares its own, lower factors; it holds recomputable data.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `replication_factor` | int | `1` | Copies of each cache entry. At least 1. |
+| `confirmation_factor` | int | `1` | Copies that hold a cache write before it is acknowledged. `1 <= confirmation_factor <= replication_factor`; a read asks `replication_factor - confirmation_factor + 1`. |
+
+```toml
+[cache]
+replication_factor = 1
+confirmation_factor = 1
+```
+
+Validated on apply like `[replication]`: a mistyped value, a factor out of range or an unknown key refuses the
+apply, naming the key. A change takes effect on every node without a restart; cache entries placed under the old
+factors may then miss and be recomputed.
+
 ### `[runtime.<name>]`
 
 | Field | Type | Default | Required | Notes |

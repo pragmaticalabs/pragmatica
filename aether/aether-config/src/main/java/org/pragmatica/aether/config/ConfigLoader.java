@@ -17,6 +17,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
@@ -81,10 +82,25 @@ public final class ConfigLoader {
 
             mergeCliOverrides(overrides, builder);
 
-            return parseReadLinearization(doc).map(mode -> applyReadLinearization(builder.build(), mode));
+            return refuseRemovedTargetRf(doc).flatMap(_ -> parseReadLinearization(doc))
+                                             .map(mode -> applyReadLinearization(builder.build(), mode));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
+    }
+
+    /// #1777 track 1: the DHT takes its replication from the cluster's committed `[replication]` section, like
+    /// streams. A node-local `[dht.replication] target_rf` would be a second source of truth — and one that
+    /// could differ between nodes, which then disagree on placement — so a config that still sets it is refused,
+    /// naming where the setting lives now, rather than silently ignored.
+    private static Result<Unit> refuseRemovedTargetRf(TomlDocument doc) {
+        return doc.getString("dht.replication", "target_rf").isPresent() || doc.getInt("dht.replication",
+                                                                                         "target_rf")
+                                                                                 .isPresent()
+               ? ConfigError.invalidConfig("[dht.replication] target_rf is removed: the DHT replication factor and "
+                                           + "confirmation factor come from the cluster's [replication] section "
+                                           + "(replication_factor, confirmation_factor)").result()
+               : Result.unitResult();
     }
 
     /// Parse the `[durable-entity] read-linearization` ops knob (spec §8.1, durable-entity primitive).
@@ -436,18 +452,16 @@ public final class ConfigLoader {
                                                                                                      "cooldown_delay_ms")
                                                                                             .isPresent();
         var hasRate = doc.getInt("dht.replication", "cooldown_rate").isPresent();
-        var hasRf = doc.getInt("dht.replication", "target_rf").isPresent();
 
-        if (hasDelay || hasRate || hasRf) {
+        if (hasDelay || hasRate) {
             var delay = parseTimeSpanOrMs(doc,
                                           "dht.replication",
                                           "cooldown_delay",
                                           "cooldown_delay_ms",
                                           DhtReplicationConfig.DEFAULT_COOLDOWN_DELAY);
             var rate = doc.getInt("dht.replication", "cooldown_rate").or(DhtReplicationConfig.DEFAULT_COOLDOWN_RATE);
-            var rf = doc.getInt("dht.replication", "target_rf").or(DhtReplicationConfig.DEFAULT_TARGET_RF);
 
-            builder.dhtReplication(DhtReplicationConfig.dhtReplicationConfig(delay, rate, rf));
+            builder.dhtReplication(DhtReplicationConfig.dhtReplicationConfig(delay, rate));
         }
     }
 

@@ -27,7 +27,15 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// [replication.cluster_events]
 /// confirmation_factor = 1      # default 1; the system:cluster-events stream's CF (its RF is the cluster size)
+///
+/// [cache]
+/// replication_factor = 1       # default 1; the DHT cache namespace's own declaration (#1777 track 1)
+/// confirmation_factor = 1      # default 1; 1 <= confirmation_factor <= replication_factor
 /// ```
+///
+/// The DHT resolves its own replication from `[replication]` too (#1777 track 1): writes are acked by
+/// `confirmation_factor` replicas and reads ask `replication_factor - confirmation_factor + 1`. The cache is a
+/// namespace that declares its own, lower factors — it is recomputable, so a single copy is its default.
 ///
 /// An absent section, and a blank or seed cluster TOML, mean [ReplicationDefaultsConfig#BUILT_IN]. Every key is
 /// typed and validated when the TOML is applied: a mistyped value, an out-of-range factor or an unknown key
@@ -36,10 +44,12 @@ import static org.pragmatica.lang.Result.success;
 public sealed interface ReplicationDefaultsParser {
     String SECTION = "replication";
     String CLUSTER_EVENTS_SECTION = "replication.cluster_events";
+    String CACHE_SECTION = "cache";
     String REPLICATION_FACTOR = "replication_factor";
     String CONFIRMATION_FACTOR = "confirmation_factor";
     Set<String> KEYS = Set.of(REPLICATION_FACTOR, CONFIRMATION_FACTOR);
     Set<String> CLUSTER_EVENTS_KEYS = Set.of(CONFIRMATION_FACTOR);
+    Set<String> CACHE_KEYS = Set.of(REPLICATION_FACTOR, CONFIRMATION_FACTOR);
     int MINIMUM_DEFAULT_FACTOR = 3;
 
     /// The defaults committed in `tomlContent`. Blank content (a self-bootstrapped cluster's seed) is the
@@ -59,6 +69,7 @@ public sealed interface ReplicationDefaultsParser {
         return refuseUnknownKeys(doc, SECTION, KEYS).flatMap(_ -> refuseUnknownKeys(doc,
                                                                                     CLUSTER_EVENTS_SECTION,
                                                                                     CLUSTER_EVENTS_KEYS))
+                                                    .flatMap(_ -> refuseUnknownKeys(doc, CACHE_SECTION, CACHE_KEYS))
                                 .flatMap(_ -> Result.all(factor(doc,
                                                                 SECTION,
                                                                 REPLICATION_FACTOR,
@@ -70,11 +81,19 @@ public sealed interface ReplicationDefaultsParser {
                                                          factor(doc,
                                                                 CLUSTER_EVENTS_SECTION,
                                                                 CONFIRMATION_FACTOR,
-                                                                builtIn.clusterEventsConfirmationFactor()))
+                                                                builtIn.clusterEventsConfirmationFactor()),
+                                                         factor(doc,
+                                                                CACHE_SECTION,
+                                                                REPLICATION_FACTOR,
+                                                                builtIn.cacheReplicationFactor()),
+                                                         factor(doc,
+                                                                CACHE_SECTION,
+                                                                CONFIRMATION_FACTOR,
+                                                                builtIn.cacheConfirmationFactor()))
                                                     .flatMap(ReplicationDefaultsParser::validated));
     }
 
-    private static Result<ReplicationDefaultsConfig> validated(int rf, int cf, int eventsCf) {
+    private static Result<ReplicationDefaultsConfig> validated(int rf, int cf, int eventsCf, int cacheRf, int cacheCf) {
         if (rf < MINIMUM_DEFAULT_FACTOR) {
             return failed("[replication] replication_factor = " + rf
                          + " is below 3; a default must be at least 3 (a lower factor is declared on the resource itself)");
@@ -91,7 +110,17 @@ public sealed interface ReplicationDefaultsParser {
                          + " is invalid: must be at least 1");
         }
 
-        return success(new ReplicationDefaultsConfig(rf, cf, eventsCf));
+        if (cacheRf < 1) {
+            return failed("[cache] replication_factor = " + cacheRf + " is invalid: must be at least 1");
+        }
+
+        if (cacheCf < 1 || cacheCf > cacheRf) {
+            return failed("[cache] confirmation_factor = " + cacheCf
+                         + " is invalid for replication_factor = " + cacheRf
+                         + ": 1 <= confirmation_factor <= replication_factor must hold");
+        }
+
+        return success(new ReplicationDefaultsConfig(rf, cf, eventsCf, cacheRf, cacheCf));
     }
 
     private static Result<Unit> refuseUnknownKeys(TomlDocument doc, String section, Set<String> known) {

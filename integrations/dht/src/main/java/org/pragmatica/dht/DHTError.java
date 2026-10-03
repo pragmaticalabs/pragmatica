@@ -136,6 +136,18 @@ public sealed interface DHTError extends Cause {
         }
     }
 
+    /// This node has not yet read the cluster's committed replication factors (#1777 track 1), so it cannot
+    /// place a key or size a quorum: a guess could read fewer replicas than the cluster writes to and answer a
+    /// false "absent". Transient — the node resolves them once its consensus state is restored.
+    DHTError REPLICATION_UNRESOLVED = new ReplicationUnresolved();
+
+    record ReplicationUnresolved() implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "DHT replication factors not yet resolved from the committed cluster configuration";
+        }
+    }
+
     record NoAvailableNodes() implements DHTError, Cause.Transient {
         @Override
         public String message() {

@@ -103,7 +103,6 @@ public record Main(String[] args) {
 
         enforceMinimumClusterSize(staticPeersConfigured(), configuredClusterNodes(aetherConfig), peers.size());
         var sliceConfig = parseSliceConfig(aetherConfig);
-        var dhtConfig = parseDhtConfig(aetherConfig);
 
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var coreMax = parseCoreMax(aetherConfig);
@@ -114,7 +113,9 @@ public record Main(String[] args) {
                                      .coreNodes(peers)
                                      .managementPort(managementPort)
                                      .sliceConfig(sliceConfig)
-                                     .artifactRepo(dhtConfig)
+                                     // #1777 track 1: placeholder only — the DHT's factors come from the committed
+                                     // `[replication]` section once consensus state is restored
+                                     .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
                                      .coreMax(coreMax)
                                      .appHttp(resolveAppHttp(aetherConfig))
                                      .tls(appHttpTls)
@@ -554,13 +555,6 @@ public record Main(String[] args) {
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::slice)
                            .or(SliceConfig.sliceConfig());
-    }
-
-    private org.pragmatica.dht.DHTConfig parseDhtConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::dhtReplication)
-                           .map(dhtRepl -> org.pragmatica.dht.DHTConfig.withReplication(dhtRepl.targetRf()))
-                           .flatMap(Result::option)
-                           .or(org.pragmatica.dht.DHTConfig.DEFAULT);
     }
 
     private Option<AetherConfig> loadConfig() {
