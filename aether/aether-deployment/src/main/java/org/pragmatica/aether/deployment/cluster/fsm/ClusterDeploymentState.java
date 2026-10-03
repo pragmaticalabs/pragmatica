@@ -1638,7 +1638,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                    target.minInstances(),
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
-                consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()), target));
+                consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                                          target));
             }
 
             submitBatch(consensusCommands);

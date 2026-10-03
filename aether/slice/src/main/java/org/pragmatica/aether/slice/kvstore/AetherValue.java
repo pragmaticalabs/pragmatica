@@ -369,8 +369,7 @@ public sealed interface AetherValue {
                                                          Option<Integer> maxInstancesOverride,
                                                          Option<Double> scaleUpOverride,
                                                          Option<Double> scaleDownOverride) {
-            var cappedAtMax = maxInstancesOverride.map(max -> Math.min(targetInstances, max))
-                                                  .or(targetInstances);
+            var cappedAtMax = maxInstancesOverride.map(max -> Math.min(targetInstances, max)).or(targetInstances);
 
             return new SliceTargetValue(version,
                                         Math.max(minimumInstances, cappedAtMax),
