@@ -556,10 +556,7 @@ public final class WaveExecutor {
                                                            count));
     }
 
-    static Result<Unit> drainOldNodes(SourceName sourceName,
-                                              NodeRole role,
-                                              int count,
-                                              ClusterBootstrapConfig desired) {
+    static Result<Unit> drainOldNodes(SourceName sourceName, NodeRole role, int count, ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
 
         for (int i = 0; i < count; i++) {
