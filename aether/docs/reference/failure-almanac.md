@@ -25,7 +25,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Surface | Exposes | CLI |
 |---------|---------|-----|
 | `GET /api/events` | The `ClusterEvent` stream — `NODE_FAILED` (CRITICAL), `NODE_LEFT` (WARNING), `LEADER_LOST` / `LEADER_ELECTED`, `QUORUM_LOST` (CRITICAL) / `QUORUM_ESTABLISHED`, `SELF_DRAIN_INITIATED` (WARNING), `DEPARTURE_PUSH_INCOMPLETE`, `SCALE_CAPPED`, `STREAM_MEMORY_EXCEEDED`, `OPERATOR_WARNING` (identified by `details.code`) (`ClusterEvent.java`, 35 sealed variants) | `aether events` |
-| `GET /api/health` | `status` (healthy / degraded / unhealthy), `quorum` (true/false), `nodeCount`, `sliceCount` | `aether health`, `aether nodes health` |
+| `GET /api/v1/health` | `status` (healthy / degraded / unhealthy), `quorum` (true/false), `nodeCount`, `sliceCount` | `aether health`, `aether nodes health` |
 | `GET /api/nodes/lifecycle/<id>` | Per-node lifecycle state (ON_DUTY, DRAINING, DECOMMISSIONED, …) | `aether nodes lifecycle` |
 | `aether cluster membership` | Per-peer SWIM FSM state + the quorum-loss self-drain signal | (CLI) |
 | `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` | `hrwOwner`, `servedByOwner`, `replicas[].state`, `confirmedOffset` | (stream failover diagnosis) |
@@ -56,7 +56,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Non-leader node failure
 
-- **Symptom:** a node stops responding; `nodeCount` on `/api/health` drops by one; slices it hosted re-route to peers.
+- **Symptom:** a node stops responding; `nodeCount` on `/api/v1/health` drops by one; slices it hosted re-route to peers.
 - **Detection surface:** `/api/events` emits `NODE_FAILED` (CRITICAL, from the SWIM FSM DEAD edge) or `NODE_LEFT` (WARNING, graceful); `/api/nodes/lifecycle/<id>` transitions the node to DECOMMISSIONED; `aether cluster membership` shows the peer FAULTY.
 - **Automatic response:** SWIM detects the death → the leader writes DECOMMISSIONED to the KV → CTM auto-heal provisions a replacement to restore the configured member count N.
 - **Budget:** detection ~8 s when the cluster is quiescent, ≤60 s under sustained load (02-chaos C3); auto-heal back to exactly N ≤180 s (C6).
@@ -76,7 +76,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Quorum loss / minority partition (self-drain)
 
-- **Symptom:** nodes on the minority side reject writes and then exit; `/api/health` reports `quorum:false` on that side.
+- **Symptom:** nodes on the minority side reject writes and then exit; `/api/v1/health` reports `quorum:false` on that side.
 - **Detection surface:** `/api/events` emits `QUORUM_LOST` (CRITICAL) and `SELF_DRAIN_INITIATED` (WARNING, `reason` ∈ `sustained-below-quorum` | `quorum-disappeared` | `rabia-paused`); the minority JVMs exit with **code 2** (distinguishes self-drain from clean=0 / SIGKILL=137); `aether cluster membership` carries the self-drain signal.
 - **Automatic response:** a node that cannot reach `core/2 + 1` peers self-terminates via `Runtime.halt(2)` after the split timeout; the majority continues serving. Drained nodes require external restart / CTM reprovision.
 - **Budget:** self-drain exit ≤45 s (8 s threshold + 30 s grace + 7 s headroom; wall-clock ~38 s cloud-proven) (C12); post-restart recovery to N healthy cores ≤60 s (C16). The self-drain state machine is a `[CONTRACT-GAP]` (code-only; guarded by `SelfDrainCoordinatorTest`).
@@ -98,7 +98,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Provisioning stall under heavy reconciler load
 
 - **Symptom:** after churn under load, auto-heal does not restore the member count promptly; `nodeCount` stays below target.
-- **Detection surface:** `/api/health` `nodeCount`; `aether status`.
+- **Detection surface:** `/api/v1/health` `nodeCount`; `aether status`.
 - **Automatic response:** a periodic reconcile re-evaluation (armed at the quorum threshold) retries provisioning; the historical permanent-paused wedge is closed.
 - **Budget:** **not yet pinned** — this is a cloud-gate-class scenario.
 - **Operator action:** manually reprovision if the cluster stays under target well beyond the ~180 s auto-heal budget.

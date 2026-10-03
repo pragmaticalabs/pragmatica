@@ -4741,23 +4741,37 @@ public final class StreamPartitionManager implements AutoCloseable {
                          .onFailure(_ -> wals.forEach(StreamEntry::closeWal));
         }
 
-        /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
-        /// ([Option#none]). The WAL is attached to the ring's eviction listener FIRST (#1234): replay can evict,
-        /// and those hand-overs must already see the partition as WAL-backed. The fresh ring is seeded above the durable last-sealed offset and only records
-        /// with `offset > lastSealedOffset` are appended (AppendLog.replay already filters them).
+        /// Recover one partition's ring. One rule on every path (#1441): the next offset is the highest DURABLE
+        /// offset + 1, the maximum over every durable source. There are two, and the floor is read ONCE for both:
+        ///   - the sealed floor `lastSealedOffset` rebuilt at boot from the refs in the streams metadata snapshot on
+        ///     disk. The ring is seeded at it, so the next append is `floor + 1`;
+        ///   - with a WAL, the WAL tail above that floor, placed at its stored offsets (contiguous from `floor + 1`
+        ///     or refused), so the next append is `max(floor, tail end) + 1`.
+        ///
+        /// The snapshot runs behind the live refs (≤100 mutations / 30 s), so the floor alone is not the highest
+        /// sealed offset after a crash. Each path covers that lag: with a WAL, truncation is bounded by the same
+        /// on-disk floor (#1345), so the WAL still holds every record above it; without one, a seal resolves only
+        /// once a snapshot holding its ref is on disk (`StorageSegmentSink.RefDurability`), so the floor covers
+        /// every completed seal. What a no-WAL crash loses is the range above the last COMPLETED seal -- records
+        /// never in the durable tier, which that mode does not promise to keep.
+        ///
+        /// The WAL is attached to the ring's eviction listener FIRST (#1234): replay can evict, and those
+        /// hand-overs must already see the partition as WAL-backed.
         private static Result<Unit> recoverPartition(String streamName,
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<AppendLog> wal,
                                                      LastSealedOffsetSource lastSealedOffset,
                                                      TrimFailure trimFailed) {
+            var floor = lastSealedOffset.lastSealedOffset(streamName, partition);
+
             return wal.onPresent(ring::attachWal)
-                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset).flatMap(_ -> trimAtOpen(streamName,
-                                                                                                                     partition,
-                                                                                                                     w,
-                                                                                                                     ring,
-                                                                                                                     trimFailed)))
-                      .or(() -> success(unit()));
+                      .map(w -> replayTail(streamName, partition, ring, w, floor).flatMap(_ -> trimAtOpen(streamName,
+                                                                                                          partition,
+                                                                                                          w,
+                                                                                                          ring,
+                                                                                                          trimFailed)))
+                      .or(() -> seedRing(ring, floor));
         }
 
         /// #1638 S1, trim at open: once the ring holds the recovered head, drop every provenance entry above it -- one a
@@ -4787,8 +4801,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                int partition,
                                                OffHeapRingBuffer ring,
                                                AppendLog wal,
-                                               LastSealedOffsetSource lastSealedOffset) {
-            var base = lastSealedOffset.lastSealedOffset(streamName, partition);
+                                               long base) {
             var records = new ArrayList<WalRecord>();
 
             return wal.replay(-1L, records::add)

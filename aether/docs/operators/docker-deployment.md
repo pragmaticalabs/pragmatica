@@ -26,8 +26,18 @@ machine, this compose file runs all three as containers. Requires a cluster secr
 no shipped default:
 
 ```bash
-cd docker
+cd aether/docker                              # from the repository root; the compose file lives in aether/docker/
 export AETHER_CLUSTER_SECRET=<your-secret>
+export AETHER_VERSION=<image-tag>             # required, no default is shipped
+```
+
+`AETHER_VERSION` is the image tag. There is deliberately no default: a hard-coded one silently
+runs a previous release from a newer checkout. For the pull path set it to a **published** release
+(an unpublished tag fails with a 404 rather than substituting another). For the `--build` path set
+it to the checkout's own version (the root `pom.xml` project version):
+
+```bash
+export AETHER_VERSION=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' ../../pom.xml | head -1)
 ```
 
 Pull the published images (no local build):
@@ -52,12 +62,12 @@ This starts:
 Only needed for the `--build` path above; the pull path needs neither Java nor Maven.
 
 ```bash
-# Build from project root
-
-# Build JARs first
+# From the repository root: build the JARs first
 mvn package -DskipTests
 
-# Build container images
+# Then build the container images from aether/ -- the Docker build context, which is
+# where docker/aether-node/Dockerfile and the COPY targets (node/target, forge/...) resolve
+cd aether
 docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
 docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
 ```
@@ -72,7 +82,7 @@ Access Forge dashboard at http://localhost:8888
 
 ## Docker Compose Configuration
 
-The `docker/docker-compose.yml` defines a 3-node cluster:
+The `aether/docker/docker-compose.yml` defines a 3-node cluster:
 
 ```yaml
 version: "3.9"

@@ -383,10 +383,10 @@ Management traffic goes directly to the Aether LB VM's public IP on port 8081.
 
 ```
 REQ-D35: Poll cluster health via management endpoint:
-         curl -sf http://<aether-lb-public-ip>:8081/api/health
+         curl -sf http://<aether-lb-public-ip>:8081/api/v1/health
          Wait up to 300 seconds.
 REQ-D36: Verify 5 core nodes visible:
-         curl -sf http://<aether-lb-public-ip>:8081/api/cluster/topology | jq '.coreCount'
+         curl -sf http://<aether-lb-public-ip>:8081/api/v1/cluster/topology | jq '.coreCount'
 REQ-D37: Verify leader elected:
          aether -c <aether-lb-public-ip>:8081 status --format value --field cluster.leaderId
 ```

@@ -121,7 +121,7 @@ export default function (data) {
         });
     } else {
         // Health check via management port
-        res = http.get(`${nodeEntry.mgmt}/api/health`, { tags: { phase: phase } });
+        res = http.get(`${nodeEntry.mgmt}/health/live`, { tags: { phase: phase } });
         isError = res.status !== 200;
 
         check(res, {
