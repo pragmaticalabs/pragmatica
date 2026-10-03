@@ -487,18 +487,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// Membership-v2 finale: the per-node work-state is read from the real node-authoritative
-    /// `NodeReportedState` readiness view (metrics pong) — the snapshot lifecycle enum was
-    /// removed. `LIFECYCLE_NOT_FOUND` when the node has not reported a pong yet / is absent.
-    private Promise<NodeReportedState> resolveLifecycleState(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(this::lookupLifecycleState);
-    }
-
-    private Promise<NodeReportedState> lookupLifecycleState(NodeId nodeId) {
-        return readLifecycleState(nodeId).async(LIFECYCLE_NOT_FOUND);
-    }
-
+    /// `NodeReportedState` readiness view (metrics pong) — the snapshot lifecycle enum was removed.
     private Option<NodeReportedState> readLifecycleState(NodeId nodeId) {
         return Option.option(nodeSupplier.get().metricsCollector().reportedStates().get(nodeId));
     }
