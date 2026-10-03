@@ -36,11 +36,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The ISR shrink for a departed member is the leader's ownership-writer decision, made on the reconcile a membership
 /// decision triggers; placement keeps every committed ISR member, so until that shrink the dead node also stays in the
 /// partition's replica set. The writer's "live" set is placement membership (installed voters narrowed to the
-/// membership FSM's counted members), so the shrink lands when membership drops the node: about ten seconds after a
-/// kill through SWIM suspicion in a warm cluster, and only at the authoritative removal (about thirty seconds,
-/// measured on bigboy 2026-10-03) while SWIM's cold-boot suppression still turns FAULTY into UNKNOWN, as it does in a
-/// cluster this young. `isrLagMax` is raised to ten minutes so the owner's lag shrink cannot be what passes this test,
-/// and the budget is bounded by membership departure, not by the election.
+/// membership FSM's counted members), so the shrink lands when membership drops the node. In a warm cluster that should
+/// be SWIM suspicion plus FAULTY, about ten seconds (not measured here); in a cluster this young SWIM's cold-boot suppression
+/// (#1830) defers FAULTY for a peer it never observed HEALTHY. Measured on bigboy 2026-10-03: 32 s (authoritative
+/// removal) and 67 s (the deferred FAULTY replayed). `isrLagMax` is raised to ten minutes so the owner's lag shrink
+/// cannot be what passes this test, and the 150 s budget is bounded by membership departure, not by the election.
 ///
 /// The in-run precondition: before the kill, the committed record names the leader as an ISR member that is not the
 /// owner, so the expected record is exactly "same owner, ISR minus the leader".
@@ -64,7 +64,7 @@ class EmberLeaderLossIsrShrinkTest {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long ISR_BUDGET_MS = 60_000L;
-    private static final long SHRINK_BUDGET_MS = 90_000L;
+    private static final long SHRINK_BUDGET_MS = 150_000L;
     private static final int STREAMS = 14;
     private static final String NAMESPACE = "ember";
     private static final String VERSION = "1.0.0";
