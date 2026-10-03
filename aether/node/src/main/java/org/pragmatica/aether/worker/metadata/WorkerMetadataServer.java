@@ -201,9 +201,7 @@ public final class WorkerMetadataServer {
 
             return dhtReplication.get()
                                  .map(replication -> new CapturedCut(store.committedRevision(),
-                                                                     selected.stream()
-                                                                             .map(this::captureScope)
-                                                                             .toList(),
+                                                                     selected.stream().map(this::captureScope).toList(),
                                                                      directory.apply(index.peersForWorker(worker,
                                                                                                           cores.get())),
                                                                      directory.apply(index.endpointPeersForWorker(worker)),

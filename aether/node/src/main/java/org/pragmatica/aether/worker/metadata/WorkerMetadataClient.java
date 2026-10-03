@@ -325,10 +325,14 @@ public final class WorkerMetadataClient {
         var endpoints = new ArrayList<NodeInfo>();
         var replication = new ArrayList<WorkerMetadataMessage.DhtReplication>();
 
-        return Result.allOf(current.scopes().stream().map(scope -> decodeScope(scope, entries, peers, endpoints, replication))).map(_ -> new Projection(Map.copyOf(entries),
-                                                                                                                                                        List.copyOf(peers),
-                                                                                                                                                        List.copyOf(endpoints),
-                                                                                                                                                        replication.isEmpty() ? Option.<WorkerMetadataMessage.DhtReplication>none() : Option.some(replication.getFirst())));
+        return Result.allOf(current.scopes()
+                                   .stream()
+                                   .map(scope -> decodeScope(scope, entries, peers, endpoints, replication))).map(_ -> new Projection(Map.copyOf(entries),
+                                                                                                                                      List.copyOf(peers),
+                                                                                                                                      List.copyOf(endpoints),
+                                                                                                                                      replication.isEmpty()
+                                                                                                                                      ? Option.<WorkerMetadataMessage.DhtReplication> none()
+                                                                                                                                      : Option.some(replication.getFirst())));
     }
 
     private Result<Unit> decodeScope(WorkerMetadataMessage.ScopeContent scope,
@@ -346,7 +350,8 @@ public final class WorkerMetadataClient {
         });
     }
 
-    private static Result<Unit> decodeDhtReplication(Object decoded, List<WorkerMetadataMessage.DhtReplication> replication) {
+    private static Result<Unit> decodeDhtReplication(Object decoded,
+                                                     List<WorkerMetadataMessage.DhtReplication> replication) {
         if (! (decoded instanceof WorkerMetadataMessage.DhtReplication record)) {
             return Causes.cause("Invalid metadata DHT replication").result();
         }

@@ -240,7 +240,6 @@ public final class EmberCluster {
     /// [#withDhtReplication] runs the production shape instead (#1777: a non-FULL DHT resolves its factors from
     /// committed state, and a worker from its projection).
     private final AtomicReference<DHTConfig> dhtReplication = new AtomicReference<>(DHTConfig.FULL);
-
     /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
     /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
