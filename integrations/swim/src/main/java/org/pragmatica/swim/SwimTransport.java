@@ -35,6 +35,11 @@ public interface SwimTransport {
     @Contract
     default void blackhole(boolean enabled) {}
 
+    /// Test-only per-peer fault injection (#1730): drop every datagram sent to, or received from, an address
+    /// `drop` accepts. `address -> false` heals.
+    @Contract
+    default void dropPeers(java.util.function.Predicate<InetSocketAddress> drop) {}
+
     /// Stop the transport and release resources.
     Promise<Unit> stop();
 

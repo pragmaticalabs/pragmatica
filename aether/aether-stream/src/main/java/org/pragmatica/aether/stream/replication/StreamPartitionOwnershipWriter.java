@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -14,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
@@ -107,6 +110,9 @@ public interface StreamPartitionOwnershipWriter {
                          .toList();
     }
 
+    /// The pre-#1730 writer: plain `Put`s of records carrying no committed ISR (`isrVersion` 0), which the ack
+    /// path treats as unmanaged. Kept for harnesses that drive ownership by hand; production uses the ISR-aware
+    /// factory below.
     static StreamPartitionOwnershipWriter streamPartitionOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                                          Supplier<Epoch> generationEpochSupplier,
                                                                          HlcClock hlcClock,
@@ -117,6 +123,41 @@ public interface StreamPartitionOwnershipWriter {
                                                         hlcClock,
                                                         committedOwnership,
                                                         hrwOwner);
+    }
+
+    /// #1730: the ISR-aware writer. Every write is a guarded [KVCommand.LeaderTransaction] whose single mutation
+    /// expects the exact committed record, so it can never overwrite an ISR change it did not see, and the records
+    /// it mints carry the partition's in-sync replica set:
+    ///   - **first record** — the ISR is the partition's placement for the owner ([IsrInputs#initialIsr]): a fresh
+    ///     partition holds nothing, so every placed replica is trivially in sync;
+    ///   - **owner unchanged** — members that left the live set are dropped from the ISR (never the owner);
+    ///   - **planned move** (the committed owner is still live) — the new owner leads, the live ISR stays; the new
+    ///     owner's activation catches up from the live holders before it serves;
+    ///   - **failover** (the committed owner is not live) — the new owner is chosen ONLY from the live ISR, the
+    ///     desired owner if it is a member, else the HRW-first member. With no live ISR member nothing is written:
+    ///     the partition stays unavailable rather than lose an acknowledged write (unclean failover is off).
+    static StreamPartitionOwnershipWriter streamPartitionOwnershipWriter(BooleanSupplier isLeaderSupplier,
+                                                                         Supplier<Epoch> generationEpochSupplier,
+                                                                         HlcClock hlcClock,
+                                                                         CommittedOwnership committedOwnership,
+                                                                         HrwOwner hrwOwner,
+                                                                         IsrInputs isrInputs,
+                                                                         Supplier<Option<LeaderValue>> committedLeader) {
+        return new IsrOwnershipWriter(isLeaderSupplier,
+                                      generationEpochSupplier,
+                                      hlcClock,
+                                      committedOwnership,
+                                      hrwOwner,
+                                      isrInputs,
+                                      committedLeader);
+    }
+
+    /// What the ISR-aware writer reads besides the committed record (#1730).
+    interface IsrInputs {
+        /// The live placement members, as the leader sees them.
+        List<NodeId> liveMembers();
+        /// The placement of `(stream, partition)` led by `owner`, the owner first.
+        List<NodeId> initialIsr(String stream, int partition, NodeId owner);
     }
 
     /// Reads the committed ownership record for `(stream, partition)` from committed KV — the leader's
@@ -201,5 +242,157 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
     /// presented identical committed state mint the IDENTICAL value.
     private static Epoch ownerEpoch(Epoch committedEpoch, long ownershipTerm) {
         return committedEpoch.withCounter(ownershipTerm);
+    }
+}
+
+/// #1730 ISR-aware writer; see [StreamPartitionOwnershipWriter#streamPartitionOwnershipWriter(BooleanSupplier, Supplier,
+/// HlcClock, StreamPartitionOwnershipWriter.CommittedOwnership, StreamPartitionOwnershipWriter.HrwOwner,
+/// StreamPartitionOwnershipWriter.IsrInputs, Supplier)].
+record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
+                          Supplier<Epoch> generationEpochSupplier,
+                          HlcClock hlcClock,
+                          StreamPartitionOwnershipWriter.CommittedOwnership committedOwnership,
+                          StreamPartitionOwnershipWriter.HrwOwner hrwOwner,
+                          StreamPartitionOwnershipWriter.IsrInputs isrInputs,
+                          Supplier<Option<LeaderValue>> committedLeader) implements StreamPartitionOwnershipWriter {
+    @Override
+    public Option<KVCommand<AetherKey>> decide(String stream,
+                                               int partition,
+                                               Option<StreamPartitionOwnershipValue> committed,
+                                               NodeId owner,
+                                               Epoch committedEpoch) {
+        return committedLeader.get()
+                              .flatMap(leader -> next(stream,
+                                                      partition,
+                                                      committed,
+                                                      owner,
+                                                      committedEpoch,
+                                                      isrInputs.liveMembers()).map(value -> guarded(leader,
+                                                                                                    stream,
+                                                                                                    partition,
+                                                                                                    committed,
+                                                                                                    value)));
+    }
+
+    @Override
+    public Option<KVCommand<AetherKey>> writeOwnershipChange(String stream, int partition) {
+        if (!isLeaderSupplier.getAsBoolean()) {
+            return Option.none();
+        }
+
+        var committed = committedOwnership.ownershipOf(stream, partition);
+
+        return hrwOwner.ownerOf(stream, partition)
+                       .orElse(() -> committed.map(StreamPartitionOwnershipValue::owner))
+                       .flatMap(owner -> decide(stream,
+                                                partition,
+                                                committed,
+                                                owner,
+                                                generationEpochSupplier.get()));
+    }
+
+    /// The record the leader should commit next, or none when the committed one stands (or no owner may be chosen).
+    Option<StreamPartitionOwnershipValue> next(String stream,
+                                               int partition,
+                                               Option<StreamPartitionOwnershipValue> committed,
+                                               NodeId desired,
+                                               Epoch committedEpoch,
+                                               List<NodeId> live) {
+        return committed.fold(() -> Option.some(minted(desired,
+                                                       committedEpoch,
+                                                       1L,
+                                                       led(desired, isrInputs.initialIsr(stream, partition, desired)),
+                                                       1L)),
+                              current -> successor(stream, partition, current, desired, committedEpoch, live));
+    }
+
+    private Option<StreamPartitionOwnershipValue> successor(String stream,
+                                                            int partition,
+                                                            StreamPartitionOwnershipValue current,
+                                                            NodeId desired,
+                                                            Epoch committedEpoch,
+                                                            List<NodeId> live) {
+        var liveIsr = current.isr().stream().filter(live::contains).toList();
+
+        if (live.contains(current.owner())) {
+            return desired.equals(current.owner())
+                   ? shrunk(current, liveIsr)
+                   : Option.some(moved(current, desired, committedEpoch, liveIsr));
+        }
+
+        return failoverOwner(stream, partition, liveIsr, desired).map(owner -> moved(current,
+                                                                                     owner,
+                                                                                     committedEpoch,
+                                                                                     liveIsr));
+    }
+
+    /// Owner unchanged and live: drop the ISR members that left the live set. The owner itself is live, so the
+    /// shrunk ISR is never empty.
+    private static Option<StreamPartitionOwnershipValue> shrunk(StreamPartitionOwnershipValue current,
+                                                                List<NodeId> liveIsr) {
+        return liveIsr.equals(current.isr())
+               ? Option.none()
+               : Option.some(current.withIsr(liveIsr));
+    }
+
+    /// Failover elects from the live ISR only: the desired owner when it is a member, else the HRW-first member.
+    /// None when no member is live — the unclean case, refused.
+    private static Option<NodeId> failoverOwner(String stream, int partition, List<NodeId> liveIsr, NodeId desired) {
+        if (liveIsr.contains(desired)) {
+            return Option.some(desired);
+        }
+
+        return Option.from(ReplicaPlacement.rank(stream, partition, liveIsr).stream().findFirst());
+    }
+
+    private StreamPartitionOwnershipValue moved(StreamPartitionOwnershipValue current,
+                                                NodeId owner,
+                                                Epoch committedEpoch,
+                                                List<NodeId> liveIsr) {
+        var term = current.ownershipTerm() + 1L;
+
+        return minted(owner, committedEpoch, term, led(owner, liveIsr), current.isrVersion() + 1L);
+    }
+
+    private StreamPartitionOwnershipValue minted(NodeId owner,
+                                                 Epoch committedEpoch,
+                                                 long ownershipTerm,
+                                                 List<NodeId> isr,
+                                                 long isrVersion) {
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
+                                                                           committedEpoch.withCounter(ownershipTerm),
+                                                                           ownershipTerm,
+                                                                           hlcClock.now(),
+                                                                           isr,
+                                                                           isrVersion);
+    }
+
+    /// `owner` first, then the other members in their given order.
+    static List<NodeId> led(NodeId owner, List<NodeId> members) {
+        var ordered = new ArrayList<NodeId>();
+
+        ordered.add(owner);
+        members.stream().filter(member -> !member.equals(owner)).forEach(ordered::add);
+
+        return List.copyOf(ordered);
+    }
+
+    /// One guarded mutation: applied only while the committed record is exactly `committed` and the committed
+    /// leader is `leader`, so a write decided on a stale record is refused rather than overwriting an ISR change.
+    static KVCommand<AetherKey> guarded(LeaderValue leader,
+                                        String stream,
+                                        int partition,
+                                        Option<StreamPartitionOwnershipValue> committed,
+                                        StreamPartitionOwnershipValue next) {
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition);
+        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                      committed.map(value -> value),
+                                                                      Option.some(next));
+
+        return new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                       UUID.randomUUID().toString(),
+                                                                       leader,
+                                                                       List.of(),
+                                                                       List.of(mutation));
     }
 }

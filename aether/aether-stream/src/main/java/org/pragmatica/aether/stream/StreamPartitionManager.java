@@ -3264,6 +3264,25 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new StreamWalView(name, partitions);
     }
 
+    /// #1730: every partition materialized on this node with its appended head — what the owner's ISR maintenance
+    /// ([org.pragmatica.aether.stream.replication.IsrMonitor]) measures replica lag against.
+    public List<PartitionHead> materializedHeads() {
+        return streams.entrySet()
+                      .stream()
+                      .flatMap(entry -> entry.getValue()
+                                             .materialized()
+                                             .entrySet()
+                                             .stream()
+                                             .map(partition -> new PartitionHead(entry.getKey(),
+                                                                                 partition.getKey(),
+                                                                                 partition.getValue()
+                                                                                          .ring()
+                                                                                          .headOffset())))
+                      .toList();
+    }
+
+    public record PartitionHead(String streamName, int partition, long head) {}
+
     /// [Option#none] for a partition this node has not materialized — nothing local exists to report,
     /// and reporting zeros would be indistinguishable from a real empty WAL.
     private Option<PartitionWalView> partitionWalView(String streamName, int partition, StreamEntry entry) {

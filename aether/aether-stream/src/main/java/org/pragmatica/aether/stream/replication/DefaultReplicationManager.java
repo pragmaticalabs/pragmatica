@@ -65,6 +65,8 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// hot path of every partition, and a single CAS'd counter would reintroduce cross-partition contention.
     private final LongAdder ackVisits = new LongAdder();
     private volatile Option<AckObserver> ackObserver = none();
+    /// #1730: the committed ISR of each partition; [ReplicationManager#UNMANAGED] until the node binds it.
+    private volatile InSyncReplicas inSync = UNMANAGED;
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
@@ -284,22 +286,58 @@ final class DefaultReplicationManager implements ReplicationManager {
                        .toList();
     }
 
+    @Contract
+    @Override
+    public void inSyncReplicaSource(InSyncReplicas source) {
+        this.inSync = source;
+    }
+
+    /// Who must confirm an offset of `(stream, partition)`, and how many of them (#1730). With a committed ISR:
+    /// every member other than this owner, all of them, and the set must hold at least `minAcks` (min-ISR = the
+    /// confirmation factor). Without one, or when no confirmation is required (`minAcks <= 0`, CF 1): any `minAcks`
+    /// of the registered replicas, as before #1730.
+    private AckSet ackSet(String streamName, int partition, int minAcks) {
+        var registered = new AckSet(replicationTargets(streamName, partition), minAcks, Set.of());
+
+        return minAcks <= 0
+               ? registered
+               : inSync.inSyncReplicas(streamName, partition)
+                       .map(isr -> isrAckSet(isr, minAcks))
+                       .or(registered);
+    }
+
+    private AckSet isrAckSet(List<NodeId> isr, int minAcks) {
+        var peers = isr.stream().filter(nodeId -> !nodeId.equals(governorId)).toList();
+
+        return peers.size() < minAcks
+               ? new AckSet(peers, minAcks, Set.copyOf(peers))
+               : new AckSet(peers, peers.size(), Set.copyOf(peers));
+    }
+
+    /// `targets` are the replicas whose confirmations count, `required` how many must confirm, `eligible` the only
+    /// identities an ack may be counted from (empty: any registered replica).
+    private record AckSet(List<NodeId> targets, int required, Set<NodeId> eligible) {
+        boolean satisfiable() {
+            return targets.size() >= required;
+        }
+    }
+
     @Override
     public Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
-        return replicationTargets(streamName, partition).size() < minAcks
+        return minAcks > 0 && !ackSet(streamName, partition, minAcks).satisfiable()
                ? NOT_ENOUGH_REPLICAS.result()
                : Result.unitResult();
     }
 
     @Override
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
-        var targets = replicationTargets(streamName, partition);
+        var ackSet = ackSet(streamName, partition, minAcks);
 
-        if (targets.size() < minAcks) {
+        if (!ackSet.satisfiable()) {
             return NOT_ENOUGH_REPLICAS.promise();
         }
 
-        return registerThenReconcile(targets, streamName, partition, offset, minAcks);
+        return registerThenReconcile(ackSet, streamName, partition, offset);
     }
 
     /// #1259: REGISTER the waiter first, THEN seed it from the registry. #262.3 seeded from the registry
@@ -308,15 +346,12 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// the await timed out on a replicated write. Registered first, every ack is caught by one of the two
     /// paths: it either finds the waiter in [#pendingAcks], or it reached the registry before the
     /// snapshot below read it. Both paths complete through [#complete], which resolves exactly once.
-    private Promise<Unit> registerThenReconcile(List<NodeId> targets,
-                                                String streamName,
-                                                int partition,
-                                                long offset,
-                                                int minAcks) {
+    private Promise<Unit> registerThenReconcile(AckSet ackSet, String streamName, int partition, long offset) {
+        var targets = ackSet.targets();
         var waiters = pendingAcks.computeIfAbsent(PartitionKey.partitionKey(streamName, partition),
                                                   _ -> new ConcurrentSkipListMap<>());
         var key = new WaiterKey(offset, waiterSequence.incrementAndGet());
-        var pending = PendingAck.pendingAck(minAcks);
+        var pending = PendingAck.pendingAck(ackSet.required(), ackSet.eligible());
 
         waiters.put(key, pending);
         armTimer(pending,
@@ -341,25 +376,27 @@ final class DefaultReplicationManager implements ReplicationManager {
     }
 
     /// Reads the SAME registry rows [#awaitReplication] seeds from, so an offset reported here is one an
-    /// await for it would resolve on at once.
+    /// await for it would resolve on at once. With a committed ISR (#1730) it is the high-water mark: the lowest
+    /// offset every ISR member other than the owner has confirmed.
     @Override
     public long replicatedThrough(String streamName, int partition, int minAcks) {
         return minAcks <= 0
                ? Long.MAX_VALUE
-               : minAcksConfirmedOffset(peerConfirmedDescending(streamName,
-                                                                partition,
-                                                                confirmedByNode(streamName, partition)),
-                                        minAcks);
+               : confirmedThrough(ackSet(streamName, partition, minAcks), confirmedByNode(streamName, partition));
     }
 
     @Override
     public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
         return minAcks <= 0
                ? Long.MAX_VALUE
-               : minAcksConfirmedOffset(peerConfirmedDescending(pending.streamName(),
-                                                                pending.partition(),
-                                                                withAck(pending)),
-                                        minAcks);
+               : confirmedThrough(ackSet(pending.streamName(), pending.partition(), minAcks),
+                                  withAck(pending));
+    }
+
+    private static long confirmedThrough(AckSet ackSet, Map<NodeId, Long> byNode) {
+        return ackSet.satisfiable()
+               ? minAcksConfirmedOffset(peerConfirmedDescending(ackSet.targets(), byNode), ackSet.required())
+               : -1L;
     }
 
     /// The registry rows with `pending` overlaid — a row is only ever raised, as the registry update would.
@@ -379,11 +416,11 @@ final class DefaultReplicationManager implements ReplicationManager {
                : -1L;
     }
 
-    private List<Long> peerConfirmedDescending(String streamName, int partition, Map<NodeId, Long> byNode) {
-        return replicationTargets(streamName, partition).stream()
-                                 .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
-                                 .sorted(Comparator.reverseOrder())
-                                 .toList();
+    private static List<Long> peerConfirmedDescending(List<NodeId> targets, Map<NodeId, Long> byNode) {
+        return targets.stream()
+                      .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
+                      .sorted(Comparator.reverseOrder())
+                      .toList();
     }
 
     private Map<NodeId, Long> confirmedByNode(String streamName, int partition) {
@@ -474,6 +511,10 @@ final class DefaultReplicationManager implements ReplicationManager {
                                   PendingAck pending,
                                   NodeId replicaId) {
         ackVisits.increment();
+        if (!pending.counts(replicaId)) {
+            return;
+        }
+
         pending.ackedReplicas().add(replicaId);
         resolveIfSatisfied(waiters, key, pending);
     }
@@ -537,15 +578,23 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// `ackedReplicas` is the set of DISTINCT non-self replica identities that have acked at-or-past the
     /// awaited offset; the await resolves once it reaches `minAcks` (#262.1). `timer` holds the ack
     /// timeout so completion can cancel it (#1260).
+    /// `eligible` (#1730) limits whose acks count: the ISR members when the partition carries a committed ISR, so a
+    /// replica outside it can never complete a confirmation; empty means any registered replica.
     record PendingAck(Promise<Unit> promise,
                       Set<NodeId> ackedReplicas,
                       int minAcks,
+                      Set<NodeId> eligible,
                       AtomicReference<Option<ScheduledFuture<?>>> timer) {
-        static PendingAck pendingAck(int minAcks) {
+        static PendingAck pendingAck(int minAcks, Set<NodeId> eligible) {
             return new PendingAck(Promise.promise(),
                                   ConcurrentHashMap.newKeySet(),
                                   minAcks,
+                                  eligible,
                                   new AtomicReference<>(none()));
+        }
+
+        boolean counts(NodeId replicaId) {
+            return eligible.isEmpty() || eligible.contains(replicaId);
         }
     }
 }

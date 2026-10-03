@@ -591,6 +591,7 @@ max_read_response_bytes = "28MB"
 reshuffle_concurrency = 2
 caught_up_max_lag_offsets = 1024
 # segment_disk_max_bytes = "200GB"   # unset: derived from the disk at boot
+isr_lag_max = "30s"
 ```
 
 | Field | Type | Default | Description |
@@ -601,6 +602,7 @@ caught_up_max_lag_offsets = 1024
 | `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
 | `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
 | `segment_disk_max_bytes` | data size | derived | Cap on this node's local-disk tier for sealed stream segments. Unset (or `0`): 40% of the usable space on the filesystem holding the stream data directory at boot, clamped to at least 1 GiB and at most usable space minus 2 GiB (the WAL usually shares the disk); the chosen value is logged at INFO. A value above the usable space is kept, with a WARN. Must be `>= 0` |
+| `isr_lag_max` | duration | `30s` | How long a member of a partition's in-sync replica set (ISR) may stay behind the owner's head before the owner asks for it to leave the ISR (#1730; Kafka's `replica.lag.time.max.ms`). **Liveness only:** the ISR changes only by a committed write and a `confirmation_factor` ≥ 2 acknowledgement waits for every committed ISR member, so no value makes an acknowledgement unsafe. Smaller drops a slow replica sooner (shorter ack stalls, fewer in-sync copies); larger keeps it longer (an acknowledgement can wait up to this long for a lagging member) |
 
 `reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
 partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition
