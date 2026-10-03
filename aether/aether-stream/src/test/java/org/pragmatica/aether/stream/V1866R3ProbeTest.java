@@ -170,8 +170,11 @@ class V1866R3ProbeTest {
     }
 
     /// Attack 2: concurrent first creates. n1 materializes on the publish path (ASYNC commit) under its own minted
-    /// incarnation and accepts records; n2's concurrent create commits last. After n1 restarts under the committed
-    /// life, every record it accepted must still be there.
+    /// incarnation; n2's concurrent create proposes another. Round 4 (#1278): the KV applier commits ONE of the two
+    /// lives (the other is refused by the life fence, pinned in `KVStoreIncarnationFenceTest`), so the round-3 order
+    /// "a committed, then b committed over it" cannot occur; the losing proposer n1 sees only b commit. Ruling A: n1
+    /// accepts nothing before a committed life applies (typed, retriable refusal), then every record it accepts under
+    /// the committed life survives its restart.
     @Test
     void production_concurrentFirstCreate_recordsAcceptedByTheLosingLife_surviveARestart() {
         var c1 = new RecordingClusterNode();
@@ -180,15 +183,18 @@ class V1866R3ProbeTest {
         var n2 = manager(c2, xWal);
 
         n1.ensureStreamMaterialized(config()).onFailure(cause -> fail(cause.message()));
-        var accepted = publish(n1, 5);
+        var beforeCommit = n1.publishLocal(STREAM, PARTITION, "early".getBytes(UTF_8), 999L);
         create(n2);
         var a = c1.lastPut();
         var b = c2.lastPut();
         n2.close();
 
         assertThat(a.value().config().incarnation()).as("fixture: two lives were minted").isNotEqualTo(b.value().config().incarnation());
-        n1.onStreamConfigPut(committed(a));
-        n1.onStreamConfigPut(committed(b)); // consensus order: b committed last
+        assertThat((boolean) beforeCommit.fold(cause -> cause instanceof StreamError.StreamConfigNotYetVisible, _ -> false))
+            .as("ruling A: no accept before a committed life applies: %s", beforeCommit)
+            .isTrue();
+        n1.onStreamConfigPut(committed(b)); // the fence committed b; n1's proposal a lost
+        var accepted = publish(n1, 5);
         n1.close();
 
         var restarted = manager(new RecordingClusterNode(), n1Wal);

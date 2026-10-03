@@ -21,6 +21,7 @@ import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
@@ -123,15 +124,20 @@ class StreamPartitionManagerTest {
         }
 
         private static StreamPartitionManager fencedManager(OwnershipEpochHighWater highWater) {
-            return StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
-                                                                 EvictionListener.NOOP,
-                                                                 ReplicationManager.NONE,
-                                                                 new StubClusterNode(StubApply.SUCCESS),
-                                                                 highWater,
-                                                                 StreamOwnerEpochSource.zero(),
-                                                                 Option.none(),
-                                                                 LastSealedOffsetSource.none(),
-                                                                 DurableSealedOffsetSource.none());
+            var node = new StubClusterNode(StubApply.SUCCESS);
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                        EvictionListener.NOOP,
+                                                                        ReplicationManager.NONE,
+                                                                        node,
+                                                                        highWater,
+                                                                        StreamOwnerEpochSource.zero(),
+                                                                        Option.none(),
+                                                                        LastSealedOffsetSource.none(),
+                                                                        DurableSealedOffsetSource.none());
+
+            node.deliverCommittedTo(manager::onStreamConfigPut);
+
+            return manager;
         }
 
         private static OwnershipEpochHighWater highWaterAt(Epoch epoch) {
@@ -621,17 +627,20 @@ class StreamPartitionManagerTest {
             withNode.close();
         }
 
+        /// #1278 ruling A, replacing `publishLocal_succeeds_afterMaterializeWithStalledCommit`, which specified the
+        /// defect: a record accepted into a life whose config never committed is lost when another life commits.
         @Test
-        void publishLocal_succeeds_afterMaterializeWithStalledCommit() {
+        void publishLocal_refusesRetriably_andAppendsNothing_whileTheCommitIsStalled() {
             var node = new StubClusterNode(StubApply.NEVER);
             var withNode = streamPartitionManager(Long.MAX_VALUE, node);
 
             withNode.ensureStreamMaterialized(StreamConfig.streamConfig("publish-stream"))
                     .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected prompt success"));
 
-            withNode.publishLocal("publish-stream", 0, "event".getBytes(), 1000L)
-                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected publish to local ring to succeed"))
-                    .onSuccess(offset -> assertThat(offset).isEqualTo(0L));
+            var refused = withNode.publishLocal("publish-stream", 0, "event".getBytes(), 1000L);
+
+            assertThat((Object) refused.fold(cause -> cause, _ -> "accepted")).isInstanceOf(StreamError.StreamConfigNotYetVisible.class);
+            assertThat(withNode.partitionInfo("publish-stream", 0).map(info -> info.headOffset()).or(-2L)).isEqualTo(-1L);
 
             withNode.close();
         }
@@ -640,6 +649,8 @@ class StreamPartitionManagerTest {
         void ensureStreamMaterialized_firesAtMostOneCommit_whenAlreadyCommitted() {
             var node = new StubClusterNode(StubApply.SUCCESS);
             var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+
+            node.deliverCommittedTo(withNode::onStreamConfigPut);
 
             withNode.ensureStreamMaterialized(StreamConfig.streamConfig("idempotent"))
                     .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
@@ -700,6 +711,8 @@ class StreamPartitionManagerTest {
             var node = new StubClusterNode(StubApply.SUCCESS);
             var withNode = streamPartitionManager(Long.MAX_VALUE, node);
 
+            node.deliverCommittedTo(withNode::onStreamConfigPut);
+
             withNode.createStream(StreamConfig.streamConfig("explicit"))
                     .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
 
@@ -740,9 +753,19 @@ class StreamPartitionManagerTest {
     static final class StubClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final StubApply behavior;
         private final AtomicInteger applyCount = new AtomicInteger(0);
+        private volatile java.util.function.Consumer<KVStoreNotification.ValuePut<AetherKey.StreamConfigKey, AetherValue.StreamConfigValue>> committed = _ -> {};
 
         StubClusterNode(StubApply behavior) {
             this.behavior = behavior;
+        }
+
+        /// #1278 round 4: a commit is the APPLIED config Put, not the apply future resolving. With a sink set, a
+        /// `SUCCESS` apply delivers each stream-config Put as the committed notification the real KV store emits on
+        /// local apply; without one it models a proposal whose commit never reaches this node.
+        StubClusterNode deliverCommittedTo(java.util.function.Consumer<KVStoreNotification.ValuePut<AetherKey.StreamConfigKey, AetherValue.StreamConfigValue>> sink) {
+            this.committed = sink;
+
+            return this;
         }
 
         int applyCount() {
@@ -753,11 +776,23 @@ class StreamPartitionManagerTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             applyCount.incrementAndGet();
 
+            if (behavior == StubApply.SUCCESS) {
+                deliverCommitted(commands);
+            }
+
             return switch (behavior) {
                 case NEVER -> Promise.promise();
                 case SUCCESS -> Promise.success(List.of());
                 case FAILURE -> new StubCommitError().promise();
             };
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private void deliverCommitted(List<KVCommand<AetherKey>> commands) {
+            commands.stream()
+                    .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.key() instanceof AetherKey.StreamConfigKey)
+                    .forEach(command -> committed.accept(new KVStoreNotification.ValuePut<>((KVCommand.Put) command,
+                                                                                            Option.empty())));
         }
 
         @Override
