@@ -286,11 +286,52 @@ class DHTReplicationChangeTest {
 
         assertThat(stale).as("typed, retriable refusal: " + refused).isTrue();
         assertThat(replicas).as("no replica took the W_old write").noneMatch(cluster::holds);
+        assertThat(cluster.nodes.get(writer).staleRefusal().map(DHTNode.StaleRefusal::fence))
+            .as("the refused writer records its own stale refusal (the owner-rule event's source)")
+            .isEqualTo(Option.some(DHTNode.NO_CHANGE));
 
         cluster.nodes.get(writer).resolveReplication(factors(3, 2), CHANGE);
 
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("applying the change ends it").isEqualTo(Option.none());
+
         assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).isTrue();
         replicas.forEach(id -> assertThat(cluster.read(id)).isEqualTo(Option.some("v")));
+    }
+
+    /// v1882 round 4, RESTART WINDOW (`probe-r4-restart-window-and-remove.patch`): a replica restarted after the settle
+    /// holds no fence until its state restore hands it the committed change. Red at f04368fb6: the straddling W_old put
+    /// landed on it, was acked at W1, and a read at R_new returned None. An unknown fence now refuses; once the replica
+    /// has resolved and adopted the change, a retry is accepted.
+    @Test
+    void restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+
+        cluster.holdPuts = true;
+        var straddling = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        cluster.changeAll(factors(3, 2));
+        cluster.settle(CHANGE, 3);
+
+        var restarted = replicas.getLast();
+        var fresh = cluster.restart(restarted);
+
+        assertThat(fresh.acceptsWrites()).as("arming: restarted, state not restored yet").isFalse();
+
+        cluster.deliverHeldTo(restarted);
+
+        assertThat(straddling.await().isSuccess()).as("the straddling put is not acknowledged").isFalse();
+        assertThat(cluster.holds(restarted)).as("the restarted replica refused it").isFalse();
+
+        fresh.resolveReplication(factors(3, 2), CHANGE);
+        assertThat(fresh.acceptsWrites()).as("resolved but not adopted: still unknown").isFalse();
+        fresh.adoptReplicationChange(CHANGE, factors(3, 2));
+        fresh.settleReplicationChange(CHANGE, factors(3, 2));
+
+        assertThat(fresh.acceptsWrites()).isTrue();
+        assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).as("the retry, stamped under the change").isTrue();
+        assertThat(cluster.holds(restarted)).isTrue();
     }
 
     /// A worker that learned the OLD factors from a core that had not applied the change yet stamps its puts with the old
@@ -436,6 +477,23 @@ class DHTReplicationChangeTest {
             assertThat(nodes.values()).as("arming: every replica completed the writers-switched pass")
                                       .allMatch(node -> node.replicationCaughtUpVersion() == version);
             nodes.values().forEach(node -> node.settleReplicationChange(version));
+        }
+
+        /// Replace `id` with a fresh process in the production boot shape: empty store, awaiting its replication.
+        DHTNode restart(NodeId id) {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+
+            nodes.keySet().forEach(ring::addNode);
+            var fresh = DHTNode.dhtNodeAwaitingReplication(id,
+                                                           memoryStorageEngine(),
+                                                           ring,
+                                                           DHTConfig.DEFAULT,
+                                                           org.pragmatica.hlc.HlcClock.hlcClock(id));
+
+            nodes.put(id, fresh);
+            antiEntropies.put(id, dhtAntiEntropy(fresh, this::route, _ -> false));
+
+            return fresh;
         }
 
         void deliverHeldTo(NodeId target) {

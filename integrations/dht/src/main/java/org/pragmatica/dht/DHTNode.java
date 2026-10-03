@@ -78,6 +78,18 @@ public final class DHTNode {
     /// ([#resolveReplication]), and aligned to the committed change's version once that record arrives
     /// ([#adoptReplicationChange]), so every node that uses the same factors stamps and fences at the same version.
     private final AtomicLong replicationFence = new AtomicLong(NO_CHANGE);
+    /// Whether [#replicationFence] reflects the cluster's committed replication change yet (#1777, v1882 round 4). A node
+    /// that restarts holds [#NO_CHANGE] until its state restore hands it the committed record; until then its fence is
+    /// UNKNOWN, and an unknown fence refuses writes rather than accepting any stamp — a write in flight across a settled
+    /// change would otherwise land on it at the old quorum.
+    private final AtomicBoolean replicationFenceKnown;
+    /// The first refusal of this node's own writes by the replication-change fence since it last adopted a change (#1777,
+    /// owner rule): the fence version its writes carried and when. Empty while its writes are accepted.
+    private final AtomicReference<Option<StaleRefusal>> staleRefusal = new AtomicReference<>(Option.none());
+
+    /// This node's writes refused as stamped below a replica's applied replication change, since `sinceMillis`, while its
+    /// own fence was `fence`.
+    public record StaleRefusal(long fence, long sinceMillis) {}
 
     private record QuorumFloor(long version, int writeQuorum, int readQuorum) {
         QuorumFloor merge(QuorumFloor other) {
@@ -111,6 +123,7 @@ public final class DHTNode {
         this.ring = ring;
         this.config = new AtomicReference<>(config);
         this.replicationResolved = new AtomicBoolean(replicationResolved);
+        this.replicationFenceKnown = new AtomicBoolean(replicationResolved);
         this.hlcClock = hlcClock;
     }
 
@@ -284,13 +297,51 @@ public final class DHTNode {
     /// raised itself at a later configuration version it applied the same factors under (a node that skipped versions), so
     /// every node on the same factors stamps and fences alike. A node on other factors keeps its fence: either it has not
     /// applied this change yet, or a later change is on its way.
+    ///
+    /// A node on other factors has already applied a LATER configuration (the record is committed after the configuration
+    /// that carries it, and every node applies commits in order), so its fence is raised to at least this version. Either
+    /// way the fence is known from here on.
     @Contract
     public void adoptReplicationChange(long version, DHTConfig factors) {
         synchronized (placementLock) {
             if (!factorsDiffer(config.get(), factors)) {
                 replicationFence.set(version);
+            } else {
+                replicationFence.accumulateAndGet(version, Math::max);
             }
+
+            replicationFenceKnown.set(true);
         }
+
+        clearStaleRefusalBelow(replicationFence.get());
+    }
+
+    /// The cluster has no committed replication change yet (#1777, v1882 round 4): this node's [#NO_CHANGE] fence is the
+    /// truth, so it is known.
+    @Contract
+    public void replicationFenceIsBaseline() {
+        replicationFenceKnown.set(true);
+    }
+
+    /// Whether this node accepts writes yet: its replication is resolved and its fence reflects the committed change.
+    public boolean acceptsWrites() {
+        return replicationResolved.get() && replicationFenceKnown.get();
+    }
+
+    /// Record that a write this node coordinated, stamped with `fence`, was refused by the replication-change fence
+    /// (#1777, owner rule). Only the first refusal since the last adoption is kept: it starts the clock.
+    @Contract
+    public void noteStaleRefusal(long fence, long nowMillis) {
+        staleRefusal.updateAndGet(current -> Option.some(current.or(() -> new StaleRefusal(fence, nowMillis))));
+    }
+
+    /// The ongoing refusal of this node's writes as stale, if any (#1777, owner rule).
+    public Option<StaleRefusal> staleRefusal() {
+        return staleRefusal.get();
+    }
+
+    private void clearStaleRefusalBelow(long fence) {
+        staleRefusal.updateAndGet(current -> current.filter(refusal -> refusal.fence() >= fence));
     }
 
     /// The highest replication change whose writers-switched catch-up pass completed here, or [#NO_CHANGE].
@@ -348,6 +399,7 @@ public final class DHTNode {
 
                 if (changed) {
                     replicationFence.set(version);
+                    clearStaleRefusalBelow(version);
                     reopenEveryOwnedPartition(before, after);
                     // `previous` is the transitional view, so a change made while an earlier one is still settling keeps
                     // the strictest quorums of all of them
@@ -685,7 +737,7 @@ public final class DHTNode {
     /// catch-up begins only after every member, this one included, reported the change applied, so it pulls that copy.
     @Contract
     public void handlePutRequest(DHTMessage.PutRequest request, Consumer<DHTMessage.PutResponse> responseHandler) {
-        if (request.replicationVersion() < replicationFence.get()) {
+        if (!acceptsWrites() || request.replicationVersion() < replicationFence.get()) {
             responseHandler.accept(new DHTMessage.PutResponse(request.requestId(), nodeId, false, false, false, true));
 
             return;

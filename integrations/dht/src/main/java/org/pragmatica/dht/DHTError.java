@@ -117,7 +117,8 @@ public sealed interface DHTError extends Cause {
     record ReplicaOnNewerReplication(NodeId replica) implements DHTError, Cause.Transient {
         @Override
         public String message() {
-            return "Replica " + replica.id() + " refused the write: it has applied a newer replication change";
+            return "Replica " + replica.id()
+                 + " refused the write: it has applied a newer replication change, or has not yet learned the committed one";
         }
     }
 

@@ -88,7 +88,8 @@ public sealed interface DHTMessage extends ProtocolMessage {
     ///
     /// `replicationStale` (#1777, CTO ruling R1c) marks a refusal by the replication-change fence: the put was stamped with
     /// an older replication change than this replica has applied, so its quorum was sized under factors the cluster has
-    /// left. The writer applies the newer change and retries.
+    /// left; or this replica does not know the committed change yet (restarted, before its state restore), so it cannot
+    /// tell. The writer retries — under the newer change once it has applied it.
     record PutResponse(String requestId,
                        NodeId sender,
                        boolean success,
