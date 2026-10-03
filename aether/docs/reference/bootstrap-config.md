@@ -319,9 +319,19 @@ the same way (`ClusterEventsFactorsRefused`).
 `confirmation_factor` replicas and a read asks `replication_factor - confirmation_factor + 1`, so every read meets
 at least one replica that acknowledged the last write when the replica set has not changed
 [mechanism: R + W = RF + 1 > RF]. A ring smaller than `replication_factor` holds every key on every node, with the
-quorums capped at the ring size. Unlike a stream, the DHT applies a changed value **live**: the keyspace is re-placed
-through the catch-up gate, and in that window a read on a partition with new replicas answers the value or a
-retryable `NotCaughtUp`, never "absent". A node refuses DHT operations (retryable `ReplicationUnresolved`) until it
+quorums capped at the ring size. Unlike a stream, the DHT applies a changed value **live**:
+- **Gate:** ANY change of `replication_factor` or `confirmation_factor` re-opens the catch-up gate on every partition a
+  node replicates.
+- **Transitional quorums:** until the node has caught up, it writes to max(old, new) and reads from max(old, new)
+  replicas, capped at the new factor.
+- **What a read returns in that window:** a value acknowledged under the old factors reads as the value or a retryable
+  `NotCaughtUp`, never "absent".
+- **Limit:** the switch back to the new quorums is per node. A write made in the brief window before another node has
+  applied the change is protected only while the reading node is still settling
+  [design intent — unverified for the reader that has already settled].
+
+Idempotency's dedup records live in this replicated DHT; only the cache uses `[cache]`. A node refuses DHT operations
+(retryable `ReplicationUnresolved`) until it
 has read the committed value after its consensus state is restored. The node-local `[dht.replication] target_rf`
 is removed; a node config that still sets it is refused.
 
