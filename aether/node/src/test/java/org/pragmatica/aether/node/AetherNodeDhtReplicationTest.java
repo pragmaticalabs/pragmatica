@@ -144,7 +144,7 @@ class AetherNodeDhtReplicationTest {
     void registerDhtExtensions_bindsTheReplicatedClientAsDhtClient_andTheCacheClientSeparately() {
         var node = awaiting();
 
-        AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(5, 3, 1, 1, 1),
+        AetherNode.applyDhtReplication(new ReplicationDefaultsConfig(5, 3, 1, 1, 1, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
                                        node,
                                        DHTConfig.DEFAULT,
                                        DHTConfig.CACHE_DEFAULT,
