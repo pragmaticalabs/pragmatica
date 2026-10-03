@@ -65,6 +65,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | CommunityObservabilityForgeTest | 12800 | 12950 | 0 | 6 nodes (3 cores + 3 workers, single method, app-http 13300, SWIM UDP 12900-12905; #1652 community route and lifecycle events) |
 | StreamConfirmationFactorOwnerKillTest | 14500 | 14600 | 0 | 5 nodes (app-http 14700; #1564 RF 3 / CF 2: an acked record survives the owner's loss) |
 | StreamConfirmationEqualsFactorAvailabilityTest | 16500 | 16600 | 0 | 3 nodes (app-http 16700; #1564 RF 3 / CF 3: one lost core refuses writes until a replacement is placed) |
+| StreamOwnerKillWritesResumeTest | 7700 | 7740 | 0 | 5 nodes (app-http 7770, SWIM UDP 7800-7804; #1339 every partition accepts a write after its owner is killed) |
 
 ## Per-Method Offset Pattern
 
