@@ -723,9 +723,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 value.artifactCoords(),
                                                                 value.owningBlueprint(),
                                                                 value.attemptCount());
-            var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
-            var commands = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(versionKey, updated),
-                                                          new KVCommand.Remove<>(lockKey));
+            // The lock is NOT removed here (#806): this runs only for an EXPIRED lock, which the next
+            // acquire takes over, and a bare Remove of a `WitnessedRemoval` value is refused anyway.
+            var commands = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(versionKey, updated));
 
             ctx.cluster()
                .apply(commands)
@@ -2838,9 +2838,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // seconds, and at the time `SchemaOrchestratorService.acquireLock` was check-then-act
             // (a read then a separate `cluster.apply(Put)`), not atomic across nodes. Since #766 the
             // claim is a fenced CAS (`lockVersion` + `VersionFenced`, refused by the applier when
-            // stale) — but a sweep is STILL blocked by #806: the lock TTL (5 min) is shorter than the
-            // migration timeout (15 min), so an expired lock can be taken over while the holder still
-            // runs, and `releaseLock` is an unfenced Remove. The second runner reached
+            // stale). #806 (lock TTL 5 min < migration timeout 15 min, unfenced release) is closed by a
+            // renewed lease and a tombstone release, but THIS sweep stays out until someone re-decides
+            // it: before #806 an expired lock could be taken over while the holder still ran, and
+            // `releaseLock` was an unfenced Remove. The second runner reached
             // `aether_schema_history` and died on `23505 duplicate key`, marking the whole datasource
             // FAILED and holding every slice in the blueprint — the exact outage the sweep was meant
             // to prevent, caused by the sweep.
