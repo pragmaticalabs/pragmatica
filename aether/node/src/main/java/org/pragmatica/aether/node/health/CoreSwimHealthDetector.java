@@ -494,16 +494,18 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                              .filter(member -> unreachable.contains(member.nodeId()))
                                              .map(SwimMember::address)
                                              .collect(java.util.stream.Collectors.toSet()))
-                                  .or(java.util.Set.of());
+                                .or(java.util.Set.of());
 
         transport().onPresent(t -> t.dropPeers(address -> addresses.stream()
-                                                                  .anyMatch(dropped -> sameEndpoint(dropped, address))));
+                                                                   .anyMatch(dropped -> sameEndpoint(dropped, address))));
     }
 
     private static boolean sameEndpoint(InetSocketAddress left, InetSocketAddress right) {
-        return left.getPort() == right.getPort() && (left.getAddress() == null || right.getAddress() == null
-                                                     || left.getAddress().isLoopbackAddress() && right.getAddress().isLoopbackAddress()
-                                                     || left.getAddress().equals(right.getAddress()));
+        return left.getPort() == right.getPort()
+               && (left.getAddress() == null || right.getAddress() == null || left.getAddress()
+                                                                                  .isLoopbackAddress() && right.getAddress()
+                                                                                                               .isLoopbackAddress() || left.getAddress()
+                                                                                                                                           .equals(right.getAddress()));
     }
 
     private Option<SwimTransport> transport() {

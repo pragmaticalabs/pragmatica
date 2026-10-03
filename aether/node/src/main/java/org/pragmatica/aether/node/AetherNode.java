@@ -2757,8 +2757,7 @@ public interface AetherNode extends ManageableNode {
             public void partitionFrom(java.util.Set<NodeId> unreachable) {
                 var cut = java.util.Set.copyOf(unreachable);
 
-                clusterNode.network()
-                           .setInboundFaultFilter((peer, _) -> !cut.contains(peer));
+                clusterNode.network().setInboundFaultFilter((peer, _) -> !cut.contains(peer));
                 swimHealthDetector.setSwimPeerPartition(cut);
             }
 
