@@ -85,7 +85,7 @@ class AetherNodeDhtReplicationTest {
     @Test
     void workerDhtReplication_isDerivedFromTheCommittedSections() {
         var toml = "[replication]\nreplication_factor = 5\nconfirmation_factor = 3\n\n[cache]\nreplication_factor = 2\nconfirmation_factor = 1\n";
-        var committed = new org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue(toml, "c", "1", java.util.List.of(), 5, 5, "forge", 1, 0);
+        var committed = new org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue(org.pragmatica.lang.Option.some(toml), "c", "1", java.util.List.of(), 5, 5, "forge", 1, 0);
 
         assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.none()).unwrap())
             .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1));

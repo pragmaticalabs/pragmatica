@@ -116,13 +116,13 @@ class EmberWorkerDhtReplicationTest {
     private void commitReplication(int replicationFactor, int confirmationFactor) {
         var leader = cluster.currentLeader().flatMap(cluster::getNode).unwrap();
         var before = leader.kvStore().getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class).unwrap();
-        var toml = before.tomlContent() + "\n[replication]\nreplication_factor = %d\nconfirmation_factor = %d\n".formatted(replicationFactor,
+        var toml = before.tomlContent().or("") + "\n[replication]\nreplication_factor = %d\nconfirmation_factor = %d\n".formatted(replicationFactor,
                                                                                                                        confirmationFactor);
 
-        assertThat(ReplicationDefaultsParser.fromClusterToml(toml).map(defaults -> defaults.replicationFactor()).or(0))
+        assertThat(ReplicationDefaultsParser.fromClusterToml(Option.some(toml)).map(defaults -> defaults.replicationFactor()).or(0))
             .as("arming: the document carries the new factor")
             .isEqualTo(replicationFactor);
-        var value = new ClusterConfigValue(toml,
+        var value = new ClusterConfigValue(Option.some(toml),
                                            before.clusterName(),
                                            before.version(),
                                            before.desiredTopology(),
