@@ -27,6 +27,7 @@ import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_DRAIN;
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_ENDPOINT_GET;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_GET;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_LIST;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDOWN;
@@ -276,8 +277,9 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     private Result<Integer> destroyEnumerated(ClusterRegistry registry, ClusterName clusterName, List<String> nodeIds) {
-        var drainResults = drainAllNodes(nodeIds);
-        var shutdownResults = shutdownAllNodes(nodeIds);
+        var outcome = drainAndShutdown(nodeIds);
+        var drainResults = outcome.drains();
+        var shutdownResults = outcome.shutdowns();
         var cleanupOk = cleanupCloudResources(clusterName);
 
         return finalizeDestruction(registry, clusterName, cleanupOk, nodeIds, drainResults, shutdownResults);
@@ -777,16 +779,125 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return List.copyOf(result);
     }
 
+    record DrainShutdownOutcome(List<NodeResult> drains, List<NodeResult> shutdowns) {}
+
+    /// The drain and shutdown phases as one unit: the node serving these requests is drained LAST, and a node whose
+    /// departure the drain wait observed is not sent a shutdown through an endpoint that may be that halted node.
+    DrainShutdownOutcome drainAndShutdown(List<String> nodeIds) {
+        var servingNode = servingNodeId(nodeIds);
+
+        warnServingNodeUnidentified(nodeIds, servingNode);
+        var ordered = servingNodeLast(nodeIds, servingNode);
+        var drainResults = drainAllNodes(ordered, servingNode);
+
+        return new DrainShutdownOutcome(drainResults, shutdownAllNodes(ordered, departedNodes(drainResults)));
+    }
+
+    /// With several nodes and no host match, the node relaying these requests may be drained mid-list, and every later
+    /// drain and shutdown then goes to a halted process while cloud cleanup still deletes the VMs. The usual cause is a
+    /// transport address that differs from the management endpoint (a private IP behind a public endpoint, e.g. AWS).
+    /// Never silent: say so and name the consequence.
+    @Contract
+    static void warnServingNodeUnidentified(List<String> nodeIds, org.pragmatica.lang.Option<String> servingNode) {
+        if (nodeIds.size() > 1 && servingNode.isEmpty()) {
+            System.err.println("  WARNING: the node serving this destroy's requests could not be identified (no node's"
+                              + " transport host matches the management endpoint, e.g. a private transport address behind"
+                              + " a public endpoint). Nodes are drained in enumerated order, so that node may be drained"
+                              + " before the others: later drain and shutdown requests can then fail while cloud cleanup"
+                              + " still deletes the VMs. Verify the cluster is gone, or re-run with --cluster pointing at"
+                              + " an endpoint whose host matches a node's transport host.");
+        }
+    }
+
+    private static java.util.Set<String> departedNodes(List<NodeResult> drainResults) {
+        return drainResults.stream()
+                           .filter(NodeResult::success)
+                           .map(NodeResult::nodeId)
+                           .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /// The node the destroy's requests are being served by, if it can be told. Every drain and shutdown is
+    /// relayed through the current endpoint, so draining THAT node first would send every later request to a halted
+    /// process (#1868, v1872). Its host is matched against each node's cluster-transport host
+    /// (`NODE_ENDPOINT_GET`); a failed lookup or a host that matches nothing yields `none()`, and the order is then
+    /// left as enumerated — best effort, stated, never a guess.
+    private static org.pragmatica.lang.Option<String> servingNodeId(List<String> nodeIds) {
+        var endpointHost = ClusterHttpClient.resolveEndpoint()
+                                            .option()
+                                            .flatMap(ClusterDestroyCommand::parseEndpoint)
+                                            .map(URI::getHost);
+
+        return endpointHost.flatMap(host -> nodeIds.stream()
+                                                   .filter(id -> nodeTransportHost(id).map(host::equals)
+                                                                                  .or(false))
+                                                   .findFirst()
+                                                   .map(org.pragmatica.lang.Option::some)
+                                                   .orElse(org.pragmatica.lang.Option.none()));
+    }
+
+    private static org.pragmatica.lang.Option<String> nodeTransportHost(String nodeId) {
+        return ClusterHttpClient.fetch(NODE_ENDPOINT_GET,
+                                       List.of(nodeId))
+                                .flatMap(MAPPER::readTree)
+                                .map(node -> node.path("address")
+                                                 .asText(""))
+                                .option()
+                                .filter(address -> address.contains(":"))
+                                .map(address -> address.substring(0,
+                                                                  address.lastIndexOf(':')));
+    }
+
+    /// The serving node goes LAST; every other node keeps its enumerated order.
+    static List<String> servingNodeLast(List<String> nodeIds, org.pragmatica.lang.Option<String> servingNode) {
+        var ordered = new ArrayList<String>(nodeIds);
+
+        servingNode.onPresent(id -> {
+            if (ordered.remove(id)) {
+                ordered.add(id);
+            }
+        });
+
+        return List.copyOf(ordered);
+    }
+
+    /// The serving node is the cluster endpoint itself, so its own address is the target's own address: the
+    /// process halting is observed as that address refusing connections, exactly as for a WaveExecutor poll.
+    private static boolean waitForServingNodeToHalt(String nodeId) {
+        return ClusterHttpClient.resolveEndpoint()
+                                .option()
+                                .flatMap(ClusterDestroyCommand::parseEndpoint)
+                                .map(uri -> ClusterHttpClient.awaitDrainComplete(uri.getScheme(),
+                                                                                 uri.getHost(),
+                                                                                 portOf(uri),
+                                                                                 nodeId,
+                                                                                 DRAIN_TIMEOUT_SECONDS * 1000L,
+                                                                                 DRAIN_POLL_INTERVAL_MS)
+                                                             .isSuccess())
+                                .or(false);
+    }
+
+    private static int portOf(URI uri) {
+        return uri.getPort() >= 0
+               ? uri.getPort()
+               : "https".equals(uri.getScheme())
+                 ? 443
+                 : 80;
+    }
+
     List<NodeResult> drainAllNodes(List<String> nodeIds) {
+        return drainAllNodes(nodeIds, org.pragmatica.lang.Option.none());
+    }
+
+    List<NodeResult> drainAllNodes(List<String> nodeIds, org.pragmatica.lang.Option<String> servingNode) {
         logPhase(DestroyPhase.DRAIN_NODES, drainAnnouncement(nodeIds.size()));
         var results = new ArrayList<NodeResult>();
 
         for (var nodeId : nodeIds) {
-            System.out.printf("Draining node %s (waiting up to %ds for DECOMMISSIONED, polling every %dms)...%n",
+            System.out.printf("Draining node %s (waiting up to %ds for the drain to complete, polling every %dms)...%n",
                               nodeId,
                               DRAIN_TIMEOUT_SECONDS,
                               DRAIN_POLL_INTERVAL_MS);
-            var result = drainSingleNode(nodeId);
+            var result = drainSingleNode(nodeId, servingNode);
 
             results.add(result);
         }
@@ -803,7 +914,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                (long) nodeCount * DRAIN_TIMEOUT_SECONDS);
     }
 
-    private NodeResult drainSingleNode(String nodeId) {
+    private NodeResult drainSingleNode(String nodeId, org.pragmatica.lang.Option<String> servingNode) {
         var drainResult = ClusterHttpClient.post(NODE_DRAIN, List.of(nodeId), "{}");
 
         if (drainResult.isFailure()) {
@@ -814,17 +925,20 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return NodeResult.failed(nodeId, refusalReason(cause));
         }
 
-        var success = waitForDecommissioned(nodeId);
+        var success = servingNode.filter(nodeId::equals).isPresent()
+                      ? waitForServingNodeToHalt(nodeId)
+                      : waitForDrainComplete(nodeId);
 
         if (success) {
-            System.out.printf("  Node %s decommissioned.%n", nodeId);
+            System.out.printf("  Node %s drained.%n", nodeId);
 
             return NodeResult.succeeded(nodeId);
         }
 
-        System.err.printf("  Node %s did not decommission in time.%n", nodeId);
+        System.err.printf("  Node %s did not finish draining in time.%n", nodeId);
 
-        return NodeResult.failed(nodeId, "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for DECOMMISSIONED");
+        return NodeResult.failed(nodeId,
+                                 "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for the drain to complete");
     }
 
     /// The reason the summary warning carries per node (#587 review NIT-2): a refusal keeps its HTTP
@@ -837,18 +951,14 @@ class ClusterDestroyCommand implements Callable<Integer> {
                : "error: " + cause.message();
     }
 
-    private static boolean waitForDecommissioned(String nodeId) {
+    /// Polls through the cluster endpoint, a member OTHER than the target (the serving node is drained last), so
+    /// the lifecycle GET's 404 — membership's committed departure — is the completion signal; see
+    /// [DrainCompletion#isDeparted].
+    private static boolean waitForDrainComplete(String nodeId) {
         var deadline = System.currentTimeMillis() + (long) DRAIN_TIMEOUT_SECONDS * 1000;
 
         while (System.currentTimeMillis() < deadline) {
-            var state = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET,
-                                                List.of(nodeId))
-                                         .flatMap(MAPPER::readTree)
-                                         .map(node -> node.path("state")
-                                                          .asText("UNKNOWN"))
-                                         .or("UNKNOWN");
-
-            if ("DECOMMISSIONED".equals(state)) {
+            if (DrainCompletion.isDeparted(ClusterHttpClient.fetch(NODE_LIFECYCLE_GET, List.of(nodeId)))) {
                 return true;
             }
 
@@ -859,6 +969,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     List<NodeResult> shutdownAllNodes(List<String> nodeIds) {
+        return shutdownAllNodes(nodeIds, java.util.Set.of());
+    }
+
+    /// A node whose departure the drain wait observed has halted: there is nothing left to shut down, and the
+    /// request would go to an endpoint that may itself be that halted node.
+    List<NodeResult> shutdownAllNodes(List<String> nodeIds, java.util.Set<String> alreadyDeparted) {
         logPhase(DestroyPhase.SHUTDOWN_NODES,
                  nodeIds.isEmpty()
                  ? "Nothing to shut down — the node list is empty"
@@ -866,6 +982,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var results = new ArrayList<NodeResult>();
 
         for (var nodeId : nodeIds) {
+            if (alreadyDeparted.contains(nodeId)) {
+                System.out.printf("Node %s already departed; nothing to shut down.%n", nodeId);
+                results.add(NodeResult.succeeded(nodeId));
+                continue;
+            }
+
             System.out.printf("Shutting down node %s...%n", nodeId);
             var result = ClusterHttpClient.post(NODE_SHUTDOWN, List.of(nodeId), "{}");
 

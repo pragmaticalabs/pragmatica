@@ -440,12 +440,8 @@ public final class WaveExecutor {
 
         var host = hosts.getFirst();
 
-        return ClusterHttpClient.drainNode(host, managementPort, nodeId)
-                                .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
-                                                                                     managementPort,
-                                                                                     nodeId,
-                                                                                     DRAIN_TIMEOUT_MS))
-                                .flatMap(_ -> sshStopNode(host, source));
+        return ClusterHttpClient.drainNodeAndAwait(host, managementPort, nodeId, DRAIN_TIMEOUT_MS).flatMap(_ -> sshStopNode(host,
+                                                                                                                            source));
     }
 
     private static Result<Unit> sshStopNode(String host, SourceProfile source) {
@@ -463,12 +459,11 @@ public final class WaveExecutor {
                                                            int managementPort) {
         var address = resolveNodeAddress(nodeId);
 
-        return ClusterHttpClient.drainNode(address, managementPort, nodeId)
-                                .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
-                                                                                     managementPort,
-                                                                                     nodeId,
-                                                                                     DRAIN_TIMEOUT_MS))
-                                .flatMap(_ -> dispatchDestroy(sourceName, source, role, 1, managementPort));
+        return ClusterHttpClient.drainNodeAndAwait(address, managementPort, nodeId, DRAIN_TIMEOUT_MS).flatMap(_ -> dispatchDestroy(sourceName,
+                                                                                                                                   source,
+                                                                                                                                   role,
+                                                                                                                                   1,
+                                                                                                                                   managementPort));
     }
 
     private static Result<List<ProvisionedNode>> reprovisionNode(SourceName sourceName,
@@ -561,19 +556,13 @@ public final class WaveExecutor {
                                                            count));
     }
 
-    private static Result<Unit> drainOldNodes(SourceName sourceName,
-                                              NodeRole role,
-                                              int count,
-                                              ClusterBootstrapConfig desired) {
+    static Result<Unit> drainOldNodes(SourceName sourceName, NodeRole role, int count, ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
 
         for (int i = 0; i < count; i++) {
             var nodeId = sourceName.value() + "-" + role.value() + "-old-" + i;
             var address = resolveNodeAddress(nodeId);
-            Result<Unit> result = ClusterHttpClient.drainNode(address, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
-                                                                                                                                                   managementPort,
-                                                                                                                                                   nodeId,
-                                                                                                                                                   DRAIN_TIMEOUT_MS));
+            Result<Unit> result = ClusterHttpClient.drainNodeAndAwait(address, managementPort, nodeId, DRAIN_TIMEOUT_MS);
 
             if (result.isFailure()) {
                 return result;
@@ -794,12 +783,8 @@ public final class WaveExecutor {
         for (int i = 0; i < stopCount; i++) {
             var host = hosts.get(hosts.size() - 1 - i);
             var nodeId = sourceName.value() + "-" + role.value() + "-" + (hosts.size() - 1 - i);
-            var result = ClusterHttpClient.drainNode(host, managementPort, nodeId)
-                                          .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
-                                                                                               managementPort,
-                                                                                               nodeId,
-                                                                                               DRAIN_TIMEOUT_MS))
-                                          .flatMap(_ -> sshStopNode(host, source));
+            var result = ClusterHttpClient.drainNodeAndAwait(host, managementPort, nodeId, DRAIN_TIMEOUT_MS).flatMap(_ -> sshStopNode(host,
+                                                                                                                                      source));
 
             if (result.isFailure()) {
                 return result;
