@@ -290,7 +290,7 @@ TOML, or a document without this section, gets the built-in defaults below.
 |---|---|---|---|
 | `replication_factor` | int | `3` | RF: copies of each partition, the owner included. At least 3 — a lower RF is declared on the resource itself (with a LOUD warning), never taken from a default. |
 | `confirmation_factor` | int | `2` | CF: copies, the owner included, that hold a write before it is acknowledged. `1 <= confirmation_factor <= replication_factor`. |
-| `tombstone_retention` | duration (`"1h"`, `"90m"`; a bare number is seconds) | `"1h"` | How long the DHT keeps a removed key's tombstone (#1777). At least `"6m30s"`: a node drops its stray copies of a partition it stopped replicating after the retention less 90 s, which must leave catch-up at least five minutes to read them. A change applies live. |
+| `tombstone_retention` | duration (`"1h"`, `"90m"`; a bare number is seconds) | `"1h"` | How long the DHT keeps a removed key's tombstone (#1777). At least `"6m30s"`: a node drops its stray copies of a partition it stopped replicating after the retention less 90 s, which must leave catch-up at least five minutes to read them. While a `[replication]` change is unsettled, strays are kept and tombstones wait until it settles (#1777 R1b). A change applies live. |
 | `[replication.cluster_events] confirmation_factor` | int | `1` | CF of the `system:cluster-events` stream (its RF is the desired core count, so the CF may not exceed it). At CF 1 an event is acknowledged on the owner's append, so events acknowledged after the last peer-acked offset are lost when the owner dies. |
 
 ```toml

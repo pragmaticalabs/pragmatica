@@ -11,4 +11,11 @@
   copies of a partition it stopped replicating after the retention less 90 s, and a node removed from the cluster
   while running drops its store, so it rejoins empty. New gauges: `aether.dht.tombstones`,
   `aether.dht.tombstones.collected`, `aether.dht.strays.purged.partitions`, `aether.dht.gc.unagreed.partitions`.
+- While a `[replication]` change is unsettled (#1777 R1b), a node keeps its stray copies past that horizon. A stray may
+  hold the only copy of a write that a slower node acknowledged at the old quorum, and the catch-up that runs after the
+  writers switch pulls from it. Tombstone collection waits the same way, until the change has been settled for two
+  anti-entropy periods plus an operation timeout, so a stray is still dropped before any tombstone it could outlive
+  [verified: DHTDurableDeleteTest `unsettledChange_keepsStrays_andTombstonesWait_untilItSettles`, in-JVM 4-node]
+  [mechanism: assumes every node observes the committed settle within that margin, the same view-lag assumption
+  the stray horizon already makes].
 - [limit: the deposed-writer residual from #1820 stays open; tombstones do not close it (owner ruling Q8).]
