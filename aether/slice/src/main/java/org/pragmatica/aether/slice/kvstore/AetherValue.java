@@ -223,8 +223,9 @@ public sealed interface AetherValue {
         /// the slice is re-allocated under the default (#937). Rebuild through the `with*` methods
         /// instead — they thread every unchanged component through by construction, which is what
         /// makes this class of loss inexpressible rather than merely absent. #698 (owner), #936
-        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer,
-        /// and `ClusterDeploymentState.handleAppBlueprintChange` is a second, still unfixed.
+        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer;
+        /// `ClusterDeploymentState.handleAppBlueprintChange` was a second (#983) and now rebuilds through
+        /// [#withBlueprintDeclaration].
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
@@ -351,6 +352,28 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+
+        /// Re-applies what a blueprint declares for this slice: version, both instance counts, owner and the
+        /// autoscaler overrides — every component `ResolvedSlice` can express. The one component the
+        /// blueprint cannot express, `placement`, is threaded through from this value (#983), by construction
+        /// rather than by a caller remembering to carry it.
+        public SliceTargetValue withBlueprintDeclaration(Version version,
+                                                         int instances,
+                                                         int minimumInstances,
+                                                         Option<BlueprintId> owner,
+                                                         Option<Integer> maxInstancesOverride,
+                                                         Option<Double> scaleUpOverride,
+                                                         Option<Double> scaleDownOverride) {
+            return new SliceTargetValue(version,
+                                        instances,
+                                        minimumInstances,
+                                        owner,
+                                        placement,
+                                        System.currentTimeMillis(),
+                                        maxInstancesOverride,
+                                        scaleUpOverride,
+                                        scaleDownOverride);
         }
 
         public SliceTargetValue withVersion(Version newVersion) {

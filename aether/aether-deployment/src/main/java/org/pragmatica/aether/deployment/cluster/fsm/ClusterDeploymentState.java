@@ -56,6 +56,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -1636,17 +1637,38 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
                 consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                          SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                                                            slice.instances(),
-                                                                                            slice.minAvailable(),
-                                                                                            Option.some(expanded.id()),
-                                                                                            slice.maxInstances(),
-                                                                                            slice.scaleUpThreshold(),
-                                                                                            slice.scaleDownThreshold())));
+                                                          declaredTarget(expanded, slice)));
             }
 
             submitBatch(consensusCommands);
             trackInFlightBlueprint(expanded, previousExpanded);
+        }
+
+        /// The `SliceTargetValue` a republish proposes: the committed value re-declared by the blueprint when
+        /// one exists, so the placement the blueprint cannot express survives (#983); a fresh value, with the
+        /// default placement, only when nothing is committed yet. Never a rebuild of an observed value from
+        /// the blueprint's components alone.
+        private SliceTargetValue declaredTarget(ExpandedBlueprint expanded, ResolvedSlice slice) {
+            var artifact = slice.artifact();
+            var owner = Option.some(expanded.id());
+
+            return ctx.kvStore()
+                      .getTyped(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                SliceTargetValue.class)
+                      .map(committed -> committed.withBlueprintDeclaration(artifact.version(),
+                                                                           slice.instances(),
+                                                                           slice.minAvailable(),
+                                                                           owner,
+                                                                           slice.maxInstances(),
+                                                                           slice.scaleUpThreshold(),
+                                                                           slice.scaleDownThreshold()))
+                      .or(() -> SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                                  slice.instances(),
+                                                                  slice.minAvailable(),
+                                                                  owner,
+                                                                  slice.maxInstances(),
+                                                                  slice.scaleUpThreshold(),
+                                                                  slice.scaleDownThreshold()));
         }
 
         /// Returns `true` exactly when the publishing blueprint was registered via
