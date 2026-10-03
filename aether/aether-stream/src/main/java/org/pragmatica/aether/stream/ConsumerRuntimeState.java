@@ -89,6 +89,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final Option<ConsumerCursorStore> cursorStore;
     private final Option<TransactionalCursorCommit> transactionalCommit;
     private final PartitionReader reader;
+    /// #1441: the head a resumed cursor is checked against ([#clampedToHead]); none for a reader whose bounds
+    /// nobody supplied, which resumes unchecked as before.
+    private final Option<PartitionBounds> bounds;
     private final TimeSpan deadLetterAppendTimeout;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -132,7 +135,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
              dlHandler,
              cursorStore,
              transactionalCommit,
-             StreamConsumerRuntime.localPartitionReader(partitionManager));
+             StreamConsumerRuntime.localPartitionReader(partitionManager),
+             some(StreamConsumerRuntime.localPartitionBounds(partitionManager)),
+             DEAD_LETTER_APPEND_TIMEOUT);
     }
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager,
@@ -150,11 +155,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          Option<TransactionalCursorCommit> transactionalCommit,
                          PartitionReader reader,
                          TimeSpan deadLetterAppendTimeout) {
+        this(partitionManager, dlHandler, cursorStore, transactionalCommit, reader, none(), deadLetterAppendTimeout);
+    }
+
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader,
+                         Option<PartitionBounds> bounds,
+                         TimeSpan deadLetterAppendTimeout) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
         this.transactionalCommit = transactionalCommit;
         this.reader = reader;
+        this.bounds = bounds;
         this.deadLetterAppendTimeout = deadLetterAppendTimeout;
         this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::periodicConsumerCheck,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
@@ -512,11 +528,62 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Contract
     private void fetchCursorAndStart(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt) {
         state.markAwaitingCursorFetch();
-        lifted(() -> fetchCursor(store, state, key.groupId(), key.streamName(), key.partition())).onResult(result -> applyCursorAndStart(result,
-                                                                                                                                         store,
-                                                                                                                                         key,
-                                                                                                                                         state,
-                                                                                                                                         attempt));
+        lifted(() -> fetchResumeCursor(store, state, key)).onResult(result -> applyCursorAndStart(result,
+                                                                                                  store,
+                                                                                                  key,
+                                                                                                  state,
+                                                                                                  attempt));
+    }
+
+    /// The stored cursor, clamped to the partition's head ([#clampedToHead]). Both halves fail together and are
+    /// retried together: delivery starts only from a position checked against the log it reads.
+    private Promise<Option<Cursor>> fetchResumeCursor(ConsumerCursorStore store, ConsumerState state, ConsumerKey key) {
+        return fetchCursor(store, state, key.groupId(), key.streamName(), key.partition()).flatMap(cursor -> clampedToHead(key,
+                                                                                                                           cursor));
+    }
+
+    /// #1441 (v1862 finding 4): a stored cursor can sit ABOVE the partition's head. A restart without a WAL keeps
+    /// only what was sealed, a promoted replica can hold less than the owner it replaced, and the cursor -- local,
+    /// or committed through consensus -- is not rolled back with them. Adopted as-is, the consumer reads nothing
+    /// until the head reaches the cursor, and the records the partition assigns to the offsets in between are
+    /// never delivered: a silent skip.
+    ///
+    /// Delivery is at-least-once (`aether/docs/reference/guarantees.md` §4, `stream.consume`), so the cursor is
+    /// clamped to `visibleHead + 1`, the next offset the partition will expose: everything it holds from there,
+    /// and everything it assigns later, is delivered. The clamp can only redeliver, never skip -- a bound that
+    /// reads low (a visible position behind the appended head, a replica not yet caught up) costs duplicates.
+    /// It is WARNed with both offsets, because the records this group processed at those offsets are gone from
+    /// the log. Not clamped when no [PartitionBounds] was supplied (a bare reader); a bounds query that fails
+    /// fails the resume, which is retried like a failed cursor fetch.
+    private Promise<Option<Cursor>> clampedToHead(ConsumerKey key, Option<Cursor> cursor) {
+        return Option.all(bounds,
+                          cursor.filter(fetched -> fetched.offset() > 0))
+                     .map((source, fetched) -> source.bounds(key.streamName(),
+                                                             key.partition())
+                                                     .map(visible -> some(clampTo(key, fetched, visible))))
+                     .or(() -> Promise.success(cursor));
+    }
+
+    private static Cursor clampTo(ConsumerKey key, Cursor fetched, VisibleBounds visible) {
+        var next = visible.visibleHead() + 1;
+
+        if (fetched.offset() <= next) {
+            return fetched;
+        }
+
+        LOG.log(System.Logger.Level.WARNING,
+                "Consumer group {0} on {1}[{2}]: stored cursor {3} is above the partition head {4}; resuming at {5}."
+               + " Offsets [{5}, {6}] no longer hold the records this group processed there (a restart without a WAL"
+               + " or a promotion lost them), and the records assigned to them next are delivered rather than skipped",
+                key.groupId(),
+                key.streamName(),
+                key.partition(),
+                fetched.offset(),
+                visible.visibleHead(),
+                next,
+                fetched.offset() - 1);
+
+        return Cursor.cursor(next, fetched.epoch());
     }
 
     /// #1271: a fenced consumer resumes only from a cursor written under ITS assignment epoch — and, #1333,

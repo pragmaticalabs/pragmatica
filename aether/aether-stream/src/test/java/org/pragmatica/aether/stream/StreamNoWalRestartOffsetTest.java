@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -13,11 +14,16 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.StorageSegmentSink.RefDurability;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.MetadataSnapshot;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.SnapshotConfig;
+import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageInstance;
 
 import org.junit.jupiter.api.AfterEach;
@@ -38,15 +44,18 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// #1441: a restart WITHOUT a WAL must not re-assign offsets already sealed into a durable segment.
 ///
 /// No-WAL streams are reachable: every node built outside `Main` (Forge, Ember, embedded) degrades to no WAL
-/// when its WAL directory is unwritable (`AetherNode.resolveStreamWalDir`), and `Main` admits it under
-/// `aether.allowNonDurableStreams`. Sealing does not depend on the WAL, so the sealed segments exist. Recovery
-/// used to seed the fresh ring only inside WAL replay, so with no WAL the ring restarted at head -1 and the next
-/// publish was assigned offset 0 — a second record at an offset the durable tier already holds.
+/// when its WAL directory is unwritable while `segments/` is not (`AetherNode.resolveStreamWalDir`), and `Main`
+/// admits it under `aether.allowNonDurableStreams`. Sealing does not depend on the WAL, so the sealed segments
+/// exist. Recovery used to seed the fresh ring only inside WAL replay, so with no WAL the ring restarted at
+/// head -1 and the next publish was assigned offset 0 — a second record at an offset the durable tier already
+/// holds.
 ///
-/// The scenario is the ticket's probe: no WAL, 5 offsets published, 0..2 evicted and sealed, restart over the
-/// same storage with the index rebuilt from refs. The next offset must be 3. The un-sealed 3..4 are lost — that
-/// is the non-durable mode's stated trade-off — but they were never in the durable tier, so 3 reuses nothing
-/// a reader of the tier can see.
+/// The next offset is the highest durable offset + 1, and a node rebuilds its sealed floor from the streams
+/// metadata snapshot ON DISK, which runs behind the live refs (≤100 mutations / 30 s). With a WAL that lag is
+/// covered: the WAL keeps every record above the snapshot floor. Without one, nothing did, so a CRASH re-assigned
+/// every offset sealed since the last snapshot — not just the un-sealed tail. A seal without a WAL therefore
+/// resolves only once a snapshot holding its ref is on disk ([RefDurability]); what a crash loses is the range
+/// above the last COMPLETED seal, which was never in the durable tier.
 class StreamNoWalRestartOffsetTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -58,6 +67,8 @@ class StreamNoWalRestartOffsetTest {
 
     @TempDir
     Path storageDir;
+    @TempDir
+    Path snapshotDir;
 
     private MetadataStore metadataStore;
     private StorageInstance storage;
@@ -98,6 +109,31 @@ class StreamNoWalRestartOffsetTest {
                                 .isEqualTo(SEALED_THROUGH + 1);
     }
 
+    /// v1862 finding 1, the CRASH case: the last metadata snapshot on disk predates every seal, and the node dies
+    /// without a graceful snapshot. Boot rebuilds the floor from that snapshot, so the offsets sealed since were
+    /// re-assigned. Each seal now makes its ref durable before it resolves, so the snapshot on disk holds them.
+    @Test
+    void noWalCrash_offsetsSealedAfterTheLastPeriodicSnapshot_areNotReassigned() {
+        var snapshots = SnapshotManager.snapshotManager(metadataStore, snapshotConfig());
+
+        snapshots.forceSnapshot();
+        index = new SegmentIndex();
+        startOwnerOn(index, RefDurability.snapshotted(snapshots));
+        publish(PUBLISHED);
+        awaitSealedThrough(SEALED_THROUGH);
+        var sealedBeforeCrash = index.lastSealedOffset(STREAM, PARTITION);
+
+        manager.close();
+        index = new SegmentIndex();
+        index.rebuildFromRefs(refsOnDisk());
+        startOwnerOn(index, RefDurability.LIVE);
+
+        assertThat(publishOne()).as("an offset sealed before the crash is never assigned again")
+                                .isEqualTo(sealedBeforeCrash + 1);
+        assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("the snapshot on disk holds every ref a completed seal wrote, so the sealed range stays readable")
+                                                             .isEqualTo(sealedBeforeCrash);
+    }
+
     /// Over-seeding guard: a no-WAL stream that never sealed anything still starts at offset 0.
     @Test
     void noWalRestart_withNothingSealed_startsAtZero() {
@@ -113,15 +149,34 @@ class StreamNoWalRestartOffsetTest {
 
     // ---- fixture -------------------------------------------------------------------------------------------
     private void startOwnerOn(SegmentIndex segmentIndex) {
+        startOwnerOn(segmentIndex, RefDurability.LIVE);
+    }
+
+    private void startOwnerOn(SegmentIndex segmentIndex, RefDurability refDurability) {
         ReplicaRegistry registry = replicaRegistry();
 
         registry.registerReplica(STREAM, PARTITION, SELF);
         manager = streamPartitionManager(Long.MAX_VALUE,
-                                         segmentSealer(storageSegmentSink(storage, segmentIndex)),
+                                         segmentSealer(storageSegmentSink(storage, segmentIndex, refDurability)),
                                          replicationManager(SELF, registry),
                                          Option.none(),
                                          segmentIndex::lastSealedOffset);
         manager.createStream(config()).onFailure(cause -> fail(cause.message()));
+    }
+
+    /// No periodic trigger fires in a test: only the forced snapshots are on disk.
+    private SnapshotConfig snapshotConfig() {
+        return SnapshotConfig.snapshotConfig(snapshotDir, Integer.MAX_VALUE, Long.MAX_VALUE, 5, "nowal-restart");
+    }
+
+    /// What boot reads: the latest snapshot on disk, restored by a fresh manager over an empty store.
+    private Map<String, BlockId> refsOnDisk() {
+        return SnapshotManager.snapshotManager(MetadataStore.inMemoryMetadataStore("after-crash"), snapshotConfig())
+                              .restoreFromLatest()
+                              .onFailure(cause -> fail("snapshot restore failed: " + cause.message()))
+                              .or(Option.none())
+                              .map(MetadataSnapshot::refs)
+                              .or(Map.of());
     }
 
     private static StreamConfig config() {
