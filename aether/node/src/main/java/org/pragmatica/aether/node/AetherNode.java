@@ -6300,7 +6300,10 @@ public interface AetherNode extends ManageableNode {
                                                           replication.confirmationFactor(),
                                                           ReplicationDefaultsConfig.BUILT_IN.clusterEventsConfirmationFactor(),
                                                           replication.cacheReplicationFactor(),
-                                                          replication.cacheConfirmationFactor()),
+                                                          replication.cacheConfirmationFactor(),
+                                                          // a worker is never a ring member and holds no DHT data, so it
+                                                          // keeps no tombstones and the retention is inert there (#1777)
+                                                          ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
                             dhtNode,
                             declared,
                             declaredCache,
