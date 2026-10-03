@@ -18,12 +18,44 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Index of committed assignment intent, independent of observed liveness.
 public final class CommunityMemberDirectory {
-    private final Map<NodeId, String> assignments = new HashMap<>();
-    private final Map<String, Set<NodeId>> communities = new HashMap<>();
-    private final Map<String, Set<NodeId>> candidates = new HashMap<>();
+    /// Where the directory's maps and sets come from. Production uses hash containers; a test substitutes
+    /// counting ones to pin how many entries a lookup touches (#1840).
+    interface Containers {
+        <K, V> Map<K, V> map();
+
+        <T> Set<T> set();
+
+        Containers HASH = new Containers() {
+            @Override
+            public <K, V> Map<K, V> map() {
+                return new HashMap<>();
+            }
+
+            @Override
+            public <T> Set<T> set() {
+                return new HashSet<>();
+            }
+        };
+    }
+
+    private final Containers containers;
+    private final Map<NodeId, String> assignments;
+    private final Map<String, Set<NodeId>> communities;
+    private final Map<String, Set<NodeId>> candidates;
+
+    private CommunityMemberDirectory(Containers containers) {
+        this.containers = containers;
+        this.assignments = containers.map();
+        this.communities = containers.map();
+        this.candidates = containers.map();
+    }
 
     public static CommunityMemberDirectory communityMemberDirectory() {
-        return new CommunityMemberDirectory();
+        return new CommunityMemberDirectory(Containers.HASH);
+    }
+
+    static CommunityMemberDirectory communityMemberDirectory(Containers containers) {
+        return new CommunityMemberDirectory(containers);
     }
 
     public synchronized org.pragmatica.lang.Unit put(NodeId node, AetherValue.ActivationDirectiveValue value) {
@@ -31,11 +63,11 @@ public final class CommunityMemberDirectory {
         if (("worker".equalsIgnoreCase(value.role()) || "spot".equalsIgnoreCase(value.role())) && !value.communityId()
                                                                                                         .isBlank()) {
             assignments.put(node, value.communityId());
-            communities.computeIfAbsent(value.communityId(), _ -> new HashSet<>()).add(node);
+            communities.computeIfAbsent(value.communityId(), _ -> containers.set()).add(node);
         }
 
         if (AetherValue.ActivationDirectiveValue.WORKER.equals(value.role()) && !value.communityId().isBlank()) {
-            candidates.computeIfAbsent(value.communityId(), _ -> new HashSet<>()).add(node);
+            candidates.computeIfAbsent(value.communityId(), _ -> containers.set()).add(node);
         }
 
         return org.pragmatica.lang.Unit.unit();

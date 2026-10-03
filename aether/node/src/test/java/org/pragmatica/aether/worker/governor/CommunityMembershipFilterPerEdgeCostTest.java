@@ -41,8 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Deterministic measures: KV snapshot calls and entries scanned during the edges (a counting double wired
 /// through the same committed-notification path `AetherNode` uses), the candidate-set size, and alive members
 /// tested. A control proves the counter counts: rebuilding the index from a snapshot is one call that scans N.
-/// The wall-time budget is a coarse guard against the index lookup itself degrading to a scan of the index
-/// (O(N) per edge is ~100x over budget at this size); it is not a performance claim.
+/// What the index lookup itself touches is pinned separately and deterministically, by an operation count:
+/// `CommunityMemberDirectoryOpCountTest`.
 class CommunityMembershipFilterPerEdgeCostTest {
     private static final int COMMUNITY_SIZE = 10;
     private static final int CORES = 3;
@@ -94,31 +94,6 @@ class CommunityMembershipFilterPerEdgeCostTest {
             assertThat(kv.snapshotCalls.get()).isEqualTo(1);
             assertThat(kv.entriesScanned.get()).isEqualTo(n);
         }
-    }
-
-    @Test
-    void guard_lookupDoesNotDegradeToScanningTheIndex() {
-        var directory = CommunityMemberDirectory.communityMemberDirectory();
-        var view = aliveView();
-        int n = 200_000;
-
-        for (int i = 0; i < n; i++) {
-            directory.put(nodeId(i), ActivationDirectiveValue.worker("c-" + i / COMMUNITY_SIZE, ""));
-        }
-
-        long start = System.nanoTime();
-        int last = 0;
-
-        for (int edge = 0; edge < 5_000; edge++) {
-            last = CommunityMembershipFilter.communityAliveMembers(view, directory, OBSERVED_COMMUNITY).size();
-        }
-
-        long millis = (System.nanoTime() - start) / 1_000_000;
-
-        System.out.printf("guard: N=%d, 5000 edges, %d ms%n", n, millis);
-        assertThat(last).isEqualTo(COMMUNITY_SIZE);
-        assertThat(millis).as("5000 edges over a %d-directive index, ms (O(index) per edge would be ~100x over)", n)
-                          .isLessThan(2_000);
     }
 
     private static EdgeCost edges(int n) {
