@@ -27,7 +27,7 @@ import static org.awaitility.Awaitility.await;
 /// ticket (rc4 cluster B, SIGKILL of the owner of partition 0) refused writes with "committed owner is
 /// hetzner-eu-core-1" for at least 35 s while `Failover completed` — which gates on the owner field — passed.
 ///
-/// The kill target is the cluster LEADER when it owns a partition, because that is the shape where the removal
+/// The death target is the cluster LEADER when it owns a partition, because that is the shape where the removal
 /// decision's reconcile pass runs with no live leader and writes nothing (the ownership writer is leader-only), and
 /// only a leadership change can run the pass again. When the leader owns none of the four partitions the target is
 /// partition 0's owner, which is the ticket's own scenario; the test logs which of the two ran, so a green run can
@@ -41,9 +41,12 @@ import static org.awaitility.Awaitility.await;
 /// requests proportional to the bound, not an unbounded number of sockets (#1553 is why the sustained-publish
 /// variant is disabled).
 ///
-/// Ember equivalence: the kill is [org.pragmatica.aether.ember.EmberCluster#killNode] (`node.stop()`, a SWIM
-/// leave), not a SIGKILL — it exercises the leaderless window and the committed-record rewrite, not failure-detection
-/// latency.
+/// Ember equivalence: the death is [org.pragmatica.aether.ember.EmberCluster#blackhole] — silent, channels open,
+/// detected by SWIM — the closest in-JVM form of a SIGKILL. `[unverified: this test is NOT red at the base]`: run
+/// against rc4 `b55a359e1` (fix reverted) it passed too (leader and partition owner both `okw-1`), because by the time
+/// the removal decision arrives a new leader already exists. It pins the property (a write, not the owner field) and
+/// guards against regressions of it; the leaderless-removal mechanism itself is pinned in-JVM by
+/// `AetherNodeReplicaSetTriggersTest.ownerLeavesWhileNoLeader_theNewLeadersFirstPassCommitsANewOwner`.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -107,7 +110,7 @@ class StreamOwnerKillWritesResumeTest extends AbstractMultiPartitionStream {
 
         LifecycleAwait.nodeBestEffort("kill node " + target + " in ownerKilled_everyPartitionAcceptsAWriteAgain()",
                                       cluster,
-                                      cluster.killNode(target, false));
+                                      cluster.blackhole(target));
 
         var seq = FIRST_POST_KILL_SEQ;
         var deadline = deadline(FAILOVER_TIMEOUT);

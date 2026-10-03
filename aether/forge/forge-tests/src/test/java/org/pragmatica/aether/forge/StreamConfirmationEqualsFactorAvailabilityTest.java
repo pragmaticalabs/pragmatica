@@ -152,8 +152,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     /// #1732 acceptance: a replacement core that joins under a fresh identity enters the partition's replica set,
     /// catches up, and CF 3 is met again, so publishes succeed.
     ///
-    /// Positive control, taken BEFORE the replacement joins: the owner's view is readable and lists exactly the two
-    /// survivors, so "the replacement is placed" afterwards is a change of that very view and not an artefact of an
+    /// Positive control, taken BEFORE the replacement joins: the owner's view is readable and, once the dead peer has
+    /// left the registry, lists exactly the two survivors, so "the replacement is placed" afterwards is a change of that very view and not an artefact of an
     /// unreadable one. Before the fix the replacement stayed out of the view for good (measured 2026-09-29 on
     /// cloudbb-2 at `d4bf26db9`: three minutes after `stre-4` was a member, the owner's registry still held only the
     /// two survivors and `stre-4`'s local view was empty), so this test timed out in [#awaitOrDump].
@@ -164,15 +164,9 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     @Test
     @Order(3)
     void replacementJoined_isPlaced_catchesUp_publishesSucceedAgain() {
-        var survivors = ownerView().map(view -> view.replicas()
-                                                    .stream()
-                                                    .map(replica -> replica.nodeId())
-                                                    .toList())
-                                   .or(List.of());
-
-        assertThat(survivors).describedAs("positive control: the owner view is readable and lists the two survivors")
-                             .hasSize(2)
-                             .doesNotContain(killedNode);
+        // The dead peer leaves the registry asynchronously (it is still registered right after the kill: the refused
+        // publishes above answer REPLICATION_TIMEOUT), so the control waits for the degraded state it describes.
+        awaitOrDump("the owner view lists exactly the two survivors", this::ownerViewListsOnlyTheSurvivors);
 
         joinReplacement();
 
@@ -191,6 +185,15 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
         assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedNode);
         replacementNode = replacement.id();
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
+    }
+
+    private boolean ownerViewListsOnlyTheSurvivors() {
+        return ownerView().map(view -> view.replicas()
+                                           .stream()
+                                           .map(replica -> replica.nodeId())
+                                           .toList())
+                         .map(nodes -> nodes.size() == 2 && !nodes.contains(killedNode))
+                         .or(false);
     }
 
     private boolean replacementPlaced() {
