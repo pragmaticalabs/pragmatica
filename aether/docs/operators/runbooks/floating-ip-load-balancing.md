@@ -16,7 +16,7 @@ DNS integration and does not change your records.
 | You get | You do not get |
 |---|---|
 | Failover with no DNS change and no wait for resolver caches | Zero-loss failover: clients using a failed node's IPs see errors for the failover window |
-| Make-before-break for planned drains and upgrades | Preserved connections: TCP connections to a moved IP are reset |
+| Make-before-break for drains the leader commands (not for self-drain or crash; those move after the fact) | Preserved connections: TCP connections to a moved IP are reset |
 | One public endpoint set for the whole cluster, served by regular nodes | Health-based DNS steering or even traffic spread across IPs |
 | An assignment table you can inspect and verify against the provider console | Cross-region failover: pool IPs are bound to a zone/region |
 
@@ -290,7 +290,7 @@ hcloud server describe <server-id>            # which Aether node it is (aether-
 
 The committed holder in the table is an Aether node id; map it to a server with the node's
 `aether-node-id` label. Someone moving an IP in the console shows up as `DIVERGED` and is reverted
-by the next pass. To move an IP deliberately, drain the holder or use rebalance; console moves do
+by the next pass (spec FIP-05, design intent — unverified until the acceptance run). To move an IP deliberately, drain the holder or use rebalance; console moves do
 not last.
 
 ### IP unserved

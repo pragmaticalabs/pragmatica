@@ -73,8 +73,8 @@ assumptions in #1867; §16 collects those.
 |---|---|---|
 | B1 | `FloatingIpProvider` has three operations: `attach(ip, targetNodeId)`, `verify(ip) → IpOwnership(ownedByAccount, currentAttachment)`, `compatibleZones(ip)`. There is no detach/unassign and no pool listing. | `aether/environment-integration/.../FloatingIpProvider.java:13-17`, `IpOwnership.java` |
 | B2 | Hetzner `attach` parses `targetNodeId` with `Number.parseLong` and passes it as the Hetzner **server id**. | `HetznerFloatingIpProvider.java:71-75` |
-| B3 | Bootstrap attach passes the **Aether node id** (`<source>-core-<n>`, the pattern at `BootstrapPhaseProvision.java:356`) of the first core of an `elected` source. That string is not a number, so on Hetzner `parseLong` fails and attach logs `Warning: floating IP attach failed` for every IP. By reading, `elected` attach has not succeeded on Hetzner at this SHA; no test exercises it (no `HetznerFloatingIpProvider` test, no attach test in `BootstrapPhasePost*Test`). | `BootstrapPhasePost.java:37-81` |
-| B4 | Teardown "detach" prints a line and returns success; it calls no provider. The attach path never records a `CreatedResource.FloatingIpAssignment`; the only constructor call is in JSON deserialization. | `BootstrapCleanup.java:1200-1204`, `BootstrapStateJson.java:206` |
+| B3 | **#1870.** Bootstrap attach passes the **Aether node id** (`<source>-core-<n>`, the pattern at `BootstrapPhaseProvision.java:356`) of the first core of an `elected` source. That string is not a number, so on Hetzner `parseLong` fails and attach logs `Warning: floating IP attach failed` for every IP. By reading, `elected` attach has not succeeded on Hetzner at this SHA; no test exercises it (no `HetznerFloatingIpProvider` test, no attach test in `BootstrapPhasePost*Test`). | `BootstrapPhasePost.java:37-81` |
+| B4 | **#1870.** Teardown "detach" prints a line and returns success; it calls no provider. The attach path never records a `CreatedResource.FloatingIpAssignment`; the only constructor call is in JSON deserialization. | `BootstrapCleanup.java:1200-1204`, `BootstrapStateJson.java:206` |
 | B5 | Hetzner `verify` reports `ownedByAccount=true` for any IP present in the account and the server id (or `""`) as `currentAttachment`. | `HetznerFloatingIpProvider.java:81-100` |
 | B6 | `HetznerClient.listFloatingIps` reads one page of `/floating_ips` (no `page`/`per_page` handling), has no unassign call, no 429/backoff handling, and `assignFloatingIp` returns when the request is accepted, not when Hetzner's action completes. [unverified: Hetzner's default page size, 25 per its API docs] | `integrations/cloud/hetzner/.../HetznerClient.java:289-301` |
 | B7 | IP matching is exact string equality against the API's `ip` field. [unverified: Hetzner reports an IPv6 floating IP as its /64 network; if so an address-form pool entry never matches] | `HetznerFloatingIpProvider.java:57-63` |
@@ -140,6 +140,11 @@ report the new holders, before the `DRAIN` command is released to the target. Bo
 `make_before_break_timeout`; on expiry the drain proceeds and the cost is reported (§9.3).
 [mechanism: the gate sits at the one drain sink, B16] [unverified: that every leader-initiated drain
 path reaches that sink; the implementation PR must enumerate them]
+**Scope: only drains the leader commands.** A self-drain (QUORUM_LOSS / CORE_ABSENCE, decided on the
+node itself) and a crash give the leader no advance notice. For those, IPs move **after the fact**:
+on the DRAINING pong for a self-drain (the holder answers 503 for up to the 30 s drain grace until
+then; window ≈ pong delivery + one assign), and on the committed departure for a crash (window as
+in §11's first two rows). Make-before-break does not cover them. [design intent — unverified]
 
 FIP-09. **No IP is unassigned by the reconcile loop.** With no eligible node, an IP stays with its
 last holder and the table reports it `UNSERVED`. Unassigning would turn "maybe served" into
@@ -325,7 +330,8 @@ Let `E` be eligible nodes for a source and `P` its pool. Target holding per node
 2. **Stickiness**: an IP whose holder is eligible does not move, except under rule 3.
 3. **Rebalance** (`rebalance = "on_imbalance"`): if `max(count) − min(count) ≥ 2`, move ONE IP from a
    most-loaded node to a least-loaded node, then wait at least `rebalance_pacing` (default 5 min)
-   before the next rebalance move. A difference of 1 is unavoidable and never triggers a move.
+   before the next rebalance move. A difference of 1 is unavoidable and does not trigger a move [mechanism: the rule's
+   threshold is `≥ 2`].
    Each rebalance move resets that IP's connections, so it is paced and can be switched off
    (`manual`).
 4. **Zone**: rules 1–3 consider only nodes whose zone is compatible with the IP.
@@ -548,7 +554,7 @@ run:
 
 | #1867 says | Baseline shows |
 |---|---|
-| "The CLI attaches floating IPs at bootstrap and detaches them on teardown." | Attach passes an Aether node id where Hetzner needs a server id and fails (B3); detach is a print (B4). Neither works today. |
+| "The CLI attaches floating IPs at bootstrap and detaches them on teardown." | Tracked as #1870. Attach passes an Aether node id where Hetzner needs a server id and fails (B3); detach is a print (B4). Neither works today. |
 | "AWS/GCP/Azure are no-ops." | They return no provider at all (B8); only Docker has the no-op. |
 | "Validator rules PF-17 and PF-18." | `elected` rules are PF-17 and PF-14; PF-18 is firewall validation and stays (B10). |
 | "AWS EIP, GCP static IP and Azure static public IP need no guest setup (1:1 NAT)." | True for one IP per node on the primary address. GCP allows one external IP per NIC and moves in two requests; Azure moves in two requests; more than one IP per node on AWS/Azure needs guest setup [unverified, §10.2]. |
