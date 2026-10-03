@@ -10,8 +10,9 @@
   a timeout, any other HTTP error and any 200 (READY, SYNCING, DRAINING) are not.
 - **A wait cannot be entered without an accepted drain.** The WaveExecutor sites call `ClusterHttpClient.drainNodeAndAwait`, which
   is the drain request followed by the wait, so a pre-first-pong 404 or an unreachable node is never read as "drained".
-- [unverified: a 404 from a FOLLOWER whose cached leader view has expired reads as completion for a node that is still draining;
-  the 404 body is identical. Not exercised by any test.]
+- **The per-node lifecycle GET no longer answers 404 from a node that has no authoritative view.** LIST already returned
+  503 + leader hint without an authoritative (leader) or fresh cached (follower) readiness view; the per-node GET did not, so
+  a cold follower answered 404 for every node. It now returns the same 503, and the CLI treats 503 as not complete.
 - [unverified: `cluster destroy` and `cluster drain --wait` poll through the cluster endpoint; if that endpoint is itself a node
   being drained, its connection failures are (correctly) not completion, so those waits can still time out.]
 - The old `ClusterHttpClientDrainStateTest` hand-fed `"state":"DECOMMISSIONED"`; it specified the defect and is replaced by tests
