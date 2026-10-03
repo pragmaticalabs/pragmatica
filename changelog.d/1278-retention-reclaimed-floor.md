@@ -18,12 +18,20 @@
     floor and refuses on every replica, so neither clears it: wipe and recreate the partition.
   - `walRecoveryHeadsLost` counts each distinct lost head once, however often the refused recovery is
     re-attempted.
-- **Stream incarnations.** `StreamConfig` gains an `incarnation` (minted at a cluster create, kept across republish).
-  Every durable artifact of a stream — its WAL directory, sealed-segment refs and reclaimed-through floors — is
-  keyed by it, and a node opens only the committed life, so a stream recreated under the same name never inherits
-  the old life's records, watermark or floor (a node down for the destroy, a half-done destroy, a retention pass or
-  seal outliving the destroy). Destroy reclaims the old life's refs best-effort. BREAKING wire shape of
-  `StreamConfig` (pre-GA; no new tag).
+- **Stream incarnations.** `StreamConfig` gains an `incarnation`: one life of the name. Every durable artifact of a
+  stream — its WAL directory, sealed-segment refs and reclaimed-through floors — is keyed by it, and a node opens only
+  the committed life, so a stream recreated under the same name never inherits the old life's records, watermark or
+  floor (a node down for the destroy, a half-done destroy, a retention pass or seal outliving the destroy). Destroy
+  reclaims the old life's refs best-effort.
+  - **The committed life is the only authority.** The KV applier refuses a config `Put` that would replace a
+    committed life (`IncarnationFenced`), so concurrent first creates resolve to one life and a recreate commits
+    only after the old life's removal applied.
+  - **Writes are accepted only into the applied committed life.** Before it applies, a publish refuses with the
+    retriable `StreamConfigNotYetVisible`, so no acknowledged record can be lost to a life that did not commit.
+  - A create of a name with an applied committed life adopts it; a recreate always proposes a new life.
+  - **Latency:** the first publish to a stream that does not exist yet waits up to 2 s for its config to commit.
+  - **BREAKING:** wire shape of `StreamConfig` (pre-GA; no new tag). KV snapshots and backups written before this
+    change are not supported: the codec has no default for the field. Wipe the cluster state and recreate streams.
 - **BREAKING (Management API / CLI, `GET /api/storage/retention`):**
   - `walRecoveryHeadGapsAccepted` is replaced by `walRecoveryHeadsLost`, the count of `WalHeadLost` refusals.
   - Each partition row gains `reclaimedThrough`.
