@@ -8,14 +8,25 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.cli.cluster.ClusterHttpClient.HttpError;
-import org.pragmatica.aether.cli.cluster.DrainCompletion.Polled;
+import org.pragmatica.http.HttpClientError;
 import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Result;
+
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.net.ConnectException;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.connectionRefused;
+import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.connectionReset;
 import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.drainAccepted;
 import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.lifecycle;
 import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.notFound;
@@ -25,8 +36,11 @@ import static org.pragmatica.aether.cli.cluster.ScriptedDrainHttp.timedOut;
 /// (`NodeReportedState` is SYNCING / READY / DRAINING). The previous version of this class hand-fed that
 /// literal and asserted on it: the fixture SPECIFIED the defect instead of probing it, so it stayed green
 /// while every wait timed out. This one drives the wait with the shapes `NodeLifecycleRoutes` really emits
-/// (see [ScriptedDrainHttp]) and states completion as what the server actually does: the entry disappears
-/// (404) or the halted process stops answering.
+/// (see [ScriptedDrainHttp]) and states completion as what the server actually does. Polling the drained node
+/// itself, only a refused connection is completion: any answer, 404 included, was served by its live process.
+/// Through the cluster endpoint, the leader's 404 is the only signal (with the soft-state limits in
+/// [DrainCompletion]). The two `await_real*` tests run the REAL `JdkHttpOperations` against real sockets, so the
+/// scripted shapes cannot drift from what the client produces.
 class ClusterHttpClientDrainStateTest {
     private static final String NODE = "core-2";
     private static final String HOST = "10.0.0.2";
@@ -57,65 +71,126 @@ class ClusterHttpClientDrainStateTest {
     @Test
     void isComplete_stillReportingInAnyRealState_isNotComplete() {
         for (var state : new String[]{"READY", "SYNCING", "DRAINING"}) {
-            for (var polled : Polled.values()) {
-                var reply = ((ScriptedDrainHttp.Step.Reply) lifecycle(NODE, state)).body();
+            var reply = ((ScriptedDrainHttp.Step.Reply) lifecycle(NODE, state)).body();
 
-                assertFalse(DrainCompletion.isComplete(Result.success(reply), polled),
-                            state + " is a node that still reports; it must never read as drained");
-            }
+            assertFalse(DrainCompletion.isComplete(Result.success(reply)),
+                        state + " is a node that still reports; it must never read as drained");
         }
     }
 
+    /// The leader's 404 is soft state (dropped on a transient QUIC evict, after three missed pongs, empty on a new
+    /// leader) and, polled on the target, was served by the target's own live process. Never completion.
     @Test
-    void isComplete_notFound_isComplete() {
+    void isComplete_notFound_isNeverComplete() {
         var body = ((ScriptedDrainHttp.Step.Reply) notFound(NODE)).body();
 
-        assertTrue(DrainCompletion.isComplete(new HttpError.ApiError(404, body).result(), Polled.TARGET_NODE));
-        assertTrue(DrainCompletion.isComplete(new HttpError.ApiError(404, body).result(), Polled.CLUSTER_ENDPOINT));
+        assertFalse(DrainCompletion.isComplete(new HttpError.ApiError(404, body).result()));
     }
 
     @Test
     void isComplete_otherHttpErrors_areNotComplete() {
         for (var status : new int[]{400, 401, 403, 409, 500, 503}) {
-            assertFalse(DrainCompletion.isComplete(new HttpError.ApiError(status, "{}").result(), Polled.TARGET_NODE),
+            assertFalse(DrainCompletion.isComplete(new HttpError.ApiError(status, "{}").result()),
                         "HTTP " + status + " says nothing about the node having gone");
         }
     }
 
     @Test
-    void isComplete_connectionFailure_speaksForTheTargetOnlyWhenTheTargetWasPolled() {
-        var refused = org.pragmatica.http.HttpClientError.ConnectionFailed.connectionFailed("refused").<String>result();
+    void isComplete_refusedConnection_isComplete() {
+        var refused = HttpClientError.ConnectionFailed.connectionFailed("refused", new ConnectException("refused")).<String>result();
 
-        assertTrue(DrainCompletion.isComplete(refused, Polled.TARGET_NODE),
-                   "the drained node halted, so its own port stops answering");
-        assertFalse(DrainCompletion.isComplete(refused, Polled.CLUSTER_ENDPOINT),
-                    "an unreachable cluster endpoint says nothing about whether the target drained");
+        assertTrue(DrainCompletion.isComplete(refused), "the drained node halted, so nothing listens on its port");
+    }
+
+    @Test
+    void isComplete_connectionFailureThatIsNotARefusal_isNotComplete() {
+        var reset = HttpClientError.ConnectionFailed.connectionFailed("reset", new IOException("Connection reset")).<String>result();
+        var dns = HttpClientError.ConnectionFailed.connectionFailed("dns", new UnknownHostException("core-2")).<String>result();
+        var bare = HttpClientError.ConnectionFailed.connectionFailed("no cause").<String>result();
+
+        for (var failure : java.util.List.of(reset, dns, bare)) {
+            assertFalse(DrainCompletion.isComplete(failure),
+                        "a reset or a DNS failure is produced by live nodes too: " + failure);
+        }
     }
 
     @Test
     void isComplete_timeout_isNeverComplete() {
         var timeout = org.pragmatica.http.HttpClientError.Timeout.timeout("slow").<String>result();
 
-        assertFalse(DrainCompletion.isComplete(timeout, Polled.TARGET_NODE),
+        assertFalse(DrainCompletion.isComplete(timeout),
                     "a slow node and a halted node both time out only one of them is gone");
     }
 
     @Test
     void isComplete_malformedBody_isNotComplete() {
-        assertFalse(DrainCompletion.isComplete(Result.success("not json"), Polled.TARGET_NODE));
+        assertFalse(DrainCompletion.isComplete(Result.success("not json")));
     }
 
     // ---- the wait, over scripted sequences ----
 
     @Test
-    void await_readyThenDrainingThenNotFound_completes() {
+    void await_notFoundRelayedByTheLiveTarget_isNotCompletion_untilItsPortRefuses() {
         var http = new ScriptedDrainHttp(drainAccepted(NODE),
                                          lifecycle(NODE, "READY"),
                                          lifecycle(NODE, "DRAINING"),
-                                         notFound(NODE));
+                                         notFound(NODE),
+                                         connectionReset(),
+                                         connectionRefused());
 
         assertTrue(await(http, GENEROUS_TIMEOUT_MS).isSuccess());
-        assertThat(http.lifecycleGets()).as("it kept polling through READY and DRAINING").isEqualTo(3);
+        assertThat(http.lifecycleGets()).as("it polled past the 404 and the reset, to the refusal").isEqualTo(5);
+    }
+
+    @Test
+    void await_notFoundForeverFromTheTarget_timesOut() {
+        var http = new ScriptedDrainHttp(drainAccepted(NODE), notFound(NODE));
+
+        var result = await(http, SHORT_TIMEOUT_MS);
+
+        assertTrue(result.isFailure(), "the leader's soft-state 404, relayed by a live target, is not a halt");
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(HttpError.DrainTimeout.class));
+    }
+
+    /// Red-first for the #1868 verifier finding: through the real client, a refused connection used to reach the
+    /// predicate as a generic `Failure` (a CompletionException wrapper), so the target's halt never completed a wait.
+    @Test
+    void await_realClosedPort_completes() throws IOException {
+        int port;
+
+        try (var socket = new ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+
+        ClusterHttpClient.HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations());
+
+        var result = ClusterHttpClient.awaitDrainComplete("http", "127.0.0.1", port, NODE, 5_000, POLL_MS);
+
+        assertTrue(result.isSuccess(), () -> "a halted target's refused port must complete the wait: " + result);
+    }
+
+    @Test
+    void await_realLiveTargetAnswering404_isNotCompletion() throws IOException {
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var body = ((ScriptedDrainHttp.Step.Reply) notFound(NODE)).body().getBytes(StandardCharsets.UTF_8);
+
+        server.createContext("/", exchange -> {
+            exchange.sendResponseHeaders(404, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        try {
+            ClusterHttpClient.HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations());
+
+            var result = ClusterHttpClient.awaitDrainComplete("http", "127.0.0.1", server.getAddress().getPort(), NODE,
+                                                              SHORT_TIMEOUT_MS, POLL_MS);
+
+            assertTrue(result.isFailure(), "a process that answers is alive, whatever it answers");
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -159,8 +234,8 @@ class ClusterHttpClientDrainStateTest {
     // ---- the drain and its wait are one operation ----
 
     @Test
-    void drainNodeAndAwait_acceptedDrainThenNotFound_completes() {
-        var http = new ScriptedDrainHttp(drainAccepted(NODE), notFound(NODE));
+    void drainNodeAndAwait_acceptedDrainThenRefused_completes() {
+        var http = new ScriptedDrainHttp(drainAccepted(NODE), connectionRefused());
         ClusterHttpClient.HTTP_OPS_REF.set(http);
 
         var result = ClusterHttpClient.drainNodeAndAwait("http", HOST, 8080, NODE, GENEROUS_TIMEOUT_MS);

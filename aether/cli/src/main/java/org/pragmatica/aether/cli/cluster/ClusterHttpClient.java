@@ -403,8 +403,9 @@ public sealed interface ClusterHttpClient {
     }
 
     /// Polls the DRAINING node itself. After an accepted drain the node halts (`DrainProcedure`), so
-    /// the terminal signal is a connection failure or a 404 from its own readiness view; see
-    /// [DrainCompletion]. Callers must have had the drain accepted first — use [#drainNodeAndAwait].
+    /// the terminal signal is its port refusing the connection; any answer it serves, 404 included, means
+    /// it is still alive — see [DrainCompletion]. Callers must have had the drain accepted first — use
+    /// [#drainNodeAndAwait].
     static Result<Unit> awaitDrainComplete(String scheme,
                                            String address,
                                            int managementPort,
@@ -415,7 +416,7 @@ public sealed interface ClusterHttpClient {
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
-            if (DrainCompletion.isComplete(getDirect(url), DrainCompletion.Polled.TARGET_NODE)) {
+            if (DrainCompletion.isComplete(getDirect(url))) {
                 return Result.unitResult();
             }
 

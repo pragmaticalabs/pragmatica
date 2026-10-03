@@ -27,7 +27,6 @@ import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_DRAIN;
-import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_GET;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_LIST;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDOWN;
 import static org.pragmatica.lang.Option.option;
@@ -36,14 +35,6 @@ import static org.pragmatica.lang.Option.option;
 @Command(name = "destroy", description = "Destroy the active cluster (drain + shutdown all nodes)")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterDestroyCommand implements Callable<Integer> {
-    /// Package-visible so a test asserts the announced ceiling against **the constant that enforces it**
-    /// rather than against a restated literal — the same arrangement as
-    /// [BootstrapCleanup#FIREWALL_DELETE_ATTEMPTS], and the reason #994's "servers are still detaching" is
-    /// the cautionary case: an announcement that can drift from the code is a false diagnostic waiting to
-    /// happen.
-    static final int DRAIN_POLL_INTERVAL_MS = 2000;
-    static final int DRAIN_TIMEOUT_SECONDS = 120;
-
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     /// #994 verification finding SF-1 — carries `Result<Option<…>>` rather than `Option<…>`, so
@@ -318,12 +309,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
     @Contract
     private void announceDestroyPlan(ClusterName clusterName) {
         System.out.printf("Destroying cluster '%s' in %d phases. This can take minutes: node enumeration"
-                         + " waits up to %ds, each node's drain up to %ds, and cloud resource deletion is"
+                         + " waits up to %ds, drains are requested without a wait, and cloud resource deletion is"
                          + " paced by the provider.%n",
                           clusterName,
                           DestroyPhase.values().length,
-                          requestTimeoutSeconds(),
-                          DRAIN_TIMEOUT_SECONDS);
+                          requestTimeoutSeconds());
     }
 
     /// #995 — the destroy pipeline's phases, printed in the same `[Phase n/m: NAME]` shape
@@ -782,10 +772,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var results = new ArrayList<NodeResult>();
 
         for (var nodeId : nodeIds) {
-            System.out.printf("Draining node %s (waiting up to %ds for the drain to complete, polling every %dms)...%n",
-                              nodeId,
-                              DRAIN_TIMEOUT_SECONDS,
-                              DRAIN_POLL_INTERVAL_MS);
+            System.out.printf("Draining node %s (request only: completion cannot be observed through the cluster endpoint)...%n",
+                              nodeId);
             var result = drainSingleNode(nodeId);
 
             results.add(result);
@@ -797,10 +785,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     private static String drainAnnouncement(int nodeCount) {
         return nodeCount == 0
                ? "Nothing to drain — the node list is empty"
-               : String.format("Draining %d node(s), up to %ds each (worst case %ds total)",
-                               nodeCount,
-                               DRAIN_TIMEOUT_SECONDS,
-                               (long) nodeCount * DRAIN_TIMEOUT_SECONDS);
+               : String.format("Draining %d node(s): drain requests only, no wait", nodeCount);
     }
 
     private NodeResult drainSingleNode(String nodeId) {
@@ -814,18 +799,14 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return NodeResult.failed(nodeId, refusalReason(cause));
         }
 
-        var success = waitForDrainComplete(nodeId);
+        // A drain the server accepted is not an observed drain: the CLI holds the node id but not the node's own
+        // address, and only that address refusing connections proves a halt (see DrainCompletion). Reporting
+        // success here would be a verdict nobody observed, so the node is reported as accepted-but-unobserved.
+        var unobserved = new DrainCompletion.NotObservable(nodeId);
 
-        if (success) {
-            System.out.printf("  Node %s drained.%n", nodeId);
+        System.err.printf("  %s%n", unobserved.message());
 
-            return NodeResult.succeeded(nodeId);
-        }
-
-        System.err.printf("  Node %s did not finish draining in time.%n", nodeId);
-
-        return NodeResult.failed(nodeId,
-                                 "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for the drain to complete");
+        return NodeResult.failed(nodeId, "drain accepted, completion not observable through the cluster endpoint");
     }
 
     /// The reason the summary warning carries per node (#587 review NIT-2): a refusal keeps its HTTP
@@ -836,23 +817,6 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return cause instanceof ClusterHttpClient.HttpError.ApiError apiError
                ? "refused with HTTP " + apiError.statusCode()
                : "error: " + cause.message();
-    }
-
-    /// Polls through the cluster endpoint, which may be any member, so only a 404 from a live member
-    /// counts as completion — see [DrainCompletion].
-    private static boolean waitForDrainComplete(String nodeId) {
-        var deadline = System.currentTimeMillis() + (long) DRAIN_TIMEOUT_SECONDS * 1000;
-
-        while (System.currentTimeMillis() < deadline) {
-            if (DrainCompletion.isComplete(ClusterHttpClient.fetch(NODE_LIFECYCLE_GET, List.of(nodeId)),
-                                           DrainCompletion.Polled.CLUSTER_ENDPOINT)) {
-                return true;
-            }
-
-            sleepQuietly();
-        }
-
-        return false;
     }
 
     List<NodeResult> shutdownAllNodes(List<String> nodeIds) {
@@ -968,15 +932,6 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return results.stream()
                       .filter(NodeResult::success)
                       .count();
-    }
-
-    @SuppressWarnings("JBCT-EX-01")
-    private static void sleepQuietly() {
-        try {
-            Thread.sleep(DRAIN_POLL_INTERVAL_MS);
-        } catch (InterruptedException _) {
-            Thread.currentThread().interrupt();
-        }
     }
 
     private static int onFailure(Cause cause) {

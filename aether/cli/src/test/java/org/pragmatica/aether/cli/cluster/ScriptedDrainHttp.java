@@ -31,7 +31,9 @@ final class ScriptedDrainHttp implements HttpOperations {
     }
 
     /// `NodeLifecycleRoutes.LIFECYCLE_NOT_FOUND` (:42-46) rendered by `ProblemResponses.renderProblemBytes`
-    /// (ProblemResponses.java:81) as a problem document with status 404 — the routing layer's wire shape.
+    /// (ProblemResponses.java:81) as a problem document with status 404 — the routing layer's wire shape. The
+    /// route is `LEADER`-targeted, so this is the leader's soft-state readiness view, relayed by whichever live
+    /// node was polled.
     static Step notFound(String nodeId) {
         return new Step.Reply(404,
                               "{\"type\":\"about:blank\",\"title\":\"Not Found\",\"status\":404,"
@@ -39,15 +41,23 @@ final class ScriptedDrainHttp implements HttpOperations {
                               + "\"instance\":\"/api/v1/nodes/lifecycle/" + nodeId + "\",\"requestId\":\"r-1\"}");
     }
 
-    /// What `JdkHttpOperations` produces when the polled process is gone (HttpClientError.fromException maps
-    /// `ConnectException` / any `IOException` here).
+    /// Transport failures are scripted as the RAW exception the JDK client throws, and reach the caller only
+    /// through `HttpClientError.fromException` wrapped in a `CompletionException` exactly as
+    /// `JdkHttpOperations.send` delivers it — so a step can only produce what the real client produces. (An
+    /// earlier version scripted a ready-made `ConnectionFailed`, which the real client never delivered; the
+    /// fixture specified the defect.)
     static Step connectionRefused() {
-        return new Step.Fail(HttpClientError.ConnectionFailed.connectionFailed("Connection refused"));
+        return new Step.Fail(new java.net.ConnectException());
+    }
+
+    /// A mid-request transport failure (`IOException`, e.g. a reset) that a LIVE node produces too.
+    static Step connectionReset() {
+        return new Step.Fail(new java.io.IOException("Connection reset"));
     }
 
     /// A request that exceeded its timeout: a slow or partitioned node, NOT a halted one.
     static Step timedOut() {
-        return new Step.Fail(HttpClientError.Timeout.timeout("request timed out"));
+        return new Step.Fail(new java.net.http.HttpTimeoutException("request timed out"));
     }
 
     /// `TransitionResult(success, nodeId, state, message)` — NodeLifecycleRoutes.java:100, as returned by an
@@ -61,7 +71,7 @@ final class ScriptedDrainHttp implements HttpOperations {
     sealed interface Step {
         record Reply(int status, String body) implements Step {}
 
-        record Fail(Cause cause) implements Step {}
+        record Fail(Throwable error) implements Step {}
     }
 
     private final Step drainResponse;
@@ -109,7 +119,7 @@ final class ScriptedDrainHttp implements HttpOperations {
             case Step.Reply reply -> Promise.success(new HttpResult<>(reply.status(),
                                                                        HttpHeaders.of(Map.of(), (a, b) -> true),
                                                                        (T) reply.body()));
-            case Step.Fail fail -> fail.cause().promise();
+            case Step.Fail fail -> HttpClientError.fromException(new java.util.concurrent.CompletionException(fail.error())).<HttpResult<T>> promise();
         };
     }
 }

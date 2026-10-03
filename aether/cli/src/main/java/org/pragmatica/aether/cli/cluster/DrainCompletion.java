@@ -4,53 +4,55 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.net.ConnectException;
+
 import org.pragmatica.http.HttpClientError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 
-/// The one definition of "this node's drain has completed", shared by every CLI drain wait.
+/// The one definition of "the drained node has gone", shared by every CLI drain wait.
 ///
-/// Built only from what the server produces. `NodeReportedState` has three values (SYNCING, READY,
-/// DRAINING) and no terminal one: a drained node runs `DrainProcedure`, `Runtime.halt(2)`s, and simply
-/// stops reporting, and the leader sweeps its readiness entry after three missed pings. So completion is
-/// an ABSENCE, and the only observables of it are:
+/// **Complete means exactly one thing: the TARGET's own management address refuses the connection**
+/// (`java.net.ConnectException`, nothing listens on the port), observed after the drain was accepted. A
+/// drained node runs `DrainProcedure`, `Runtime.halt(2)`s, and its listener goes away; `NodeReportedState`
+/// (SYNCING / READY / DRAINING) has no terminal value to read instead.
 ///
-/// - `GET /api/v1/nodes/lifecycle/{id}` answering 404 (`NodeLifecycleRoutes.LIFECYCLE_NOT_FOUND`: the
-///   serving node's readiness view no longer holds the id);
-/// - the polled node itself refusing or resetting the connection (`HttpClientError.ConnectionFailed`),
-///   because the process halted.
+/// **No HTTP answer is ever completion, a 404 included.** The lifecycle GET is `LEADER`-routed, so the target
+/// forwards it and relays the leader's answer; a 404 therefore proves the target is alive (it served it), and
+/// the leader's 404 itself is soft state, not a death verdict: its readiness view drops a LIVE node on a
+/// transient QUIC evict (`AetherNode` routes `PeerDisconnected` to `pongSignalFan.evict`), after three silent
+/// ping intervals (`sweepStale`), and is empty on a newly elected leader until the first pongs arrive. A 200 in
+/// any state (READY, SYNCING, DRAINING), a 503, a timeout, and a connection failure that is not a refusal (DNS,
+/// a reset mid-request: live nodes produce those too) are likewise not completion.
 ///
-/// A 200 in ANY state (READY before the leader's ping carries the drain, SYNCING, DRAINING) means the node
-/// is still reporting, so the drain is not complete.
+/// **Only a poll of the target's own address can complete.** A poll through the cluster endpoint reaches some
+/// other member, whose connection failure says nothing about the target and whose 404 is the soft-state answer
+/// above, so there is no sound completion signal there; those callers report [NotObservable] instead.
 ///
-/// An absence proves nothing unless a drain actually started — a pre-first-pong 404, or a node that was never
-/// reachable, looks identical. That precondition is not checked here; it is structural: every caller reaches
-/// this predicate only after the drain command was ACCEPTED (admission requires the node to be READY, see
+/// An absence proves nothing unless a drain actually started. That is structural: every caller reaches this
+/// predicate only after the drain command was ACCEPTED (admission requires the node to be READY, see
 /// `NodeLifecycleRoutes.checkDrainReadiness`).
-///
-/// A timeout is deliberately NOT completion: a slow or partitioned node and a halted one both time out.
 public sealed interface DrainCompletion {
-    record unused() implements DrainCompletion {}
-
-    /// What the poll was addressed to. A connection failure is evidence about the polled process only, so
-    /// it can speak for the drain target only when the target was the one polled.
-    enum Polled {
-        /// The poll went to the node being drained: its halt is observable as a connection failure.
-        TARGET_NODE,
-        /// The poll went to the cluster's management endpoint, which may be any member (or the target's
-        /// peer that itself halts): a connection failure says nothing about the target.
-        CLUSTER_ENDPOINT
+    /// A drain the server accepted whose completion this CLI invocation has no sound way to observe: it holds
+    /// the node id but not the node's own management address, and polling through the cluster endpoint cannot
+    /// tell a halted node from a live one.
+    record NotObservable(String nodeId) implements DrainCompletion, Cause {
+        @Override
+        public String message() {
+            return "drain of " + nodeId + " was accepted, but its completion cannot be observed through the cluster"
+                   + " endpoint: only the node's own address refusing connections proves it halted, and the CLI does"
+                   + " not know that address";
+        }
     }
 
-    static boolean isComplete(Result<String> lifecycleResponse, Polled polled) {
-        return lifecycleResponse.fold(cause -> isAbsence(cause, polled), _ -> false);
+    static boolean isComplete(Result<String> pollOfTarget) {
+        return pollOfTarget.fold(DrainCompletion::isRefusedConnection, _ -> false);
     }
 
-    private static boolean isAbsence(Cause cause, Polled polled) {
+    private static boolean isRefusedConnection(Cause cause) {
         return switch (cause) {
-            case ClusterHttpClient.HttpError.ApiError apiError -> apiError.statusCode() == 404;
-            case HttpClientError.ConnectionFailed _ -> polled == Polled.TARGET_NODE;
+            case HttpClientError.ConnectionFailed failed -> failed.cause().map(ConnectException.class::isInstance).or(false);
             default -> false;
         };
     }
