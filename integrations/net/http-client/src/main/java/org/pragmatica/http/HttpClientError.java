@@ -131,9 +131,11 @@ public sealed interface HttpClientError extends Cause {
             case HttpConnectTimeoutException _ -> timeout("Connection timeout");
             case HttpTimeoutException e -> timeout(e.getMessage());
             // The JDK client's ConnectException carries no message; name the failure rather than print "null".
-            case java.net.ConnectException e -> connectionFailed(Option.option(e.getMessage()).or("Connection refused"), e);
+            case java.net.ConnectException e -> connectionFailed(Option.option(e.getMessage()).or("Connection refused"),
+                                                                 e);
             case java.net.UnknownHostException e -> connectionFailed("Unknown host: " + e.getMessage(), e);
-            case java.io.IOException e -> connectionFailed(Option.option(e.getMessage()).or(e.getClass().getSimpleName()), e);
+            case java.io.IOException e -> connectionFailed(Option.option(e.getMessage()).or(e.getClass().getSimpleName()),
+                                                           e);
             case InterruptedException _ -> timeout("Request interrupted");
             default -> failure(throwable);
         };

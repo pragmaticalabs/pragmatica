@@ -798,7 +798,6 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
             return NodeResult.failed(nodeId, refusalReason(cause));
         }
-
         // A drain the server accepted is not an observed drain: the CLI holds the node id but not the node's own
         // address, and only that address refusing connections proves a halt (see DrainCompletion). Reporting
         // success here would be a verdict nobody observed, so the node is reported as accepted-but-unobserved.

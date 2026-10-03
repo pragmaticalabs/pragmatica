@@ -40,9 +40,10 @@ public sealed interface DrainCompletion {
     record NotObservable(String nodeId) implements DrainCompletion, Cause {
         @Override
         public String message() {
-            return "drain of " + nodeId + " was accepted, but its completion cannot be observed through the cluster"
-                   + " endpoint: only the node's own address refusing connections proves it halted, and the CLI does"
-                   + " not know that address";
+            return "drain of " + nodeId
+                 + " was accepted, but its completion cannot be observed through the cluster"
+                 + " endpoint: only the node's own address refusing connections proves it halted, and the CLI does"
+                 + " not know that address";
         }
     }
 
