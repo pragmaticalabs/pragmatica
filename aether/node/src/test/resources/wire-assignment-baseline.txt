@@ -68,6 +68,8 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$DeploymentFailed (at:org.pragmatica
 SHAPE org.pragmatica.aether.api.ClusterEvent$DeploymentStarted (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$DhtReplicationSettled (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$DhtReplicationUnsettled (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$DhtWriterStale (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$DhtWriterStaleResolved (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$LeaderElected (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$LeaderLost (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$NodeFailed (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -410,6 +412,8 @@ TAG  org.pragmatica.aether.api.ClusterEvent$DeploymentFailed 269
 TAG  org.pragmatica.aether.api.ClusterEvent$DeploymentStarted 270
 TAG  org.pragmatica.aether.api.ClusterEvent$DhtReplicationSettled 2125
 TAG  org.pragmatica.aether.api.ClusterEvent$DhtReplicationUnsettled 2124
+TAG  org.pragmatica.aether.api.ClusterEvent$DhtWriterStale 2127
+TAG  org.pragmatica.aether.api.ClusterEvent$DhtWriterStaleResolved 2128
 TAG  org.pragmatica.aether.api.ClusterEvent$LeaderElected 272
 TAG  org.pragmatica.aether.api.ClusterEvent$LeaderLost 273
 TAG  org.pragmatica.aether.api.ClusterEvent$NodeFailed 274

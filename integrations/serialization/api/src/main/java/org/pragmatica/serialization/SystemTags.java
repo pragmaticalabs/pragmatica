@@ -595,6 +595,8 @@ public interface SystemTags {
         pin(table, 2124, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationUnsettled");
         pin(table, 2125, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationSettled");
         pin(table, 2126, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationStage");
+        pin(table, 2127, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStale");
+        pin(table, 2128, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStaleResolved");
         // ---- 2119..16383 RESERVED ----
         rejectDuplicateTags(table);
 

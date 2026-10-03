@@ -65,6 +65,27 @@ class DHTMessageEpochCodecTest {
         }
     }
 
+    /// #1777 R1c: the replication-change refusal crosses the wire, distinct from the owner-epoch fence.
+    @Test
+    void putResponse_roundTrip_preservesTheReplicationStaleRefusal() {
+        var codec = codec();
+        var buf = Unpooled.buffer();
+
+        try {
+            codec.write(buf, new DHTMessage.PutResponse("req-2", new NodeId("n2"), false, false, false, true));
+            codec.write(buf, new DHTMessage.PutResponse("req-3", new NodeId("n2"), false, false, true, false));
+            DHTMessage.PutResponse stale = codec.read(buf);
+            DHTMessage.PutResponse fenced = codec.read(buf);
+
+            assertThat(stale.replicationStale()).isTrue();
+            assertThat(stale.fenced()).isFalse();
+            assertThat(fenced.replicationStale()).isFalse();
+            assertThat(fenced.fenced()).isTrue();
+        } finally {
+            buf.release();
+        }
+    }
+
     /// #1818 L1: the departure view the receiver checks placement against crosses the wire. Every in-JVM
     /// departure test hands the record over directly, so only this round trip reaches the codec.
     @Test

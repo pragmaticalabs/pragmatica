@@ -242,7 +242,15 @@ public final class DistributedDHTClient implements DHTClient {
                                                                             indeterminateIfFenced(cause,
                                                                                                   quorum,
                                                                                                   collector)),
-                                                  Promise::success));
+                                                  Promise::success))
+                      .onFailure(cause -> noteIfStale(cause, stamp));
+    }
+
+    /// #1777 (owner rule): a write refused by the replication-change fence starts this node's stale-writer clock.
+    private void noteIfStale(Cause cause, WriteStamp stamp) {
+        if (cause instanceof DHTError.ReplicationChangeStale) {
+            node.noteStaleRefusal(stamp.replicationVersion(), System.currentTimeMillis());
+        }
     }
 
     /// The version and owner epoch one put is stamped with — what a rollback must match exactly — and the replication
@@ -340,7 +348,8 @@ public final class DistributedDHTClient implements DHTClient {
                                                                             indeterminateIfFenced(cause,
                                                                                                   quorum,
                                                                                                   collector)),
-                                                  Promise::success));
+                                                  Promise::success))
+                      .onFailure(cause -> noteIfStale(cause, stamp));
     }
 
     @Override

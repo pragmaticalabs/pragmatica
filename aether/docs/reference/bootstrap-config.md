@@ -341,6 +341,10 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   The fence is keyed on the change a replica has APPLIED, not on the writers-switched stage: every old-quorum write a
   replica accepts then predates its report, so every core's writers-switched pass pulls it
   [verified: `wOldWriteLandingBetweenAReplicasApplyAndItsWritersSwitched_isRefused`].
+- **Restarted replicas:** until its state restore hands it the committed change, a replica refuses writes (retryable). An
+  unknown fence never accepts [verified: DHTReplicationChangeTest `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`].
+- **Stale writer event:** a node whose writes stay refused this way for over 5 minutes without adopting the change emits
+  `DHT_WRITER_STALE`, and `DHT_WRITER_STALE_RESOLVED` once it adopts it (at most once each).
 - **The roster is the leader's membership view, not a committed fact.** A wrong roster only delays the settle (a member
   that is gone but still counted) or hastens it (a live writer held `Dead`); the write fence keeps both safe.
 - **What a read returns while unsettled:** a value acknowledged under the old factors reads as the value or a

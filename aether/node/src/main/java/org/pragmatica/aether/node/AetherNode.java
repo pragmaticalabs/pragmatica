@@ -2114,6 +2114,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                   System::currentTimeMillis));
 
         dhtNode.onReplicationCaughtUp(_ -> dhtSettlement.report());
+        // #1777 (owner rule): this node announces its own writes being refused as stale beyond the bound
+        var dhtWriterStaleWatch = DhtWriterStaleWatch.dhtWriterStaleWatch(config.self(),
+                                                                          dhtNode,
+                                                                          delegateRouter::route,
+                                                                          System::currentTimeMillis);
         var corePeerIds = config.topology()
                                 .coreNodes()
                                 .stream()
@@ -4286,6 +4291,7 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> {
                                                                           workerMetadataChannel.tick();
                                                                           dhtSettlement.report();
+                                                                          dhtWriterStaleWatch.tick();
                                                                       },
                                                                       TimeSpan.timeSpan(100).millis()));
         communityDirectory.restore(kvStore.snapshot());
@@ -6508,6 +6514,9 @@ public interface AetherNode extends ManageableNode {
                             cacheDhtConfig);
         if (replication.changeVersion() != DHTNode.NO_CHANGE) {
             DhtReplicationSettlement.applyCommitted(dhtNode, declared, workerChange(replication));
+        } else {
+            // v1882 r4: the projection says no change is committed, so this worker's fence is known
+            dhtNode.replicationFenceIsBaseline();
         }
 
         settlement.applied(replication.configVersion());
@@ -8955,6 +8964,9 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onDhtReplicationUnsettled));
         entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationSettled.class,
                                               eventAggregator::onDhtReplicationSettled));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtWriterStale.class, eventAggregator::onDhtWriterStale));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtWriterStaleResolved.class,
+                                              eventAggregator::onDhtWriterStaleResolved));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
