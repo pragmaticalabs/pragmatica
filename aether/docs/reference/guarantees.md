@@ -38,7 +38,7 @@
 | 5 | KV (Store-A) | `epoch.fence` (Put) | monotonic single-writer (reject stale epoch/leader) | deterministic, reconstructible from KV | — | enforced when writes resume | LIVE |
 | 6 | DHT (Store-B) | `dht.write` (system maps) | **eventual**, W=1 single-node ack | **not crash-durable** (in-mem) | — | side with ≥W replicas (≈local) | LIVE *(eventual)* |
 | 7 | DHT (Store-B) | `dht.read` (system maps) | **eventual**, first-non-empty (no read-repair) | — | — | any live replica | LIVE *(eventual)* |
-| 8 | DHT (Store-B) | `dht.write` (artifact repo) | quorum **LWW by HLC** (W = CF, R = RF − CF + 1 from the committed `[replication]`; W=R=2 at the default RF 3/CF 2, #1777) | quorum in-mem | — | majority | LIVE *(eventual/LWW)* |
+| 8 | DHT (Store-B) | `dht.write` (artifact repo) | quorum **LWW by HLC** (W = CF, R = RF − CF + 1 from the committed `[replication]`; W=R=2 at the default RF 3/CF 2, #1777; after a live change, max(old, new) on every node until the leader commits the change settled, #1777 R1b) | quorum in-mem | — | majority | LIVE *(eventual/LWW)* |
 | 9 | DHT (Store-B) | `dht.epoch-gate` | per-partition single-writer fence — **authority = consensus KV**, enforced node-local at the DHT engine (not a DHT keyspace); transient accept during KV-apply lag, monotonic convergence | — | — | — | LIVE |
 | 10 | Availability | `cluster.accept-writes` | — | — | — | **majority only**; minority `QuorumPaused` | LIVE |
 | 11 | Availability | `minority.self-fence` | — | — | — | minority **halts** ~15 s after quorum loss (**C-over-A**) | LIVE |

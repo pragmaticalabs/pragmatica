@@ -322,13 +322,26 @@ at least one replica that acknowledged the last write when the replica set has n
 quorums capped at the ring size. Unlike a stream, the DHT applies a changed value **live**:
 - **Gate:** ANY change of `replication_factor` or `confirmation_factor` re-opens the catch-up gate on every partition a
   node replicates.
-- **Transitional quorums:** until the node has caught up, it writes to max(old, new) and reads from max(old, new)
-  replicas, capped at the new factor.
-- **What a read returns in that window:** a value acknowledged under the old factors reads as the value or a retryable
-  `NotCaughtUp`, never "absent".
-- **Limit:** the switch back to the new quorums is per node. A write made in the brief window before another node has
-  applied the change is protected only while the reading node is still settling
-  [design intent — unverified for the reader that has already settled].
+- **Transitional quorums:** every node, workers included, writes to max(old, new) and reads from max(old, new)
+  replicas, capped at the new factor, until the cluster COMMITS that the change has settled. No node switches on its
+  own.
+- **When it settles:** the leader commits three stages in one consensus record. First every core and every worker that
+  is not confirmed departed reports that it applied the change. Then every core runs a fresh catch-up pass, which
+  copies any write a slower node made at the old quorum before it applied the change. When every core reports that pass
+  complete, the change is settled and the new quorums apply.
+- **What a read returns while unsettled:** a value acknowledged under the old factors reads as the value or a
+  retryable `NotCaughtUp`, never "absent". This includes a value written at the old quorum by a node that had not
+  applied the change yet
+  [verified: integrations/dht/src/test/java/org/pragmatica/dht/DHTReplicationChangeTest.java, in-JVM].
+  A partition that is catching up refuses reads until it has caught up, and the catch-up runs twice per change.
+- **Liveness cost:** a member that never reports keeps the change unsettled. Reads then stay at the stricter
+  transitional quorum: they fail sooner when replicas are down, but they never return a false "absent". A member stops
+  being waited for once its departure is confirmed (membership `Dead`).
+- **Operator event:** a change still unsettled after 5 minutes emits `DHT_REPLICATION_UNSETTLED` (WARNING). When it
+  settles, or a newer change replaces it, `DHT_REPLICATION_SETTLED` (INFO) follows. See the management API event list.
+- **Limit:** a worker that the leader's membership has not seen yet, and that has not filed a report, is not waited
+  for. It can still write at the old quorum if it learned the old factors from a core that had not applied the change.
+  [unverified: no test drives this window].
 
 Idempotency's dedup records live in this replicated DHT; only the cache uses `[cache]`. A node refuses DHT operations
 (retryable `ReplicationUnresolved`) until it
