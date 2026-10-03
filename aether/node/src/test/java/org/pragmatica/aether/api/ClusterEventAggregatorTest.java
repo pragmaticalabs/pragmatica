@@ -233,6 +233,40 @@ class ClusterEventAggregatorTest {
                                      .containsEntry("requestedBy", "operator-x");
     }
 
+    /// #1730 owner ruling: the stream failover refusal and its resolution reach the cluster-events stream as typed
+    /// events carrying the stream, partition, owner, ISR, live set and reason, through the codec transport.
+    @Test
+    void streamFailoverRefusedAndResolved_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onStreamFailoverRefused(OperationalEvent.StreamFailoverRefused.streamFailoverRefused("orders",
+                                                                                                              2,
+                                                                                                              "node-a",
+                                                                                                              java.util.List.of("node-a", "node-b"),
+                                                                                                              java.util.List.of("node-c"),
+                                                                                                              "no live ISR"));
+        h.aggregator().onStreamFailoverResolved(OperationalEvent.StreamFailoverResolved.streamFailoverResolved("orders",
+                                                                                                                2,
+                                                                                                                "node-b",
+                                                                                                                java.util.List.of("node-b"),
+                                                                                                                java.util.List.of("node-b", "node-c"),
+                                                                                                                "elected"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.StreamFailoverRefused.class);
+        assertThat(events.get(0).type()).isEqualTo("STREAM_FAILOVER_REFUSED");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(events.get(0).details()).containsEntry("stream", "orders")
+                                           .containsEntry("partition", "2")
+                                           .containsEntry("owner", "node-a")
+                                           .containsEntry("isr", "node-a,node-b")
+                                           .containsEntry("live", "node-c")
+                                           .containsEntry("reason", "no live ISR");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamFailoverResolved.class);
+        assertThat(events.get(1).details()).containsEntry("owner", "node-b");
+    }
+
     // --- owner-gated emit (operational events: config/deploy/scale/blueprint stay owner-gated) -----
 
     @Test

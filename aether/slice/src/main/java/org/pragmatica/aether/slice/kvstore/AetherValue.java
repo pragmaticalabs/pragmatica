@@ -2389,12 +2389,18 @@ public sealed interface AetherValue {
     /// leaves behind commit atomically. A CF ≥ 2 publish is acknowledged only once every ISR member holds it, and
     /// the ISR changes only through a guarded consensus write ([KVCommand.LeaderTransaction] whose mutation expects
     /// the exact current record) — never by a node's local view.
+    ///
+    /// `failoverRefused` (#1730, owner ruling): the leader found the owner dead and no ISR member live, so it elected
+    /// nobody (unclean failover is off). Committing that verdict — instead of only computing it — makes the refusal a
+    /// single committed TRANSITION: the guarded write that sets it (and the one that clears it, when an owner is
+    /// elected or returns) is accepted exactly once, and its committer is the one node that announces it.
     record StreamPartitionOwnershipValue(NodeId owner,
                                          Epoch ownerEpoch,
                                          long ownershipTerm,
                                          HlcTimestamp transferredAt,
                                          List<NodeId> isr,
-                                         long isrVersion) implements AetherValue, EpochBearing<Epoch> {
+                                         long isrVersion,
+                                         boolean failoverRefused) implements AetherValue, EpochBearing<Epoch> {
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
         /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences
         /// ANY `EpochBearing` value). A stale-owner takeover at the same epoch (bumping only
@@ -2424,7 +2430,13 @@ public sealed interface AetherValue {
                                                                                   Epoch ownerEpoch,
                                                                                   long ownershipTerm,
                                                                                   HlcTimestamp transferredAt) {
-            return new StreamPartitionOwnershipValue(owner, ownerEpoch, ownershipTerm, transferredAt, List.of(owner), 0L);
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     List.of(owner),
+                                                     0L,
+                                                     false);
         }
 
         public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
@@ -2433,7 +2445,13 @@ public sealed interface AetherValue {
                                                                                   HlcTimestamp transferredAt,
                                                                                   List<NodeId> isr,
                                                                                   long isrVersion) {
-            return new StreamPartitionOwnershipValue(owner, ownerEpoch, ownershipTerm, transferredAt, isr, isrVersion);
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false);
         }
 
         /// The same ownership with ISR `isr`, one ISR change later.
@@ -2443,7 +2461,19 @@ public sealed interface AetherValue {
                                                      ownershipTerm,
                                                      transferredAt,
                                                      isr,
-                                                     isrVersion + 1);
+                                                     isrVersion + 1,
+                                                     failoverRefused);
+        }
+
+        /// The same ownership and ISR with the failover verdict `refused`.
+        public StreamPartitionOwnershipValue withFailoverRefused(boolean refused) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     refused);
         }
     }
 

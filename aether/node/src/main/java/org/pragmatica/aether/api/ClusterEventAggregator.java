@@ -24,6 +24,8 @@ import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -1430,6 +1432,58 @@ public final class ClusterEventAggregator {
                                    Severity.INFO,
                                    "Blueprint deployed: " + event.artifactCoords(),
                                    Map.of("artifactCoords", event.artifactCoords(), "requestedBy", event.requestedBy())));
+    }
+
+    @Contract
+    public void onStreamFailoverRefused(OperationalEvent.StreamFailoverRefused event) {
+        emit(new StreamFailoverRefused(hlcClock.now(),
+                                       Severity.CRITICAL,
+                                       "Stream " + event.stream()
+                                      + "[" + event.partition()
+                                      + "] has no owner: owner " + event.owner()
+                                      + " is not live and no in-sync replica " + event.isr()
+                                      + " is live",
+                                       streamFailoverDetails(event.stream(),
+                                                             event.partition(),
+                                                             event.owner(),
+                                                             event.isr(),
+                                                             event.live(),
+                                                             event.reason())));
+    }
+
+    @Contract
+    public void onStreamFailoverResolved(OperationalEvent.StreamFailoverResolved event) {
+        emit(new StreamFailoverResolved(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream()
+                                       + "[" + event.partition()
+                                       + "] has an owner again: " + event.owner(),
+                                        streamFailoverDetails(event.stream(),
+                                                              event.partition(),
+                                                              event.owner(),
+                                                              event.isr(),
+                                                              event.live(),
+                                                              event.reason())));
+    }
+
+    private static Map<String, String> streamFailoverDetails(String stream,
+                                                             int partition,
+                                                             String owner,
+                                                             List<String> isr,
+                                                             List<String> live,
+                                                             String reason) {
+        return Map.of("stream",
+                      stream,
+                      "partition",
+                      String.valueOf(partition),
+                      "owner",
+                      owner,
+                      "isr",
+                      String.join(",", isr),
+                      "live",
+                      String.join(",", live),
+                      "reason",
+                      reason);
     }
 
     @Contract

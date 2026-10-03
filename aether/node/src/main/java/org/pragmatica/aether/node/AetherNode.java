@@ -1715,6 +1715,16 @@ public interface AetherNode extends ManageableNode {
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                      StreamOwnershipRetry retry,
                                      List<PartitionKey> reconciled) {
+        driveStreamOwnership(writer, applier, retry, StreamFailoverAnnouncer.NONE, reconciled);
+    }
+
+    /// As above, announcing every failover refusal/resolution the batch COMMITTED ([StreamFailoverAnnouncer]).
+    @Contract
+    static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
+                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                     StreamOwnershipRetry retry,
+                                     StreamFailoverAnnouncer announcer,
+                                     List<PartitionKey> reconciled) {
         // Entity arcs are excluded HERE, not in the controller's reconcile: their LOG replicas are
         // placed by the same reconcile as any stream's (wanted), but their OWNERSHIP has exactly one
         // authority — EntityOwnershipReconciler, which places over the keyspace's hosting set. Left
@@ -1723,6 +1733,7 @@ public interface AetherNode extends ManageableNode {
         // non-hosting nodes (which refuse every write) for up to one entity tick each time.
         applyStreamOwnershipBatch(applier,
                                   retry,
+                                  announcer,
                                   writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled)));
     }
 
@@ -1732,12 +1743,14 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void applyStreamOwnershipBatch(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                   StreamOwnershipRetry retry,
+                                                  StreamFailoverAnnouncer announcer,
                                                   List<KVCommand<AetherKey>> commands) {
         if (commands.isEmpty()) {
             return;
         }
 
         applier.apply(commands)
+               .onSuccess(results -> announcer.announce(commands, results))
                .onSuccess(results -> retry.settled(refusedCount(results)))
                .onFailure(cause -> retry.failed(commands.size(),
                                                 cause));
@@ -5404,6 +5417,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                   () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                                                          LeaderValue.class));
         // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
+        // #1730 owner ruling: a committed failover refusal/resolution is announced once, by the leader that committed it.
+        var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
+                                                                                      delegateRouter::route);
         var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
                                                                              () -> reconcileReplicaSet(clusterEventsControllerRef));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
@@ -5418,6 +5434,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
                                                                                                                                            clusterCommandApplier,
                                                                                                                                            streamOwnershipRetry,
+                                                                                                                                           streamFailoverAnnouncer,
                                                                                                                                            reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
@@ -8818,6 +8835,10 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(OperationalEvent.ConfigChanged.class, eventAggregator::onConfigChanged));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeployed.class,
                                               eventAggregator::onBlueprintDeployed));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverRefused.class,
+                                              eventAggregator::onStreamFailoverRefused));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,
+                                              eventAggregator::onStreamFailoverResolved));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));

@@ -323,13 +323,30 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
         return failoverOwner(stream, partition, liveIsr, desired).map(owner -> moved(current,
                                                                                      owner,
                                                                                      committedEpoch,
-                                                                                     liveIsr));
+                                                                                     liveIsr))
+                            .orElse(() -> refused(current));
+    }
+
+    /// No live ISR member and the owner dead: elect nobody (unclean failover is off) and COMMIT that verdict once, so
+    /// the refusal is one committed transition its committer announces (#1730, owner ruling). Already committed: no
+    /// write, so a repeated reconcile of a still-refused partition changes nothing and announces nothing.
+    private static Option<StreamPartitionOwnershipValue> refused(StreamPartitionOwnershipValue current) {
+        return current.failoverRefused()
+               ? Option.none()
+               : Option.some(current.withFailoverRefused(true));
     }
 
     /// Owner unchanged and live: drop the ISR members that left the live set. The owner itself is live, so the
     /// shrunk ISR is never empty.
     private static Option<StreamPartitionOwnershipValue> shrunk(StreamPartitionOwnershipValue current,
                                                                 List<NodeId> liveIsr) {
+        if (current.failoverRefused()) {
+            // The refused owner is live again: the refusal resolves without an election.
+            return Option.some((liveIsr.equals(current.isr())
+                                ? current
+                                : current.withIsr(liveIsr)).withFailoverRefused(false));
+        }
+
         return liveIsr.equals(current.isr())
                ? Option.none()
                : Option.some(current.withIsr(liveIsr));

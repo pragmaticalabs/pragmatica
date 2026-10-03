@@ -43,7 +43,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullEpoch_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO, null, 0L);
+        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO, null, 0L, false);
 
         assertThat(v.ownerEpoch()).isEqualTo(Epoch.ZERO);
     }
@@ -52,7 +52,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullTransferredAt_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L);
+        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false);
 
         assertThat(v.transferredAt()).isEqualTo(HlcTimestamp.ZERO);
     }
@@ -63,8 +63,8 @@ class StreamPartitionOwnershipValueTest {
     void construct_missingIsr_normalizesToOwnerAlone() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L).isr()).containsExactly(owner);
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, java.util.List.of(), 0L).isr()).containsExactly(owner);
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false).isr()).containsExactly(owner);
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, java.util.List.of(), 0L, false).isr()).containsExactly(owner);
     }
 
     /// #1730: an ISR change keeps the ownership and advances only the ISR version.

@@ -102,12 +102,34 @@ class IsrOwnershipWriterTest {
             assertThat(next.isr()).containsExactly(C);
         }
 
-        /// Unclean failover is off: with no ISR member live nobody is elected, however many other nodes are live.
+        /// Unclean failover is off: with no ISR member live nobody is elected, however many other nodes are live. The
+        /// refusal itself is committed once (owner ruling: it is an announced transition), changing nothing else.
         @Test
-        void next_ownerGone_noIsrMemberLive_electsNobody() {
+        void next_ownerGone_noIsrMemberLive_electsNobody_andCommitsTheRefusalOnce() {
             var current = record(A, 3L, List.of(A, B), 4L);
+            var refused = writer.next(STREAM, PARTITION, Option.some(current), D, GENERATION, List.of(C, D)).unwrap();
 
-            assertThat(writer.next(STREAM, PARTITION, Option.some(current), D, GENERATION, List.of(C, D)).isEmpty()).isTrue();
+            assertThat(refused).isEqualTo(current.withFailoverRefused(true));
+            assertThat(writer.next(STREAM, PARTITION, Option.some(refused), D, GENERATION, List.of(C, D)).isEmpty())
+                .as("a still-refused partition is not rewritten")
+                .isTrue();
+        }
+
+        @Test
+        void next_refusedPartition_anIsrMemberReturns_isElected_andTheRefusalClears() {
+            var refused = record(A, 3L, List.of(A, B), 4L).withFailoverRefused(true);
+            var next = writer.next(STREAM, PARTITION, Option.some(refused), B, GENERATION, List.of(B, C)).unwrap();
+
+            assertThat(next.owner()).isEqualTo(B);
+            assertThat(next.failoverRefused()).isFalse();
+        }
+
+        @Test
+        void next_refusedPartition_theOwnerReturns_keepsOwnership_andTheRefusalClears() {
+            var refused = record(A, 3L, List.of(A, B), 4L).withFailoverRefused(true);
+            var next = writer.next(STREAM, PARTITION, Option.some(refused), A, GENERATION, List.of(A, B)).unwrap();
+
+            assertThat(next).isEqualTo(refused.withFailoverRefused(false));
         }
     }
 
