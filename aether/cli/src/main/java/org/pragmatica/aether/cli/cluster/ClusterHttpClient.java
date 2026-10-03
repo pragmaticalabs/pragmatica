@@ -22,7 +22,6 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
-import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -38,8 +37,7 @@ public sealed interface ClusterHttpClient {
 
     AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
 
-    JsonMapper LIFECYCLE_MAPPER = JsonMapper.defaultJsonMapper();
-    String DECOMMISSIONED = "DECOMMISSIONED";
+    long DRAIN_POLL_INTERVAL_MS = 2000;
 
     @Contract
     @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01", "JBCT-RET-08"})
@@ -385,40 +383,47 @@ public sealed interface ClusterHttpClient {
         return getDirect(url);
     }
 
-    static Result<Unit> waitForDrainComplete(String address, int managementPort, String nodeId, long timeoutMs) {
-        return waitForDrainComplete(registryScheme(), address, managementPort, nodeId, timeoutMs);
+    /// Drain `nodeId` and wait for the drain to complete. The two are one operation so that completion
+    /// is only ever judged for a drain the server ACCEPTED — see [DrainCompletion] for why that matters.
+    static Result<Unit> drainNodeAndAwait(String address, int managementPort, String nodeId, long timeoutMs) {
+        return drainNodeAndAwait(registryScheme(), address, managementPort, nodeId, timeoutMs);
     }
 
-    static Result<Unit> waitForDrainComplete(String scheme,
-                                             String address,
-                                             int managementPort,
-                                             String nodeId,
-                                             long timeoutMs) {
+    static Result<Unit> drainNodeAndAwait(String scheme,
+                                          String address,
+                                          int managementPort,
+                                          String nodeId,
+                                          long timeoutMs) {
+        return drainNode(scheme, address, managementPort, nodeId)
+                        .flatMap(_ -> awaitDrainComplete(scheme,
+                                                         address,
+                                                         managementPort,
+                                                         nodeId,
+                                                         timeoutMs,
+                                                         DRAIN_POLL_INTERVAL_MS));
+    }
+
+    /// Polls the DRAINING node itself. After an accepted drain the node halts (`DrainProcedure`), so
+    /// the terminal signal is a connection failure or a 404 from its own readiness view; see
+    /// [DrainCompletion]. Callers must have had the drain accepted first — use [#drainNodeAndAwait].
+    static Result<Unit> awaitDrainComplete(String scheme,
+                                           String address,
+                                           int managementPort,
+                                           String nodeId,
+                                           long timeoutMs,
+                                           long pollIntervalMs) {
         var url = scheme + "://" + address + ":" + managementPort + "/api/v1/nodes/lifecycle/" + nodeId;
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
-            if (isDecommissioned(getDirect(url))) {
+            if (DrainCompletion.isComplete(getDirect(url), DrainCompletion.Polled.TARGET_NODE)) {
                 return Result.unitResult();
             }
 
-            ClusterBootstrapOrchestrator.sleepQuietly(2000);
+            ClusterBootstrapOrchestrator.sleepQuietly(pollIntervalMs);
         }
 
         return new HttpError.DrainTimeout(nodeId, timeoutMs).result();
-    }
-
-    /// Reads the lifecycle entry's `state` field rather than searching the whole response body
-    /// for the token (#522 sibling sweep): a body-wide match would report a drain complete the
-    /// moment any other field happened to mention the state — the wave would then restart a node
-    /// that is still shedding traffic. An unreadable response is never "decommissioned", so the
-    /// caller keeps waiting and ultimately fails with `DrainTimeout`.
-    static boolean isDecommissioned(Result<String> lifecycleResponse) {
-        return lifecycleResponse.flatMap(LIFECYCLE_MAPPER::readTree)
-                                .map(node -> node.path("state")
-                                                 .asText(""))
-                                .map(DECOMMISSIONED::equals)
-                                .or(false);
     }
 
     sealed interface HttpError extends Cause {

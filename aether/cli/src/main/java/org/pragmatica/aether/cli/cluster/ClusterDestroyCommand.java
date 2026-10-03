@@ -782,7 +782,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var results = new ArrayList<NodeResult>();
 
         for (var nodeId : nodeIds) {
-            System.out.printf("Draining node %s (waiting up to %ds for DECOMMISSIONED, polling every %dms)...%n",
+            System.out.printf("Draining node %s (waiting up to %ds for the drain to complete, polling every %dms)...%n",
                               nodeId,
                               DRAIN_TIMEOUT_SECONDS,
                               DRAIN_POLL_INTERVAL_MS);
@@ -814,17 +814,17 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return NodeResult.failed(nodeId, refusalReason(cause));
         }
 
-        var success = waitForDecommissioned(nodeId);
+        var success = waitForDrainComplete(nodeId);
 
         if (success) {
-            System.out.printf("  Node %s decommissioned.%n", nodeId);
+            System.out.printf("  Node %s drained.%n", nodeId);
 
             return NodeResult.succeeded(nodeId);
         }
 
-        System.err.printf("  Node %s did not decommission in time.%n", nodeId);
+        System.err.printf("  Node %s did not finish draining in time.%n", nodeId);
 
-        return NodeResult.failed(nodeId, "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for DECOMMISSIONED");
+        return NodeResult.failed(nodeId, "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for the drain to complete");
     }
 
     /// The reason the summary warning carries per node (#587 review NIT-2): a refusal keeps its HTTP
@@ -837,18 +837,14 @@ class ClusterDestroyCommand implements Callable<Integer> {
                : "error: " + cause.message();
     }
 
-    private static boolean waitForDecommissioned(String nodeId) {
+    /// Polls through the cluster endpoint, which may be any member, so only a 404 from a live member
+    /// counts as completion — see [DrainCompletion].
+    private static boolean waitForDrainComplete(String nodeId) {
         var deadline = System.currentTimeMillis() + (long) DRAIN_TIMEOUT_SECONDS * 1000;
 
         while (System.currentTimeMillis() < deadline) {
-            var state = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET,
-                                                List.of(nodeId))
-                                         .flatMap(MAPPER::readTree)
-                                         .map(node -> node.path("state")
-                                                          .asText("UNKNOWN"))
-                                         .or("UNKNOWN");
-
-            if ("DECOMMISSIONED".equals(state)) {
+            if (DrainCompletion.isComplete(ClusterHttpClient.fetch(NODE_LIFECYCLE_GET, List.of(nodeId)),
+                                           DrainCompletion.Polled.CLUSTER_ENDPOINT)) {
                 return true;
             }
 
