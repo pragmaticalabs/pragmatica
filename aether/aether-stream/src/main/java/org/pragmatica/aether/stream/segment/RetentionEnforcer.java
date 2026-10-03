@@ -29,6 +29,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageError;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 
 import org.slf4j.Logger;
@@ -207,19 +208,39 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      PressureRelief.NONE);
     }
 
-    /// As above, also watching the durable segment tier's pressure, and relieving it through `relief` (#1604), with
-    /// the floor refs made durable through `floorDurability` before retention drops what they license (#1278) -- the
-    /// production wiring, where the metadata store reaches disk only through snapshots. There is deliberately no
-    /// pressure-aware overload without it: a snapshot-backed store under [FloorDurability#LIVE] would drop refs
-    /// whose floor no snapshot holds yet.
+    /// The production wiring (#1278, #1604): the durable segment tier's pressure is watched and relieved, and the
+    /// floor refs are made durable by a forced snapshot of `snapshots` before retention drops what they license --
+    /// the metadata store reaches disk only through those snapshots. Both derive from the one manager, so a caller
+    /// cannot pair a snapshot-backed store with a non-durable floor ([FloorDurability#LIVE] would let a snapshot
+    /// captured concurrently with the drops hold neither the dropped refs nor their floor).
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
                                                       SegmentIndex index,
                                                       long retentionMs,
                                                       SegmentRetentionFloor retentionFloor,
-                                                      FloorDurability floorDurability,
+                                                      SnapshotManager snapshots,
+                                                      StorageGarbageCollector collector,
                                                       SegmentReader ageReader,
-                                                      SegmentTierPressure pressure,
-                                                      PressureRelief relief) {
+                                                      SegmentTierPressure pressure) {
+        return retentionEnforcer(storage,
+                                 index,
+                                 retentionMs,
+                                 retentionFloor,
+                                 FloorDurability.snapshotted(snapshots),
+                                 ageReader,
+                                 pressure,
+                                 PressureRelief.snapshotBounded(snapshots, collector));
+    }
+
+    /// As above with the durability and relief steps supplied directly -- for tests that inject a failing or
+    /// observing step. Package-private on purpose: production goes through the [SnapshotManager] overload.
+    static RetentionEnforcer retentionEnforcer(StorageInstance storage,
+                                               SegmentIndex index,
+                                               long retentionMs,
+                                               SegmentRetentionFloor retentionFloor,
+                                               FloorDurability floorDurability,
+                                               SegmentReader ageReader,
+                                               SegmentTierPressure pressure,
+                                               PressureRelief relief) {
         return new RetentionEnforcer(storage,
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),

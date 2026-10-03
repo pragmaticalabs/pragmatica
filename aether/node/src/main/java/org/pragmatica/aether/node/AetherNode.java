@@ -230,7 +230,6 @@ import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.SegmentTierPressure;
-import org.pragmatica.aether.stream.segment.PressureRelief;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
@@ -5000,11 +4999,10 @@ public interface AetherNode extends ManageableNode {
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
                                                                                                                       partition),
-                                                                          RetentionEnforcer.FloorDurability.snapshotted(streamStorageSetup.snapshotManager()),
+                                                                          streamStorageSetup.snapshotManager(),
+                                                                          streamStorageSetup.garbageCollector(),
                                                                           streamSegmentReader,
-                                                                          streamSegmentTierPressure,
-                                                                          PressureRelief.snapshotBounded(streamStorageSetup.snapshotManager(),
-                                                                                                         streamStorageSetup.garbageCollector()));
+                                                                          streamSegmentTierPressure);
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
