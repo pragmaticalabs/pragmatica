@@ -123,6 +123,17 @@ class LivePlacementMembersWiringTest {
         assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()));");
     }
 
+    /// #1339 / #1732: `AetherNodeReplicaSetTriggersTest` drives the trigger helpers through wiring it builds itself, so
+    /// deleting either production call site leaves it green. These pins are the half it cannot see: the placement-input
+    /// triggers are registered on the node's routes, and the FSM transition hook reconciles on a counted-boundary edge.
+    @Test
+    void replicaSetInputTriggers_areWiredIntoTheAssembly() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("wireReplicaSetInputTriggers(allEntries,streamReplicaSetController::reconcile,clusterNode::onVoterConfiguration);");
+        assertThat(code).contains("reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef,record);");
+    }
+
     /// `AetherNode.java` with line comments removed and all whitespace stripped, so a pin matches the
     /// wiring expression regardless of formatter line breaks. The path is derived from this class's own
     /// location (`<module>/target/test-classes` → `<module>/src/main/java`); an unreadable file fails loudly,
