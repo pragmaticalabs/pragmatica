@@ -22,7 +22,6 @@ public final class CommunityMemberDirectory {
     /// counting ones to pin how many entries a lookup touches (#1840).
     interface Containers {
         <K, V> Map<K, V> map();
-
         <T> Set<T> set();
 
         Containers HASH = new Containers() {
