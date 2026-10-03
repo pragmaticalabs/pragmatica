@@ -699,8 +699,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private void releaseLockSilently(String datasourceName, Object attemptToken) {
         releaseLock(attemptToken).onFailure(c -> log.error("Failed to release lock for '{}': {}",
-                                                             datasourceName,
-                                                             c.message()));
+                                                           datasourceName,
+                                                           c.message()));
     }
 
     private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
@@ -888,8 +888,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<Unit> settleRenewal(Lease lease, SchemaMigrationLockValue renewed) {
-        committedLock(lease.key).filter(renewed::equals)
-                                .onPresent(_ -> adopt(lease, renewed));
+        committedLock(lease.key).filter(renewed::equals).onPresent(_ -> adopt(lease, renewed));
 
         return Promise.unitPromise();
     }
@@ -944,7 +943,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private SchemaMigrationLockValue witnessFor(Lease lease) {
         synchronized (lease) {
             return committedLock(lease.key).filter(lease::owns)
-                                           .or(lease.held);
+                                .or(lease.held);
         }
     }
 
