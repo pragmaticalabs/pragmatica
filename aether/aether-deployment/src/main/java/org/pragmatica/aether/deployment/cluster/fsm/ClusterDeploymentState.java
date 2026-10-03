@@ -900,11 +900,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                               artifact);
                     continue;
                 }
+                // The committed count, not the declared one (#983): `restoreSliceTarget` registers the same
+                // artifact, and the store's iteration order decides which of the two runs last.
+                var target = declaredTarget(expanded, slice);
 
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
-                                                   slice.instances(),
-                                                   slice.minAvailable(),
+                                                   target.targetInstances(),
+                                                   target.minInstances(),
                                                    Option.some(expanded.id()),
                                                    schemaRequired));
             }

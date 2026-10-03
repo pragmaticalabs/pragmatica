@@ -82,8 +82,21 @@ class BlueprintRepublishPlacementTest {
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
 
     private void newHarness() {
+        newHarness(RestoreOrder.BLUEPRINT_FIRST, _ -> {});
+    }
+
+    /// The order a new leader's `rebuildStateFromKVStore` visits the entries in. The real store iterates
+    /// `Map.copyOf(storage)`, whose order is salted per JVM, so both orders occur in production.
+    enum RestoreOrder {
+        BLUEPRINT_FIRST,
+        BLUEPRINT_LAST
+    }
+
+    /// Seeds the store BEFORE `Activate`, so the leader activation restores from it.
+    private void newHarness(RestoreOrder order, java.util.function.Consumer<InMemoryKvStore> seed) {
         var router = MessageRouter.mutable();
-        kvStore = new InMemoryKvStore(router);
+        kvStore = new InMemoryKvStore(router, order);
+        seed.accept(kvStore);
         cluster = new RecordingClusterNode(SELF);
         LongSupplier clock = () -> 10_000_000L;
 
@@ -280,6 +293,46 @@ class BlueprintRepublishPlacementTest {
         assertThat(inMemoryInstances(V1)).isEqualTo(4);
     }
 
+    /// v1858 — leader change. A new leader rebuilds `blueprints` from the store; the reconciler then sizes
+    /// the slice from that in-memory count (`reconcileBlueprint` reads `blueprint.instances()`), and
+    /// `Active.onEntry` runs `reconcile()` right after the rebuild. `restoreAppBlueprint` registered the
+    /// DECLARED count, so whichever of the two restore entries the store visited last decided the scale.
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(RestoreOrder.class)
+    void leaderRestore_keepsTheCommittedAutoscaledCount(RestoreOrder order) {
+        newHarness(order, store -> {
+            store.put(TARGET_KEY, autoscaled(V1, 8, 2, Option.some(12)));
+            store.put(AppBlueprintKey.appBlueprintKey(OWNER), blueprintValue(slice(V1, 3, 2, Option.some(12), Option.none(), Option.none())));
+        });
+
+        assertThat(inMemoryInstances(V1)).as("the count the reconciler sizes the slice to after a leader change")
+                                         .isEqualTo(8);
+    }
+
+    /// Mid-rollout leader change: the republish already committed V2 at the carried scale.
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(RestoreOrder.class)
+    void leaderRestore_midRollout_keepsTheCarriedCountForTheNewVersion(RestoreOrder order) {
+        newHarness(order, store -> {
+            store.put(TARGET_KEY, autoscaled(V2, 6, 2, Option.none()));
+            store.put(AppBlueprintKey.appBlueprintKey(OWNER), blueprintValue(slice(V2, 3, 2)));
+        });
+
+        assertThat(inMemoryInstances(V2)).isEqualTo(6);
+    }
+
+    /// Opposite polarity: nothing committed for the slice, so the declared count is the only source.
+    @Test
+    void leaderRestore_withNothingCommitted_usesTheDeclaredCount() {
+        newHarness(RestoreOrder.BLUEPRINT_LAST, store -> store.put(AppBlueprintKey.appBlueprintKey(OWNER), blueprintValue(slice(V1, 4, 2))));
+
+        assertThat(inMemoryInstances(V1)).isEqualTo(4);
+    }
+
+    private static AppBlueprintValue blueprintValue(ResolvedSlice slice) {
+        return AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice), Option.none()));
+    }
+
     private static SliceTargetValue autoscaled(Artifact artifact, int count, int min, Option<Integer> max) {
         return SliceTargetValue.sliceTargetValue(artifact.version(), count, min, Option.some(OWNER), max, Option.none(), Option.none());
     }
@@ -368,12 +421,28 @@ class BlueprintRepublishPlacementTest {
     }
 
     private static final class InMemoryKvStore extends KVStore<AetherKey, AetherValue> {
-        InMemoryKvStore(MessageRouter router) {
+        private final RestoreOrder order;
+
+        InMemoryKvStore(MessageRouter router, RestoreOrder order) {
             super(router, stubSerializer(), stubDeserializer());
+            this.order = order;
         }
 
         void put(AetherKey key, AetherValue value) {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        @Override
+        public synchronized java.util.Map<AetherKey, AetherValue> snapshot() {
+            var ordered = new java.util.LinkedHashMap<AetherKey, AetherValue>();
+            var all = super.snapshot();
+            java.util.function.Predicate<AetherKey> isBlueprint = AppBlueprintKey.class::isInstance;
+            var firstGroup = order == RestoreOrder.BLUEPRINT_FIRST ? isBlueprint : isBlueprint.negate();
+
+            all.forEach((k, v) -> {if (firstGroup.test(k)) ordered.put(k, v);});
+            all.forEach((k, v) -> {if (!firstGroup.test(k)) ordered.put(k, v);});
+
+            return ordered;
         }
     }
 
