@@ -142,6 +142,51 @@ class BootstrapSeedProvisioningTest {
         assertThat(registry.resolve(SourceName.DEFAULT, "some-cloud-account-binding").isFailure()).isTrue();
     }
 
+    /// The seed's local binding is persisted in capacity reservations, so it must have the same shape as every
+    /// other binding (an opaque SHA-256 hex digest, never a credential and never empty), be the same value from a
+    /// fresh registry (a restarted leader must recognise its own reservations), and differ from the binding the
+    /// same `default` source gets once an operator commits a configuration declaring it — so a reservation made
+    /// before the first `cluster apply` is seen as a different account afterwards rather than silently re-bound.
+    @Test
+    void binding_bootstrapSeed_isAStableOpaqueDigest_distinctFromTheDeclaredDefaultSource() {
+        seedBootstrapOnly();
+        var local = Option.<ComputeProvider>some(new FakeProvider());
+        var seeded = SourceComputeRegistry.sourceComputeRegistry(() -> store.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                      AetherValue.ClusterConfigValue.class),
+                                                                 local);
+        var restarted = SourceComputeRegistry.sourceComputeRegistry(() -> store.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                         AetherValue.ClusterConfigValue.class),
+                                                                    local);
+        var committed = SourceComputeRegistry.sourceComputeRegistry(() -> Option.some(AetherValue.ClusterConfigValue.clusterConfigValue(DECLARED_DEFAULT,
+                                                                                                                                         CLUSTER,
+                                                                                                                                         "1.0.0",
+                                                                                                                                         List.of(),
+                                                                                                                                         3,
+                                                                                                                                         9,
+                                                                                                                                         "forge",
+                                                                                                                                         2L)),
+                                                                    local);
+
+        var seedBinding = seeded.binding(SourceName.DEFAULT).unwrap();
+
+        assertThat(seedBinding).as("an opaque SHA-256 hex digest, like every persisted binding").matches("[0-9a-f]{64}");
+        assertThat(restarted.binding(SourceName.DEFAULT).unwrap()).as("stable across registry instances").isEqualTo(seedBinding);
+        assertThat(committed.binding(SourceName.DEFAULT).unwrap()).as("the declared default source is a different account")
+                                                                  .matches("[0-9a-f]{64}")
+                                                                  .isNotEqualTo(seedBinding);
+    }
+
+    private static final String DECLARED_DEFAULT = """
+        config_version = "1.0.0"
+        [cluster]
+        name = "seeded"
+        version = "1.0.0"
+        [source.default]
+        type = "forge"
+        [source.default.core]
+        count = 3
+        """;
+
     private static final class FakeProvider implements ComputeProvider {
         private final AtomicInteger creates = new AtomicInteger();
         private final AtomicInteger lists = new AtomicInteger();
