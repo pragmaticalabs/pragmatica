@@ -4789,14 +4789,13 @@ public interface AetherNode extends ManageableNode {
                                                                             alertManager,
                                                                             config.self(),
                                                                             operatorWarningSink);
-        // onConfirmedDeparture holds ONE listener: every consumer of the DEAD edge is called from here
+
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, leaderReconcilerRef);
-            // #1777 R1b: a member with a committed departure is no longer waited for; the leader drops its report
-            dhtSettlement.onDeparture(departed);
         });
         // #1777 R1b: the pong cadence the leader already receives is what notices that time passed (the overdue bound)
-        // and that a member's departure no longer holds a change unsettled; no timer of its own
+        // and that a member's departure is now committed (it is no longer waited for, and its report is dropped); no timer
+        // of its own, and no second consumer on the single-slot DEAD edge above
         metricsCollector.addPongListener(_ -> dhtSettlement.evaluate());
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onDhtLeaderChange(change, kvStore, dhtSettlement)));

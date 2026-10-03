@@ -69,8 +69,9 @@ import org.slf4j.LoggerFactory;
 /// clears with `DHT_REPLICATION_SETTLED` when the change settles or is superseded.
 ///
 /// **No timers.** The leader evaluates on the commits that can advance a change (the configuration, the change record,
-/// any report), on leadership gain, on a committed departure, and on the cluster-sync pong cadence it already receives —
-/// the last is what notices that time has passed.
+/// any report), on leadership gain, and on the cluster-sync pong cadence it already receives — the last is what notices
+/// that time has passed and that a member's departure is now committed. An evaluation drops the reports of departed
+/// members, so a stale report never holds a later change.
 public interface DhtReplicationSettlement {
     Logger LOG = LoggerFactory.getLogger(DhtReplicationSettlement.class);
     /// The operator-attention bound. A change settles after every member's next configuration notification (cores) or
@@ -301,10 +302,6 @@ public interface DhtReplicationSettlement {
     @Contract
     void evaluate();
 
-    /// A committed departure: the leader drops the member's report and re-evaluates.
-    @Contract
-    void onDeparture(NodeId departed);
-
     /// File this node's report when it differs from the one it last filed. Called on every event that changes it, and on
     /// the worker-metadata tick every node already runs, which retries a report whose submission failed (a worker before
     /// its forwarding path is up, a core during a quorum loss): without a retry, one lost report would hold the change
@@ -379,31 +376,12 @@ public interface DhtReplicationSettlement {
 
                 committed().filter(change -> !change.settled())
                          .flatMap(change -> advance(change,
-                                                    reports(),
+                                                    liveReports(),
                                                     Set.copyOf(inputs.dhtNode().ring().nodes()),
                                                     inputs.workers().get(),
                                                     inputs.departed(),
                                                     inputs.clock().getAsLong()))
                          .onPresent(this::propose);
-            }
-
-            @Override
-            @Contract
-            public void onDeparture(NodeId departed) {
-                if (!inputs.isLeader().get()) {
-                    return;
-                }
-
-                var key = DhtReplicationReportKey.dhtReplicationReportKey(departed);
-
-                inputs.kvStore()
-                      .get(key)
-                      .onPresent(_ -> inputs.submit()
-                                            .apply(List.of(new KVCommand.Remove<>(key)))
-                                            .onFailure(cause -> LOG.debug("DHT replication report of departed {} not removed: {}",
-                                                                          departed,
-                                                                          cause.message())));
-                evaluate();
             }
 
             @Override
@@ -438,6 +416,26 @@ public interface DhtReplicationSettlement {
                 return inputs.kvStore()
                              .getTyped(DhtReplicationChangeKey.dhtReplicationChangeKey(),
                                        DhtReplicationChangeValue.class);
+            }
+
+            /// The reports of members not confirmed departed. A departed member's report is dropped here, by the leader, so
+            /// it cannot hold a later change for a leader whose membership view never saw that member die.
+            private Map<NodeId, DhtReplicationReportValue> liveReports() {
+                var reports = reports();
+                var departed = reports.keySet().stream().filter(inputs.departed()).toList();
+
+                departed.forEach(this::dropReport);
+                departed.forEach(reports::remove);
+
+                return reports;
+            }
+
+            private void dropReport(NodeId departed) {
+                inputs.submit()
+                      .apply(List.of(new KVCommand.Remove<>(DhtReplicationReportKey.dhtReplicationReportKey(departed))))
+                      .onFailure(cause -> LOG.debug("DHT replication report of departed {} not removed: {}",
+                                                    departed,
+                                                    cause.message()));
             }
 
             private Map<NodeId, DhtReplicationReportValue> reports() {

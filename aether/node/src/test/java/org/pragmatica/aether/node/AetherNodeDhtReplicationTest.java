@@ -216,9 +216,6 @@ class AetherNodeDhtReplicationTest {
         public void evaluate() {}
 
         @Override
-        public void onDeparture(NodeId departed) {}
-
-        @Override
         public void report() {}
     }
 
