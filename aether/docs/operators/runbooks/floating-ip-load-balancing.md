@@ -33,10 +33,10 @@ failure, then check it against eligible nodes `E`:
 | Want | Choose |
 |---|---|
 | One failure affects ≤ 1/3 of clients | `P ≥ 3`, and `E ≥ P` so each node holds ≤ 1 IP |
-| Even load across ingress nodes | `P` a multiple of `E` (balancing keeps every node within ±1 IP) |
+| Even load across ingress nodes | `P` a multiple of `E`. With `rebalance = "on_imbalance"` the cluster moves one IP at a time, paced, only when two nodes differ by 2 or more IPs; zone binding and `manual` mode can leave it less even (spec §8.4) |
 | Survive `k` node failures with all IPs served | `E − k ≥ 1`, and `(E − k) × maxIpsPerNode ≥ P` |
 
-`maxIpsPerNode` by provider: Hetzner no fixed limit; AWS, GCP and Azure **1** without guest network
+`maxIpsPerNode` by provider: Hetzner no documented per-server limit (unverified); AWS, GCP and Azure **1** without guest network
 setup (spec §10.2). On GCP a node holding a pool IP loses its own ephemeral external IP.
 
 **Per-node capacity.** An ingress node terminates TLS and forwards to the slice's hosting node
@@ -115,7 +115,7 @@ app.example.com.  3600  IN  AAAA  2001:db8:1::10
 
 - **One record per pool IP, all under one name.** Clients get the full set and can retry another
   address when one fails.
-- **TTL.** Failover never depends on DNS, so the TTL only governs how fast a pool *change* reaches
+- **TTL.** The cluster moves IPs without touching DNS, so the TTL only governs how fast a pool *change* reaches
   clients. 300–3600 s is reasonable. Lower it a day ahead of a planned pool change (§6), raise it
   back afterwards.
 - **No DNS health checks that remove records.** A provider health check that pulls a record during
@@ -141,8 +141,10 @@ Every eligible node terminates TLS for every pool IP, because any of them can be
    key_path  = "/etc/aether/tls/app.key"
    ```
    Deliver it through `[source.<name>.node_config]` plus your secret distribution so that nodes
-   provisioned later by auto-heal receive it too. A node without the certificate is a node that
-   fails TLS the moment it receives an IP.
+   provisioned later by auto-heal receive it too. A node without `[app-http.tls]` falls back to the
+   cluster-CA certificate (CN = its node id), which public clients reject, and HTTP/3 falls back to a
+   self-signed one. Nothing in the cluster checks that nodes carry the same certificate, so the
+   loop below is the only check.
 3. **Renewal**: renew on every eligible node before expiry. Check every node, not only current
    holders:
    ```bash
@@ -158,8 +160,8 @@ Every eligible node terminates TLS for every pool IP, because any of them can be
   eligible node, not only on current holders. On Hetzner, the Aether-managed firewall opens
   `app_http` for `floating_ip` sources when no `[source.X.firewall]` is declared; if you declare one,
   include the app port yourself.
-- On AWS/GCP/Azure open it yourself (security group / VPC firewall rule / NSG); Aether manages no
-  ingress there and warns at bootstrap.
+- On AWS, the Aether-managed ingress opens it the same way as on Hetzner. On GCP/Azure open it
+  yourself (VPC firewall rule / NSG); Aether manages no ingress there and warns at bootstrap.
 - Never expose the management port or the cluster port on pool IPs. They are reached on each
   node's primary address.
 - **HTTP/3 caveat** (*unverified*, spec §10.3): on Hetzner the pool address is an alias. If HTTP/3
@@ -178,8 +180,10 @@ Every eligible node terminates TLS for every pool IP, because any of them can be
 2. Add it to `pool` and apply the config. The table shows the new IP `UNSERVED` until a node is
    eligible for it.
 3. Hetzner only: existing nodes do not have the alias. Replace eligible nodes one at a time (each
-   replacement gets the new pool in its cloud-init); drains are make-before-break. On AWS/GCP/Azure
-   skip this step.
+   replacement gets the new pool in its cloud-init): drain each through
+   `POST /api/v1/nodes/drain/<id>` (make-before-break applies) and let auto-heal replace it. Do not
+   use the CLI's rolling restart / drain-destroy until #1868 is fixed: it waits for a state the
+   server never emits and ends in `DrainTimeout`. On AWS/GCP/Azure skip this step.
 4. Wait for `CONVERGED`, test the IP directly (§2 step 6).
 5. Add the DNS record.
 
@@ -212,7 +216,8 @@ Give these to the teams that call the service:
 - **Expect connection resets** during failovers, drains and rebalances. Long-lived connections
   (WebSocket, gRPC streams, HTTP/2) must reconnect with backoff and jitter.
 - **Retry only what is safe to repeat.** A request whose connection reset may or may not have been
-  processed. Retry idempotent requests; give non-idempotent ones an idempotency key.
+  processed. Inside the cluster an ingress node also retries a forward whose target died
+  mid-flight, so a non-idempotent request may already have been started once (unverified; spec B14). Retry idempotent requests; give non-idempotent ones an idempotency key.
 - **Respect DNS TTLs** so that pool changes (§6) reach you.
 
 ## 8. Failover drill
@@ -225,7 +230,7 @@ real client errors for one IP for the failover window.
 2. **Start a probe** against that IP from outside the cluster, recording failures with timestamps:
    ```bash
    while true; do
-     printf '%s ' "$(date -u +%H:%M:%S.%N | cut -c1-12)"
+     printf '%s ' "$(python3 -c 'import datetime;print(datetime.datetime.utcnow().strftime("%H:%M:%S.%f")[:12])')"   # date +%N is GNU-only
      curl -sS -m 2 --resolve app.example.com:443:<ip> https://app.example.com/<a-route> \
           -o /dev/null -w '%{http_code}\n' 2>&1 | tail -1
      sleep 0.2
@@ -248,6 +253,17 @@ Count what must NOT happen, not what should: a drill passes when the probe shows
 the windows above, not when it shows some successes.
 
 ## 9. Troubleshooting
+
+### Health checks for ingress nodes
+
+- `/health/live` and `/health/ready` are on the **management** port (8080), not the app port, and
+  are per node.
+- **#1869:** `/health/ready` stays `UP` while a node drains, even though its app port answers 503
+  for up to the 30 s drain grace. Until #1869 is fixed, do not use `/health/ready` to decide whether a
+  node can take traffic. Use the leader's view instead: `GET /api/v1/nodes/lifecycle`
+  (SYNCING / READY / DRAINING). That view is the one the cluster itself uses to move IPs.
+- An external monitor probing a pool IP measures the holder of that moment. Pair it with the
+  assignment table to tell which node failed.
 
 ### Read the assignment table
 
@@ -314,9 +330,8 @@ Work through the eligibility predicate (spec §7.2) for the IP's source:
 
 ### After a leader change
 
-Nothing should move. If IPs moved right after a leader change, record the event sequence
-(`aether events`) and file an issue: the spec's FIP-06 says a leader change alone moves no
-IP.
+Nothing should move (spec FIP-06, design intent, pinned by spec test T3). If IPs moved right after
+a leader change, record the event sequence (`aether events`) and file an issue.
 
 ## 10. Reference
 
@@ -326,6 +341,7 @@ IP.
 | `floating_ip.pool` | — | Pool addresses (IPv4 and/or IPv6) |
 | `floating_ip.eligible_roles` | `["worker"]` | Roles that may hold pool IPs |
 | `floating_ip.rebalance` | `on_imbalance` | `on_imbalance` \| `manual` |
+| `floating_ip.rebalance_pacing` | `5m` | Minimum gap between automatic rebalance moves |
 | `floating_ip.make_before_break_timeout` | `60s` | Max wait for moves before a drain proceeds |
 | `floating_ip.verify_interval` | `30s` | Provider verification period |
 | `floating_ip.readiness_grace` | `5s` | Non-READY duration before a move |

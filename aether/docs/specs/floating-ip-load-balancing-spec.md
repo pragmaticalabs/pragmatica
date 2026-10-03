@@ -81,19 +81,19 @@ assumptions in #1867; §16 collects those.
 | B8 | AWS, GCP and Azure integrations return `Option.empty()` from `floatingIp()` (no provider at all). Docker returns the `NoopFloatingIpProvider`. | `AwsEnvironmentIntegration.java:108`, `GcpEnvironmentIntegration.java:107`, `AzureEnvironmentIntegration.java:116`, `DockerEnvironmentIntegration.java:58-59` |
 | B9 | `LoadBalancerMode` = `none` / `external` / `elected`. An unrecognised string falls back silently to the source-type default, which is `elected` for `forge` sources and `none` otherwise. | `LoadBalancerMode.java:14-18`, `ClusterBootstrapConfigParser.java:399-409` |
 | B10 | `elected` validator rules are **PF-17** (rejected on SSH sources) and **PF-14** (needs a non-spot sub-table). **PF-18 is firewall-rule validation** (port, protocol, CIDR), unrelated to `elected`. REQ-5.1.3.2 ("`elected` requires non-empty `load_balancer_ips`") has no validator rule. | `ClusterBootstrapConfigValidator.java:297-298, 392-407, 499-512` |
-| B11 | Other `elected`-gated code: firewall auto-open of `app_http` TCP+UDP (REQ-5.1.8.2) and its warnings, and preflight "PF-12" which only resolves the provider (it never calls `verify` or `compatibleZones`; no production caller of either exists). | `BootstrapPhaseFirewall.java:95, 250, 267`, `PreflightChecker.java:120-133` |
+| B11 | Other `elected`-gated code: firewall auto-open of `app_http` TCP+UDP (REQ-5.1.8.2) on providers with Aether-managed ingress (`MANAGES_INGRESS` = Hetzner, AWS) and the warning for the others (GCP, Azure), and preflight "PF-12" which only resolves the provider (it never calls `verify` or `compatibleZones`; no production caller of either exists). | `BootstrapPhaseFirewall.java:95, 111, 250, 267`, `PreflightChecker.java:120-133` |
 | B12 | **The node runtime never reads `LoadBalancerMode`.** The only consumers are the config module and the CLI. The cluster-bootstrap spec's REQ-6.3.1 (CDM LB task group with hard anti-affinity) and REQ-6.3.4 (3–5 s failover) describe behaviour with no implementation. `LoadBalancerManager` (the `external`-mode target sync) is wired whenever `[cloud.load_balancer]` is configured, regardless of mode, and is activated by the local `LeaderChange` notification with no epoch fence on its provider calls. | `AetherNode.java:2846-2851, 7385-7391` |
 | B13 | Every node's app HTTP server binds the wildcard address for its port, so it accepts traffic on any address configured on the host, including an alias. | `integrations/net/http-server/.../NettyHttpServer.java:179` |
-| B14 | App HTTP dispatch is local-first and forwards to a hosting node otherwise; security overrides are enforced "at every ingress" (#1659). Any node can therefore serve as ingress for any route. | `AppHttpServer.java:872-876, 910-914` |
-| B15 | `/health/ready` (management port, `LOCAL`) is `UP` iff the node's `NodeLifecycle` state is `ACTIVE`. Cluster-wide, the leader holds an authoritative readiness view (`NodeReportedState` SYNCING / READY / DRAINING, carried on the cluster-sync pong). A new leader's view starts non-authoritative. | `StatusRoutes.java:516-532`, `NodeReportedState.java:23`, `NodeLifecycleRoutes.java:140-155` |
-| B16 | Drain is a **leader-local command**, not a KV record: every operator/controller drain goes through one sink (`requestDrainThroughFsm`) that enqueues it in `DrainCommandRegistry` and notifies `MembershipFsm`; the target receives `DRAIN` on the cluster-sync ping and, on entering DRAINING, **stops accepting new app-layer work** at once. | `AetherNode.java:1052-1065`, `DrainProcedure.java:28-31`, `NodeLifecycleRoutes.java:219-268` |
+| B14 | Every node starts the app HTTP server (port 8070 by default, gated only by `[app-http] enabled`), with no role gate. Dispatch serves a local ACTIVE slice locally and otherwise forwards round-robin to a reachable hosting node via `HttpForwarder`. If the forward target dies mid-flight, the forward fails and is retried on another candidate, bounded by `maxForwardRetries` and the request deadline, then 504. Security overrides are enforced "at every ingress" (#1659). Any node can therefore serve as ingress for any route. When quorum disappears the app port quiesces routing. [unverified: whether a forward retry can replay a non-idempotent request that the first target had already started] | `AppHttpServer.java:785-791, 983-1008, 910-914`, `HttpForwarder.java:233-243` |
+| B15 | `/health/ready` (management port 8080, `LOCAL`, not the app port) is `UP` iff the node's `NodeLifecycle` state is `ACTIVE`. **#1869:** `NodeLifecycle.drain()` has no production caller, so `/health/ready` stays `UP` through a drain while the app port answers 503 (`InvocationAdmission.DRAINING`). Cluster-wide, the leader holds an authoritative readiness view (`NodeReportedState` SYNCING / READY / DRAINING, carried on the cluster-sync pong). A new leader's view starts non-authoritative. | `StatusRoutes.java:516-532`, `NodeReportedState.java:23`, `NodeLifecycleRoutes.java:144-160` |
+| B16 | Drain is a **leader-local command**, not a KV record: every operator/controller drain goes through one sink (`requestDrainThroughFsm`) that enqueues it in `DrainCommandRegistry` and notifies `MembershipFsm`; the target receives `DRAIN` on the cluster-sync ping and, on entering DRAINING, **stops accepting new app-layer work** at once, then halts after a 30 s grace. Nodes also self-drain on quorum loss / core absence, which no leader command precedes. The leader learns of any drain from the target's DRAINING pong (`MembershipFsm.onDrainAcknowledged`). **#1868:** the CLI's `waitForDrainComplete` polls for `DECOMMISSIONED`, which the server never emits, so CLI rolling restart, drain-destroy and scale-down end in `DrainTimeout`. | `AetherNode.java:1052-1065, 6879`, `DrainProcedure.java:28-31`, `NodeLifecycleRoutes.java:219-268` |
 | B17 | Committed-state writes can be leader-fenced: a `KVCommand.LeaderTransaction` carries the committing leader's `LeaderValue`, read witnesses and per-key expected values; the applier accepts it iff the carried leader equals the committed `LeaderKey` value and every expectation matches, deterministically on every replica. `LeaderAuthorized` values refuse plain Put/Remove. `HierarchyStateWriter` wraps this for leader-authored state. | `KVStore.java:192-209`, `LeaderAuthorized.java`, `HierarchyStateWriter.java:23-79` |
 | B18 | Epoch-bearing values (`EpochBearing`, `Epoch(incarnation, rabiaTerm, localCounter)`) are refused when older than the committed value; a `mintsEpoch` write must be strictly newer. `LeaderTerm` mints the term component from the committed election's `viewSequence`. | `EpochBearing.java:35-49`, `Epoch.java:22`, `LeaderTerm.java` |
-| B19 | NodeId → provider instance id is recorded as `NodePlacementValue(sourceName, observedZone, providerInstanceId)` under `NodePlacementKey(nodeId)` for worker placements. [unverified: whether core nodes get a placement record] | `AetherValue.java:2461`, `ClusterTopologyManagerRecord.java:1211-1224, 1286-1300` |
+| B19 | NodeId → provider instance id: the general path is the provider label `aether-node-id`, stamped at create, resolved by `listInstances` with a tag filter. Worker placements additionally record `NodePlacementValue(sourceName, observedZone, providerInstanceId)` under `NodePlacementKey(nodeId)`. Neither is on `NodeInfo`. [unverified: whether core nodes get a placement record] | `HetznerComputeProvider.java:565-590`, `NodeLifecycleManager.java:46-57`, `AetherValue.java:2461`, `ClusterTopologyManagerRecord.java:1211-1224, 1286-1300` |
 | B20 | Bootstrap and leader-provisioned replacements render cloud-init through one shared `NodeUserDataRenderer`, fed from the committed cluster TOML. Containers run with `--network host`; JVM mode runs under systemd as a non-root user. The user-data script itself runs as root at first boot. | `NodeUserDataRenderer.java:272-275`, `ClusterTopologyManagerRecord.java:1453-1500` |
 | B21 | SWIM defaults: period 1 s, probe timeout 500 ms, suspect timeout 10 s. | `TimeoutsConfig.java:192-195` |
 | B22 | `aether cluster apply` in rc4 actuates scale changes only; any change to a source field is rejected. There is no runtime path to change `load_balancer_ips`. | `aether/docs/reference/cli.md` (`aether cluster apply`) |
-| B23 | `[app-http.tls] cert_path` / `key_path` configure an operator certificate for the app listener, server-auth only. | `ConfigLoader.java:394-402`, `AppHttpServer.java:562-566` |
+| B23 | `[app-http.tls] cert_path` / `key_path` configure an operator certificate for the app listener, server-auth only, per node. Without it the listener falls back to the cluster-CA certificate (CN = node id), which public clients do not trust, and HTTP/3 to a self-signed one. Nothing checks that nodes carry the same certificate. | `ConfigLoader.java:394-402`, `AppHttpServer.java:562-566` |
 
 ## 4. Invariants
 
@@ -143,7 +143,8 @@ path reaches that sink; the implementation PR must enumerate them]
 
 FIP-09. **No IP is unassigned by the reconcile loop.** With no eligible node, an IP stays with its
 last holder and the table reports it `UNSERVED`. Unassigning would turn "maybe served" into
-"certainly not served". Teardown is the only unassign path.
+"certainly not served". Teardown is the only unassign path. [mechanism: the reconciler has no
+unassign call; `unassign` is reachable only from `aether cluster destroy` (§13)]
 
 FIP-10. **Guest readiness gates assignment where the provider needs guest setup.** On providers
 whose capability says the guest must carry the address (Hetzner), an IP is assigned only to a node
@@ -177,7 +178,8 @@ Each row has a producer and a consumer on the live path; a field with neither do
 
 ## 6. Committed state
 
-New records (each needs a `SystemTags` pin, or every node fails to boot):
+New records (each needs a `SystemTags` pin, or every node fails to boot, and a re-recorded
+`wire-assignment-baseline.txt` for `WireAssignmentTripwireTest`):
 
 ```java
 record FloatingIpAssignmentKey(SourceName source, String ip) implements RuntimeKey   // "floating-ip/<source>/<ip>"
@@ -212,6 +214,7 @@ load_balancer = "floating_ip"
 pool = ["203.0.113.10", "203.0.113.11", "2001:db8:1::10"]
 eligible_roles = ["worker"]           # default ["worker"]; "core" allowed; "spot" refused
 rebalance = "on_imbalance"            # "on_imbalance" (default) | "manual"
+rebalance_pacing = "5m"               # §8.4 rule 3
 make_before_break_timeout = "60s"     # FIP-08
 verify_interval = "30s"               # FIP-05
 readiness_grace = "5s"                # §8.2
@@ -280,6 +283,7 @@ One pass:
 |---|---|---|
 | Activation | `LeaderChange` gained | verify-only pass (FIP-06); triggers armed after `nttDepartureTimeout × 1.5`, as `LeaderReconciler` does |
 | Death | committed departure of a holder (`NodeRemoved`, `NodeDecommissioned`, worker leave decision) | move its IPs |
+| Self-drain | holder's pong reports DRAINING with no held drain command (quorum loss / core absence) | move its IPs at once, no grace. This fires at or after drain start: up to the 30 s drain grace the holder answers 503 (B16), so this case is not make-before-break |
 | Unready | holder reported non-READY on an authoritative view for ≥ `readiness_grace` | move its IPs; a node that returns to READY becomes eligible again but does not get its IPs back (stickiness) |
 | Drain / shutdown | drain sink (B16), before release to the target | make-before-break (§8.3) |
 | Join / ready | an eligible node becomes eligible | rebalance check (§8.4) |
@@ -302,7 +306,7 @@ At `requestDrainThroughFsm(target)` on the leader:
    `make_before_break_timeout` expires. Expiry releases anyway, logs at WARN, emits
    `FloatingIpMakeBeforeBreakExpired`, and the remaining IPs move by the death trigger later.
    (Owner question Q10: refuse the drain instead.)
-4. The rolling upgrade path drains through the same sink, so it inherits this without its own code.
+4. The server-side drain route goes through this sink (B16) [mechanism: `NodeLifecycleRoutes` → `drainCommandSink` → `requestDrainThroughFsm`]. Whether every other leader-initiated drain (surplus trim, community-placement terminate, upgrade) reaches it is [unverified]; the implementation PR enumerates them, and any path that bypasses the sink gets the self-drain trigger's at-or-after behaviour. CLI rolling restart is currently broken by #1868.
 
 [limit: leader-local-gate] The pending drain lives in leader memory (B16). If the leader changes
 while a drain is held, the new leader has no record of it; the operator's drain call must be
@@ -335,6 +339,7 @@ Let `E` be eligible nodes for a source and `P` its pool. Target holding per node
 Two leaders cannot both commit a holder for the same IP from the same prior value: the second
 transaction's expected value no longer matches, and a deposed leader's witness no longer equals the
 committed `LeaderKey` (B17). Every replica decides identically from committed state.
+[mechanism: `KVStore.handleLeaderTransaction` compares only committed storage and the command]
 
 ### 9.2 What it does not give, and what closes the gap
 
@@ -342,8 +347,9 @@ The provider call is an external side effect; KV fencing cannot cover it. Three 
 
 1. **Pre-call check** (FIP-04): leadership, committed `(holder, epoch)` and quorum are re-read
    immediately before each call. A leader that has applied its own deposition stops.
-2. **Self-stop on quorum loss**: a leader that observes quorum loss issues no provider calls; a
-   minority node self-drains after `split_timeout` anyway.
+2. **Self-stop on quorum loss**: a leader that observes quorum loss issues no provider calls
+   [design intent — unverified: new code in the reconciler, pinned by T8]. A minority node also
+   self-drains on quorum loss (B16), which bounds how long a deposed leader stays up.
 3. **Convergence** (FIP-05): the remaining case, a request sent before deposition that lands after
    the new leader's request, leaves the IP on the stale holder until the new leader's next verify
    pass. The stale holder was the committed holder of an earlier epoch, so it is often still
@@ -379,14 +385,15 @@ record FloatingIpCapabilities(GuestSetup guestSetup,     // ALIAS_ON_ALL_ELIGIBL
                               boolean singleRequestMove)  // false: a move is unassign + assign
 ```
 
-The target is the provider instance id from the placement record (B19), never the Aether node id
-(fixes B2/B3). `holders` reads every page (fixes B6).
+The target is the provider instance id, resolved from the node id through the provider's
+`aether-node-id` label (B19), and never the Aether node id itself (fixes B2/B3). The reconciler
+caches the mapping per listing; a node whose instance cannot be resolved is not eligible. `holders` reads every page (fixes B6).
 
 ### 10.2 Behaviour by provider
 
 | Provider | Move | Guest setup | IPs per node | rc5 status |
 |---|---|---|---|---|
-| Hetzner | `POST /floating_ips/{id}/actions/assign` (one request; reassigns from the current server) | Every eligible node configures **every** pool address at boot via cloud-init (IPv4 /32; IPv6 the chosen address of the /64). Traffic reaches only the holder, so a move needs no guest action. | no fixed limit [unverified] | implement (Hetzner-first) |
+| Hetzner | `POST /floating_ips/{id}/actions/assign` (one request; reassigns from the current server) | Every eligible node configures **every** pool address at boot via cloud-init (IPv4 /32; IPv6 the chosen address of the /64). Traffic reaches only the holder, so a move needs no guest action. | no documented per-server limit [unverified: provider docs] | implement (Hetzner-first) |
 | AWS | `AssociateAddress` with `AllowReassociation=true` (one request) | None for one EIP on the primary private IP. More than one per node needs secondary private IPs, which some AMIs do not configure automatically. | 1 without guest setup | Q1 |
 | GCP | Remove the instance's access config, add one with the static IP: **two requests, unserved between them** | None | 1 per NIC (one external IPv4 per access config); the node's ephemeral external IP is replaced | Q1 |
 | Azure | Dissociate the public IP from one NIC ip-configuration, associate to another: two requests | None for the primary ip-configuration; secondary ones need guest setup | 1 without guest setup | Q1 |
@@ -423,10 +430,12 @@ stop advertising HTTP/3 on pool IPs until fixed.
 | Planned drain / upgrade | Connections on moved IPs reset; new connections succeed | `make_before_break_timeout` at most | automatic; on expiry see §8.3 |
 | Rebalance move | Connections on that IP reset | one IP per `rebalance_pacing` | set `rebalance = "manual"` to stop |
 | Leader change | None by itself (FIP-06) | — | — |
+| Holder on the minority side of a partition | App routing quiesces on quorum loss (B14); the holder then self-drains (B16); the majority leader moves its IPs on the DRAINING pong or the departure | split detection + one assign [design intent — unverified] | automatic |
+| Holder self-drains (quorum/core loss) | 503 from the holder until the move | ≤ 30 s drain grace, typically one assign after the DRAINING pong [design intent — unverified] | automatic |
 | Stale leader's late request | One IP on a stale holder | ≤ `verify_interval` + one assign | automatic (FIP-05) |
 | No eligible node | IP `UNSERVED` (FIP-09) | until a node becomes eligible | add capacity or fix readiness |
 | Provider API down / 429 | Moves wait; IPs stay with current holders | until the API recovers | automatic with backoff; alert on `UNSERVED`/`DIVERGED` |
-| Pool IP in a zone with no nodes | Never assignable | permanent | place eligible nodes in a compatible zone, or swap the IP |
+| Pool IP in a zone with no nodes | Not assignable (predicate 5) | until an eligible node exists in a compatible zone | place eligible nodes in a compatible zone, or swap the IP |
 
 Costs to state everywhere this feature is described:
 
@@ -503,7 +512,7 @@ Each unit/in-JVM test names the production line it pins and is shown red with th
 | T13 | no eligible node → no unassign, status `UNSERVED` | FIP-09 |
 | T14 | validation: PF-28..PF-31 each refuse their case; an unknown mode string is an error, not `none` | FIP-11 |
 | T15 | Hetzner provider: paged listing, IPv6 containment match, server id from placement record | B2, B6, B7 fixes |
-| T16 | codec: new key/value pinned (`SystemCodecPinningTest`) and round-trip | §6 |
+| T16 | codec: new key/value carry `SystemTags` pins (`SystemCodecPinningTest` catches an unpinned type by registry membership), the wire-assignment baseline is re-recorded (`WireAssignmentTripwireTest`), and both round-trip | §6 |
 | T17 | renderer: eligible-role cloud-init contains one alias per pool address; ineligible role contains none | §10.3 |
 
 In-JVM (Ember, no-op provider): a 5-core + 3-worker cluster with a 3-IP pool; kill a holder; the
@@ -546,6 +555,8 @@ run:
 | "Move trigger: node DEATH (SWIM)." | Under the hierarchy contract a core does not track every worker in SWIM (H12); the trigger is the committed departure, with worker latency unmeasured. |
 | `elected` as an existing mode with behaviour | The runtime never reads the mode (B12); removing it removes config/CLI code only. |
 | Pool management (add/remove IPs) | No runtime path exists: `cluster apply` rejects source-field changes (B22). |
+| "Failing READINESS" via `/health/ready` | `/health/ready` stays UP through a drain (#1869); the trigger has to use the leader's pong view (B15), not the HTTP probe. |
+| "Make-before-break on drain and rolling upgrade" | Only drains issued through the leader's sink can be held; self-drain is at-or-after (B16), and CLI rolling restart times out today (#1868). |
 
 ## 17. Owner questions
 
