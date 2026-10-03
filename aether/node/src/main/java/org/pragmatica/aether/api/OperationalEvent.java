@@ -46,4 +46,52 @@ public sealed interface OperationalEvent extends Message.Local {
             return new BlueprintDeleted(artifactId, requestedBy, System.currentTimeMillis());
         }
     }
+
+    /// #1777 (CTO ruling R1b, owner rule): a live DHT replication change has stayed unsettled for longer than the
+    /// operator-attention bound, so every node still reads and writes at the stricter transitional quorums
+    /// ([ClusterEvent.DhtReplicationUnsettled]). Derived from the committed change record on every node; published once.
+    record DhtReplicationUnsettled(long changeVersion,
+                                   int replicationFactor,
+                                   int confirmationFactor,
+                                   String stage,
+                                   long since,
+                                   String reason,
+                                   long timestamp) implements OperationalEvent {
+        public static DhtReplicationUnsettled dhtReplicationUnsettled(long changeVersion,
+                                                                      int replicationFactor,
+                                                                      int confirmationFactor,
+                                                                      String stage,
+                                                                      long since,
+                                                                      String reason) {
+            return new DhtReplicationUnsettled(changeVersion,
+                                               replicationFactor,
+                                               confirmationFactor,
+                                               stage,
+                                               since,
+                                               reason,
+                                               System.currentTimeMillis());
+        }
+    }
+
+    /// #1777: an overdue DHT replication change left the condition — it settled, or a newer change superseded it
+    /// ([ClusterEvent.DhtReplicationSettled]).
+    record DhtReplicationSettled(long changeVersion,
+                                 int replicationFactor,
+                                 int confirmationFactor,
+                                 long since,
+                                 String reason,
+                                 long timestamp) implements OperationalEvent {
+        public static DhtReplicationSettled dhtReplicationSettled(long changeVersion,
+                                                                  int replicationFactor,
+                                                                  int confirmationFactor,
+                                                                  long since,
+                                                                  String reason) {
+            return new DhtReplicationSettled(changeVersion,
+                                             replicationFactor,
+                                             confirmationFactor,
+                                             since,
+                                             reason,
+                                             System.currentTimeMillis());
+        }
+    }
 }

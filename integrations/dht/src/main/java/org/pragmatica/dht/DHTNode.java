@@ -255,6 +255,23 @@ public final class DHTNode {
         }
     }
 
+    /// As [#settleReplicationChange(long)], for the latest committed change, which installed `settled`. A floor this node
+    /// raised itself is tagged with the configuration version it APPLIED, which can be later than the version the change
+    /// was committed under — a node that skipped configuration versions (a worker between projection polls, a node
+    /// restoring a later snapshot) applied the same factors at a later version. When this node already uses exactly the
+    /// settled factors, its floor belongs to this change and is dropped whatever its tag. A node on other factors keeps
+    /// its floor: a later change is on its way.
+    @Contract
+    public void settleReplicationChange(long version, DHTConfig settled) {
+        synchronized (placementLock) {
+            settledVersion.accumulateAndGet(version, Math::max);
+            var covered = !factorsDiffer(config.get(), settled);
+
+            quorumFloor.set(quorumFloor.get()
+                                       .filter(floor -> !covered && floor.version() > settledVersion.get()));
+        }
+    }
+
     /// The highest replication change whose writers-switched catch-up pass completed here, or [#NO_CHANGE].
     public long replicationCaughtUpVersion() {
         return caughtUpVersion.get();

@@ -184,7 +184,7 @@ class WorkerMetadataColdRestartTest {
                                               _ -> List.of(),
                                               LIMITS,
                                               (_, _) -> {},
-                                              () -> clusterIncarnation, () -> org.pragmatica.lang.Result.success(new WorkerMetadataMessage.DhtReplication(3, 2, 1, 1)));
+                                              () -> clusterIncarnation, () -> org.pragmatica.lang.Result.success(new WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 1, -1, 0, 0, true)));
         }
 
         void seed(long revision, String value) {

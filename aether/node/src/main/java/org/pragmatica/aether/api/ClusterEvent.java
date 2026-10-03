@@ -19,16 +19,17 @@ import org.pragmatica.serialization.Codec;
 /// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
 /// additional variants without modifying the sealed parent.
 ///
-/// Closed-set count is **40 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// Closed-set count is **42 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
 /// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED + STREAM_MEMORY_EXCEEDED +
 /// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED + THRESHOLD_BREACHED/THRESHOLD_CLEARED +
-/// COMMUNITY_MINTED/COMMUNITY_STATE_CHANGED/COMMUNITY_MEMBER_JOINED/COMMUNITY_MEMBER_LEFT + OPERATOR_WARNING).
+/// COMMUNITY_MINTED/COMMUNITY_STATE_CHANGED/COMMUNITY_MEMBER_JOINED/COMMUNITY_MEMBER_LEFT + OPERATOR_WARNING +
+/// DHT_REPLICATION_UNSETTLED/DHT_REPLICATION_SETTLED).
 ///
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.DhtReplicationUnsettled, ClusterEvent.DhtReplicationSettled, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -483,6 +484,30 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         @Override
         public ClusterEvent withDetail(String key, String value) {
             return new CommunityMemberLeft(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1777 (CTO ruling R1b): a live change of the DHT's `[replication]` factors has stayed unsettled for longer than
+    /// five minutes, so every node still uses the transitional quorums — W_t = max(W_old, W_new), R_t = max(R_old, R_new).
+    /// Reads and writes stay correct; they need more replicas than the new factors do, so they fail sooner when replicas
+    /// are down. Usually a member that is neither reporting nor confirmed departed, or a core whose catch-up cannot
+    /// complete. Derived from the committed change record, so it is published once by the cluster-events owner.
+    /// Severity WARNING. `details`: `changeVersion`, `replicationFactor`, `confirmationFactor`, `stage`, `since`,
+    /// `reason`.
+    record DhtReplicationUnsettled(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new DhtReplicationUnsettled(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1777: the complement of {@link DhtReplicationUnsettled} — the overdue change settled, or a newer change
+    /// superseded it (`reason`). Severity INFO. `details`: `changeVersion`, `replicationFactor`, `confirmationFactor`,
+    /// `since`, `reason`.
+    record DhtReplicationSettled(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new DhtReplicationSettled(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
         }
     }
 

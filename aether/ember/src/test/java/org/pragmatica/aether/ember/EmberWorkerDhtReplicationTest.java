@@ -97,6 +97,54 @@ class EmberWorkerDhtReplicationTest {
         assertThat(cluster.allNodes()).as("every core re-resolved too")
                                       .filteredOn(node -> !node.self().equals(worker.self()))
                                       .allMatch(node -> dhtNode(node).config().replicationFactor() == 5);
+
+        // #1777 CTO ruling R1b, through the real wiring: the change settles only by a committed record, after every
+        // member (the worker included, through its forwarding path) reported it applied and every core caught up after
+        // the writers switched; then the new quorums apply on cores and worker alike. RF5/CF3 -> RF3/CF1 makes the
+        // switch visible: W_t = min(max(1, 3), 3) = 3 while unsettled, W_new = 1 once settled.
+        awaitSettled(currentConfigVersion());
+        var lowered = commitReplication(3, 1);
+
+        awaitSettled(lowered);
+        assertThat(workerReport(worker).appliedVersion()).as("the worker's report reached the leader's store").isGreaterThanOrEqualTo(lowered);
+        awaitCondition("the worker switched to W_new only after the committed settle", () -> workerDht.config().writeQuorum() == 1);
+        awaitCondition("every core switched too",
+                       () -> cluster.allNodes().stream()
+                                    .filter(node -> !node.self().equals(worker.self()))
+                                    .allMatch(node -> dhtNode(node).config().writeQuorum() == 1));
+    }
+
+    private long currentConfigVersion() {
+        return leaderNode().kvStore().getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class).unwrap().configVersion();
+    }
+
+    private AetherNode leaderNode() {
+        return cluster.currentLeader().flatMap(cluster::getNode).unwrap();
+    }
+
+    private void awaitSettled(long version) {
+        var lastSeen = new AtomicReference<String>("none");
+
+        try {
+            awaitCondition("replication change " + version + " committed as SETTLED", () -> {
+                var change = leaderNode().kvStore()
+                                         .getTyped(AetherKey.DhtReplicationChangeKey.dhtReplicationChangeKey(),
+                                                   AetherValue.DhtReplicationChangeValue.class);
+
+                lastSeen.set(change.toString());
+
+                return change.filter(value -> value.version() == version && value.settled()).isPresent();
+            });
+        } catch (AssertionError timedOut) {
+            throw new AssertionError(timedOut.getMessage() + "; last committed record: " + lastSeen.get(), timedOut);
+        }
+    }
+
+    private AetherValue.DhtReplicationReportValue workerReport(AetherNode worker) {
+        return leaderNode().kvStore()
+                           .getTyped(AetherKey.DhtReplicationReportKey.dhtReplicationReportKey(worker.self()),
+                                     AetherValue.DhtReplicationReportValue.class)
+                           .unwrap();
     }
 
     private static boolean readsAbsent(AetherNode worker, byte[] key, AtomicReference<String> lastRead) {
@@ -113,10 +161,10 @@ class EmberWorkerDhtReplicationTest {
 
     /// Commits `[replication]` with the given factors into the RUNNING cluster through the leader — a live change, no
     /// restart. Armed by parsing the document with the same parser the DHT resolves from.
-    private void commitReplication(int replicationFactor, int confirmationFactor) {
+    private long commitReplication(int replicationFactor, int confirmationFactor) {
         var leader = cluster.currentLeader().flatMap(cluster::getNode).unwrap();
         var before = leader.kvStore().getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class).unwrap();
-        var toml = before.tomlContent().or("") + "\n[replication]\nreplication_factor = %d\nconfirmation_factor = %d\n".formatted(replicationFactor,
+        var toml = withoutReplication(before.tomlContent().or("")) + "\n[replication]\nreplication_factor = %d\nconfirmation_factor = %d\n".formatted(replicationFactor,
                                                                                                                        confirmationFactor);
 
         assertThat(ReplicationDefaultsParser.fromClusterToml(Option.some(toml)).map(defaults -> defaults.replicationFactor()).or(0))
@@ -144,6 +192,23 @@ class EmberWorkerDhtReplicationTest {
         assertThat(leader.<Object>apply(List.of(transaction)).await(REQUEST).unwrap())
             .anyMatch(outcome -> outcome instanceof KVCommand.TransactionResult accepted && accepted.transactionId().equals(id)
                                  && accepted.accepted());
+        return value.configVersion();
+    }
+
+    /// The document without a `[replication]` section, so a second live change replaces the first instead of repeating
+    /// the table (a TOML error).
+    private static String withoutReplication(String toml) {
+        var start = toml.indexOf("\n[replication]");
+
+        if (start < 0) {
+            return toml;
+        }
+
+        var next = toml.indexOf("\n[", start + 1);
+
+        return next < 0
+               ? toml.substring(0, start)
+               : toml.substring(0, start) + toml.substring(next);
     }
 
     private static void awaitCondition(String what, BooleanSupplier condition) {

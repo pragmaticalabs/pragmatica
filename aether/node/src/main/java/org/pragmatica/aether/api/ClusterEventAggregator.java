@@ -1440,6 +1440,49 @@ public final class ClusterEventAggregator {
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
+    /// #1777 R1b: every node derives this from the committed change record, so it goes through the owner-gated [#emit]
+    /// and is published once.
+    @Contract
+    public void onDhtReplicationUnsettled(OperationalEvent.DhtReplicationUnsettled event) {
+        emit(new ClusterEvent.DhtReplicationUnsettled(hlcClock.now(),
+                                                      Severity.WARNING,
+                                                      "DHT replication change " + event.changeVersion()
+                                                     + " (RF " + event.replicationFactor()
+                                                     + ", CF " + event.confirmationFactor()
+                                                     + ") is " + event.reason()
+                                                     + "; the stricter transitional quorums stay in force",
+                                                      Map.of("changeVersion",
+                                                             String.valueOf(event.changeVersion()),
+                                                             "replicationFactor",
+                                                             String.valueOf(event.replicationFactor()),
+                                                             "confirmationFactor",
+                                                             String.valueOf(event.confirmationFactor()),
+                                                             "stage",
+                                                             event.stage(),
+                                                             "since",
+                                                             String.valueOf(event.since()),
+                                                             "reason",
+                                                             event.reason())));
+    }
+
+    @Contract
+    public void onDhtReplicationSettled(OperationalEvent.DhtReplicationSettled event) {
+        emit(new ClusterEvent.DhtReplicationSettled(hlcClock.now(),
+                                                    Severity.INFO,
+                                                    "DHT replication change " + event.changeVersion()
+                                                   + " is no longer unsettled: " + event.reason(),
+                                                    Map.of("changeVersion",
+                                                           String.valueOf(event.changeVersion()),
+                                                           "replicationFactor",
+                                                           String.valueOf(event.replicationFactor()),
+                                                           "confirmationFactor",
+                                                           String.valueOf(event.confirmationFactor()),
+                                                           "since",
+                                                           String.valueOf(event.since()),
+                                                           "reason",
+                                                           event.reason())));
+    }
+
     @Contract
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         emit(new ConnectionFailed(hlcClock.now(),
