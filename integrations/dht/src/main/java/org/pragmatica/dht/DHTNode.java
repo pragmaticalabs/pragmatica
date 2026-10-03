@@ -72,6 +72,7 @@ public final class DHTNode {
     private final AtomicLong caughtUpVersion = new AtomicLong(NO_CHANGE);
 
     private final AtomicReference<Consumer<Long>> caughtUpListener = new AtomicReference<>(_ -> {});
+
     /// When this node last dropped a replication-change floor (wall clock), or `Long.MIN_VALUE` if never (#1777 track 3).
     private final AtomicLong settledAtMillis = new AtomicLong(Long.MIN_VALUE);
 
