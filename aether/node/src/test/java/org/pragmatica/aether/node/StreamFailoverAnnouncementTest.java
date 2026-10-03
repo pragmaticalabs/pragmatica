@@ -16,6 +16,7 @@ import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -35,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1730 owner ruling: a stream partition's failover refusal is announced as an operational event on the TRANSITION,
 /// once, and its resolution likewise — never per reconcile. Driven end to end through the production pieces: the
-/// ISR-aware ownership writer, the real KV applier deciding its guarded transactions, and
-/// [AetherNode#driveStreamOwnership] with the production [StreamFailoverAnnouncer].
+/// ISR-aware ownership writer and [AetherNode#driveStreamOwnership] write through the real KV applier, whose committed
+/// `ValuePut` notifications feed the production [StreamFailoverAnnouncer] exactly as every node's KV router does.
 class StreamFailoverAnnouncementTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -47,19 +48,18 @@ class StreamFailoverAnnouncementTest {
     private static final LeaderValue LEADER = new LeaderValue(C, 1L);
     private static final List<PartitionKey> PASS = List.of(PartitionKey.partitionKey(STREAM, PARTITION));
 
-    private final KVStore<AetherKey, AetherValue> store = store();
     private final AtomicReference<List<NodeId>> live = new AtomicReference<>(List.of(C));
     private final List<OperationalEvent> announced = new CopyOnWriteArrayList<>();
-
+    private final StreamFailoverAnnouncer announcer = StreamFailoverAnnouncer.streamFailoverAnnouncer(live::get, announced::add);
+    private final KVStore<AetherKey, AetherValue> store = store();
     @Test
     void refusal_isAnnouncedOnce_repeatedReconcilesAnnounceNothing_andRecoveryAnnouncesResolvedOnce() {
         seedLeaderAndRecord(List.of(A, B));
         var writer = writer();
         var retry = AetherNode.StreamOwnershipRetry.streamOwnershipRetry((_, _) -> {}, () -> {});
-        var announcer = StreamFailoverAnnouncer.streamFailoverAnnouncer(live::get, announced::add);
 
         for (var pass = 0; pass < 3; pass++) {
-            AetherNode.driveStreamOwnership(writer, this::apply, retry, announcer, PASS);
+            AetherNode.driveStreamOwnership(writer, this::apply, retry, PASS);
         }
 
         assertThat(committed().failoverRefused()).as("the refusal is committed").isTrue();
@@ -75,7 +75,7 @@ class StreamFailoverAnnouncementTest {
 
         live.set(List.of(B, C));
         for (var pass = 0; pass < 3; pass++) {
-            AetherNode.driveStreamOwnership(writer, this::apply, retry, announcer, PASS);
+            AetherNode.driveStreamOwnership(writer, this::apply, retry, PASS);
         }
 
         assertThat(committed().owner()).as("an ISR member was elected").isEqualTo(B);
@@ -84,25 +84,15 @@ class StreamFailoverAnnouncementTest {
                                                             event -> assertThat(event.owner()).isEqualTo(B.id()));
     }
 
-    /// A transaction the applier REFUSED changed nothing, so nothing is announced for it.
+    /// A committed change that does not flip the refusal (an ISR shrink, a move) announces nothing.
     @Test
-    void refusedTransaction_announcesNothing() {
+    void committedChangeWithoutARefusalFlip_announcesNothing() {
         var before = record(List.of(A, B));
-        var id = "refuse-1";
-        KVCommand<AetherKey> transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key(),
-                                                                                                    id,
-                                                                                                    LEADER,
-                                                                                                    List.of(),
-                                                                                                    List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key(),
-                                                                                                                                                           Option.some(before),
-                                                                                                                                                           Option.some(before.withFailoverRefused(true)))));
 
-        assertThat(StreamFailoverAnnouncer.transitions(List.of(transaction),
-                                                       List.of(new KVCommand.TransactionResult(id, false)),
-                                                       List.of(C))).isEmpty();
-        assertThat(StreamFailoverAnnouncer.transitions(List.of(transaction),
-                                                       List.of(new KVCommand.TransactionResult(id, true)),
-                                                       List.of(C))).hasSize(1);
+        assertThat(StreamFailoverAnnouncer.transition(key(), Option.some(before), before.withIsr(List.of(A)), List.of(A)).isEmpty())
+            .isTrue();
+        assertThat(StreamFailoverAnnouncer.transition(key(), Option.some(before), before.withFailoverRefused(true), List.of(C)).isPresent())
+            .isTrue();
     }
 
     private StreamPartitionOwnershipWriter writer() {
@@ -160,8 +150,17 @@ class StreamFailoverAnnouncementTest {
         return StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, PARTITION);
     }
 
-    private static KVStore<AetherKey, AetherValue> store() {
-        return new KVStore<>(MessageRouter.mutable(), new Serializer() {
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private KVStore<AetherKey, AetherValue> store() {
+        var router = MessageRouter.mutable();
+
+        router.addRoute(KVStoreNotification.ValuePut.class, put -> {
+            if (((KVStoreNotification.ValuePut) put).cause().key() instanceof StreamPartitionOwnershipKey) {
+                announcer.onOwnershipPut((KVStoreNotification.ValuePut) put);
+            }
+        });
+
+        return new KVStore<>(router, new Serializer() {
             @Override
             public <T> void write(ByteBuf buffer, T value) {}
         }, new Deserializer() {

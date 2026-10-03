@@ -1715,16 +1715,6 @@ public interface AetherNode extends ManageableNode {
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                      StreamOwnershipRetry retry,
                                      List<PartitionKey> reconciled) {
-        driveStreamOwnership(writer, applier, retry, StreamFailoverAnnouncer.NONE, reconciled);
-    }
-
-    /// As above, announcing every failover refusal/resolution the batch COMMITTED ([StreamFailoverAnnouncer]).
-    @Contract
-    static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
-                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                     StreamOwnershipRetry retry,
-                                     StreamFailoverAnnouncer announcer,
-                                     List<PartitionKey> reconciled) {
         // Entity arcs are excluded HERE, not in the controller's reconcile: their LOG replicas are
         // placed by the same reconcile as any stream's (wanted), but their OWNERSHIP has exactly one
         // authority — EntityOwnershipReconciler, which places over the keyspace's hosting set. Left
@@ -1733,7 +1723,6 @@ public interface AetherNode extends ManageableNode {
         // non-hosting nodes (which refuse every write) for up to one entity tick each time.
         applyStreamOwnershipBatch(applier,
                                   retry,
-                                  announcer,
                                   writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled)));
     }
 
@@ -1743,14 +1732,12 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void applyStreamOwnershipBatch(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                   StreamOwnershipRetry retry,
-                                                  StreamFailoverAnnouncer announcer,
                                                   List<KVCommand<AetherKey>> commands) {
         if (commands.isEmpty()) {
             return;
         }
 
         applier.apply(commands)
-               .onSuccess(results -> announcer.announce(commands, results))
                .onSuccess(results -> retry.settled(refusedCount(results)))
                .onFailure(cause -> retry.failed(commands.size(),
                                                 cause));
@@ -5417,9 +5404,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                   () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                                                          LeaderValue.class));
         // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
-        // #1730 owner ruling: a committed failover refusal/resolution is announced once, by the leader that committed it.
-        var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
-                                                                                      delegateRouter::route);
         var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
                                                                              () -> reconcileReplicaSet(clusterEventsControllerRef));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
@@ -5434,13 +5418,22 @@ public interface AetherNode extends ManageableNode {
                                                                                    (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
                                                                                                                                            clusterCommandApplier,
                                                                                                                                            streamOwnershipRetry,
-                                                                                                                                           streamFailoverAnnouncer,
                                                                                                                                            reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
+        // #1730 owner ruling: every node derives the failover refusal/resolution event from the committed ownership Put;
+        // the cluster-events aggregator publishes only on its partition owner, so it reaches the stream exactly once.
+        var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
+                                                                                      delegateRouter::route);
+
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamFailoverAnnouncer::onOwnershipPut)
+                                              .build()
+                                              .asRouteEntries());
         // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
         // exists); the leader's writer alone judges liveness (ReplicaSetController#desiredOwner). Backfill sources
         // from, and self-elects against, the same owner.

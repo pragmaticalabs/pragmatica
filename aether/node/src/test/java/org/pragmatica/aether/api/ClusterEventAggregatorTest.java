@@ -267,6 +267,39 @@ class ClusterEventAggregatorTest {
         assertThat(events.get(1).details()).containsEntry("owner", "node-b");
     }
 
+    /// #1730 owner ruling, the cluster-wide path: EVERY node derives the failover event from the same committed
+    /// ownership Put, and only the cluster-events partition owner publishes. The LEADER (which committed the refusal)
+    /// is NOT that owner here, and the event still reaches the stream exactly once — on the owner.
+    @Test
+    void streamFailoverRefused_derivedOnEveryNode_publishedOnceByTheEventsOwner_notTheLeader() {
+        var leader = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var eventsOwner = Harness.create(Harness.defaultRetention(), OWNER);
+        var third = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var key = org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey("orders", 0);
+        var before = org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue.streamPartitionOwnershipValue(new NodeId("node-a"),
+                                                                                                                             org.pragmatica.aether.slice.generation.Epoch.ZERO,
+                                                                                                                             1L,
+                                                                                                                             org.pragmatica.hlc.HlcTimestamp.ZERO,
+                                                                                                                             List.of(new NodeId("node-a"), new NodeId("node-b")),
+                                                                                                                             2L);
+        var committed = new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut<>(new org.pragmatica.cluster.state.kvstore.KVCommand.Put<>(key,
+                                                                                                                                                         before.withFailoverRefused(true)),
+                                                                                                    org.pragmatica.lang.Option.some(before));
+
+        for (var node : List.of(leader, eventsOwner, third)) {
+            org.pragmatica.aether.node.StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> List.of(new NodeId("node-c")),
+                                                                                       event -> node.aggregator()
+                                                                                                    .onStreamFailoverRefused((OperationalEvent.StreamFailoverRefused) event))
+                                                         .onOwnershipPut(committed);
+        }
+
+        assertThat(leader.events()).as("the leader is not the events owner: it publishes nothing").isEmpty();
+        assertThat(third.events()).isEmpty();
+        assertThat(eventsOwner.events()).as("exactly one copy, on the events owner")
+                                        .singleElement()
+                                        .isInstanceOf(ClusterEvent.StreamFailoverRefused.class);
+    }
+
     // --- owner-gated emit (operational events: config/deploy/scale/blueprint stay owner-gated) -----
 
     @Test
