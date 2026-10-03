@@ -21,5 +21,12 @@
   with the real FSM, controller and ownership writer and asserts the registry or commit has NOT moved before the trigger;
   `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/replication/ReplicaSetControllerTest.java]` pins the
   coalescing and the clear-before-read ordering. In-JVM unit tests.
+- **Ember evidence (bigboy, 3-node and 5-node in-JVM clusters).**
+  `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamConfirmationEqualsFactorAvailabilityTest.java]`:
+  the #1732 acceptance (replacement placed, caught up, publishes succeed) is green with the fix and RED at the base (`b55a359e1`:
+  `ConditionTimeout` waiting for the replacement to enter the replica set). `StreamOwnerKillWritesResumeTest` asserts a WRITE
+  (not the owner field) reaches every partition after the leader-and-owner dies silently; `[unverified: it is NOT red at the
+  base]` — on Ember a new leader already exists when the removal decision arrives, so the cloud's 35 s refusal window is not
+  reproduced and may be failure-detection latency rather than a wedge. The leaderless-removal mechanism is pinned in-JVM only.
 - **Not changed:** a failed ownership batch write still waits for the next trigger (its log line says "re-driven on next
   reconcile"). `[unverified: no retry timer was added]`.
