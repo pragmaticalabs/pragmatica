@@ -132,6 +132,11 @@ final class CatchUpState {
                             .count();
     }
 
+    /// Whether no partition is pending — cheap enough for every quorum read (#1777 R1).
+    boolean nonePending() {
+        return pending.isEmpty();
+    }
+
     List<Partition> pendingPartitions() {
         return pending.keySet()
                       .stream()
