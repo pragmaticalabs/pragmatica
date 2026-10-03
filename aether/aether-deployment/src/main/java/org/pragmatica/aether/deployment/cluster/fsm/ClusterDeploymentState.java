@@ -1616,7 +1616,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             for (var slice : expanded.loadOrder()) {
                 var artifact = slice.artifact();
 
-                log.info("Scheduling {} with {} requested instances ({} allocatable nodes)",
+                log.info("Scheduling {} with {} declared instances ({} allocatable nodes)",
                          artifact,
                          slice.instances(),
                          nodes.size());
@@ -1635,6 +1635,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
                 var target = declaredTarget(expanded, slice);
 
+                log.info("Scheduling {} at {} instances (declared {}; a committed count is carried, clamped into the declared bounds)",
+                         artifact,
+                         target.targetInstances(),
+                         slice.instances());
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
                                                    target.targetInstances(),
