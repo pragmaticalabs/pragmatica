@@ -490,8 +490,9 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     /// #1777 (CTO ruling R1b): a live change of the DHT's `[replication]` factors has stayed unsettled for longer than
     /// five minutes, so every node still uses the transitional quorums — W_t = max(W_old, W_new), R_t = max(R_old, R_new).
     /// Reads and writes stay correct; they need more replicas than the new factors do, so they fail sooner when replicas
-    /// are down. Usually a member that is neither reporting nor confirmed departed, or a core whose catch-up cannot
-    /// complete. Derived from the committed change record, so it is published once by the cluster-events owner.
+    /// are down. Usually a member the leader's membership view still counts that is not reporting, or a core whose
+    /// catch-up cannot complete. Derived from the committed change record on every node and published through the
+    /// cluster-events owner gate: AT MOST ONCE per transition — missed if the owner cannot publish at that moment.
     /// Severity WARNING. `details`: `changeVersion`, `replicationFactor`, `confirmationFactor`, `stage`, `since`,
     /// `reason`.
     record DhtReplicationUnsettled(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {

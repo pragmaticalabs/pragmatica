@@ -11,8 +11,9 @@
   - Every node, workers included, uses the transitional quorums W = max(W_old, W_new) and R = max(R_old, R_new),
     capped at the new RF, until the cluster COMMITS the change as settled. No node switches on its own catch-up.
   - **Settle:** the leader moves the committed change record through three stages: applying, writers switched, and
-    settled. Writers switched means every core and every worker that is not confirmed departed reported the change
-    applied. Each core then runs a fresh catch-up pass. Settled means every core reported that pass complete. Every
+    settled. Writers switched means every member the leader's membership view counts (cores, workers, reporters;
+    members it holds `Dead` excluded) reported the change applied. Each core then runs a fresh catch-up pass. Settled
+    means every core reported that pass complete. Every
     stage is a compare-and-set leader transaction, and every report is checked against the change version, so a
     report for an older change never advances a newer one
     [verified: aether/node/src/test/java/org/pragmatica/aether/node/DhtReplicationSettlementTest.java].
@@ -25,7 +26,14 @@
   - **Liveness:** a member that never reports keeps the change unsettled. Reads stay at the stricter quorum, so they
     become unavailable sooner, but they never return a false "absent". A change unsettled for 5 minutes emits
     `DHT_REPLICATION_UNSETTLED`, and its settling or replacement emits `DHT_REPLICATION_SETTLED`.
-  - [unverified: a worker that the leader's membership has not yet seen, and that has not reported, is not waited for.]
+  - **Write fence (CTO ruling R1c):** every put carries the writer's applied replication change, and a replica that
+    has applied a newer one refuses it with the retryable `ReplicationChangeStale`. A put in flight across the whole
+    change, or from a writer the roster missed, never lands an old-quorum write after the settle
+    [verified: DHTReplicationChangeTest `straddlingPut_startedUnderTheOldFactors_isRefusedAfterTheChange_andTheRetrySucceeds`
+    (v1882's round-3 probe), `writerExcludedFromTheSettle_isRefused_untilItAppliesTheChange`,
+    `writerTaughtTheOldChange_isFencedByReplicasOnTheNewOne`]. The roster is the leader's membership view: a wrong one
+    only delays or hastens the settle.
+  - The two events are published at most once per transition (missed if the cluster-events owner cannot publish then).
 - **Idempotency stores its dedup records in the replicated DHT at the `[replication]` factors**, not at the cache's
   RF 1. It was resolving the cache-scoped client.
   [verified: aether/resource/interceptors/src/test/java/org/pragmatica/aether/resource/interceptor/DhtNamespaceExtensionTest.java]

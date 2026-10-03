@@ -49,7 +49,7 @@ public sealed interface OperationalEvent extends Message.Local {
 
     /// #1777 (CTO ruling R1b, owner rule): a live DHT replication change has stayed unsettled for longer than the
     /// operator-attention bound, so every node still reads and writes at the stricter transitional quorums
-    /// ([ClusterEvent.DhtReplicationUnsettled]). Derived from the committed change record on every node; published once.
+    /// ([ClusterEvent.DhtReplicationUnsettled]). Derived from the committed change record on every node; published at most once.
     record DhtReplicationUnsettled(long changeVersion,
                                    int replicationFactor,
                                    int confirmationFactor,

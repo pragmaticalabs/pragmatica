@@ -6551,7 +6551,8 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// #1777 R1b: the workers a replication change waits for — every worker the membership tracks that has not been
-    /// confirmed departed. Any of them may write to the DHT.
+    /// marked Dead in the leader's membership view. Any of them may write to the DHT. The view decides only WHEN a change
+    /// settles; the replication-change fence on every put keeps a writer it misses safe (#1777 R1c).
     static Set<NodeId> dhtWritingWorkers(Option<MembershipFsm> membershipFsm) {
         return membershipFsm.map(fsm -> fsm.memberDescriptors()
                                            .entrySet()
@@ -6563,7 +6564,8 @@ public interface AetherNode extends ManageableNode {
                             .or(Set.of());
     }
 
-    /// #1777 R1b: whether `member`'s departure is committed — the membership's terminal `Dead` state.
+    /// #1777 R1b: whether the leader's membership view holds `member` `Dead`. Not a committed fact: a wrong verdict only
+    /// hastens or delays a settle (#1777 R1c).
     static boolean committedDeparture(Option<MembershipFsm> membershipFsm, NodeId member) {
         return membershipFsm.map(fsm -> "Dead".equals(fsm.memberStates().get(member)))
                             .or(false);

@@ -267,7 +267,7 @@ class DHTReplicationChangeTest {
         replicas.forEach(id -> assertThat(cluster.read(id)).as("readable at R_new on " + id).isEqualTo(Option.some("v")));
     }
 
-    /// A writer the roster wrongly excluded (falsely confirmed departed, so the change settled without its report) still
+    /// A writer the roster wrongly excluded (held Dead by a wrong membership view, so the change settled without its report) still
     /// writes under the old factors. Every replica that applied the change refuses it with the typed, retriable
     /// `ReplicationChangeStale`; once the writer applies the change, its retry succeeds and reads at R_new.
     @Test

@@ -2165,7 +2165,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     /// Runtime (#1777, CTO ruling R1b): one member's report on the latest DHT replication change — what it applied and
     /// what it caught up for. Written by the member itself (a worker through its forwarding cluster node), read by the
-    /// leader, removed by the leader on the member's committed departure. Never projected to workers.
+    /// leader, removed by the leader once its membership view holds the member `Dead`. Never projected to workers.
     record DhtReplicationReportKey(NodeId nodeId) implements RuntimeKey {
         private static final String PREFIX = "dht-replication-report/";
 

@@ -1441,7 +1441,7 @@ public final class ClusterEventAggregator {
     }
 
     /// #1777 R1b: every node derives this from the committed change record, so it goes through the owner-gated [#emit]
-    /// and is published once.
+    /// and is published at most once (missed if the owner cannot publish at that moment).
     @Contract
     public void onDhtReplicationUnsettled(OperationalEvent.DhtReplicationUnsettled event) {
         emit(new ClusterEvent.DhtReplicationUnsettled(hlcClock.now(),
