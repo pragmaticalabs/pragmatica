@@ -101,6 +101,8 @@ public final class NettySwimTransport implements SwimTransport {
     /// probes — simulating genuine silent death across BOTH transport planes. Default false
     /// (zero effect in normal operation).
     private volatile boolean blackholed = false;
+    /// Test-only per-peer partition (#1730): datagrams to or from an address it accepts are dropped.
+    private volatile java.util.function.Predicate<InetSocketAddress> droppedPeers = _ -> false;
 
     /// Per-source IP rate limiter map for ANNOUNCE flood protection.
     /// Entries idle > {@value #ANNOUNCE_LIMITER_IDLE_EVICT_MS} ms are evicted lazily.
@@ -139,7 +141,7 @@ public final class NettySwimTransport implements SwimTransport {
 
     @Override
     public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
-        if (blackholed) {
+        if (blackholed || droppedPeers.test(target)) {
             return Promise.unitPromise();
         }
 
@@ -383,6 +385,12 @@ public final class NettySwimTransport implements SwimTransport {
         }
     }
 
+    @Override
+    @Contract
+    public void dropPeers(java.util.function.Predicate<InetSocketAddress> drop) {
+        droppedPeers = drop;
+    }
+
     private SimpleChannelInboundHandler<DatagramPacket> inboundHandler(SwimMessageHandler handler) {
         return new SimpleChannelInboundHandler<>() {
             @Override
@@ -394,7 +402,7 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private void handleIncoming(SwimMessageHandler handler, DatagramPacket packet) {
-        if (blackholed) {
+        if (blackholed || droppedPeers.test(packet.sender())) {
             // Silent death: drop the inbound datagram before decrypt/dispatch so this node
             // never observes peers' probes nor acks them — mirroring QuicClusterNetwork.
             return;

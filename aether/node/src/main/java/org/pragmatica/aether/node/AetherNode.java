@@ -471,6 +471,12 @@ public interface AetherNode extends ManageableNode {
     @Contract
     default void blackhole(boolean enabled) {}
 
+    /// Test-only per-peer network partition (#1730): drop QUIC messages from, and SWIM datagrams to and from,
+    /// `unreachable`. Applied on both sides of a cut it is a symmetric partition; an empty set heals. Unlike
+    /// [#blackhole(boolean)] it cuts only the named peers, so a minority keeps talking among itself.
+    @Contract
+    default void partitionFrom(java.util.Set<NodeId> unreachable) {}
+
     /// Additive test fault injection; production authenticated-message policy remains enforced.
     default Unit setInboundFaultFilter(java.util.function.BiPredicate<NodeId, Message.Wired> filter) {
         return Unit.unit();
@@ -2744,6 +2750,16 @@ public interface AetherNode extends ManageableNode {
             public void blackhole(boolean enabled) {
                 clusterNode.network().blackhole(enabled);
                 swimHealthDetector.setSwimBlackholed(enabled);
+            }
+
+            @Contract
+            @Override
+            public void partitionFrom(java.util.Set<NodeId> unreachable) {
+                var cut = java.util.Set.copyOf(unreachable);
+
+                clusterNode.network()
+                           .setInboundFaultFilter((peer, _) -> !cut.contains(peer));
+                swimHealthDetector.setSwimPeerPartition(cut);
             }
 
             @Override
