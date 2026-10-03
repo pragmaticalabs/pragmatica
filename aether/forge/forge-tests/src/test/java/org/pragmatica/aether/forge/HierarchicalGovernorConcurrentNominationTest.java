@@ -160,6 +160,9 @@ class HierarchicalGovernorConcurrentNominationTest {
         var key = new AetherKey.CommunityKey(COMMUNITY);
         var changes = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
+        // H11 (#1840): a committed community is final, so the auto-assigned directives are removed and
+        // re-created in the test community; creating where none exists is allowed.
+        removeDirectives(node, workers);
         changes.add(new KVCommand.Mutation<>(key,
                                              Option.none(),
                                              Option.some(new AetherValue.CommunityValue("default",
@@ -170,10 +173,8 @@ class HierarchicalGovernorConcurrentNominationTest {
                                                                                         Option.none()))));
         for (var worker : workers) {
             var directive = new AetherKey.ActivationDirectiveKey(worker.self());
-            var before = node.kvStore().getTyped(directive, AetherValue.ActivationDirectiveValue.class).unwrap();
-
             changes.add(new KVCommand.Mutation<>(directive,
-                                                 Option.some(before),
+                                                 Option.none(),
                                                  Option.some(new AetherValue.ActivationDirectiveValue("WORKER",
                                                                                                       COMMUNITY,
                                                                                                       ""))));
@@ -201,6 +202,32 @@ class HierarchicalGovernorConcurrentNominationTest {
                                                            .filter(value -> value.communityId()
                                                                                  .equals(COMMUNITY))
                                                            .isPresent()));
+    }
+
+    private void removeDirectives(AetherNode node, List<AetherNode> workers) {
+        var removals = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+
+        for (var worker : workers) {
+            var directive = new AetherKey.ActivationDirectiveKey(worker.self());
+            var before = node.kvStore().getTyped(directive, AetherValue.ActivationDirectiveValue.class).unwrap();
+
+            removals.add(new KVCommand.Mutation<>(directive, Option.some(before), Option.none()));
+        }
+
+        var id = UUID.randomUUID().toString();
+        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(removals.getFirst().key(),
+                                                                                  id,
+                                                                                  node.kvStore()
+                                                                                      .getTyped(LeaderKey.INSTANCE,
+                                                                                                LeaderValue.class)
+                                                                                      .unwrap(),
+                                                                                  List.of(),
+                                                                                  removals);
+
+        assertThat(node.<Object> apply(List.of(transaction)).await(BUDGET).unwrap()).anyMatch(value -> value instanceof KVCommand.TransactionResult result
+                                                                                                       && result.transactionId()
+                                                                                                                .equals(id)
+                                                                                                       && result.accepted());
     }
 
     private AetherNode leader() {
