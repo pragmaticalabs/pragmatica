@@ -83,7 +83,9 @@ class LivePlacementMembersWiringTest {
     /// the leader's live set), not by the routing owner, which now follows the committed record.
     @Test
     void ownershipWriterHrwOwner_readsTheControllersDesiredOwner() {
-        assertThat(assemblyCode()).contains("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)))");
+        // #1730: the writer is the ISR-aware one -- the same desired-owner read, plus the live/initial-ISR inputs from the
+        // controller and the committed leader its guarded transactions carry.
+        assertThat(assemblyCode()).contains("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)),streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class));");
     }
 
     /// #1555 sticky ownership: every node routes by the committed record, and backfill resolves the same owner.
@@ -101,7 +103,8 @@ class LivePlacementMembersWiringTest {
     void ownerPromotionBlock_reachesStatusReadAlarmAndWindow() {
         var code = assemblyCode();
 
-        assertThat(code).contains("streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);");
+        // #1730: a partition with no live in-sync replica has no owner to report, so the controller's block joins it.
+        assertThat(code).contains("streamPartitionManager.ownerBlockSource((stream,partition)->ownerActivation.blockOf(stream,partition).orElse(()->streamReplicaSetController.noInSyncReplica(stream,partition)));");
         assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
         assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
