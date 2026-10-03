@@ -67,6 +67,7 @@ public final class DHTNode {
     private final AtomicLong regatedVersion = new AtomicLong(NO_CHANGE);
     /// The highest replication change whose writers-switched catch-up pass this node has completed.
     private final AtomicLong caughtUpVersion = new AtomicLong(NO_CHANGE);
+
     private final AtomicReference<Consumer<Long>> caughtUpListener = new AtomicReference<>(_ -> {});
 
     /// The version no replication change carries.
@@ -206,9 +207,7 @@ public final class DHTNode {
 
             var held = new QuorumFloor(version, writeQuorum, readQuorum);
 
-            quorumFloor.set(Option.some(quorumFloor.get()
-                                                   .map(floor -> floor.merge(held))
-                                                   .or(held)));
+            quorumFloor.set(Option.some(quorumFloor.get().map(floor -> floor.merge(held)).or(held)));
         }
     }
 
@@ -227,7 +226,6 @@ public final class DHTNode {
             }
 
             regatedVersion.set(version);
-
             if (!config.get().isFullReplication()) {
                 var current = config.get().effectiveReplicationFactor(ring.nodeCount());
                 var sources = Math.min(Math.max(sourceReplicationFactor, current), ring.nodeCount());
@@ -250,8 +248,7 @@ public final class DHTNode {
     public void settleReplicationChange(long version) {
         synchronized (placementLock) {
             settledVersion.accumulateAndGet(version, Math::max);
-            quorumFloor.set(quorumFloor.get()
-                                       .filter(floor -> floor.version() > settledVersion.get()));
+            quorumFloor.set(quorumFloor.get().filter(floor -> floor.version() > settledVersion.get()));
         }
     }
 
@@ -267,8 +264,7 @@ public final class DHTNode {
             settledVersion.accumulateAndGet(version, Math::max);
             var covered = !factorsDiffer(config.get(), settled);
 
-            quorumFloor.set(quorumFloor.get()
-                                       .filter(floor -> !covered && floor.version() > settledVersion.get()));
+            quorumFloor.set(quorumFloor.get().filter(floor -> !covered && floor.version() > settledVersion.get()));
         }
     }
 
@@ -287,8 +283,7 @@ public final class DHTNode {
         var regated = regatedVersion.get();
 
         if (catchUp.nonePending() && caughtUpVersion.getAndAccumulate(regated, Math::max) < regated) {
-            caughtUpListener.get()
-                            .accept(regated);
+            caughtUpListener.get().accept(regated);
         }
     }
 
@@ -350,9 +345,7 @@ public final class DHTNode {
 
     private QuorumFloor floorOf(DHTConfig config, long version) {
         return new QuorumFloor(Math.max(version,
-                                        quorumFloor.get()
-                                                   .map(QuorumFloor::version)
-                                                   .or(version)),
+                                        quorumFloor.get().map(QuorumFloor::version).or(version)),
                                config.writeQuorum(),
                                config.readQuorum());
     }
