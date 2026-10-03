@@ -113,7 +113,7 @@ class CommunityPlacementReconcilerTest {
     private void initialize() {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(CONFIG, "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
         seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(OLD), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
         seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(OLD), new AetherValue.NodePlacementValue("pool", Option.some("old"), "old-instance")));
         ready.add(OLD);
@@ -150,7 +150,7 @@ class CommunityPlacementReconcilerTest {
         initialize();
         var entry = new AetherValue.TopologyEntry("pool", "worker", 0);
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(CONFIG.substring(0, CONFIG.indexOf("[community.stable]")),
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG.substring(0, CONFIG.indexOf("[community.stable]"))),
                 "test", "1.0.0", List.of(entry), 3, 3, "forge", 2, 0)));
         assertThat(reconciler.requestRetirement(OLD, entry).await().isSuccess()).isTrue();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
@@ -171,9 +171,9 @@ class CommunityPlacementReconcilerTest {
         var entry = new AetherValue.TopologyEntry("pool", "worker", 0);
         var toml = CONFIG.substring(0, CONFIG.indexOf("[community.stable]"));
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(toml, "test", "1.0.0", List.of(entry), 3, 3, "forge", 2, 0)));
+            new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(entry), 3, 3, "forge", 2, 0)));
         beforeCommit = () -> seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(toml, "test", "1.0.0",
+            new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0",
                 List.of(new AetherValue.TopologyEntry("pool", "worker", 1)), 3, 3, "forge", 3, 0)));
         assertThat(reconciler.requestRetirement(OLD, entry).await().isFailure()).isTrue();
         assertThat(store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class).isEmpty()).isTrue();
@@ -327,7 +327,7 @@ class CommunityPlacementReconcilerTest {
     void zeroTarget_retiresWithoutReplacementAndDissolvesOnlyAfterConfirmedAbsence() {
         initialize();
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(CONFIG.replace("target_size = 1", "target_size = 0"),
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG.replace("target_size = 1", "target_size = 0")),
                 "test", "1.0.0", List.of(), 3, 3, "forge", 2, 0)));
         reconciler.reconcile().await().unwrap();
         assertThat(current().targetNode()).isEqualTo(OLD);

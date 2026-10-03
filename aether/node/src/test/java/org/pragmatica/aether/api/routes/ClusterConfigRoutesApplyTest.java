@@ -99,13 +99,13 @@ class ClusterConfigRoutesApplyTest {
         /// which is what BootstrapModule's own comment ("Bootstrap replaces it with the real
         /// per-source spec at formation") always claimed happened.
         @Test
-        void handleApplyConfig_storedBlankTomlSeed_replacesSeedWithFullOperatorTopology() {
+        void handleApplyConfig_storedBootstrapSeed_replacesSeedWithFullOperatorTopology() {
             var store = storeWith(bootstrapSeed());
 
             var response = applySucceeds(store, new ApplyConfigRequest(OPERATOR_TOML, 0));
             var committed = committedConfig(store);
 
-            assertThat(committed.tomlContent()).isEqualTo(OPERATOR_TOML);
+            assertThat(committed.tomlContent()).isEqualTo(Option.some(OPERATOR_TOML));
             assertThat(committed.desiredTopology()).containsExactlyInAnyOrder(CORE_ENTRY, WORKER_ENTRY);
             assertThat(committed.configVersion()).as("seed version + 1, so the successor fence accepts the write")
                                                  .isEqualTo(2);
@@ -115,7 +115,7 @@ class ClusterConfigRoutesApplyTest {
         /// The operator-visible symptom: without the worker entry in committed state,
         /// `reconcileWorkerTopology` has nothing to act on and no cloud worker is ever created.
         @Test
-        void handleApplyConfig_storedBlankTomlSeed_carriesWorkerCountIntoClusterState() {
+        void handleApplyConfig_storedBootstrapSeed_carriesWorkerCountIntoClusterState() {
             var store = storeWith(bootstrapSeed());
 
             applySucceeds(store, new ApplyConfigRequest(OPERATOR_TOML, 0));
@@ -126,23 +126,13 @@ class ClusterConfigRoutesApplyTest {
         /// The seed's placeholder entry (empty source name) must not survive alongside the real one,
         /// or the topology would declare a phantom source.
         @Test
-        void handleApplyConfig_storedBlankTomlSeed_dropsThePlaceholderSourceEntry() {
+        void handleApplyConfig_storedBootstrapSeed_dropsThePlaceholderSourceEntry() {
             var store = storeWith(bootstrapSeed());
 
             applySucceeds(store, new ApplyConfigRequest(OPERATOR_TOML, 0));
 
             assertThat(committedConfig(store).desiredTopology()).noneMatch(entry -> entry.sourceName().isEmpty());
             assertThat(committedConfig(store).deploymentType()).isEqualTo("cloud");
-        }
-
-        @Test
-        void isBootstrapSeed_blankTomlContent_isSeed() {
-            assertThat(ClusterConfigRoutes.isBootstrapSeed(bootstrapSeed())).isTrue();
-        }
-
-        @Test
-        void isBootstrapSeed_realTomlContent_isNotSeed() {
-            assertThat(ClusterConfigRoutes.isBootstrapSeed(committedOperatorConfig(1))).isFalse();
         }
     }
 
@@ -192,7 +182,7 @@ class ClusterConfigRoutesApplyTest {
             var committed = committedConfig(store);
 
             assertThat(committed.clusterName()).isEqualTo("prod");
-            assertThat(committed.tomlContent()).isEqualTo(OPERATOR_TOML);
+            assertThat(committed.tomlContent()).isEqualTo(Option.some(OPERATOR_TOML));
             assertThat(committed.configVersion()).isEqualTo(expectedVersion);
         }
     }
@@ -247,7 +237,7 @@ class ClusterConfigRoutesApplyTest {
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigError.VersionConflict.class));
             assertThat(committedConfig(store).tomlContent()).as("the competing writer's config is what committed")
-                                                            .isEqualTo(OPERATOR_TOML);
+                                                            .isEqualTo(Option.some(OPERATOR_TOML));
         }
     }
 
@@ -274,7 +264,7 @@ class ClusterConfigRoutesApplyTest {
 
             var committed = committedConfig(store);
             assertThat(committed.tomlContent()).as("a rejected apply must leave the previously committed config untouched")
-                                               .isEqualTo(OPERATOR_TOML);
+                                               .isEqualTo(Option.some(OPERATOR_TOML));
             assertThat(committed.configVersion()).isEqualTo(5);
         }
     }
@@ -309,8 +299,7 @@ class ClusterConfigRoutesApplyTest {
     /// The BootstrapModule self-seed exactly as a formed cluster carries it: no TOML, a core-only
     /// topology under an EMPTY source name (the seed predates any source definition), version 1.
     private static ClusterConfigValue bootstrapSeed() {
-        return ClusterConfigValue.clusterConfigValue("",
-                                                     "prod",
+        return ClusterConfigValue.bootstrapSeed("prod",
                                                      "1.0.0",
                                                      List.of(new TopologyEntry("", TopologyEntry.CORE_ROLE, 3)),
                                                      3,

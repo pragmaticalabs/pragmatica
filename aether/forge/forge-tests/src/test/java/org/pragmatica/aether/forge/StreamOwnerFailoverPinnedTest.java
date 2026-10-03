@@ -11,7 +11,6 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.lang.io.TimeSpan;
 
 /// #491 — membership-PINNED variant of the RF=2 stream owner-kill failover proof (shared flow in
 /// [AbstractStreamOwnerFailover]). Identical to [StreamOwnerFailoverTest] except it pins membership two
@@ -20,9 +19,9 @@ import org.pragmatica.lang.io.TimeSpan;
 /// membership split timeouts on the cluster ([EmberCluster#withRaisedSwimTimeouts]) so the stale-link
 /// eviction + SWIM-DEAD cascade + quorum-loss self-fence do not fire in the transient (the killed owner
 /// still departs via graceful SWIM leave, so real failover is NOT slowed); (2) once member-complete it
-/// disables auto-heal on EVERY node's CTM (defense-in-depth vs replacement churn — the killed HRW owner
-/// MAY be the leader, and only the leader's CTM acts, so whichever node becomes leader post-failover must
-/// also have the flag off). Auto-heal-off ALONE was empirically insufficient (swimDeadStuck cascaded
+/// pins auto-heal OFF cluster-wide (defense-in-depth vs replacement churn). The switch is one replicated
+/// value written through the leader ([AutoHealPin]), so whichever node becomes leader post-failover — the
+/// killed HRW owner MAY be the leader — reads it off too. Auto-heal-off ALONE was empirically insufficient (swimDeadStuck cascaded
 /// into a self-fence); the raised timeouts keep swimDeadStuck EMPTY through the failover — this suppresses
 /// #498 (SWIM false-removal).
 ///
@@ -60,17 +59,9 @@ class StreamOwnerFailoverPinnedTest extends AbstractStreamOwnerFailover {
 
     @Override
     void pinMembership(EmberCluster cluster) {
-        // #685 review round 1 SHOULD-FIX 3 — `setAutoHealEnabled` writes through consensus KV and can
-        // fail; discarding its Promise (as this call used to) makes that failure invisible and lets the
-        // test proceed as if every node were pinned when one might not be. Await it, bounded, and fail
-        // the test on failure — a pin that silently does not pin is worse than no pin.
-        cluster.allNodes()
-               .forEach(node -> node.clusterTopologyManager()
-                                    .onPresent(ctm -> ctm.setAutoHealEnabled(false, PIN_REASON)
-                                                         .await(TimeSpan.timeSpan(30).seconds())
-                                                         .onFailure(cause -> {
-                                                             throw new AssertionError("auto-heal pin failed: " + cause.message());
-                                                         })));
+        // The switch is one leader-written, replicated value since #1390; AutoHealPin writes it through the
+        // current leader and fails the test unless every node reads it back OFF.
+        AutoHealPin.pinOff(cluster, PIN_REASON);
     }
 
     @Override

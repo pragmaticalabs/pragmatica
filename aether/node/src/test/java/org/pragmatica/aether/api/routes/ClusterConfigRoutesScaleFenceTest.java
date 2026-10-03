@@ -190,8 +190,7 @@ class ClusterConfigRoutesScaleFenceTest {
     private static ClusterConfigValue committedConfig(long configVersion) {
         // Blank seed TOML: every committed config is re-read for [replication.cluster_events] (#1564 B1), and the
         // placeholder "toml" this used before is not a TOML document.
-        return ClusterConfigValue.clusterConfigValue("",
-                                                     "prod",
+        return ClusterConfigValue.bootstrapSeed("prod",
                                                      "1.0.0",
                                                      List.of(CORE_3),
                                                      3,

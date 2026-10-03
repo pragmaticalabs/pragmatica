@@ -55,7 +55,7 @@ class DrainGraceLivenessSeamTest {
     }
 
     private static Option<AetherValue.ClusterConfigValue> committedCoreCount(int coreCount) {
-        return Option.some(new AetherValue.ClusterConfigValue("",
+        return Option.some(new AetherValue.ClusterConfigValue(Option.none(),
                                                               "",
                                                               "1.0.0",
                                                               List.of(new AetherValue.TopologyEntry("primary", "core", coreCount)),
