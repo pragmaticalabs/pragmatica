@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -320,6 +321,14 @@ final class DefaultReplicationManager implements ReplicationManager {
         boolean satisfiable() {
             return targets.size() >= required;
         }
+
+        /// Judged when an ack arrives, against the ISR in force THEN (#1730): an ack set taken at registration would
+        /// leave a member that joined the ISR meanwhile uncounted, and failover elects from the committed ISR.
+        boolean satisfiedBy(Set<NodeId> acked) {
+            return satisfiable() && acked.stream()
+                                         .filter(nodeId -> eligible.isEmpty() || eligible.contains(nodeId))
+                                         .count() >= required;
+        }
     }
 
     @Override
@@ -337,7 +346,7 @@ final class DefaultReplicationManager implements ReplicationManager {
             return NOT_ENOUGH_REPLICAS.promise();
         }
 
-        return registerThenReconcile(ackSet, streamName, partition, offset);
+        return registerThenReconcile(ackSet, streamName, partition, offset, minAcks);
     }
 
     /// #1259: REGISTER the waiter first, THEN seed it from the registry. #262.3 seeded from the registry
@@ -346,12 +355,16 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// the await timed out on a replicated write. Registered first, every ack is caught by one of the two
     /// paths: it either finds the waiter in [#pendingAcks], or it reached the registry before the
     /// snapshot below read it. Both paths complete through [#complete], which resolves exactly once.
-    private Promise<Unit> registerThenReconcile(AckSet ackSet, String streamName, int partition, long offset) {
-        var targets = ackSet.targets();
+    private Promise<Unit> registerThenReconcile(AckSet ackSet,
+                                                String streamName,
+                                                int partition,
+                                                long offset,
+                                                int minAcks) {
+        var targets = seedTargets(ackSet, streamName, partition);
         var waiters = pendingAcks.computeIfAbsent(PartitionKey.partitionKey(streamName, partition),
                                                   _ -> new ConcurrentSkipListMap<>());
         var key = new WaiterKey(offset, waiterSequence.incrementAndGet());
-        var pending = PendingAck.pendingAck(ackSet.required(), ackSet.eligible());
+        var pending = PendingAck.pendingAck(streamName, partition, minAcks);
 
         waiters.put(key, pending);
         armTimer(pending,
@@ -364,6 +377,15 @@ final class DefaultReplicationManager implements ReplicationManager {
         resolveIfSatisfied(waiters, key, pending);
 
         return pending.promise();
+    }
+
+    /// #1730: seed from every replica that may count by the time the await resolves — the ISR peers and the
+    /// registered replicas (one proposed into the ISR meanwhile) — because the ack set is judged at resolution.
+    private List<NodeId> seedTargets(AckSet ackSet, String streamName, int partition) {
+        return Stream.concat(ackSet.targets().stream(),
+                             replicationTargets(streamName, partition).stream())
+                     .distinct()
+                     .toList();
     }
 
     /// Distinct non-self replicas whose registry-recorded confirmed offset already reaches `offset`.
@@ -511,10 +533,6 @@ final class DefaultReplicationManager implements ReplicationManager {
                                   PendingAck pending,
                                   NodeId replicaId) {
         ackVisits.increment();
-        if (!pending.counts(replicaId)) {
-            return;
-        }
-
         pending.ackedReplicas().add(replicaId);
         resolveIfSatisfied(waiters, key, pending);
     }
@@ -522,7 +540,7 @@ final class DefaultReplicationManager implements ReplicationManager {
     private void resolveIfSatisfied(ConcurrentSkipListMap<WaiterKey, PendingAck> waiters,
                                     WaiterKey key,
                                     PendingAck pending) {
-        if (pending.ackedReplicas().size() >= pending.minAcks()) {
+        if (ackSet(pending.streamName(), pending.partition(), pending.minAcks()).satisfiedBy(pending.ackedReplicas())) {
             complete(waiters, key, pending, success(unit()));
         }
     }
@@ -578,23 +596,22 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// `ackedReplicas` is the set of DISTINCT non-self replica identities that have acked at-or-past the
     /// awaited offset; the await resolves once it reaches `minAcks` (#262.1). `timer` holds the ack
     /// timeout so completion can cancel it (#1260).
-    /// `eligible` (#1730) limits whose acks count: the ISR members when the partition carries a committed ISR, so a
-    /// replica outside it can never complete a confirmation; empty means any registered replica.
+    /// #1730: every non-self ack is recorded; which of them count, and how many are needed, is decided at resolution
+    /// against the partition's ISR then ([AckSet#satisfiedBy]), so a replica outside it never completes a confirmation
+    /// and a member that joined after registration is still waited for.
     record PendingAck(Promise<Unit> promise,
                       Set<NodeId> ackedReplicas,
+                      String streamName,
+                      int partition,
                       int minAcks,
-                      Set<NodeId> eligible,
                       AtomicReference<Option<ScheduledFuture<?>>> timer) {
-        static PendingAck pendingAck(int minAcks, Set<NodeId> eligible) {
+        static PendingAck pendingAck(String streamName, int partition, int minAcks) {
             return new PendingAck(Promise.promise(),
                                   ConcurrentHashMap.newKeySet(),
+                                  streamName,
+                                  partition,
                                   minAcks,
-                                  eligible,
                                   new AtomicReference<>(none()));
-        }
-
-        boolean counts(NodeId replicaId) {
-            return eligible.isEmpty() || eligible.contains(replicaId);
         }
     }
 }

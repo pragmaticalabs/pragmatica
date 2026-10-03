@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.replication;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -58,6 +59,10 @@ public final class IsrMonitor {
     private final LongSupplier nanoClock;
     /// When each ISR member was last seen caught up to the owner's head, per partition (`System.nanoTime`).
     private final Map<PartitionKey, Map<NodeId, Long>> lastCaughtUp = new ConcurrentHashMap<>();
+    /// Members this owner proposed to ADD, per partition, with the committed record the proposal expects (#1730).
+    private final Map<PartitionKey, Pending> pendingAdditions = new ConcurrentHashMap<>();
+
+    private record Pending(StreamPartitionOwnershipValue base, Set<NodeId> additions) {}
 
     private IsrMonitor(NodeId self,
                        OwnedPartitions owned,
@@ -116,6 +121,28 @@ public final class IsrMonitor {
         return commands;
     }
 
+    /// The set an acknowledgement on this owner must wait for: the committed ISR plus the members this owner proposed
+    /// to add on exactly that record (Kafka's maximal ISR, KIP-497). A proposed member can be committed before this
+    /// node applies the commit, and failover elects from the committed ISR, so the ack must already wait for it. A
+    /// proposal whose expected record is no longer the committed one either landed in it or can never apply (it is a
+    /// CAS on that record), so it stops counting.
+    public List<NodeId> maximalIsr(String streamName, int partition, StreamPartitionOwnershipValue committed) {
+        return Option.option(pendingAdditions.get(PartitionKey.partitionKey(streamName, partition)))
+                     .filter(pending -> pending.base()
+                                               .equals(committed))
+                     .map(pending -> withAdditions(committed.isr(),
+                                                   pending.additions()))
+                     .or(committed::isr);
+    }
+
+    private static List<NodeId> withAdditions(List<NodeId> isr, Set<NodeId> additions) {
+        var maximal = new ArrayList<>(isr);
+
+        additions.stream().filter(member -> !maximal.contains(member)).forEach(maximal::add);
+
+        return List.copyOf(maximal);
+    }
+
     /// The ISR this owner should propose for `partition`, or none when the committed one stands.
     Option<List<NodeId>> nextIsr(Owned partition, long now) {
         var key = PartitionKey.partitionKey(partition.streamName(), partition.partition());
@@ -130,16 +157,34 @@ public final class IsrMonitor {
 
         next.add(self);
         peers.stream().filter(peer -> now - seen.get(peer) <= lagMax.nanos()).forEach(next::add);
-        var highWater = peers.stream()
-                             .mapToLong(peer -> confirmed.getOrDefault(peer, -1L))
-                             .min()
-                             .orElse(partition.head());
+        var candidates = new ArrayList<NodeId>();
+        var firstHighWater = highWater(peers, confirmed, partition.head());
 
-        confirmed.forEach((replica, offset) -> admitIfCaughtUp(next, record, replica, offset, highWater));
+        confirmed.forEach((replica, offset) -> admitIfCaughtUp(candidates, record, replica, offset, firstHighWater));
+        // Count the candidates toward every acknowledgement BEFORE re-reading the high-water mark they are admitted
+        // against: an ack resolved earlier was confirmed in the registry by every ISR member, so it is at or below
+        // the re-read mark; one resolved later waits for the candidate.
+        pendingAdditions.put(key, new Pending(record, Set.copyOf(candidates)));
+        var reread = confirmedByNode(partition);
+        var highWater = highWater(peers, reread, partition.head());
+        var admitted = candidates.stream()
+                                 .filter(candidate -> reread.getOrDefault(candidate, -1L) >= highWater)
+                                 .toList();
+
+        pendingAdditions.put(key, new Pending(record, Set.copyOf(admitted)));
+        next.addAll(admitted);
 
         return next.equals(record.isr())
                ? Option.none()
                : Option.some(List.copyOf(next));
+    }
+
+    /// The lowest offset every ISR member other than the owner confirmed, or the owner's head when it is alone.
+    private static long highWater(List<NodeId> peers, Map<NodeId, Long> confirmed, long head) {
+        return peers.stream()
+                    .mapToLong(peer -> confirmed.getOrDefault(peer, -1L))
+                    .min()
+                    .orElse(head);
     }
 
     /// A member is caught up while its confirmed offset reaches the owner's head; one first seen now starts its clock.

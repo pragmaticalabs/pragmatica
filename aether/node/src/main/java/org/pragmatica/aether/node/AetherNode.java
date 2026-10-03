@@ -1446,10 +1446,15 @@ public interface AetherNode extends ManageableNode {
     /// #1730: the committed ISR of `(stream, partition)`; none for a record minted before #1730 (`isrVersion` 0),
     /// which carries no committed ISR, and for a partition with no record.
     static Option<List<NodeId>> committedIsr(KVStore<AetherKey, AetherValue> kvStore, String stream, int partition) {
+        return committedIsrRecord(kvStore, stream, partition).map(StreamPartitionOwnershipValue::isr);
+    }
+
+    static Option<StreamPartitionOwnershipValue> committedIsrRecord(KVStore<AetherKey, AetherValue> kvStore,
+                                                                    String stream,
+                                                                    int partition) {
         return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
                                 StreamPartitionOwnershipValue.class)
-                      .filter(record -> record.isrVersion() > 0)
-                      .map(StreamPartitionOwnershipValue::isr);
+                      .filter(record -> record.isrVersion() > 0);
     }
 
     /// #1730: what the leader's ownership writer reads besides the committed record — the live placement members and
@@ -5421,7 +5426,6 @@ public interface AetherNode extends ManageableNode {
         // #1730: the committed ISR keeps its members placed (so they keep receiving the partition), and a CF >= 2
         // confirmation needs every one of them. A record minted before #1730 (isrVersion 0) carries no committed ISR.
         streamReplicaSetController.committedIsrSource((stream, partition) -> committedIsr(kvStore, stream, partition).or(List.of()));
-        streamReplicationManager.inSyncReplicaSource((stream, partition) -> committedIsr(kvStore, stream, partition));
         streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);
         // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
@@ -5516,7 +5520,13 @@ public interface AetherNode extends ManageableNode {
                                                clusterCommandApplier,
                                                streamingConfig.isrLagMax(),
                                                System::nanoTime);
-
+        // #1730: a CF >= 2 confirmation needs every member of the committed ISR plus every member this owner has
+        // proposed to add to it (the maximal ISR). A record minted before #1730 (isrVersion 0) carries no ISR.
+        streamReplicationManager.inSyncReplicaSource((stream, partition) -> committedIsrRecord(kvStore,
+                                                                                               stream,
+                                                                                               partition).map(record -> isrMonitor.maximalIsr(stream,
+                                                                                                                                              partition,
+                                                                                                                                              record)));
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(isrMonitor::tick, ISR_MONITOR_INTERVAL));
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
