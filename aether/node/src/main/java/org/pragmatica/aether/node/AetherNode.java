@@ -17,8 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -1076,6 +1078,14 @@ public interface AetherNode extends ManageableNode {
     /// re-attempt once the owner becomes CAUGHT_UP. Kept well under the backfill source-wait bound (20s)
     /// so several attempts occur within one wait window; CAUGHT_UP partitions are skipped (no-op).
     TimeSpan STREAM_BACKFILL_REDRIVE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// #1339 residual: a FAILED stream-ownership batch write changes no placement input (the committed record stays
+    /// where it was), so no trigger re-runs the pass, and with a steady leader and stable membership the partition stays
+    /// write-refused. The failure is itself the edge: it re-arms the coalescing reconcile after a delay that doubles from
+    /// this base up to [#STREAM_OWNERSHIP_RETRY_CAP] and resets on the next successful write. The re-armed pass derives
+    /// from current state, so a write that a later trigger already superseded costs one no-op pass.
+    TimeSpan STREAM_OWNERSHIP_RETRY_BASE = TimeSpan.timeSpan(500).millis();
+    /// Upper bound of the [#STREAM_OWNERSHIP_RETRY_BASE] backoff: a persistently failing write retries at this cadence.
+    TimeSpan STREAM_OWNERSHIP_RETRY_CAP = TimeSpan.timeSpan(30).seconds();
     /// Cadence for the metadata snapshot driver (A3b). Drives `SnapshotManager.maybeSnapshot()` across
     /// every storage setup; the manager self-gates on its mutation-count / time-interval trigger, so
     /// this tick only needs to be frequent enough to bound the post-trigger snapshot latency.
@@ -1630,11 +1640,12 @@ public interface AetherNode extends ManageableNode {
     /// DHT bootstrap writer, whose apply runs in an async retry batch that can straddle a leader change):
     /// the decide-then-apply here is synchronous on the reconcile thread, the writer re-checks leadership
     /// immediately before deciding each pair, and consensus rejects a stale-leader apply. A failed apply
-    /// is logged, never thrown — the next membership-change reconcile re-drives.
+    /// is logged, never thrown, and re-arms the reconcile with backoff ([#STREAM_OWNERSHIP_RETRY_BASE]).
     @Contract
-    private static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
-                                             Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                             List<PartitionKey> reconciled) {
+    static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
+                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                     StreamOwnershipRetry retry,
+                                     List<PartitionKey> reconciled) {
         // Entity arcs are excluded HERE, not in the controller's reconcile: their LOG replicas are
         // placed by the same reconcile as any stream's (wanted), but their OWNERSHIP has exactly one
         // authority — EntityOwnershipReconciler, which places over the keyspace's hosting set. Left
@@ -1642,6 +1653,7 @@ public interface AetherNode extends ManageableNode {
         // catalog/membership edge and fight that reconcile record-for-record, parking arcs on
         // non-hosting nodes (which refuse every write) for up to one entity tick each time.
         applyStreamOwnershipBatch(applier,
+                                  retry,
                                   writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled)));
     }
 
@@ -1650,15 +1662,49 @@ public interface AetherNode extends ManageableNode {
     /// is skipped rather than sent (an empty command batch would be rejected by consensus).
     @Contract
     private static void applyStreamOwnershipBatch(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                  StreamOwnershipRetry retry,
                                                   List<KVCommand<AetherKey>> commands) {
         if (commands.isEmpty()) {
             return;
         }
 
         applier.apply(commands)
-               .onFailure(cause -> LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — re-driven on next reconcile",
-                                            commands.size(),
-                                            cause.message()));
+               .onSuccess(_ -> retry.succeeded())
+               .onFailure(cause -> retry.failed(commands.size(),
+                                                cause));
+    }
+
+    /// The re-arm half of [#STREAM_OWNERSHIP_RETRY_BASE]: counts consecutive failed ownership batch writes and, on each
+    /// failure, hands the reconcile trigger to `schedule` with the backed-off delay. One instance per node.
+    record StreamOwnershipRetry(AtomicInteger consecutiveFailures,
+                                BiConsumer<Runnable, TimeSpan> schedule,
+                                Runnable reconcile) {
+        static StreamOwnershipRetry streamOwnershipRetry(BiConsumer<Runnable, TimeSpan> schedule, Runnable reconcile) {
+            return new StreamOwnershipRetry(new AtomicInteger(), schedule, reconcile);
+        }
+
+        /// Doubles from the base per consecutive failure, capped.
+        static TimeSpan delayAfter(int consecutiveFailures) {
+            var doubled = STREAM_OWNERSHIP_RETRY_BASE.millis() << Math.min(consecutiveFailures, 16);
+
+            return TimeSpan.timeSpan(Math.min(doubled, STREAM_OWNERSHIP_RETRY_CAP.millis())).millis();
+        }
+
+        @Contract
+        void succeeded() {
+            consecutiveFailures.set(0);
+        }
+
+        @Contract
+        void failed(int moved, Cause cause) {
+            var delay = delayAfter(consecutiveFailures.getAndIncrement());
+
+            LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — reconcile re-armed in {}",
+                     moved,
+                     cause.message(),
+                     delay);
+            schedule.accept(reconcile, delay);
+        }
     }
 
     /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
@@ -5251,6 +5297,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                           StreamPartitionOwnershipValue.class),
                                                                                                   (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
                                                                                                                                                                                                                                          partition)));
+        // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
+        var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
+                                                                             () -> reconcileReplicaSet(clusterEventsControllerRef));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
                                                                                    placementMembers,
@@ -5262,6 +5311,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                            partition)),
                                                                                    (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
                                                                                                                                            clusterCommandApplier,
+                                                                                                                                           streamOwnershipRetry,
                                                                                                                                            reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
