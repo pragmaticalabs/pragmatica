@@ -84,14 +84,37 @@ class HierarchicalWorkerRuntimeReplayTest {
         assertThat(worker.periodicTasks().armedCount()).isEqualTo(tasks);
         assertThat(observationListenerCount(worker)).isEqualTo(listeners);
 
-        LifecycleAwait.nodeSettled("stop worker", cluster, cluster.killNode(workerId.id(), false));
-        assertThat(worker.periodicTasks().armedCount()).isZero();
+        // Removal then creation in another community is still allowed (#1840 item 3), so the runtime
+        // replacement path stays reachable and keeps its one-owner pin.
+        commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none())));
+        commit(List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
+            new KVCommand.Mutation<>(key, Option.none(), Option.some(reassigned))));
+        await().atMost(BUDGET.duration()).until(() -> announcerHolder(worker).get() != original
+            && announcerHolder(worker).get().communityId().equals(communityKey.communityId()));
+        var replacement = announcerHolder(worker).get();
         assertThat(originalTimer.isScheduled()).isFalse();
+        assertThat(original.isGovernor()).isFalse();
+        assertThat(timer(replacement).isScheduled()).isTrue();
+        assertThat(worker.periodicTasks().armedCount()).isEqualTo(tasks);
+        assertThat(observationListenerCount(worker)).isEqualTo(listeners);
+
+        // A callback already dequeued before replacement may still reach the retired instance.
         original.onMembershipChange(List.of());
+        assertThat(announcerHolder(worker).get()).isSameAs(replacement);
+        assertThat(originalTimer.isScheduled()).isFalse();
         assertThat(original.isGovernor()).isFalse();
         assertThat(((java.util.concurrent.atomic.AtomicLong) accessor(original, "sequence")).get()).isEqualTo(-1);
+
+        LifecycleAwait.nodeSettled("stop reassigned worker", cluster, cluster.killNode(workerId.id(), false));
         assertThat(worker.periodicTasks().armedCount()).isZero();
-        assertThat(originalTimer.isScheduled()).isFalse();
+        assertThat(timer(replacement).isScheduled()).isFalse();
+        original.onMembershipChange(List.of());
+        replacement.onMembershipChange(List.of());
+        assertThat(original.isGovernor()).isFalse();
+        assertThat(replacement.isGovernor()).isFalse();
+        assertThat(((java.util.concurrent.atomic.AtomicLong) accessor(replacement, "sequence")).get()).isEqualTo(-1);
+        assertThat(worker.periodicTasks().armedCount()).isZero();
+        assertThat(timer(replacement).isScheduled()).isFalse();
     }
 
     private void commit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
