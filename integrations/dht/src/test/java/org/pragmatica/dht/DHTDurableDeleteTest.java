@@ -190,8 +190,9 @@ class DHTDurableDeleteTest {
             assertThat(cluster.member(reader).client().get(key).await().unwrap().isPresent()).isFalse();
         }
 
-        /// A catch-up that pulls an EXPIRED tombstone it has no entry for completes: the tombstone is deliberately not
-        /// re-created, and that must not read as a copy the store refused.
+        /// A catch-up that pulls an EXPIRED tombstone it has no entry for completes IN THAT ROUND: the tombstone is
+        /// deliberately not re-created, and that must not read as a copy the store refused. (Without the exemption the
+        /// partition still completes, one round later, because the digest leaves expired tombstones out.)
         @Test
         void catchUp_completesWhenAPulledTombstoneIsExpiredAndAbsentHere() {
             var cluster = new DurableDeleteCluster(3, RF3);
@@ -209,7 +210,7 @@ class DHTDurableDeleteTest {
                    });
             cluster.advanceClockBy(TWO_HOURS);
             cluster.member(booter).node().beginCatchUp();
-            cluster.catchUpAll(3);
+            cluster.member(booter).antiEntropy().catchUpNow();
 
             assertThat(cluster.member(booter).node().readiness(partition)).isEqualTo(DHTMessage.Readiness.SERVING);
             assertThat(cluster.entryAt(booter, key).isEmpty()).isTrue();
@@ -240,26 +241,29 @@ class DHTDurableDeleteTest {
             assertThat(cluster.members()).allMatch(member -> member.client().get(key).await().unwrap().isEmpty());
         }
 
-        /// A node REMOVED from the cluster while running drops its store, so if it rejoins after the tombstone was
-        /// collected it cannot resurrect the value — it rejoins empty, as a restarted node does.
+        /// A node REMOVED from the cluster while running — paused, so it ran nothing while it was out — drops its
+        /// store when it applies its own removal. If it rejoins after the tombstone was collected it cannot resurrect
+        /// the value: it rejoins empty, as a restarted node does.
         @Test
         void nodeRemovedWhileRunning_rejoinsEmpty_afterTheTombstoneWasCollected() {
             var cluster = new DurableDeleteCluster(3, RF1);
             var key = bytes("rejoin-after-gc");
             var owner = cluster.replicasOf(key).getFirst();
+            var others = cluster.members().stream().filter(member -> !member.id().equals(owner)).toList();
 
             cluster.member(owner).client().put(key, VALUE).await().unwrap();
-            cluster.members().forEach(member -> member.listener().onNodeRemoved(removed(owner)));
-            cluster.catchUpAll(3);
+            others.forEach(member -> member.listener().onNodeRemoved(removed(owner)));
+            others.forEach(member -> member.antiEntropy().catchUpNow());
 
-            var interim = cluster.replicasOf(key).getFirst();
+            var interim = others.getFirst().node().ring().nodesFor(key, 1).getFirst();
 
             cluster.member(interim).client().remove(key).await().unwrap();
             cluster.advanceClockBy(TWO_HOURS);
-            cluster.synchronizeAll();
+            others.forEach(member -> member.antiEntropy().synchronizeNow());
 
             assertThat(cluster.entryAt(interim, key).isEmpty()).as("control: the tombstone was collected").isTrue();
 
+            cluster.member(owner).listener().onNodeRemoved(removed(owner));
             cluster.members().forEach(member -> member.listener().onNodeJoined(joined(owner)));
             cluster.catchUpAll(3);
 
