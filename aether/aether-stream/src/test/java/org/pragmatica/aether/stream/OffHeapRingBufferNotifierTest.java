@@ -82,8 +82,8 @@ class OffHeapRingBufferNotifierTest {
             awaitHighWater(highWater, i);
         }
 
-        assertThat(assertionCalls).as("the AssertionError listener was notified of every publish").hasValue(6);
-        assertThat(overflowCalls).as("the StackOverflowError listener was notified of every publish").hasValue(6);
+        awaitCalls(assertionCalls, 6, "the AssertionError listener was notified of every publish");
+        awaitCalls(overflowCalls, 6, "the StackOverflowError listener was notified of every publish");
         assertThat(ring.appendListenerFailures()).as("each listener failure is counted").isEqualTo(12);
         ring.close();
     }
@@ -104,7 +104,36 @@ class OffHeapRingBufferNotifierTest {
             assertThat(ring.append(("e" + i).getBytes(UTF_8), 1L).isSuccess()).as("append %d", i).isTrue();
             awaitHighWater(highWater, i);
         }
-        assertThat(oomCalls).as("the failing listener was reached on every publish").hasValue(4);
+        awaitCalls(oomCalls, 4, "the failing listener was reached on every publish");
+        ring.close();
+    }
+
+    /// Why the tests above await the asserted counter and not `highWater`: listeners run one after another
+    /// on the serial notifier, so the listener that sets `highWater` finishing says nothing about a listener
+    /// registered after it (#1851). Here the later listener is held on a latch, so `highWater` has reached
+    /// the offset while the later listener has demonstrably not completed — the old proxy wait, made certain.
+    @Test
+    void anEarlierListenerHavingRun_saysNothingAboutALaterOne() throws InterruptedException {
+        var ring = OffHeapRingBuffer.offHeapRingBuffer(1_000, 1024 * 1024);
+        var highWater = new AtomicLong(-1);
+        var laterEntered = new CountDownLatch(1);
+        var laterGate = new CountDownLatch(1);
+        var laterCompleted = new AtomicInteger();
+
+        ring.addAppendListener(offset -> highWater.set(offset));
+        ring.addAppendListener(_ -> {
+            laterEntered.countDown();
+            awaitQuietly(laterGate);
+            laterCompleted.incrementAndGet();
+        });
+        assertThat(ring.append("e0".getBytes(UTF_8), 1L).isSuccess()).isTrue();
+
+        awaitHighWater(highWater, 0);
+        assertThat(laterEntered.await(10, TimeUnit.SECONDS)).as("the later listener runs after the earlier one").isTrue();
+        assertThat(laterCompleted).as("highWater reached while the later listener is still unfinished").hasValue(0);
+
+        laterGate.countDown();
+        awaitCalls(laterCompleted, 1, "the later listener completes once released");
         ring.close();
     }
 
@@ -190,6 +219,15 @@ class OffHeapRingBufferNotifierTest {
             Thread.onSpinWait();
         }
         assertThat(highWater.get()).as("notified up to offset %d", offset).isGreaterThanOrEqualTo(offset);
+    }
+
+    private static void awaitCalls(AtomicInteger calls, int expected, String description) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (calls.get() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(calls).as(description).hasValue(expected);
     }
 
     private static void appendAll(OffHeapRingBuffer ring, int count) {
