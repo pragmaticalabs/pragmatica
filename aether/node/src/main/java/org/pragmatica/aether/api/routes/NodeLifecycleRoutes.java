@@ -101,6 +101,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     record InFlightResponse(int count) {}
 
+    /// Package-private accessor for unit tests of the per-node lifecycle GET (#1868).
+    Promise<LifecycleEntry> getNodeLifecycleForTest(String nodeIdStr) {
+        return getNodeLifecycle(nodeIdStr);
+    }
+
     /// Package-private accessor for unit tests that exercise the drain admission path (notably the
     /// disruption-budget guard) without standing up the HTTP routing layer. Production callers go
     /// through the `routes()` stream.
@@ -206,7 +211,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
+    /// Same authority guard as LIST (#1868): without an authoritative or fresh cached view an absent
+    /// entry means "this node knows nothing", not "the node is gone", so it answers 503 + leader hint.
+    /// Only after the guard does `LIFECYCLE_NOT_FOUND` (404) mean "absent from an authoritative view" —
+    /// the signal the CLI's drain wait reads as completion (`DrainCompletion`).
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
+        if (!nodeSupplier.get().metricsCollector().hasAuthoritativeReadiness()) {
+            return readinessUnavailableError().promise();
+        }
+
         return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr, state.name(), 0L));
     }
 
