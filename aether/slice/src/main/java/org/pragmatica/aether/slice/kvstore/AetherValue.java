@@ -28,6 +28,7 @@ import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
 import org.pragmatica.cluster.state.kvstore.CommunityFenced;
+import org.pragmatica.cluster.state.kvstore.IncarnationFenced;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
@@ -2312,7 +2313,15 @@ public sealed interface AetherValue {
         }
     }
 
-    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue {
+    /// #1278: fenced on the stream's incarnation ([IncarnationFenced]), so while a life of the name is committed no
+    /// other life can commit over it — concurrent first creates resolve first-wins, and a recreate commits only after
+    /// the removal of the old life has applied.
+    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue, IncarnationFenced {
+        @Override
+        public long fenceIncarnation() {
+            return config.incarnation();
+        }
+
         public static StreamConfigValue streamConfigValue(StreamConfig config) {
             return new StreamConfigValue(config, System.currentTimeMillis());
         }
