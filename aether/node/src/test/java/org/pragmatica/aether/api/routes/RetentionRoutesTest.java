@@ -295,6 +295,18 @@ class RetentionRoutesTest {
                                                                      .isZero();
         }
 
+        /// The same field on a MATERIALIZED partition's row (built from the WAL snapshot, not from the index alone):
+        /// the two row builders are separate paths and each must carry the floor.
+        @Test
+        void assembleRetention_reportsReclaimedThrough_onAMaterializedPartitionRow() {
+            var index = new SegmentIndex();
+
+            index.recordReclaimed("alpha", 0, 99);
+            var snapshot = new WalSnapshot(List.of(new StreamWalView("alpha", List.of(wallessPartition(0)))));
+
+            assertThat(onlyRow(RetentionRoutes.assembleRetention(snapshot, index, emptyStore())).reclaimedThrough()).isEqualTo(99L);
+        }
+
         /// #1258 round 3 nit, re-aimed by #1278: pins the PRODUCTION overload the route calls. A real WAL
         /// recovery refuses a lost head (a WAL starting at offset 5 with nothing sealed or reclaimed), and the
         /// three-argument assembler must report the node-wide count — forcing it to 0 there used to leave every
