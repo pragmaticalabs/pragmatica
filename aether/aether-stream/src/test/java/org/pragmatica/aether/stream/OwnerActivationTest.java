@@ -410,6 +410,20 @@ class OwnerActivationTest {
         assertThat(activation.isActivated(STREAM, PARTITION)).isTrue();
     }
 
+    /// #1730: an ISR change moves no ownership. The owner stays activated across it, instead of re-running the
+    /// whole gate (and refusing its writes meanwhile) every time a replica joins or leaves the ISR.
+    @Test
+    void isActivated_isrChangesOnly_staysActivated() {
+        var owned = ownedBy(SELF, 1);
+
+        record.set(Option.some(owned));
+        assertThat(activate()).isTrue();
+
+        record.set(Option.some(owned.withIsr(java.util.List.of(SELF, PEER_A))));
+
+        assertThat(activation.isActivated(STREAM, PARTITION)).isTrue();
+    }
+
     @Test
     void isActivated_recordNamesAnotherNode_isFalse() {
         record.set(Option.some(ownedBy(SELF, 1)));
