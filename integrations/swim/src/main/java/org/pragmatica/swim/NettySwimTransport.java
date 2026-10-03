@@ -94,13 +94,13 @@ public final class NettySwimTransport implements SwimTransport {
     private final AtomicReference<Option<Channel>> channel = new AtomicReference<>(none());
     private final AtomicReference<Option<EventLoopGroup>> group = new AtomicReference<>(none());
     private final AtomicReference<Option<DnsNameResolver>> nettyResolver = new AtomicReference<>(none());
-
     /// Test-only silent-death fault injection for the SWIM UDP plane. Mirrors
     /// `QuicClusterNetwork.blackholed`: when true, outbound sends are dropped and inbound
     /// datagrams are discarded before dispatch, so this node neither acks nor observes SWIM
     /// probes — simulating genuine silent death across BOTH transport planes. Default false
     /// (zero effect in normal operation).
     private volatile boolean blackholed = false;
+
     /// Test-only per-peer partition (#1730): datagrams to or from an address it accepts are dropped.
     private volatile java.util.function.Predicate<InetSocketAddress> droppedPeers = _ -> false;
 
