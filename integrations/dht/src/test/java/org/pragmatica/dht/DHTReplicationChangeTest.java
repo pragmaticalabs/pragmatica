@@ -370,7 +370,7 @@ class DHTReplicationChangeTest {
     /// its refusals arrive AFTER the writer adopted. The writer is current; nothing else is written (an idle writer).
     @Test
     void v1882r6_refusalArrivingAfterTheWriterAdopted_leavesNoStaleRecord() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = cluster.nonReplicaOf(replicas);
 
@@ -396,7 +396,7 @@ class DHTReplicationChangeTest {
     /// the genuine stale record (alert suppression)? Then: does a read at R_new from the other replicas answer absent?
     @Test
     void v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -421,7 +421,7 @@ class DHTReplicationChangeTest {
     /// remotes refuse it as stale it fails without ever having touched the writer's slot.
     @Test
     void v1882r10_orderA_stalePutWaitsForEvidence_failsStale_andNeverAppliesTheLocalSlot() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -456,7 +456,7 @@ class DHTReplicationChangeTest {
     /// applied). The put fails stale and the writer's slot is never written, so there is no later "local success" to count.
     @Test
     void v1882r10_orderB_remoteStaleFirst_failsStale_andNeverAppliesTheLocalSlot() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -476,7 +476,7 @@ class DHTReplicationChangeTest {
     /// behind: the put fails instead of being acknowledged by the one lagging replica.
     @Test
     void v1882r7_orderB_remoteStaleThenRemoteSuccess_fails() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = cluster.nonReplicaOf(replicas);
         var unaware = replicas.getFirst();
@@ -501,7 +501,7 @@ class DHTReplicationChangeTest {
     /// because it is evidence this writer is behind.
     @Test
     void v1882r7_orderC_ackThenLateStale_ackStands_andTheRecordIsKept() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = cluster.nonReplicaOf(replicas);
         var unaware = replicas.getFirst();
@@ -536,7 +536,7 @@ class DHTReplicationChangeTest {
     /// pending; the replica that applied the change then refuses as stale and the put fails.
     @Test
     void v1882r9_orderE_nonStaleRefusalFirst_thenStale_failsInsteadOfAckingOnTheNonStaleReply() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var restarting = replicas.get(1);
@@ -566,7 +566,7 @@ class DHTReplicationChangeTest {
     /// evidence, so the put is acknowledged.
     @Test
     void v1882r9_nonStaleRefusalFirst_thenSuccess_acks() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var restarting = replicas.get(1);
@@ -627,7 +627,7 @@ class DHTReplicationChangeTest {
     /// The slot is not touched at all: the value stays, byte- and version-identical (no apply, so no undo).
     @Test
     void v1882r10_stalePut_neverTouchesTheWritersOnlyLocalCopy() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -651,7 +651,7 @@ class DHTReplicationChangeTest {
     /// How many replicas hold X once X is acknowledged?
     @Test
     void v1882r10_probeS_staleWriterReplica_neverLeavesAnAckedXBelowItsQuorum() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var stale = replicas.getFirst();
         var r1 = replicas.get(1);
@@ -763,7 +763,7 @@ class DHTReplicationChangeTest {
     /// evidence either way the put is acknowledged on its own slot — the named limit — and NO stale record is set.
     @Test
     void v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
 
@@ -777,7 +777,7 @@ class DHTReplicationChangeTest {
     /// V1882 r6 CONTROL: the same refusals delivered BEFORE the writer adopts; adoption clears the record.
     @Test
     void v1882r6_control_refusalBeforeAdoption_isClearedByAdoption() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = cluster.nonReplicaOf(replicas);
 
@@ -873,6 +873,16 @@ class DHTReplicationChangeTest {
     }
 
     /// The old factors with a short operation timeout, so a put whose replies never all arrive fails fast.
+    /// The old factors with a 5 s operation timeout: an evidence bound of 500 ms, so a pin that relies on "the reply is still
+    /// pending" survives a cold JVM or a loaded CI box (v1882 F20); the 50 ms bound of [#shortTimeout] did not.
+    private static DHTConfig wideBound(int replicationFactor, int confirmationFactor) {
+        return DHTConfig.dhtConfig(replicationFactor,
+                                   confirmationFactor,
+                                   replicationFactor - confirmationFactor + 1,
+                                   org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds())
+                        .unwrap();
+    }
+
     private static DHTConfig shortTimeout(int replicationFactor, int confirmationFactor) {
         return DHTConfig.dhtConfig(replicationFactor,
                                    confirmationFactor,
