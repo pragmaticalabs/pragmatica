@@ -50,7 +50,9 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     /// @return New ConfigurationProvider with all secrets resolved, or failure
     static Result<ConfigurationProvider> resolve(ConfigurationProvider provider,
                                                  Fn1<Promise<String>, String> secretResolver) {
-        return resolveAllEntries(provider, secretResolver).map(resolved -> wrapProvider(provider, resolved, secretResolver));
+        return resolveAllEntries(provider, secretResolver).map(resolved -> wrapProvider(provider,
+                                                                                        resolved,
+                                                                                        secretResolver));
     }
 
     /// #904: the caller has NO resolver. Succeeds with `provider` itself -- never wrapped, so a
