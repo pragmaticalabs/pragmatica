@@ -4199,6 +4199,7 @@ subcommand was removed in #525.
 ## A/B Testing
 
 All A/B test mutation endpoints require the requesting node to be the cluster leader.
+A mutation reaching a node that is not the leader answers `409 Conflict` (`This operation requires the leader node.`, with the current leader named when known), not `500` (#833). Create answers `400` when `artifactBase` or `variants` is missing or empty, or when an artifact base or a variant version cannot be parsed.
 
 ### GET /api/v1/ab-tests
 
@@ -4783,6 +4784,12 @@ Cause → status resolution: a cause implementing `HttpStatusAware` surfaces its
 including serialization failures and unmapped domain causes (#308) — falls back to HTTP `500`
 but STILL returns the structured `problem+json` body above, never a bare/empty 500. A scripted
 client can therefore always parse `status` and `detail`.
+
+A management `POST` whose body omits a required field, or carries one that cannot be parsed, answers `400`
+and names the field in `detail`; `500` is reserved for genuine server faults (#954). This holds for
+`/api/v1/deploy`, `/api/v1/scale`, `/api/v1/config`, `/api/v1/logging/levels`, `/api/v1/cluster/keys` and
+`/api/v1/cluster/keys/revoke/{id}` (an unknown key is `404`; a key declared in node configuration is `409`),
+`/api/v1/ab-tests/create`, `/api/v1/blueprints/deploy` and `/api/v1/blueprints/publish`.
 
 The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
 emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
