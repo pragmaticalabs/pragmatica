@@ -54,10 +54,15 @@ final class CatchUpRound {
     private final Set<NodeId> outstandingPulls = ConcurrentHashMap.newKeySet();
     /// The monotonic clock the round's ages are read from: `System.nanoTime` in production, a manual clock in a test.
     private final LongSupplier clock;
-    /// When the round decided, so a round whose pulls are still landing is kept for a bounded while. ZERO means undecided,
-    /// and the decision and its stamp are ONE atomic step: a reader can never observe "decided" without the time it
-    /// decided at (two separate fields let a tick that landed between them read a stamp of 0 and replace the round).
-    private final AtomicLong decidedAtNanos = new AtomicLong();
+
+    /// The stamp of a round that has not decided. `System.nanoTime` may legally return any value, negative ones included, so
+    /// no ordinary reading can be the sentinel: it is the one value a clock reading of a decision is never taken to be.
+    private static final long UNDECIDED = Long.MIN_VALUE;
+
+    /// When the round decided, so a round whose pulls are still landing is kept for a bounded while. [#UNDECIDED] means
+    /// undecided, and the decision and its stamp are ONE atomic step: a reader can never observe "decided" without the time
+    /// it decided at (two separate fields let a tick that landed between them read a stamp of 0 and replace the round).
+    private final AtomicLong decidedAtNanos = new AtomicLong(UNDECIDED);
     private final AtomicBoolean anchorless = new AtomicBoolean();
 
     private CatchUpRound(long id,
@@ -124,12 +129,11 @@ final class CatchUpRound {
     boolean decidedWithin(long ageNanos) {
         var decidedAt = decidedAtNanos.get();
 
-        return decidedAt != 0L && clock.getAsLong() - decidedAt <= ageNanos;
+        return decidedAt != UNDECIDED && clock.getAsLong() - decidedAt <= ageNanos;
     }
 
     private boolean claimDecision() {
-        return decidedAtNanos.compareAndSet(0L,
-                                            Math.max(clock.getAsLong(), 1L));
+        return decidedAtNanos.compareAndSet(UNDECIDED, clock.getAsLong());
     }
 
     /// Decide on the answers in hand, for a round some source never answered (#1777, H2): allowed only when at
