@@ -101,8 +101,8 @@ class JdkHttpClientCloseTest {
                          .isSuccess()).isTrue();
     }
 
-    /// The JDK backend's operations own no releasable state and implement no close convention, so
-    /// the client's close is a success rather than a failure.
+    /// The JDK backend's operations are `AsyncCloseable` since #1097 (they shut their `HttpClient` down);
+    /// the client's close succeeds through them.
     @Test
     void close_succeeds_withJdkBackend() {
         var client = JdkHttpClient.jdkHttpClient(configWith(HttpBackend.JDK));
