@@ -107,6 +107,18 @@ public final class ProviderBasedConfigService implements ConfigService {
                        .anyMatch(key -> key.startsWith(prefix));
     }
 
+    /// A key that holds a SCALAR where a record is expected is an operator error, not an absent section: treating it
+    /// as absent bound the record's default (or `none()`) and dropped what the operator wrote (`json = "snake_case"`
+    /// where a `[http.x.json]` table was expected). It is a [ConfigError.TypeMismatch] naming the key and saying a
+    /// table was expected; the value is not echoed, since a misplaced scalar can be a credential.
+    private Option<Result<Object>> scalarWhereTableExpected(String path, Class<?> recordType) {
+        return provider.getString(path)
+                       .map(_ -> ConfigError.typeMismatch(path,
+                                                          "a table of keys for " + recordType.getSimpleName(),
+                                                          "a scalar value")
+                                            .result());
+    }
+
     private static boolean hasSectionPrefix(String key, String prefix, String section) {
         return key.startsWith(prefix) || key.equals(section);
     }
@@ -489,7 +501,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         var nestedSection = section + "." + toSnakeCase(key);
 
         if (!hasRecordSection(nestedSection)) {
-            return some(findDefaultOrError(type, nestedSection));
+            return some(scalarWhereTableExpected(nestedSection, type).or(() -> findDefaultOrError(type, nestedSection)));
         }
 
         return some((Result<Object>) bindToClass(nestedSection, type));
@@ -800,7 +812,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         }
 
         if (!hasRecordSection(fullKey)) {
-            return success(none());
+            return scalarWhereTableExpected(fullKey, innerClass).or(() -> success(none()));
         }
 
         return bindToClass(fullKey, innerClass).map(Option::option);

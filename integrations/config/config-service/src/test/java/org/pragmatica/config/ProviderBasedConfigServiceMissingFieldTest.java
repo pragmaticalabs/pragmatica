@@ -115,10 +115,11 @@ class ProviderBasedConfigServiceMissingFieldTest {
         assertThat(noEndpoint.unwrap().endpoint()).isEqualTo(Option.none());
     }
 
-    /// Round 2: a path that exists only as a SCALAR key is not a record section. `retention = "time"` made
-    /// `svc.retention` a "section", so the binder tried to bind a record there and failed on its first required
-    /// field; the stream shorthand is interpreted by the stream parser, not by this binder. The nested record now
-    /// falls to its `DEFAULT` (bare) or `none()` (`Option`), as if the key were absent.
+    /// Round 3: a path that holds a SCALAR where a record (or `Option<Record>`) is expected is an operator error,
+    /// not an absent section. `hasSection` answers true for a scalar key, so the binder used to try to bind a record
+    /// there and fail on its first required field; treating the scalar as absent instead (round 2) silently bound the
+    /// record's default or `none()` and dropped what was written (`json = "snake_case"` where a table was expected).
+    /// It is now a typed `TypeMismatch` naming the key and saying a table was expected; the value is not echoed.
     record Retention(String kind, int maxCount) {}
 
     /// Shaped like `StreamConfig`: a whole-record `DEFAULT` that supplies the nested record, which has none of its own.
@@ -129,17 +130,25 @@ class ProviderBasedConfigServiceMissingFieldTest {
     record OptionalRetentionHolder(String name, Option<Endpoint> endpoint) {}
 
     @Test
-    void scalarKeyWhereABareRecordIsExpected_isNotARecordSection_fallsToItsDefault() {
-        var stream = serviceWith(Map.of("s.name", "x", "s.retention", "time")).config("s", Stream.class).unwrap();
+    void scalarKeyWhereABareRecordIsExpected_isATypeMismatch_notTheDefault() {
+        var result = serviceWith(Map.of("s.name", "x", "s.retention", "time")).config("s", Stream.class);
 
-        assertThat(stream.retention()).isEqualTo(Stream.DEFAULT.retention());
+        assertThat(result.isFailure()).as("a scalar where a table is expected must not bind the default").isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(ConfigError.TypeMismatch.class);
+            assertThat(cause.message()).contains("s.retention").contains("table").doesNotContain("time");
+        });
     }
 
     @Test
-    void scalarKeyWhereAnOptionRecordIsExpected_isNotARecordSection_bindsNone() {
-        var holder = serviceWith(Map.of("s.name", "x", "s.endpoint", "scalar")).config("s", OptionalRetentionHolder.class).unwrap();
+    void scalarKeyWhereAnOptionRecordIsExpected_isATypeMismatch_notNone() {
+        var result = serviceWith(Map.of("s.name", "x", "s.endpoint", "s3cretValue")).config("s", OptionalRetentionHolder.class);
 
-        assertThat(holder.endpoint()).isEqualTo(Option.none());
+        assertThat(result.isFailure()).as("a scalar where an Option<Record> table is expected must not bind none()").isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(ConfigError.TypeMismatch.class);
+            assertThat(cause.message()).contains("s.endpoint").contains("table").doesNotContain("s3cretValue");
+        });
     }
 
     /// The control: a real section under the same name still binds.
