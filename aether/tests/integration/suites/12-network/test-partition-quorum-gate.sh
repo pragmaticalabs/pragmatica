@@ -32,8 +32,9 @@
 #   container process alive. From the majority's perspective: SWIM
 #   ping-acks fail and QUIC drops; from the minority's perspective: same,
 #   plus zero peer visibility. The reverse op `docker network connect`
-#   restores reachability (with a new IP, which Docker DNS resolves and
-#   QUIC tolerates via fresh handshake).
+#   restores reachability with `--ip` set to the address the container had before the
+#   disconnect (the compose networks have a fixed subnet): a SWIM member's address is pinned to its
+#   process, so a container that came back on a new address would be refused, not adopted.
 #
 # Why this test no longer asserts a 5s minority HOLD:
 #   The earlier expectation — minority NodeIds stay PRESENT for the full
@@ -200,6 +201,31 @@ container_for_node() {
     remote_exec "docker ps --filter 'label=aether.node-id=${nid}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true
 }
 
+# A reconnect must give the container back ITS address. Peers pin a member's SWIM address to the process, so a
+# container that comes back on a new address is refused (and reported) instead of adopted, and S06 could never
+# see 5 healthy cores. The compose networks have a fixed subnet, which is what lets `docker network connect --ip`
+# restore the address. The address is read before the disconnect, since a disconnected container has none.
+PARTITION_IP_DIR="${PARTITION_IP_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/s05-ips.XXXXXX")}"
+
+remember_network_ip() {
+    local container="$1" nets
+    nets=$(remote_exec "docker inspect -f '{{json .NetworkSettings.Networks}}' ${container}" 2>/dev/null || true)
+    printf '%s' "$nets" | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin)["'"${NETWORK_NAME}"'"]["IPAddress"])
+except Exception:
+    pass
+' > "${PARTITION_IP_DIR}/${container}" 2>/dev/null || true
+}
+
+recall_network_ip() {
+    local file="${PARTITION_IP_DIR}/$1"
+    if [ -s "$file" ]; then
+        tr -d '[:space:]' < "$file"
+    fi
+}
+
 # Disconnect a container from the cluster network. Container process
 # remains alive but loses all peer reachability. stderr captured (silent
 # stderr is a known trap per project memory).
@@ -220,6 +246,7 @@ disconnect_node_from_network() {
         return 0
     fi
     local out rc
+    remember_network_ip "$container"
     out=$(remote_exec "docker network disconnect ${NETWORK_NAME} ${container}" 2>&1)
     rc=$?
     if [ $rc -ne 0 ]; then
@@ -247,8 +274,13 @@ connect_node_to_network() {
         log_info "Healed partition for ${container} (provider firewall removed)"
         return 0
     fi
-    local out rc
-    out=$(remote_exec "docker network connect ${NETWORK_NAME} ${container}" 2>&1)
+    local out rc ip_flag=""
+    local remembered
+    remembered=$(recall_network_ip "$container")
+    if [ -n "$remembered" ]; then
+        ip_flag=" --ip ${remembered}"
+    fi
+    out=$(remote_exec "docker network connect${ip_flag} ${NETWORK_NAME} ${container}" 2>&1)
     rc=$?
     if [ $rc -ne 0 ]; then
         if printf '%s' "$out" | grep -qi "already exists\|already connected\|endpoint with name"; then

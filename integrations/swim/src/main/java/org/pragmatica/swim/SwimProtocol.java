@@ -16,6 +16,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetAddress;
+import java.security.SecureRandom;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -73,6 +74,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.utility.warning.OperatorWarningCode.SWIM_KILL_GATE_HELD;
 import static org.pragmatica.utility.warning.OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT;
+import static org.pragmatica.utility.warning.OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT;
 
 
 /// Core SWIM protocol implementation providing failure detection and membership dissemination.
@@ -100,6 +102,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Sequence of the unsolicited `Ack`s that answer an ANNOUNCE with the membership view (#1783).
     /// The probe sequence counter starts at 1, so no pending probe ever matches it.
     private static final long SYNC_ACK_SEQUENCE = 0L;
+    private static final SecureRandom SEQUENCE_RANDOM = new SecureRandom();
     /// An unconfirmed source address is probed once per this window, however often it announces.
     private static final long ADDRESS_CANDIDATE_REPROBE_MS = 400L;
     /// An unconfirmed source address that has not answered within this window is forgotten.
@@ -252,7 +255,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// grace window. Parallel map (does NOT touch the `SwimMember` record/codec).
     private final Map<NodeId, Long> memberFirstSeenAt = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
-    private final AtomicLong sequenceCounter = new AtomicLong(0);
+    /// Probe sequences start at an unpredictable per-process offset and then increase, so a process never reuses a
+    /// sequence it drew before and two lives of one node do not draw alike. Never 0 ([#SYNC_ACK_SEQUENCE]); the offset
+    /// leaves the upper half of the range for increments, so the counter cannot wrap.
+    private final AtomicLong sequenceCounter = new AtomicLong(unpredictableSequenceStart());
     /// Durable, monotonic self-incarnation — the SWIM liveness epoch this node
     /// advertises for ITSELF. Seeded from the boot incarnation in [#announceJoin]
     /// and bumped strictly past any incoming suspicion in [#handleSelfUpdate].
@@ -1565,9 +1571,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void handlePing(InetSocketAddress sender, Ping ping) {
         inboundProbeReceived = true;
         recordInboundReachability();
-        processPiggyback(ping.piggyback(), ping.from());
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
-        var ack = Ack.ack(selfId, ping.sequence(), piggyback);
+        processPiggyback(ping.piggyback(), ping.from(), Option.none());
+        var ack = Ack.ack(selfId, ping.sequence(), ackPiggyback());
 
         transport.send(sender, ack);
     }
@@ -1593,7 +1598,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void handleAck(InetSocketAddress sender, Ack ack) {
         confirmAddressCandidate(sender, ack);
-        processPiggyback(ack.piggyback(), ack.from());
+        processPiggyback(ack.piggyback(), ack.from(), answeredProbeFrom(ack));
         processAckProbe(ack);
         forwardRelay(ack);
     }
@@ -1732,27 +1737,93 @@ public final class SwimProtocol implements SwimMessageHandler {
         // still present as FAULTY when its self-ANNOUNCE arrives, so the clear must not
         // be gated on absence. A dead node never self-announces, so this cannot reopen
         // the oscillation; this is what preserves partition-heal (suite 12 S06).
-        // Boot-token gate (owner ruling, session 28): an ANNOUNCE from a different process for a
-        // known identity retires it — the old process is treated as dead, the new one refused. It
-        // runs BEFORE the tombstone clear so a refused process can never reopen the identity.
-        if (!admitsBootToken(announce.nodeInfo().id(),
-                             announce.bootToken())) {
-            refuseAnnounce(sender,
-                           announce.nodeInfo().id());
+        // Boot-token gate (owner ruling, session 28): a different process for a known identity retires it —
+        // the old process is treated as dead, the new one refused. A token this node has not seen proven
+        // (unknown, or different from the recorded one) is NOT presented to the registry from the datagram
+        // alone: the source is probed first and the token is admitted only when the answer carries it
+        // ([#confirmAddressCandidate]). A recorded or zero token, and a retired identity, go straight to the registry.
+        var id = announce.nodeInfo().id();
+        var needsProof = announce.bootToken() != 0L && bootTokenOf(id) != announce.bootToken() && !isRetired(id);
+
+        if (!needsProof && !admitsBootToken(id, announce.bootToken())) {
+            refuseAnnounce(sender, id);
 
             return;
         }
 
-        routeByAddressPin(sender, announce);
+        routeByAddressPin(sender, announce, needsProof);
     }
 
-    /// The pin is keyed by NodeId. That equals (NodeId, boot token): a different non-zero token for a known id never
-    /// reaches this method, because [#admitsBootToken] refuses it first (terminal removal), so no re-pin path exists.
-    /// A new process therefore takes a new NodeId and is pinned afresh.
+    /// A node's own identity: what a peer confirms an ANNOUNCE's boot token against. Empty while the node has no
+    /// incarnation or no token yet.
+    private List<MembershipUpdate> selfIdentity() {
+        var incarnation = selfIncarnation.get();
+        var token = selfBootToken.get();
+
+        return incarnation == 0 || token == 0L
+               ? List.of()
+               : List.of(MembershipUpdate.membershipUpdate(selfId,
+                                                           MemberState.ALIVE,
+                                                           incarnation,
+                                                           selfAddress,
+                                                           token,
+                                                           selfLabels));
+    }
+
+    /// The gossip of an Ack, with this node's own identity first. The buffered gossip often carries a self-ALIVE
+    /// already; that one is moved to the front instead of sending the identity twice, which would not fit a
+    /// datagram for a node with a long id. Gossip is peeked exactly as before; the identity is the one thing that is
+    /// never dropped, so trailing gossip is left for a later round when the datagram budget is short.
+    private List<MembershipUpdate> ackPiggyback() {
+        var gossip = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
+        var own = gossip.stream()
+                        .filter(this::isOwnIdentity)
+                        .max(Comparator.comparingLong(MembershipUpdate::incarnation))
+                        .stream()
+                        .toList();
+        var identity = own.isEmpty()
+                       ? selfIdentity()
+                       : own;
+        var ordered = new ArrayList<>(identity);
+        var identityLeads = !identity.isEmpty();
+
+        gossip.stream().filter(update -> !identityLeads || !update.nodeId()
+                                                                  .equals(selfId)).forEach(ordered::add);
+        while (ordered.size() > Math.max(1, identity.size()) && estimatedBytesOf(ordered) > piggybackBudgetBytes || ordered.size() > config.maxPiggyback()) {
+            ordered.removeLast();
+        }
+
+        return List.copyOf(ordered);
+    }
+
+    private static int estimatedBytesOf(List<MembershipUpdate> updates) {
+        return updates.stream()
+                      .mapToInt(PiggybackBuffer::estimatedBytes)
+                      .sum();
+    }
+
+    private boolean isOwnIdentity(MembershipUpdate update) {
+        return update.nodeId()
+                     .equals(selfId)
+               && update.bootToken() != 0L
+               && update.bootToken() == selfBootToken.get();
+    }
+
+    private static boolean provesToken(Ack ack, Announce announce) {
+        return announce.bootToken() == 0L || ack.piggyback()
+                                                .stream()
+                                                .anyMatch(update -> update.nodeId()
+                                                                          .equals(ack.from()) && update.bootToken() == announce.bootToken());
+    }
+
+    /// The pin is keyed by NodeId. That equals (NodeId, boot token): a token that differs from the recorded one is
+    /// never admitted without the process answering with it, and a confirmed different token retires the identity
+    /// (terminal removal), so no re-pin path exists. A new process therefore takes a new NodeId and is pinned afresh.
+    ///
     /// A member's SWIM address is pinned to the process identity: the first address that both announced it and
     /// answered a probe as that member. An ANNOUNCE from the pinned address is accepted; from any other address
-    /// it is refused outright; with no pin yet it only earns the source address one probe.
-    private void routeByAddressPin(InetSocketAddress sender, Announce announce) {
+    /// it is refused outright; with no pin yet, or a token still to prove, it only earns the source address one probe.
+    private void routeByAddressPin(InetSocketAddress sender, Announce announce, boolean needsProof) {
         var id = announce.nodeInfo().id();
         var source = sender.getAddress();
 
@@ -1763,6 +1834,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         var pinned = addressPins.get(id);
 
         if (pinned == null) {
+            probeAddressCandidate(sender, announce);
+        } else if (pinned.equals(source) && needsProof) {
             probeAddressCandidate(sender, announce);
         } else if (pinned.equals(source)) {
             acceptAnnounce(sender, announce, false);
@@ -1831,11 +1904,25 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         var id = ack.from();
+        var announce = candidate.announce();
+
+        if (!provesToken(ack, announce)) {
+            reportIdentityConflict(id, sender.getAddress());
+
+            return;
+        }
+
+        if (!admitsBootToken(id, announce.bootToken())) {
+            refuseAnnounce(candidate.source(), id);
+
+            return;
+        }
+
         var pinned = addressPins.putIfAbsent(id, sender.getAddress());
 
-        if (pinned == null) {
-            acceptAnnounce(candidate.source(), candidate.announce(), true);
-        } else if (!pinned.equals(sender.getAddress())) {
+        if (pinned == null || pinned.equals(sender.getAddress())) {
+            acceptAnnounce(candidate.source(), announce, pinned == null);
+        } else {
             reportAddressConflict(id, pinned, sender.getAddress());
         }
     }
@@ -1847,15 +1934,12 @@ public final class SwimProtocol implements SwimMessageHandler {
         return announced.equals(ack.from()) && probed.equals(sender.getAddress());
     }
 
-    private Unit reportAddressConflict(NodeId id, InetAddress pinned, InetAddress attempted) {
-        var key = id.id() + "@" + attempted.getHostAddress();
+    private boolean dueForReport(String key) {
         var now = System.currentTimeMillis();
         var last = addressConflictReportedAt.get(key);
 
         if (last != null && now - last < ADDRESS_CONFLICT_REPORT_WINDOW_MS) {
-            LOG.debug("SWIM ANNOUNCE for {} from {} refused again: pinned to {}", id.id(), attempted, pinned);
-
-            return Unit.unit();
+            return false;
         }
 
         if (addressConflictReportedAt.size() >= MAX_ADDRESS_CONFLICT_KEYS) {
@@ -1863,6 +1947,16 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         addressConflictReportedAt.put(key, now);
+
+        return true;
+    }
+
+    private Unit reportAddressConflict(NodeId id, InetAddress pinned, InetAddress attempted) {
+        if (!dueForReport(id.id() + "@" + attempted.getHostAddress())) {
+            LOG.debug("SWIM ANNOUNCE for {} from {} refused again: pinned to {}", id.id(), attempted, pinned);
+
+            return Unit.unit();
+        }
 
         return OperatorWarnings.raise(LOG,
                                       operatorWarningSink,
@@ -1874,6 +1968,21 @@ public final class SwimProtocol implements SwimMessageHandler {
                                       id.id(),
                                       pinned.getHostAddress(),
                                       attempted.getHostAddress());
+    }
+
+    private Unit reportIdentityConflict(NodeId id, InetAddress source) {
+        if (!dueForReport("token:" + id.id() + "@" + source.getHostAddress())) {
+            return Unit.unit();
+        }
+
+        return OperatorWarnings.raise(LOG,
+                                      operatorWarningSink,
+                                      SWIM_MEMBER_IDENTITY_CONFLICT,
+                                      id.id(),
+                                      "SWIM member {} was announced from {} with a process token its live process did not "
+                                     + "answer with; the ANNOUNCE was ignored and nothing was retired",
+                                      id.id(),
+                                      source.getHostAddress());
     }
 
     /// The accepted ANNOUNCE: tombstone clear, introduction, dial hint and join ack, all addressed to `sender`, which
@@ -2157,6 +2266,17 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// (same process — heals exactly as before). A different token retires the identity: the
     /// resident process is treated as dead and the new one is refused, as is every later piece of
     /// evidence for a retired id. Every refusal is counted and logged.
+    /// A token that differs from the recorded one, presented by gossip (or a ping) rather than by the member's own
+    /// answer to this node's probe: it can retire nothing, because only the member's own answer to a probe identifies its process.
+    private boolean isUnprovenTokenConflict(MembershipUpdate update) {
+        var known = bootTokenOf(update.nodeId());
+
+        return update.bootToken() != 0L
+               && known != 0L
+               && known != update.bootToken()
+               && !isRetired(update.nodeId());
+    }
+
     private boolean admitsBootToken(NodeId peer, long token) {
         return switch (bootTokens.admit(peer, token)) {
             case ADMITTED -> true;
@@ -2356,17 +2476,34 @@ public final class SwimProtocol implements SwimMessageHandler {
         recordHealthyAndEmit(nodeId, alive.incarnation());
     }
 
-    private void processPiggyback(List<MembershipUpdate> updates, NodeId gossipSender) {
-        updates.forEach(update -> applyUpdate(update, gossipSender));
+    /// The sender of an Ack that answers one of this node's own pending probes of that very node: the one speaker
+    /// whose own token a datagram can prove. Everything else a datagram carries is hearsay.
+    private Option<NodeId> answeredProbeFrom(Ack ack) {
+        return option(pendingProbes.get(ack.sequence())).filter(probe -> probe.targetId()
+                                                                              .equals(ack.from()))
+                     .map(_ -> ack.from());
     }
 
-    private void applyUpdate(MembershipUpdate update, NodeId gossipSender) {
+    private void processPiggyback(List<MembershipUpdate> updates, NodeId gossipSender, Option<NodeId> provenSpeaker) {
+        updates.forEach(update -> applyUpdate(update,
+                                              gossipSender,
+                                              provenSpeaker.filter(update.nodeId()::equals).isPresent()));
+    }
+
+    private void applyUpdate(MembershipUpdate update, NodeId gossipSender, boolean provenByAnswer) {
         if (!inMembershipScope(update.nodeId())) {
             return;
         }
 
         if (selfId.equals(update.nodeId())) {
             handleSelfUpdate(update);
+
+            return;
+        }
+
+        if (!provenByAnswer && isUnprovenTokenConflict(update)) {
+            LOG.debug("SWIM ignored a process token for {} that differs from the recorded one: not carried by its own answer",
+                      update.nodeId().id());
 
             return;
         }
@@ -3207,6 +3344,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         addressPins.put(announce.nodeInfo().id(),
                         sender.getAddress());
         onMessage(sender, announce);
+    }
+
+    private static long unpredictableSequenceStart() {
+        return 1L + SEQUENCE_RANDOM.nextLong(Long.MAX_VALUE / 2);
     }
 
     /// Test-only: the pinned address of a member, if any.

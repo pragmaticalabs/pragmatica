@@ -67,7 +67,11 @@ public enum OperatorWarningCode {
     NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
     /// A SWIM datagram claimed a member identity from a source address other than the one that identity is
     /// pinned to, and was refused. A restart is not this: a new process carries a new identity and gets its own pin.
-    SWIM_MEMBER_ADDRESS_CONFLICT("swim-member-address-conflict", "membership", WarningLevel.WARNING);
+    SWIM_MEMBER_ADDRESS_CONFLICT("swim-member-address-conflict", "membership", WarningLevel.WARNING),
+    /// A SWIM datagram presented a different process token for a member whose live process answered with its own,
+    /// and was refused. A genuinely new process under the same identity is not this: it answers with the new token
+    /// and is refused by the identity rule.
+    SWIM_MEMBER_IDENTITY_CONFLICT("swim-member-identity-conflict", "membership", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

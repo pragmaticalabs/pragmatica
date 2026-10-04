@@ -168,12 +168,21 @@ services:
       - "8074:8070"
 
 networks:
+  # Fixed subnets: the partition suite reconnects a container with `docker network connect --ip` so it keeps its
+  # address (a SWIM member's address is pinned to its process; a new address is refused). Without a configured
+  # subnet Docker refuses --ip.
   aether-a-network:
     name: aether-a-network
     driver: bridge
+    ipam:
+      config:
+        - subnet: 10.231.10.0/24
   aether-b-network:
     name: aether-b-network
     driver: bridge
+    ipam:
+      config:
+        - subnet: 10.231.11.0/24
 
 volumes:
   pgdata:

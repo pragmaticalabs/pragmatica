@@ -220,7 +220,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### SWIM member address change refused
 
 - **Symptom:** a live member's SWIM address differs from the one its identity is pinned to on a peer, for example after its IP changed (a container reconnected to a network with a new address). The peer refuses its ANNOUNCE and keeps probing the pinned address, so the member goes SUSPECT and is declared dead on that peer.
-- **Detection surface:** the `OPERATOR_WARNING` event with `details.code` = `swim-member-address-conflict` (subject: the member id; the message names the pinned and the refused address), and the same text in the node log, which is not throttled.
+- **Detection surface:** the `OPERATOR_WARNING` event with `details.code` = `swim-member-address-conflict` (subject: the member id; the message names the pinned and the refused address), and the same text in the node log, which is not throttled. A process token that the live process does not confirm raises `swim-member-identity-conflict` the same way and retires nothing.
 - **Automatic response:** none. The ANNOUNCE is refused whole: no reply, no address change, no tombstone clear. A restarted process carries a new identity and is pinned afresh, so a restart raises no warning.
 - **Budget:** the event is throttled to one per member per 60 s.
 - **Degraded / at risk:** the member whose address changed is unreachable for SWIM on the refusing peers until it is restarted. No data is at risk beyond what losing that node costs.
