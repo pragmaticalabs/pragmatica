@@ -64,7 +64,11 @@ public enum OperatorWarningCode {
     /// A configured core member died on this node's membership view without this node ever observing it
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
-    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING);
+    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// A slice's declarative stream consumer could not be registered at activation (#1935): the slice activated, but
+    /// that consumer will receive nothing until the cause is fixed and the slice re-activated. CRITICAL: a declared
+    /// consumer that silently never fires is a data-plane gap, not a caveat.
+    STREAM_CONSUMER_NOT_REGISTERED("stream-consumer-not-registered", "stream-subscription", WarningLevel.CRITICAL);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

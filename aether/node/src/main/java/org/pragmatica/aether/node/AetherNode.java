@@ -3766,6 +3766,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                   .deployment()
                                                                                                   .transitionRetryDelay(),
                                                                                             currentGenerationEpochSupplier);
+
+        // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
+        nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
+
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is

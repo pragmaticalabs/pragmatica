@@ -99,6 +99,8 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1618,11 +1620,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                     method,
                                                                                                                                                                     batchMode,
                                                                                                                                                                     eventType)))
-                                     .onFailure(cause -> log.error("Declarative stream consumer {}.{} on section [{}] could NOT be registered — it will receive nothing: {}",
-                                                                   artifact,
-                                                                   entry.method(),
-                                                                   entry.config(),
-                                                                   cause.message()))
+                                     .onFailure(cause -> raiseConsumerNotRegistered(artifact, entry, cause))
                                      .option()
                                      .onPresent(result::add);
                 }
@@ -1653,6 +1651,29 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// [BlueprintStreamAddresses#engineKeyFor] against the same bindings map, so the property this
         /// method was written to hold — a consumer resolves to exactly the stream its publisher writes
         /// to — survives the change rather than being re-established by coincidence.
+        /// #1935: a declared consumer that cannot be registered receives nothing, and the slice activates anyway,
+        /// so the log line alone left an operator with a healthy-looking slice and a silent consumer. It is now also
+        /// an operator warning (CRITICAL `stream-consumer-not-registered`) naming the slice, method, stream section
+        /// and cause, raised on this node's event log; the aggregator throttles it per (code, subject).
+        ///
+        /// The slice still ACTIVATES: that is a choice. One unregistered consumer must not take down the slice's
+        /// other entry points (routes, other consumers, scheduled tasks), the failure is per-entry and the cause is
+        /// usually configuration the operator can correct without redeploying code, and failing activation would
+        /// put the whole slice into the retry loop for a condition a retry cannot fix. The cost, accepted here, is a
+        /// slice that reports healthy while a consumer is dead; the warning is what makes that visible. There is no
+        /// slice-status field for an activated-with-caveat condition, so none is added.
+        private void raiseConsumerNotRegistered(Artifact artifact, ReactiveManifestEntry entry, Cause cause) {
+            OperatorWarnings.raise(log,
+                                   ctx.operatorWarnings(),
+                                   OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                                   artifact + "." + entry.method() + "[" + entry.config() + "]",
+                                   "Declarative stream consumer {}.{} on section [{}] could NOT be registered, it will receive nothing: {}",
+                                   artifact,
+                                   entry.method(),
+                                   entry.config(),
+                                   cause.message());
+        }
+
         private Result<String> resolveStreamName(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))

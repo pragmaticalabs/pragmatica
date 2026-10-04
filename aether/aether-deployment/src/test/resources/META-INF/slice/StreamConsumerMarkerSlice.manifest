@@ -1,0 +1,11 @@
+reactive.count=2
+reactive.0.category=stream
+reactive.0.method=onOrder
+reactive.0.config=streams.orders
+reactive.0.batch=false
+reactive.0.eventType=com.example.Order
+reactive.1.category=stream
+reactive.1.method=onGhost
+reactive.1.config=streams.ghost
+reactive.1.batch=false
+reactive.1.eventType=com.example.Ghost
