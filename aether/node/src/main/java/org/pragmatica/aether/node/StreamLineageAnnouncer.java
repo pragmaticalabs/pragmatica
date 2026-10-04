@@ -13,6 +13,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
+
 /// #1873 (owner rule: an operator-facing condition emits an event on its transition): announces that a partition's owner began
 /// a new epoch WITHOUT a change of owner, which is how a ring rebuilt under an unchanged owner shows in the committed record (a
 /// restart without a WAL, a lazy re-materialize, a re-created stream). A change of owner is the failover event's business.
@@ -30,7 +31,9 @@ public interface StreamLineageAnnouncer {
     void onOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put);
 
     static StreamLineageAnnouncer streamLineageAnnouncer(Consumer<OperationalEvent> sink) {
-        return put -> transition(put.cause().key(), put.oldValue(), put.cause().value()).onPresent(sink);
+        return put -> transition(put.cause().key(),
+                                 put.oldValue(),
+                                 put.cause().value()).onPresent(sink);
     }
 
     /// The event a committed change from `before` to `after` calls for: the epoch advanced under the same owner, with the start of
@@ -38,15 +41,21 @@ public interface StreamLineageAnnouncer {
     static Option<OperationalEvent> transition(StreamPartitionOwnershipKey key,
                                                Option<StreamPartitionOwnershipValue> before,
                                                StreamPartitionOwnershipValue after) {
-        return before.filter(previous -> previous.owner().equals(after.owner()))
-                     .filter(previous -> after.ownerEpoch().isStrictlyAfter(previous.ownerEpoch()))
+        return before.filter(previous -> previous.owner()
+                                                 .equals(after.owner()))
+                     .filter(previous -> after.ownerEpoch()
+                                              .isStrictlyAfter(previous.ownerEpoch()))
                      .flatMap(previous -> after.lastEpochStart()
-                                               .filter(start -> start.epoch().equals(after.ownerEpoch()))
+                                               .filter(start -> start.epoch()
+                                                                     .equals(after.ownerEpoch()))
                                                .map(start -> OperationalEvent.StreamLineageRestarted.streamLineageRestarted(key.stream(),
-                                                                                                                           key.partition(),
-                                                                                                                           after.owner().id(),
-                                                                                                                           previous.ownerEpoch().toString(),
-                                                                                                                           after.ownerEpoch().toString(),
-                                                                                                                           start.startOffset())));
+                                                                                                                            key.partition(),
+                                                                                                                            after.owner()
+                                                                                                                                 .id(),
+                                                                                                                            previous.ownerEpoch()
+                                                                                                                                    .toString(),
+                                                                                                                            after.ownerEpoch()
+                                                                                                                                 .toString(),
+                                                                                                                            start.startOffset())));
     }
 }

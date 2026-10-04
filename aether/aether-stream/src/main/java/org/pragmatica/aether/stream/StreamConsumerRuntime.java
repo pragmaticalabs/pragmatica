@@ -143,6 +143,7 @@ public interface StreamConsumerRuntime extends AutoCloseable {
 
     /// Late-bind where a consumer's re-seek after a replaced lineage is reported to the operator (#1873). The default ignores
     /// it: a runtime without a node behind it only logs.
+    @Contract
     default void operatorWarnings(OperatorWarningSink sink) {}
 
     @FunctionalInterface

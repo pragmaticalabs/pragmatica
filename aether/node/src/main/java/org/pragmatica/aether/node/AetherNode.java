@@ -1488,13 +1488,13 @@ public interface AetherNode extends ManageableNode {
         return (stream, partition, current, start, restarted) -> committedLeader.get()
                                                                                 .fold(() -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise(),
                                                                                       leader -> applier.apply(List.of(StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
-                                                                                                                                                                         stream,
-                                                                                                                                                                         partition,
-                                                                                                                                                                         Option.some(current),
-                                                                                                                                                                         restarted
-                                                                                                                                                                         ? current.restarted(start,
-                                                                                                                                                                                              clock.now())
-                                                                                                                                                                         : current.withEpochStart(start))))
+                                                                                                                                                                           stream,
+                                                                                                                                                                           partition,
+                                                                                                                                                                           Option.some(current),
+                                                                                                                                                                           restarted
+                                                                                                                                                                           ? current.restarted(start,
+                                                                                                                                                                                               clock.now())
+                                                                                                                                                                           : current.withEpochStart(start))))
                                                                                                        .mapToUnit());
     }
 
@@ -5559,9 +5559,8 @@ public interface AetherNode extends ManageableNode {
         // #1873 (KIP-320): every consumer read is checked, on the node that serves it, against the partition's COMMITTED epoch
         // starts; this is where that node reads them.
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
-                                                                                                                                              partition),
-                                                                                         StreamPartitionOwnershipValue.class));
-
+                                                                                                                                                partition),
+                                                                                        StreamPartitionOwnershipValue.class));
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
         streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
@@ -5765,11 +5764,12 @@ public interface AetherNode extends ManageableNode {
                                                                                 streamDeadLetterSink,
                                                                                 streamClusterCursorStore,
                                                                                 StreamConsumerRuntime.validatingReader((stream, partition, fromOffset, maxEvents) -> streamReadRouter.read(stream,
-                                                                                                                                                                                              partition,
-                                                                                                                                                                                              fromOffset,
-                                                                                                                                                                                              maxEvents,
-                                                                                                                                                                                              ReadPreference.GOVERNOR),
+                                                                                                                                                                                           partition,
+                                                                                                                                                                                           fromOffset,
+                                                                                                                                                                                           maxEvents,
+                                                                                                                                                                                           ReadPreference.GOVERNOR),
                                                                                                                        streamReadRouter::readValidated));
+
         streamConsumerRuntime.operatorWarnings(operatorWarningSink);
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,

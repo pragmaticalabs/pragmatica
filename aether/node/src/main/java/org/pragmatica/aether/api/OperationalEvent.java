@@ -129,7 +129,13 @@ public sealed interface OperationalEvent extends Message.Local {
                                                                     String oldEpoch,
                                                                     String newEpoch,
                                                                     long startOffset) {
-            return new StreamLineageRestarted(stream, partition, owner, oldEpoch, newEpoch, startOffset, System.currentTimeMillis());
+            return new StreamLineageRestarted(stream,
+                                              partition,
+                                              owner,
+                                              oldEpoch,
+                                              newEpoch,
+                                              startOffset,
+                                              System.currentTimeMillis());
         }
     }
 

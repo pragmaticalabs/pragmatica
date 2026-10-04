@@ -117,9 +117,8 @@ public final class OwnerActivation {
     @FunctionalInterface
     public interface RingIncarnation {
         long of(String stream, int partition);
-
         /// For the factories without a partition manager behind them: every partition has the same, unknown, incarnation.
-        RingIncarnation NONE = (_, _) -> -1L;
+        RingIncarnation NONE = (_, _) -> - 1L;
     }
 
     /// Commits, as the owner, where the current epoch of `(stream, partition)` begins (#1730 phase 2, KIP-320): with
@@ -534,18 +533,19 @@ public final class OwnerActivation {
     ///     takes the next ownership term, so the new epoch begins where it resumed.
     /// A consumer that read the replaced offsets holds the old epoch, and is told so (`EpochValidation`).
     private Promise<Option<StreamPartitionOwnershipValue>> commitLineage(String stream,
-                                                                        int partition,
-                                                                        PartitionKey key,
-                                                                        Option<StreamPartitionOwnershipValue> record) {
+                                                                         int partition,
+                                                                         PartitionKey key,
+                                                                         Option<StreamPartitionOwnershipValue> record) {
         return record.fold(() -> Promise.success(record), committed -> commitLineage(stream, partition, key, committed));
     }
 
     private Promise<Option<StreamPartitionOwnershipValue>> commitLineage(String stream,
-                                                                        int partition,
-                                                                        PartitionKey key,
-                                                                        StreamPartitionOwnershipValue committed) {
+                                                                         int partition,
+                                                                         PartitionKey key,
+                                                                         StreamPartitionOwnershipValue committed) {
         var started = committed.lastEpochStart()
-                               .filter(start -> start.epoch().equals(committed.ownerEpoch()))
+                               .filter(start -> start.epoch()
+                                                     .equals(committed.ownerEpoch()))
                                .isPresent();
         var incarnation = ringIncarnation.of(stream, partition);
         var restarted = started && !Long.valueOf(incarnation).equals(activatedIncarnation.get(key));
@@ -554,7 +554,11 @@ public final class OwnerActivation {
             return Promise.success(Option.some(committed));
         }
 
-        return lineage.commit(stream, partition, committed, selfWatermark.localWatermark(stream, partition) + 1L, restarted)
+        return lineage.commit(stream,
+                              partition,
+                              committed,
+                              selfWatermark.localWatermark(stream, partition) + 1L,
+                              restarted)
                       .flatMap(_ -> ownedRecord(stream, partition))
                       .flatMap(this::requireCommittedStart)
                       .onSuccess(_ -> activatedIncarnation.put(key, incarnation));
@@ -565,7 +569,8 @@ public final class OwnerActivation {
     /// is now. Without this an owner would activate with no start and answer every consumer read `OwnerNotActivated`.
     private Promise<Option<StreamPartitionOwnershipValue>> requireCommittedStart(Option<StreamPartitionOwnershipValue> record) {
         return record.filter(value -> value.lastEpochStart()
-                                           .filter(start -> start.epoch().equals(value.ownerEpoch()))
+                                           .filter(start -> start.epoch()
+                                                                 .equals(value.ownerEpoch()))
                                            .isPresent())
                      .isPresent() || record.isEmpty()
                ? Promise.success(record)

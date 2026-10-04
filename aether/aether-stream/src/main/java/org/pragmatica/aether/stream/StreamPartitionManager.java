@@ -858,12 +858,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                          long fromOffset,
                                          int maxEvents,
                                          Epoch consumerEpoch) {
-        return ownerRoleGate(streamName, partition).flatMap(_ -> admitted(streamName, partition, fromOffset, consumerEpoch))
-                                                   .flatMap(epoch -> readLocal(streamName,
-                                                                               partition,
-                                                                               fromOffset,
-                                                                               maxEvents).map(events -> new EpochRead(events,
-                                                                                                                       epoch)));
+        return ownerRoleGate(streamName, partition).flatMap(_ -> admitted(streamName,
+                                                                          partition,
+                                                                          fromOffset,
+                                                                          consumerEpoch))
+                            .flatMap(epoch -> readLocal(streamName, partition, fromOffset, maxEvents).map(events -> new EpochRead(events,
+                                                                                                                                  epoch)));
     }
 
     private Result<Epoch> admitted(String streamName, int partition, long fromOffset, Epoch consumerEpoch) {
@@ -875,7 +875,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      consumerEpoch,
                                                                      fromOffset,
                                                                      visibleBounds(streamName, partition).map(VisibleBounds::visibleHead)
-                                                                                                         .or(-1L)));
+                                                                                  .or(-1L)));
     }
 
     /// Late-bind the committed ownership records (#1730 phase 2 / #1873): `AetherNode` wires the node's applied KV state.

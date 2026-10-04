@@ -213,7 +213,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// A plain consumer read: not a replica's catch-up, not a linearizable one. It is the read that carries the owner
     /// epoch the consumer last read under (#1730 phase 2 / #1873).
     private boolean isConsumerRead(ReadForward request) {
-        return !isReplicaCatchup(request) && !request.catchup() && !request.linearizable();
+        return ! isReplicaCatchup(request)
+               && !request.catchup()
+               && !request.linearizable();
     }
 
     /// Validated by [StreamPartitionManager#readServing(String, int, long, int, Epoch)]: the cursor is checked against the
@@ -226,7 +228,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                      request.maxEvents(),
                                      request.consumerEpoch())
                         .async()
-                        .onSuccess(read -> sendReadSuccess(request, read.events(), read.ownerEpoch()))
+                        .onSuccess(read -> sendReadSuccess(request,
+                                                           read.events(),
+                                                           read.ownerEpoch()))
                         .onFailure(cause -> sendReadFailure(request, cause));
     }
 

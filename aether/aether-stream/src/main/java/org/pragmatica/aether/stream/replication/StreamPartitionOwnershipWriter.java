@@ -402,7 +402,13 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                 List<NodeId> fenced) {
         var term = current.ownershipTerm() + 1L;
 
-        return minted(owner, committedEpoch, term, led(owner, liveIsr), current.isrVersion() + 1L, fenced, current.epochStarts());
+        return minted(owner,
+                      committedEpoch,
+                      term,
+                      led(owner, liveIsr),
+                      current.isrVersion() + 1L,
+                      fenced,
+                      current.epochStarts());
     }
 
     private StreamPartitionOwnershipValue minted(NodeId owner,

@@ -157,14 +157,14 @@ public final class StreamReadRouter {
         return ownerResolver.resolve(streamName, partition)
                             .filter(owner -> !owner.equals(selfNodeId))
                             .flatMap(owner -> forwardClient.map(client -> client.readRemoteValidated(owner,
-                                                                                                    streamName,
-                                                                                                    partition,
-                                                                                                    fromOffset,
-                                                                                                    maxEvents,
-                                                                                                    consumerEpoch)))
+                                                                                                     streamName,
+                                                                                                     partition,
+                                                                                                     fromOffset,
+                                                                                                     maxEvents,
+                                                                                                     consumerEpoch)))
                             .map(read -> read.map(result -> new StreamPartitionManager.EpochRead(toRawEvents(result.events(),
                                                                                                              partition),
-                                                                                                  result.ownerEpoch())))
+                                                                                                 result.ownerEpoch())))
                             .or(() -> StreamError.General.PARTITION_NOT_LOCAL.<StreamPartitionManager.EpochRead> promise());
     }
 

@@ -90,6 +90,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
 
     private static final Consumer<CheckpointIssuePoint> NO_CHECKPOINT_ISSUE_PROBE = _ -> {};
+
     private static final Logger WARNINGS_LOG = LoggerFactory.getLogger(ConsumerRuntimeState.class);
 
     private final StreamPartitionManager partitionManager;
@@ -1080,7 +1081,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// The events are served under the owner epoch `read.ownerEpoch()` (#1730 phase 2 / #1873): the consumer adopts it, so
     /// its next read is checked against the lineage these offsets belong to. A reader that reports none (a local or
     /// legacy reader) leaves the epoch as it was.
-    private Promise<Boolean> pollSucceeded(ConsumerKey key, ConsumerState state, StreamPartitionManager.EpochRead read) {
+    private Promise<Boolean> pollSucceeded(ConsumerKey key,
+                                           ConsumerState state,
+                                           StreamPartitionManager.EpochRead read) {
         state.adoptOwnerEpoch(read.ownerEpoch());
 
         return pollSucceeded(key, state, read.events());
@@ -1146,7 +1149,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         OperatorWarnings.raise(WARNINGS_LOG,
                                operatorWarnings,
                                OperatorWarningCode.STREAM_CONSUMER_REWOUND,
-                               key.groupId() + ":" + key.streamName() + "[" + key.partition() + "]@" + diverged.ownerEpoch(),
+                               key.groupId()
+                              + ":" + key.streamName()
+                              + "[" + key.partition()
+                              + "]@" + diverged.ownerEpoch(),
                                "Consumer group {} on {}[{}] was at offset {} when the partition's owner began epoch {} at offset {}; "
                               + "it re-reads from {}. Records this group processed at offsets [{}, {}) belong to the replaced lineage "
                               + "and are no longer in the log; the records now at those offsets are delivered",

@@ -2419,7 +2419,6 @@ public sealed interface AetherValue {
         /// epochs that began above it can invalidate a consumer's cursor; the record keeps the newest, and a consumer older
         /// than the oldest kept is told to resume from the head instead of being checked against a boundary that is gone.
         public static final int EPOCH_STARTS_MAX = 16;
-
         /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
         /// bounded here: the oldest entry is forgotten first, which can at worst let one stale member fight once more.
         public static final int FENCED_MAX = 16;
@@ -2582,7 +2581,8 @@ public sealed interface AetherValue {
         public StreamPartitionOwnershipValue withEpochStart(long startOffset) {
             var next = new EpochStart(ownerEpoch, startOffset);
 
-            return lastEpochStart().filter(next::equals).isPresent()
+            return lastEpochStart().filter(next::equals)
+                                 .isPresent()
                    ? this
                    : withStarts(append(epochStarts, next));
         }
@@ -2623,9 +2623,7 @@ public sealed interface AetherValue {
         /// than `next` are unchanged (it is judged against the first start that follows its epoch, which is `next` or an earlier
         /// one that `next` supersedes); only a consumer older than EVERY kept start can tell a new life from an old one.
         private static List<EpochStart> append(List<EpochStart> starts, EpochStart next) {
-            var all = new ArrayList<>(starts.stream()
-                                            .filter(start -> start.startOffset() < next.startOffset())
-                                            .toList());
+            var all = new ArrayList<>(starts.stream().filter(start -> start.startOffset() < next.startOffset()).toList());
 
             all.add(next);
 

@@ -64,7 +64,9 @@ public final class EpochValidation {
     /// The owner commits the start of its epoch before it serves, so a record whose newest start is another epoch belongs
     /// to an owner that is not yet activated for this one.
     private static boolean startedFor(Epoch ownerEpoch, List<EpochStart> starts) {
-        return !starts.isEmpty() && starts.getLast().epoch().equals(ownerEpoch);
+        return ! starts.isEmpty() && starts.getLast()
+                                           .epoch()
+                                           .equals(ownerEpoch);
     }
 
     private static Result<Epoch> judged(Epoch ownerEpoch,
@@ -77,9 +79,9 @@ public final class EpochValidation {
         }
 
         return firstFollowing(starts, consumerEpoch).filter(next -> cursor > next.startOffset())
-                                                    .<Result<Epoch>> map(next -> new StreamError.EpochDiverged(ownerEpoch,
-                                                                                                                next.startOffset()).result())
-                                                    .or(() -> Result.success(ownerEpoch));
+                             .<Result<Epoch>> map(next -> new StreamError.EpochDiverged(ownerEpoch,
+                                                                                        next.startOffset()).result())
+                             .or(() -> Result.success(ownerEpoch));
     }
 
     /// A consumer older than the oldest kept start cannot be placed against the boundaries that followed its epoch: either the
@@ -87,12 +89,13 @@ public final class EpochValidation {
     /// this life of the partition (a re-created stream continues its ownership record's epochs and supersedes the earlier lives'
     /// starts with its own, see `StreamPartitionOwnershipValue#restarted`).
     private static boolean predatesTheKeptHistory(List<EpochStart> starts, Epoch consumerEpoch) {
-        return (startsAtZero(starts) || starts.size() >= StreamPartitionOwnershipValue.EPOCH_STARTS_MAX)
-               && consumerEpoch.compareTo(starts.getFirst().epoch()) < 0;
+        return (startsAtZero(starts) || starts.size() >= StreamPartitionOwnershipValue.EPOCH_STARTS_MAX) && consumerEpoch.compareTo(starts.getFirst()
+                                                                                                                                          .epoch()) < 0;
     }
 
     private static boolean startsAtZero(List<EpochStart> starts) {
-        return starts.getFirst().startOffset() == 0L;
+        return starts.getFirst()
+                     .startOffset() == 0L;
     }
 
     /// Where a consumer too old to be placed resumes: the start of the new life when the oldest kept epoch began at 0, otherwise
@@ -104,8 +107,7 @@ public final class EpochValidation {
     }
 
     private static Option<EpochStart> firstFollowing(List<EpochStart> starts, Epoch consumerEpoch) {
-        return Option.from(starts.stream()
-                                 .filter(start -> start.epoch().compareTo(consumerEpoch) > 0)
-                                 .findFirst());
+        return Option.from(starts.stream().filter(start -> start.epoch()
+                                                                .compareTo(consumerEpoch) > 0).findFirst());
     }
 }

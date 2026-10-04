@@ -1510,12 +1510,18 @@ public final class ClusterEventAggregator {
                                        + " on its owner " + event.owner()
                                        + " at offset " + event.startOffset()
                                        + ": its ring was rebuilt, consumers read from that offset again",
-                                        Map.of("stream", event.stream(),
-                                               "partition", String.valueOf(event.partition()),
-                                               "owner", event.owner(),
-                                               "oldEpoch", event.oldEpoch(),
-                                               "newEpoch", event.newEpoch(),
-                                               "startOffset", String.valueOf(event.startOffset()))));
+                                        Map.of("stream",
+                                               event.stream(),
+                                               "partition",
+                                               String.valueOf(event.partition()),
+                                               "owner",
+                                               event.owner(),
+                                               "oldEpoch",
+                                               event.oldEpoch(),
+                                               "newEpoch",
+                                               event.newEpoch(),
+                                               "startOffset",
+                                               String.valueOf(event.startOffset()))));
     }
 
     private static Map<String, String> streamIsrDetails(String stream,

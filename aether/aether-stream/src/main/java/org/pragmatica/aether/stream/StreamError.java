@@ -82,7 +82,7 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Consumer cursor belongs to a replaced lineage: owner epoch %s began at offset %d, resume there".formatted(ownerEpoch,
-                                                                                                                                resumeAt);
+                                                                                                                              resumeAt);
         }
     }
 
