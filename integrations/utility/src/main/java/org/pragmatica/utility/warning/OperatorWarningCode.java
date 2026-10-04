@@ -68,7 +68,10 @@ public enum OperatorWarningCode {
     /// A slice's declarative stream consumer could not be registered at activation (#1935): the slice activated, but
     /// that consumer will receive nothing until the cause is fixed and the slice re-activated. CRITICAL: a declared
     /// consumer that silently never fires is a data-plane gap, not a caveat.
-    STREAM_CONSUMER_NOT_REGISTERED("stream-consumer-not-registered", "stream-subscription", WarningLevel.CRITICAL);
+    STREAM_CONSUMER_NOT_REGISTERED("stream-consumer-not-registered", "stream-subscription", WarningLevel.CRITICAL),
+    /// The resolved counterpart of [#STREAM_CONSUMER_NOT_REGISTERED] (#1935): a consumer that was raised as not
+    /// registered now registers. Raised only for a subject the not-registered warning was raised for.
+    STREAM_CONSUMER_REGISTERED_AGAIN("stream-consumer-registered-again", "stream-subscription", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

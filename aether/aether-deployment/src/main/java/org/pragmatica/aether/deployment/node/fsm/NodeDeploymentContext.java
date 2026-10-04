@@ -60,6 +60,9 @@ public final class NodeDeploymentContext {
     private final AtomicReference<Runnable> shutdownCallback;
     private final AtomicReference<Runnable> activeOnEntryCallback;
     private final AtomicReference<OperatorWarningSink> operatorWarnings;
+
+    private final java.util.Set<String> unregisteredConsumers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private final LongSupplier clock;
     private final Supplier<Option<Epoch>> currentEpochSupplier;
     private final NodeDeploymentState dormant;
@@ -311,6 +314,18 @@ public final class NodeDeploymentContext {
     /// until the node binds its own sink (never a process-wide one: Ember runs several nodes in one JVM).
     public OperatorWarningSink operatorWarnings() {
         return operatorWarnings.get();
+    }
+
+    /// Subjects (`<slice>.<method>[<section>]`) of declared stream consumers a `stream-consumer-not-registered`
+    /// warning was raised for and that have not registered since, so the resolved warning is raised only for those.
+    @Contract
+    public void markUnregisteredConsumer(String subject) {
+        unregisteredConsumers.add(subject);
+    }
+
+    /// True when `subject` was marked, which is also what clears it.
+    public boolean clearUnregisteredConsumer(String subject) {
+        return unregisteredConsumers.remove(subject);
     }
 
     @Contract

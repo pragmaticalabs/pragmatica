@@ -137,6 +137,53 @@ class NodeDeploymentStateStreamConsumerRegistrationTest {
         assertThat(awaitWarnings(0)).isEmpty();
     }
 
+    /// Removal (deactivate, undeploy) re-reads the same manifest for a slice that is going away. A consumer that never
+    /// resolved has nothing to remove and nothing for an operator to do, so it must not raise "could NOT be registered".
+    @Test
+    void removingAnUnregistrableConsumer_raisesNothing() throws Exception {
+        Method m = NodeDeploymentState.Active.class.getDeclaredMethod("doUnpublishStreamSubscriptions", Artifact.class, Slice.class);
+        m.setAccessible(true);
+        ((Promise<?>) m.invoke(activeState(), ARTIFACT, new StreamConsumerStubSlice())).await();
+
+        assertThat(awaitWarnings(0)).as("a deactivation must not raise a not-registered CRITICAL").isEmpty();
+    }
+
+    /// The resolved counterpart: once the section is declared, the consumer that was raised as not registered registers
+    /// and a WARNING `stream-consumer-registered-again` is raised for exactly that subject; a consumer that always
+    /// registered raises nothing, and a second publish does not repeat it.
+    @Test
+    void aConsumerRaisedAsNotRegistered_thenRegistering_raisesTheResolvedWarningOnce() throws Exception {
+        invokeReadStreamSubscriptions(activeState(), new StreamConsumerStubSlice());
+        assertThat(awaitWarnings(1)).hasSize(1);
+
+        ConfigService.setInstance(realBinderOver(STREAMS_TOML + "\n[streams.ghost]\npartitions = 2\n"));
+        invokeReadStreamSubscriptions(activeState(), new StreamConsumerStubSlice());
+        invokeReadStreamSubscriptions(activeState(), new StreamConsumerStubSlice());
+
+        var all = awaitWarnings(2);
+
+        assertThat(all).hasSize(2);
+        assertThat(all.get(1).code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN);
+        assertThat(all.get(1).code().level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(all.get(1).subject()).contains("onGhost").contains("streams.ghost");
+    }
+
+    /// Removal clears the memory silently: a slice undeployed while unregistered must not make a LATER healthy deploy
+    /// look like a resolution.
+    @Test
+    void removalWhileUnregistered_thenAHealthyDeploy_raisesNoResolvedWarning() throws Exception {
+        invokeReadStreamSubscriptions(activeState(), new StreamConsumerStubSlice());
+        assertThat(awaitWarnings(1)).hasSize(1);
+
+        Method m = NodeDeploymentState.Active.class.getDeclaredMethod("doUnpublishStreamSubscriptions", Artifact.class, Slice.class);
+        m.setAccessible(true);
+        ((Promise<?>) m.invoke(activeState(), ARTIFACT, new StreamConsumerStubSlice())).await();
+        ConfigService.setInstance(realBinderOver(STREAMS_TOML + "\n[streams.ghost]\npartitions = 2\n"));
+        invokeReadStreamSubscriptions(activeState(), new StreamConsumerStubSlice());
+
+        assertThat(awaitWarnings(1)).as("only the original not-registered warning").hasSize(1);
+    }
+
     private List<OperatorWarning> awaitWarnings(int expected) throws InterruptedException {
         var deadline = System.currentTimeMillis() + 2_000;
 

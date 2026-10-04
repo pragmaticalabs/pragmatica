@@ -9,3 +9,7 @@
   retry loop for a condition a retry cannot fix. There is no slice-status field for an activated-with-caveat
   condition, so none was added; the event is the signal. `NodeDeploymentManager` gains `setOperatorWarningSink`, bound
   by the node to its own sink.
+- **Raised on publish only, never on removal.** Deactivation and undeploy re-read the same manifest; an unresolvable
+  consumer there is logged at DEBUG, so undeploying an affected slice does not raise a false CRITICAL.
+- **The resolved counterpart `stream-consumer-registered-again` (WARNING)** is raised when a consumer previously raised as
+  not registered registers, once, for that same subject only; removing the slice clears the memory silently.
