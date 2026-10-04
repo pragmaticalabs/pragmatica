@@ -107,6 +107,15 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A repair was refused because the record of what its cut would discard could not be made durable first (#1730 phase 2): the
+    /// copy keeps its records and stays quarantined, and the repair is retried.
+    record RepairWitnessFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: its truncation witness could not be written (%s)".formatted(streamName, partition, reason);
+        }
+    }
+
     /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
     /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
     /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.

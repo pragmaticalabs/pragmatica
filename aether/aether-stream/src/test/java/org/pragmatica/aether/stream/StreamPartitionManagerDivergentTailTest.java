@@ -229,6 +229,103 @@ class StreamPartitionManagerDivergentTailTest {
         one.close();
     }
 
+    /// B9: a timer left from a repair that already settled must not report a NEWER repair earlier than its own bound. Repair 1 cuts
+    /// and settles at once (its timer is still pending); repair 2 cuts ~200 ms later; repair 1's timer fires at 400 ms, when repair 2
+    /// is only 200 ms old: nothing may be reported then, and repair 2 reports at its own bound.
+    @Test
+    void repairDivergence_aStaleTimerFromASettledRepair_doesNotReportANewerRepairEarly() throws InterruptedException {
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir.resolve("cf1-stale")));
+
+        one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.repairReportBound(org.pragmatica.lang.io.TimeSpan.timeSpan(400).millis());
+        for (var i = 0; i < 12; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 10, "different".getBytes(UTF_8), 1010L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        one.quarantineView().repairSettled("single", PARTITION);
+        awaitWarnings(1);
+        assertThat(warnings).as("repair 1 settled: reported once, settled").singleElement();
+        warnings.clear();
+        Thread.sleep(200);
+        one.appendRecovered("single", PARTITION, 6, "different".getBytes(UTF_8), 1006L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        Thread.sleep(300);
+
+        assertThat(warnings).as("repair 1's timer fired at 400 ms; repair 2 is 300 ms old, inside its own bound: no report").isEmpty();
+
+        awaitWarnings(1);
+
+        assertThat(warnings).as("repair 2 reports at its own bound").singleElement()
+                            .satisfies(warning -> assertThat(warning.message()).contains("repairSettled=false"));
+        one.close();
+    }
+
+    /// I (v1890): the witness of what a cut discards is written BEFORE the cut, and a cut whose witness cannot be made durable is
+    /// REFUSED: the records stay, the copy stays quarantined, nothing is reported as lost.
+    @Test
+    void repairDivergence_whenTheWitnessCannotBeWritten_refusesTheCut_andLosesNothing() throws Exception {
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir.resolve("cf1-witness")));
+
+        one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        blockWitnessFiles(walDir.resolve("cf1-witness"));
+
+        var refused = one.repairDivergence("single", PARTITION, _ -> true);
+
+        assertThat(refused.isFailure()).as("the cut is refused when its witness cannot be written").isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RepairWitnessFailed.class));
+        assertThat(one.readAppended("single", PARTITION, 0, 20).unwrap()).as("nothing was cut").hasSize(8);
+        assertThat(one.quarantinedAt("single", PARTITION).isPresent()).as("the copy stays quarantined").isTrue();
+        quietPeriod();
+        assertThat(warnings).as("no loss, no report").isEmpty();
+        one.close();
+    }
+
+    /// I: a witness that exists but cannot be read (a torn or foreign file) is reported at reopen as an UNKNOWN range, never dropped.
+    @Test
+    void aTornWitness_isReportedAtReopenAsAnUnknownRange_andRemoved() throws Exception {
+        var path = walDir.resolve("cf1-torn");
+        var first = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        first.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+             .onFailure(cause -> fail(cause.message()));
+        first.appendRecovered("single", PARTITION, 0, "r0".getBytes(UTF_8), 1000L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        first.syncReplicated("single", PARTITION).await();
+        first.close();
+        var wal = java.nio.file.Files.walk(path).filter(java.nio.file.Files::isRegularFile).filter(file -> file.getFileName().toString().endsWith(".wal")).findFirst().orElseThrow();
+
+        java.nio.file.Files.writeString(wal.resolveSibling(wal.getFileName() + ".pending-cut"), "3 5 xx");
+        var restarted = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        restarted.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+                 .onFailure(cause -> fail(cause.message()));
+        restarted.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        awaitWarnings(1);
+
+        assertThat(warnings).singleElement().satisfies(warning -> assertThat(warning.message()).contains("unknown range"));
+        assertThat(java.nio.file.Files.exists(wal.resolveSibling(wal.getFileName() + ".pending-cut"))).as("the witness is removed once reported").isFalse();
+        restarted.close();
+    }
+
+    /// Makes every witness write under `root` fail: a directory occupies each file's temporary witness name.
+    private static void blockWitnessFiles(java.nio.file.Path root) throws java.io.IOException {
+        try (var files = java.nio.file.Files.walk(root)) {
+            for (var file : files.filter(java.nio.file.Files::isRegularFile).toList()) {
+                java.nio.file.Files.createDirectories(file.resolveSibling(file.getFileName() + ".pending-cut.tmp"));
+            }
+        }
+    }
+
     /// B9 (v1890): a divergence older than the compared window is cut back one window per run. The operator is told ONCE, when the
     /// repair settles, with the FINAL range (from the last cut's first offset up to the original local head), not once per step.
     @Test
