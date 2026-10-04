@@ -780,16 +780,25 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// `keepThrough` (they are otherwise monotonic). A listener told earlier that visibility advanced past the cut
     /// simply finds nothing above it on its next read. Readers retry across the cut, see [#truncationSeq].
     public Result<Long> truncateSuffix(long keepThrough) {
+        return truncateSuffix(keepThrough, Result::unitResult, _ -> {});
+    }
+
+    /// [#truncateSuffix(long)] with the owner of the ring's durable copy taking part INSIDE the ordered section
+    /// (#1730 phase 2): `durableCut` runs under the append lock, after the cut was found possible and before the ring
+    /// changes, so a replicated append cannot write a frame for an offset the log still holds, and a failed durable
+    /// cut leaves the ring untouched. `afterCut` runs under the same lock once the ring has shrunk, with the number of
+    /// events removed. Neither runs when nothing is above `keepThrough`.
+    public Result<Long> truncateSuffix(long keepThrough, Supplier<Result<Unit>> durableCut, LongConsumer afterCut) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
         synchronized (appendLock) {
-            return guardedAccess(() -> truncateSuffixChecked(keepThrough));
+            return guardedAccess(() -> truncateSuffixChecked(keepThrough, durableCut, afterCut));
         }
     }
 
-    private Result<Long> truncateSuffixChecked(long keepThrough) {
+    private Result<Long> truncateSuffixChecked(long keepThrough, Supplier<Result<Unit>> durableCut, LongConsumer afterCut) {
         var head = rawHeadOffset();
         var tail = rawTailOffset();
 
@@ -801,7 +810,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return new StreamError.TruncateBelowRetained(streamName, partition, keepThrough, tail).result();
         }
 
-        return success(cutSuffix(keepThrough, head));
+        return durableCut.get()
+                         .map(_ -> cutSuffix(keepThrough, head))
+                         .onSuccess(afterCut::accept);
     }
 
     private long cutSuffix(long keepThrough, long head) {

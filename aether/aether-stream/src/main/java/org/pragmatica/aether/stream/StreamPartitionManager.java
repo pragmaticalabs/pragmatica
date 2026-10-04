@@ -59,6 +59,9 @@ import org.pragmatica.aether.stream.provenance.ProvenanceEpoch;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.AppendLog.WalRecord;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -228,6 +231,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Object quarantineLock = new Object();
     /// #1596: the durable partition flag, late-bound ([#partitionFlags(PartitionFlags)]).
     private volatile Option<PartitionFlags> partitionFlags = none();
+    /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
+    /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
+    private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
     /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
@@ -864,6 +870,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void partitionFlags(PartitionFlags flags) {
         this.partitionFlags = some(flags);
+    }
+
+    /// Late-bind the operator-warning sink (#1730 phase 2). `AetherNode` wires the cluster one; unit and Forge managers
+    /// keep the log-only default. Set once at wiring.
+    @Contract
+    public void operatorWarnings(OperatorWarningSink sink) {
+        this.operatorWarnings = sink;
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1943,6 +1956,116 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new ManagerQuarantineView();
     }
 
+    /// What a repair of a quarantined replica removed: everything above `keptThrough`, which is `removed` events
+    /// spanning `[firstRemoved, lastRemoved]`.
+    public record TailCut(long keptThrough, long removed, long firstRemoved, long lastRemoved) {}
+
+    /// Repairs a quarantined REPLICA copy by cutting its tail back to the last offset it shares with its sender
+    /// (#1730 phase 2, KIP-101): the divergent entry sits at `quarantinedAt`, so every offset below it is kept and
+    /// everything from it up is removed from the WAL, then the epoch history, then the ring, inside the ring's ordered
+    /// section so no replicated append lands between. The quarantine is lifted in the same section (only if it is still
+    /// the one this repair read, so a divergence recorded meanwhile at a lower offset is kept). Nothing is quarantined:
+    /// `none`. The CALLER decides that the sender is the committed owner of a later epoch and that this node is not
+    /// the owner; this method never does.
+    ///
+    /// Refused, leaving the partition quarantined, when the cut lies below the ring's retained range
+    /// ([StreamError.TruncateBelowRetained]): those offsets were evicted and possibly sealed, so the ring cannot
+    /// vouch that they are gone.
+    @Contract
+    public Result<Option<TailCut>> repairDivergence(String streamName, int partition) {
+        var ref = new PartitionRef(streamName, partition);
+
+        return quarantinedAt(streamName, partition).fold(() -> success(none()),
+                                                          divergedAtOffset -> cutDivergentTail(streamName,
+                                                                                               partition,
+                                                                                               ref,
+                                                                                               divergedAtOffset).map(Option::some));
+    }
+
+    private Result<TailCut> cutDivergentTail(String streamName, int partition, PartitionRef ref, long divergedAtOffset) {
+        var keep = divergedAtOffset - 1;
+
+        return resolvePartitionBuffer(streamName, partition).flatMap(ring -> cutRing(streamName,
+                                                                                    partition,
+                                                                                    ref,
+                                                                                    ring,
+                                                                                    divergedAtOffset,
+                                                                                    keep))
+                                                           .onSuccess(cut -> reportCut(streamName, partition, cut))
+                                                           .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
+                                                                                        streamName,
+                                                                                        partition,
+                                                                                        keep,
+                                                                                        cause.message()));
+    }
+
+    private Result<TailCut> cutRing(String streamName,
+                                    int partition,
+                                    PartitionRef ref,
+                                    OffHeapRingBuffer ring,
+                                    long divergedAtOffset,
+                                    long keep) {
+        var head = ring.headOffset();
+        var wal = walFor(streamName, partition);
+
+        return ring.truncateSuffix(keep,
+                                   () -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
+                                            .or(Result.unitResult()),
+                                   _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
+                   .map(removed -> new TailCut(keep, removed, keep + 1, head))
+                   .onSuccess(_ -> divergedAt.remove(ref, divergedAtOffset));
+    }
+
+    /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
+    /// the replicated write the durability barrier remembers is forgotten when it was above the cut -- a barrier that
+    /// still pointed at it would expose, as durable and visible, offsets the cut removed.
+    @Contract
+    private void forgetCutState(String streamName, int partition, PartitionRef ref, long divergedAtOffset, long keep) {
+        synchronized (quarantineLock) {
+            divergedAt.remove(ref, divergedAtOffset);
+        }
+
+        lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
+                                                (_, write) -> write.offset() > keep
+                                                              ? null
+                                                              : write);
+    }
+
+    /// A cut is routine for a stream that confirms with replicas (what it removed was never acknowledged: an
+    /// acknowledgement needs every in-sync member, and the committed owner is one). With `confirmation_factor` 1 the
+    /// acknowledgement was the old owner's alone, so the removed records may have been acknowledged and are lost: that
+    /// is the stated acks=1 window, and the operator is told exactly which offsets.
+    @Contract
+    private void reportCut(String streamName, int partition, TailCut cut) {
+        if (cut.removed() == 0) {
+            return;
+        }
+
+        if (confirmationFactorFor(streamName) <= 1) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_TRUNCATED,
+                                   streamName + "[" + partition + "]@" + cut.firstRemoved(),
+                                   "Replica {}[{}] discarded offsets [{}, {}] ({} events) that diverged from its owner; "
+                                  + "confirmation_factor is 1, so they may have been acknowledged by their writer and are lost",
+                                   streamName,
+                                   partition,
+                                   cut.firstRemoved(),
+                                   cut.lastRemoved(),
+                                   cut.removed());
+
+            return;
+        }
+
+        log.info("Replica {}[{}] cut its tail back to offset {}: {} unacknowledged events [{}, {}] diverged from its owner",
+                 streamName,
+                 partition,
+                 cut.keptThrough(),
+                 cut.removed(),
+                 cut.firstRemoved(),
+                 cut.lastRemoved());
+    }
+
     private final class ManagerQuarantineView implements QuarantineView {
         @Override
         public Option<Long> quarantinedAt(String streamName, int partition) {
@@ -1954,6 +2077,11 @@ public final class StreamPartitionManager implements AutoCloseable {
             synchronized (quarantineLock) {
                 return quarantinedAt(streamName, partition).fold(() -> some(promotion.get()), _ -> none());
             }
+        }
+
+        @Override
+        public Result<Option<Long>> repair(String streamName, int partition) {
+            return repairDivergence(streamName, partition).map(cut -> cut.map(TailCut::keptThrough));
         }
     }
 

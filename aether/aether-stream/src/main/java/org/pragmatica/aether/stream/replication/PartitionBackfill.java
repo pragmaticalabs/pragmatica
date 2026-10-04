@@ -98,6 +98,9 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// replica re-runs backfill on the next reconcile.
 public final class PartitionBackfill {
     private static final Logger log = LoggerFactory.getLogger(PartitionBackfill.class);
+    /// How many of the owner's newest records a replica that claims to hold them all compares before it is promoted
+    /// (#1730 phase 2, the window the promotion gate compares as well).
+    private static final long TAIL_VERIFY_WINDOW = 1024L;
 
     private final ReplicaRegistry registry;
     private final AlignedRecovery partitionRecovery;
@@ -627,10 +630,16 @@ public final class PartitionBackfill {
     }
 
     private Promise<Long> runBackfill(String streamName, int partition) {
+        return runBackfill(streamName, partition, true);
+    }
+
+    private Promise<Long> runBackfill(String streamName, int partition, boolean mayRepair) {
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
-            return refuseQuarantined(streamName, partition);
+            return mayRepair && repairable(streamName, partition)
+                   ? repairThenRun(streamName, partition)
+                   : refuseQuarantined(streamName, partition);
         }
 
         if (isSelfOwner(streamName, partition)) {
@@ -654,6 +663,43 @@ public final class PartitionBackfill {
         holdSyncingBelow(streamName, partition, divergedAt);
 
         return quarantineRefusal(streamName, partition, divergedAt);
+    }
+
+    /// #1730 phase 2 (KIP-101): a quarantined copy is repairable when its sender is the committed owner and this node is
+    /// not: the owner's records for the diverging offsets win, and what this copy holds above the last shared offset was
+    /// never acknowledged (an acknowledgement needs every in-sync member, and the committed owner is one). A copy that
+    /// is itself the owner, or has no owner to compare with, stays quarantined.
+    private boolean repairable(String streamName, int partition) {
+        return !isSelfOwner(streamName, partition) && hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
+                                                                                      .isPresent();
+    }
+
+    /// Cut the divergent tail, hold self SYNCING at the last shared offset, and run the backfill again from there. A
+    /// refused cut leaves the quarantine as it was.
+    private Promise<Long> repairThenRun(String streamName, int partition) {
+        return quarantine.repair(streamName, partition)
+                         .fold(cause -> repairRefused(streamName, partition, cause),
+                               kept -> kept.fold(() -> runBackfill(streamName, partition, false),
+                                                 keptThrough -> resumeAfterRepair(streamName, partition, keptThrough)));
+    }
+
+    private Promise<Long> resumeAfterRepair(String streamName, int partition, long keptThrough) {
+        updateWatermark(streamName, partition, self, keptThrough, ReplicationState.SYNCING);
+        log.info("Backfill {}[{}]: divergent tail cut back to offset {} — refetching from the owner",
+                 streamName,
+                 partition,
+                 keptThrough);
+
+        return runBackfill(streamName, partition, false);
+    }
+
+    private Promise<Long> repairRefused(String streamName, int partition, Cause cause) {
+        log.warn("Backfill {}[{}]: quarantined copy could not be repaired by truncation: {}",
+                 streamName,
+                 partition,
+                 cause.message());
+
+        return refuseQuarantined(streamName, partition);
     }
 
     @Contract
@@ -1824,6 +1870,7 @@ public final class PartitionBackfill {
                     .fold(result -> result.fold(_ -> handleNoSource(streamName, partition, replicas),
                                                 ownerWatermark -> promoteOrWait(streamName,
                                                                                 partition,
+                                                                                owner,
                                                                                 selfConfirmed,
                                                                                 ownerWatermark,
                                                                                 replicas)));
@@ -1833,47 +1880,41 @@ public final class PartitionBackfill {
     /// else falls through to the probe-gated no-source path rather than flipping a false `CAUGHT_UP`.
     private Promise<Long> promoteOrWait(String streamName,
                                         int partition,
+                                        NodeId owner,
                                         long selfConfirmed,
                                         long ownerWatermark,
                                         List<ReplicaDescriptor> replicas) {
         return atTail(selfConfirmed, ownerWatermark)
-               ? promoteAtOwnerTail(streamName, partition, selfConfirmed, ownerWatermark)
+               ? verifyAgainstOwnerTail(streamName, partition, owner, ownerWatermark, replicas)
                : handleNoSource(streamName, partition, replicas);
+    }
+
+    /// #1730 phase 2: a replica that holds everything the owner holds is not CAUGHT_UP until it has COMPARED its records
+    /// with the owner's. An empty response says only that the replica holds at least the owner's head; it says nothing
+    /// about whether the records agree, and a replica that held more, or different records, was promoted at its OWN
+    /// head (the owner then counted that offset as a confirmation of records the replica never received). The owner's
+    /// last [#TAIL_VERIFY_WINDOW] records are fetched and applied through the ordinary apply, which skips a held record
+    /// that is identical and refuses a different one (quarantine, then repair); the replica is promoted at the OWNER's
+    /// head, whatever it holds above it. An empty answer proves nothing and takes the no-source path.
+    private Promise<Long> verifyAgainstOwnerTail(String streamName,
+                                                 int partition,
+                                                 NodeId owner,
+                                                 long ownerWatermark,
+                                                 List<ReplicaDescriptor> replicas) {
+        var from = Math.max(0L, ownerWatermark - TAIL_VERIFY_WINDOW + 1);
+
+        return transport.requestCatchup(owner,
+                                        catchupRequest(owner, streamName, partition, from),
+                                        () -> progress(streamName, partition))
+                        .flatMap(response -> response.payloads().isEmpty()
+                                             ? handleNoSource(streamName, partition, replicas)
+                                             : applyAndPromote(streamName, partition, -1L, response));
     }
 
     /// An owner reporting `-1` is an EMPTY owner, never a true tail (#445) — self must not promote off
     /// it however much history self holds, because a further-ahead survivor may exist.
     private static boolean atTail(long selfConfirmed, long ownerWatermark) {
         return ownerWatermark >= 0 && selfConfirmed >= ownerWatermark;
-    }
-
-    /// #1505 F2: a quarantined partition is never promoted at the owner's tail (#559 path, [#promoteUnlessQuarantined]).
-    private Promise<Long> promoteAtOwnerTail(String streamName,
-                                             int partition,
-                                             long selfConfirmed,
-                                             long ownerWatermark) {
-        return promoteUnlessQuarantined(streamName,
-                                        partition,
-                                        () -> promoteAtOwnerTailUnquarantined(streamName,
-                                                                              partition,
-                                                                              selfConfirmed,
-                                                                              ownerWatermark));
-    }
-
-    private Promise<Long> promoteAtOwnerTailUnquarantined(String streamName,
-                                                          int partition,
-                                                          long selfConfirmed,
-                                                          long ownerWatermark) {
-        log.debug("Backfill {}[{}]: CAUGHT_UP at owner tail — owner watermark {}, self {} — empty response "
-                 + "means nothing to fetch, not an empty owner; skipping the cold-start contest",
-                  streamName,
-                  partition,
-                  ownerWatermark,
-                  selfConfirmed);
-        updateWatermark(streamName, partition, self, selfConfirmed);
-        firstNoSourceMs.remove(partitionKey(streamName, partition));
-
-        return Promise.success(0L);
     }
 
     /// On an exact tie at the max watermark, exactly ONE replica may promote: the one with the lowest

@@ -64,7 +64,12 @@ public enum OperatorWarningCode {
     /// A configured core member died on this node's membership view without this node ever observing it
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
-    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING);
+    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
+    /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
+    /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas
+    /// discards only unacknowledged records on the same cut, and that is only logged.
+    STREAM_DIVERGENT_TAIL_TRUNCATED("stream-divergent-tail-truncated", "stream-replication", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

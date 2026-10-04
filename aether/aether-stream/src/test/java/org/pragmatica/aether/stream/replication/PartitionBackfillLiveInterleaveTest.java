@@ -14,14 +14,17 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -253,7 +256,7 @@ class PartitionBackfillLiveInterleaveTest {
     @Test
     void quarantine_divergentHeldEntry_backfillMustNotPromoteCaughtUp() {
         var handler = receiveHandler();
-        var backfill = backfill();
+        var backfill = backfillWithoutRepair();
 
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
         replica.appendRecovered(STREAM, PARTITION, 13L, "forged-13".getBytes(UTF_8), 1013L).unwrap();
@@ -278,7 +281,7 @@ class PartitionBackfillLiveInterleaveTest {
     @Test
     void quarantine_caughtUpReplicaMeetsDivergence_isDemotedBelowIt_sendsNoCompletionAck() {
         var handler = receiveHandler();
-        var backfill = backfill();
+        var backfill = backfillWithoutRepair();
 
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
         var first = backfill.backfill(STREAM, PARTITION);
@@ -388,6 +391,34 @@ class PartitionBackfillLiveInterleaveTest {
     }
 
     private PartitionBackfill backfill() {
+        return backfillOver(replica.quarantineView());
+    }
+
+    /// A quarantine whose repair is refused (#1730 phase 2: below the ring's retained range, or a failed cut). What a
+    /// quarantined partition must never do while the divergent entry is held, refuse to pull, promote or ack, is pinned
+    /// through it; a repair that succeeds is pinned by `ReplicaDivergentTailRepairTest`.
+    private PartitionBackfill backfillWithoutRepair() {
+        var real = replica.quarantineView();
+
+        return backfillOver(new QuarantineView() {
+            @Override
+            public Option<Long> quarantinedAt(String stream, int partition) {
+                return real.quarantinedAt(stream, partition);
+            }
+
+            @Override
+            public <T> Option<T> unlessQuarantined(String stream, int partition, Supplier<T> promotion) {
+                return real.unlessQuarantined(stream, partition, promotion);
+            }
+
+            @Override
+            public Result<Option<Long>> repair(String stream, int partition) {
+                return Causes.cause("repair refused").result();
+            }
+        });
+    }
+
+    private PartitionBackfill backfillOver(QuarantineView quarantine) {
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
                                  this::deferredCatchup,
@@ -401,7 +432,7 @@ class PartitionBackfillLiveInterleaveTest {
                                  () -> MEMBERS,
                                  CommittedStreamOwnerSource.none(),
                                  replica::syncReplicated,
-                                 replica.quarantineView());
+                                 quarantine);
     }
 
     private Promise<ReplicationMessage.CatchupResponse> deferredCatchup(NodeId target,
