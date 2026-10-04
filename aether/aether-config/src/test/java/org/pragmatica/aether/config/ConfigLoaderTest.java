@@ -455,7 +455,6 @@ class ConfigLoaderTest {
             [dht.replication]
             cooldown_delay_ms = 5000
             cooldown_rate = 5000
-            target_rf = 5
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -463,7 +462,6 @@ class ConfigLoaderTest {
             .onSuccess(config -> {
                 assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(5000);
                 assertThat(config.dhtReplication().cooldownRate()).isEqualTo(5000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(5);
             });
     }
 
@@ -480,28 +478,26 @@ class ConfigLoaderTest {
             .onSuccess(config -> {
                 assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
                 assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(3);
             });
     }
 
+    /// #1777 track 1: the DHT's factors come from the cluster's committed `[replication]`; a node-local
+    /// `target_rf` would be a second source of truth, so it is refused, naming where the setting lives now.
     @Test
-    void loadFromString_parsesPartialDhtReplicationConfig() {
+    void loadFromString_targetRf_isRefusedNamingReplication() {
         var toml = """
             [cluster]
             environment = "docker"
             nodes = 3
 
             [dht.replication]
-            target_rf = 0
+            target_rf = 5
             """;
 
-        ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
-            .onSuccess(config -> {
-                assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(0);
-            });
+        var message = ConfigLoader.loadFromString(toml)
+                                  .fold(cause -> cause.message(), _ -> "loaded");
+
+        assertThat(message).contains("target_rf").contains("[replication]");
     }
 
     @Test

@@ -39,6 +39,8 @@ class DhtResolveObserverWiringTest {
     void assembly_scopesTheCacheClientFromTheUnobservedBase() throws IOException {
         var source = Files.readString(SOURCE);
 
-        assertThat(source).contains("var cacheDhtClient = baseDhtClient.scoped(config.cache());");
+        // #1777 track 1: still scoped from the unobserved base; the declaration is now read live from the committed
+        // `[cache]` section through a supplier
+        assertThat(source).contains("var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);");
     }
 }

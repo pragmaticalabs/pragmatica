@@ -8,12 +8,16 @@ import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailSender;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.utils.Retry;
 
 import static org.pragmatica.aether.resource.notification.NotificationResult.notificationResult;
 
 
-final class HttpNotificationSender implements NotificationSender {
+/// `AsyncCloseable` because the email sender it holds owns the `HttpOperations` the factory built for
+/// it, and a closeable held in a field is invisible to `ResourceFactory`'s release dispatch (#1097).
+final class HttpNotificationSender implements NotificationSender, AsyncCloseable {
     private final HttpEmailSender sender;
     private final Retry retry;
 
@@ -27,6 +31,13 @@ final class HttpNotificationSender implements NotificationSender {
         return switch (notification) {
             case Notification.Email email -> sendEmail(email);
         };
+    }
+
+    @Override
+    public Promise<Unit> close() {
+        return sender instanceof AsyncCloseable closeable
+               ? closeable.close()
+               : Promise.unitPromise();
     }
 
     private Promise<NotificationResult> sendEmail(Notification.Email email) {

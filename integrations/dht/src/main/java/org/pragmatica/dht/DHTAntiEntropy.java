@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -75,7 +76,8 @@ public final class DHTAntiEntropy {
 
     private final DHTNode node;
     private final DHTNetwork network;
-    private final DHTConfig config;
+    /// Fixed for the [DHTConfig]-taking factories; the node's live replication for the production one (#1777 track 1).
+    private final Supplier<DHTConfig> config;
     private final TimeSpan antiEntropyInterval;
     private final TimeSpan catchUpRoundTimeout;
     /// Which senders may push a departure batch (`ackRequested`) here: the nodes the leader commanded to
@@ -103,7 +105,7 @@ public final class DHTAntiEntropy {
 
     private DHTAntiEntropy(DHTNode node,
                            DHTNetwork network,
-                           DHTConfig config,
+                           Supplier<DHTConfig> config,
                            TimeSpan antiEntropyInterval,
                            TimeSpan catchUpRoundTimeout,
                            Predicate<NodeId> departingSenders) {
@@ -124,7 +126,7 @@ public final class DHTAntiEntropy {
     public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
         return new DHTAntiEntropy(node,
                                   network,
-                                  config,
+                                  () -> config,
                                   DEFAULT_ANTI_ENTROPY_INTERVAL,
                                   CATCH_UP_ROUND_TIMEOUT,
                                   _ -> false);
@@ -142,7 +144,7 @@ public final class DHTAntiEntropy {
                                                 Predicate<NodeId> departingSenders) {
         return new DHTAntiEntropy(node,
                                   network,
-                                  config,
+                                  () -> config,
                                   DEFAULT_ANTI_ENTROPY_INTERVAL,
                                   CATCH_UP_ROUND_TIMEOUT,
                                   departingSenders);
@@ -158,7 +160,19 @@ public final class DHTAntiEntropy {
                                                 DHTNetwork network,
                                                 DHTConfig config,
                                                 TimeSpan antiEntropyInterval) {
-        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT, _ -> false);
+        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT, _ -> false);
+    }
+
+    /// Create an anti-entropy process that follows the node's LIVE replication ([DHTNode#config], #1777 track 1)
+    /// and accepts departure pushes from `departingSenders`. Rounds wait until the node has resolved the
+    /// cluster's committed replication: before that it cannot tell which partitions it replicates.
+    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, Predicate<NodeId> departingSenders) {
+        return new DHTAntiEntropy(node,
+                                  network,
+                                  node::config,
+                                  DEFAULT_ANTI_ENTROPY_INTERVAL,
+                                  CATCH_UP_ROUND_TIMEOUT,
+                                  departingSenders);
     }
 
     /// Test seam: an anti-entropy process whose catch-up rounds time out after `catchUpRoundTimeout`.
@@ -167,7 +181,7 @@ public final class DHTAntiEntropy {
                                          DHTConfig config,
                                          TimeSpan antiEntropyInterval,
                                          TimeSpan catchUpRoundTimeout) {
-        return new DHTAntiEntropy(node, network, config, antiEntropyInterval, catchUpRoundTimeout, _ -> false);
+        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, catchUpRoundTimeout, _ -> false);
     }
 
     /// Start the periodic anti-entropy process.
@@ -209,11 +223,11 @@ public final class DHTAntiEntropy {
     /// [#CATCH_UP_ROUND_TIMEOUT]. Cheap when nothing is pending. Run every [#CATCH_UP_INTERVAL].
     @Contract
     public void catchUpNow() {
-        if (config.isFullReplication()) {
+        if (config.get().isFullReplication() || !node.replicationResolved()) {
             return;
         }
 
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
 
         node.pendingPartitions().forEach(partition -> catchUpIfOwned(partition, replicationFactor));
     }
@@ -224,7 +238,7 @@ public final class DHTAntiEntropy {
     }
 
     private void runAntiEntropy() {
-        if (config.isFullReplication()) {
+        if (config.get().isFullReplication() || !node.replicationResolved()) {
             return;
         }
 
@@ -237,7 +251,7 @@ public final class DHTAntiEntropy {
 
     private void synchronizePartitions() {
         expireStalePendingDigests();
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
         var owned = 0;
 
         for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
@@ -689,7 +703,7 @@ public final class DHTAntiEntropy {
     /// The holder applies the same test against ITS ring ([DHTNode#handleMigrationDataRequest]) — a
     /// replica is acquired only where the two views agree (issue #420).
     private boolean isLocalReplicaOf(int partitionIndex) {
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
 
         return node.ring()
                    .nodesFor(Partition.at(partitionIndex),
@@ -809,7 +823,7 @@ public final class DHTAntiEntropy {
     /// concurrent with drains as in a fleet replacement (v1820 r5). Nothing retries the nack, so each lost the copy.
     /// A member the pusher knows and this node does not is simply absent here, which is another removal.
     private boolean replicaHereAroundDeparture(DHTMessage.MigrationDataResponse response, DHTMessage.KeyValue entry) {
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
         var pusherLeaving = Set.copyOf(response.leaving());
         var pusherView = Set.copyOf(response.view());
 
@@ -857,7 +871,7 @@ public final class DHTAntiEntropy {
     }
 
     private boolean replicaOfEntry(NodeId candidate, DHTMessage.KeyValue entry) {
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
 
         return node.ring()
                    .nodesFor(entry.key(),
