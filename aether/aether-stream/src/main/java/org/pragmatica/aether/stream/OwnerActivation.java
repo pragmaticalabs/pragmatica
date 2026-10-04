@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -572,6 +573,81 @@ public final class OwnerActivation {
     private Promise<Unit> catchUpFromHighest(String stream, int partition, List<PeerWatermark> answered) {
         clearUnreachable(PartitionKey.partitionKey(stream, partition));
         var local = selfWatermark.localWatermark(stream, partition);
+
+        return withoutDivergentPeers(stream, partition, local, answered).flatMap(kept -> catchUpFromKept(stream,
+                                                                                                         partition,
+                                                                                                         local,
+                                                                                                         kept));
+    }
+
+    /// #1730 phase 2 (KIP-101): a candidate ELECTED from the committed ISR holds every acknowledged record, because an
+    /// acknowledgement needed every member of the ISR in force (phase 1). A peer whose records differ from the
+    /// candidate's within the overlap therefore carries a tail nobody acknowledged: an ex-owner that returned, or an ISR
+    /// member that lagged an election. That peer is left out of the catch-up (never the source, never compared again) and
+    /// truncates itself when it backfills from the new owner. Only a candidate with a committed ISR it belongs to is
+    /// exempt; a record minted before #1730 has none, and every other refusal (two peers disagreeing with each other,
+    /// nothing comparable) is unchanged.
+    private Promise<List<PeerWatermark>> withoutDivergentPeers(String stream,
+                                                               int partition,
+                                                               long local,
+                                                               List<PeerWatermark> answered) {
+        if (!isrElected(stream, partition)) {
+            return Promise.success(answered);
+        }
+
+        return Promise.allOf(answered.stream()
+                                     .map(peer -> divergesFromCandidate(stream, partition, local, peer))
+                                     .toList())
+                      .map(verdicts -> keepAgreeing(stream, partition, answered, verdicts));
+    }
+
+    private boolean isrElected(String stream, int partition) {
+        return records.committed(stream, partition)
+                      .filter(record -> record.isrVersion() > 0 && record.isr().contains(self))
+                      .isPresent();
+    }
+
+    /// Whether `peer` holds, within the overlap, a record that differs from the candidate's. A peer that cannot be read
+    /// is not judged here; the existing comparisons report it as they did before.
+    private Promise<Boolean> divergesFromCandidate(String stream, int partition, long local, PeerWatermark peer) {
+        var to = Math.min(local, peer.watermark());
+
+        if (to < 0) {
+            return Promise.success(false);
+        }
+
+        var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
+
+        return Promise.all(ranges.read(self, stream, partition, from, to),
+                           ranges.read(peer.node(), stream, partition, from, to))
+                      .map((mine, theirs) -> compared(mine, theirs) > 0 && !agree(mine, theirs))
+                      .recover(_ -> false);
+    }
+
+    private List<PeerWatermark> keepAgreeing(String stream,
+                                             int partition,
+                                             List<PeerWatermark> answered,
+                                             List<Result<Boolean>> verdicts) {
+        var kept = new ArrayList<PeerWatermark>();
+
+        for (var i = 0; i < answered.size(); i++) {
+            if (verdicts.get(i).or(false)) {
+                log.warn("Owner activation of {}[{}]: {} holds records that differ from this elected owner's (watermark {}, "
+                        + "local {}); it is left out of the catch-up and truncates its divergent tail when it backfills from this node",
+                         stream,
+                         partition,
+                         answered.get(i).node(),
+                         answered.get(i).watermark(),
+                         selfWatermark.localWatermark(stream, partition));
+            } else {
+                kept.add(answered.get(i));
+            }
+        }
+
+        return List.copyOf(kept);
+    }
+
+    private Promise<Unit> catchUpFromKept(String stream, int partition, long local, List<PeerWatermark> answered) {
         var source = Option.from(answered.stream()
                                          .filter(peer -> peer.watermark() > local)
                                          .max(Comparator.comparingLong(PeerWatermark::watermark)));
