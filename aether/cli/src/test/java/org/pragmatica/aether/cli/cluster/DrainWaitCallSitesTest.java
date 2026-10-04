@@ -95,6 +95,51 @@ class DrainWaitCallSitesTest {
         return new ScriptedDrainHttp(drainAccepted(NODE), lifecycle(NODE, "DRAINING"), notFound(NODE), connectionRefused());
     }
 
+    /// #1720: in a rolling restart the second drain is commonly asked for before the first node's displaced instance
+    /// is ACTIVE again, and the floor refuses it. The refusal is transient, so the wave waits it out rather than
+    /// ending the upgrade on the first 409.
+    @Test
+    void rollingRestart_aTransientSliceFloorRefusal_isWaitedOut() {
+        var http = drainsThenHalts().withDrainSequence(ScriptedDrainHttp.sliceFloorRefused(NODE), drainAccepted(NODE));
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        var config = sshConfig(UNRESOLVABLE_HOST);
+        var plan = DiffPlan.diffPlan(List.of(),
+                                     List.of(new DiffAction.RuntimeChange(sourceNameOrDefault("dc"), NodeRole.CORE, "a", "b")),
+                                     List.of(),
+                                     List.of());
+
+        var result = WaveExecutor.execute(plan, config, config);
+
+        assertThat(http.drainPosts()).as("refused once, then re-requested and admitted").isEqualTo(2);
+        assertThat(http.lifecycleGets()).as("and the drain wait then ran to the halt").isEqualTo(3);
+        assertThat(failureText(result)).doesNotContain("minAvailable").doesNotContain("did not complete drain");
+    }
+
+    /// A refusal that outlasts the bound still ends the drain, naming the slice.
+    @Test
+    void sliceFloorRefusal_thatPersists_endsAtTheBound_namingTheSlice() {
+        var http = drainsThenHalts().withDrainSequence(ScriptedDrainHttp.sliceFloorRefused(NODE));
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+
+        var result = ClusterHttpClient.drainNodeWhenFloorAllows("http", UNRESOLVABLE_HOST, 5150, NODE, 200, 20);
+
+        assertThat(failureText(result)).contains("minAvailable");
+        assertThat(http.drainPosts()).as("it was re-requested while waiting").isGreaterThan(1);
+    }
+
+    /// Only the floor refusal is waited out: any other failure returns at once.
+    @Test
+    void anyOtherDrainRefusal_isNotRetried() {
+        var http = new ScriptedDrainHttp(new ScriptedDrainHttp.Step.Reply(409, "{\"status\":409,\"detail\":\"disruption budget exhausted\"}"),
+                                         lifecycle(NODE, "ON_DUTY"));
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+
+        var result = ClusterHttpClient.drainNodeWhenFloorAllows("http", UNRESOLVABLE_HOST, 5150, NODE, 200, 20);
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(http.drainPosts()).isEqualTo(1);
+    }
+
     @Test
     void scaleDownOfSshNodes_proceedsPastTheDrainWait_toTheSshStop() {
         var http = drainsThenHalts();

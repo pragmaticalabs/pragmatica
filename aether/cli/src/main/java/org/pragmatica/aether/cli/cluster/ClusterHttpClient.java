@@ -403,12 +403,43 @@ public sealed interface ClusterHttpClient {
                                           int managementPort,
                                           String nodeId,
                                           long timeoutMs) {
-        return drainNode(scheme, address, managementPort, nodeId).flatMap(_ -> awaitDrainComplete(scheme,
-                                                                                                  address,
-                                                                                                  managementPort,
-                                                                                                  nodeId,
-                                                                                                  timeoutMs,
-                                                                                                  DRAIN_POLL_INTERVAL_MS));
+        return drainNodeWhenFloorAllows(scheme, address, managementPort, nodeId, timeoutMs, DRAIN_POLL_INTERVAL_MS).flatMap(_ -> awaitDrainComplete(scheme,
+                                                                                                                                                    address,
+                                                                                                                                                    managementPort,
+                                                                                                                                                    nodeId,
+                                                                                                                                                    timeoutMs,
+                                                                                                                                                    DRAIN_POLL_INTERVAL_MS));
+    }
+
+    /// #1720: a drain refused by a slice's `minAvailable` floor (409) is TRANSIENT inside a rolling operation — the
+    /// instance the previous drain displaced is not ACTIVE on its new node yet, and `waitForNodeReady` does not wait
+    /// for slices — so the drain is re-requested until admitted or the bound passes, instead of ending the wave on
+    /// the first refusal. Any other answer, success or failure, returns at once. The last refusal is what a caller
+    /// sees on expiry, so it still names the slice.
+    static Result<Unit> drainNodeWhenFloorAllows(String scheme,
+                                                 String address,
+                                                 int managementPort,
+                                                 String nodeId,
+                                                 long timeoutMs,
+                                                 long pollIntervalMs) {
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        var result = drainNode(scheme, address, managementPort, nodeId);
+
+        while (isSliceFloorRefusal(result) && System.currentTimeMillis() < deadline) {
+            System.out.printf("  drain of %s waits for the slice floor to recover...%n", nodeId);
+            ClusterBootstrapOrchestrator.sleepQuietly(pollIntervalMs);
+            result = drainNode(scheme, address, managementPort, nodeId);
+        }
+
+        return result;
+    }
+
+    private static boolean isSliceFloorRefusal(Result<Unit> result) {
+        return result.fold(cause -> cause instanceof HttpError.ApiError error
+                                    && error.statusCode() == 409
+                                    && error.body()
+                                            .contains("minAvailable"),
+                           _ -> false);
     }
 
     /// Polls the DRAINING node itself. After an accepted drain the node halts (`DrainProcedure`), so
