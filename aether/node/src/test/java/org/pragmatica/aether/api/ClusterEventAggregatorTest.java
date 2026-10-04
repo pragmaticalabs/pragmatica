@@ -30,7 +30,10 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -1388,6 +1391,33 @@ class ClusterEventAggregatorTest {
         h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
 
         assertThat(h.events()).as("60,000 ms: the window has ended").hasSize(2);
+    }
+
+    // --- slice failure on a node -----------------------------------------------------------------
+
+    /// #1660: the operator surface for a node that stopped hosting a slice after a failed reactivation is
+    /// the committed FAILED `NodeArtifactValue` `NodeDeploymentState.handleReactivationFailure` now writes.
+    /// One committed put, one WARNING `DeploymentFailed`, naming the node, the artifact and the reason.
+    @Test
+    void committedFailedNodeArtifactPut_emitsOneWarningDeploymentFailed_namingNodeArtifactAndReason() {
+        var h = Harness.create();
+        var key = NodeArtifactKey.nodeArtifactKey(new NodeId("node-2"), ROLLBACK_ARTIFACT);
+        var value = new NodeArtifactValue(SliceState.FAILED,
+                                          Option.some("Reactivation after quorum restore failed: consensus timeout"),
+                                          false,
+                                          0,
+                                          List.of(),
+                                          0L);
+
+        h.aggregator().onNodeArtifactPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.DeploymentFailed.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().summary()).contains("node-2")
+                                               .contains(ROLLBACK_ARTIFACT.asString())
+                                               .contains("Reactivation after quorum restore failed");
     }
 
     // --- production retention -------------------------------------------------------------------

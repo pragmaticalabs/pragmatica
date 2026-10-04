@@ -1633,10 +1633,12 @@ class StreamConsumerManagerTest {
         /// Ticket item 2, ARM 2 OF 2 — THE PERSISTENT PARK, and the reason the report is not cosmetic.
         ///
         /// Identical to the arm above except for ONE input: `placement` is NOT transitioned. That models
-        /// `NodeDeploymentState.handleReactivationFailure` (:2151) and the quorum-loss `suspendSlice`
-        /// (:2102), both of which call `unregisterSliceFromInvocation` WITHOUT transitioning the
-        /// deployment away from ACTIVE — unlike `handleUnloading` (:1656) and `performDeactivation`
-        /// (:991), which commit UNLOADING / DEACTIVATING first.
+        /// the quorum-loss `NodeDeploymentState.suspendSlice`, which calls `unregisterSliceFromInvocation`
+        /// WITHOUT transitioning the deployment away from ACTIVE because no write can commit without
+        /// quorum — unlike `handleUnloading` and `performDeactivation`, which commit UNLOADING /
+        /// DEACTIVATING first. `handleReactivationFailure` was the other such path until #1660 made it
+        /// commit FAILED. `placement` is fed by this fixture, so a node-side fix cannot redden this test:
+        /// it pins what the consumer does WITH a stale map, not whether the map goes stale.
         ///
         /// The consequence is the one an operator has to live with: `candidateNodes` reads the map, the
         /// map still says ACTIVE here, so this node stays the computed assignee and the leader rewrites
@@ -1661,7 +1663,7 @@ class StreamConsumerManagerTest {
                                                       .containsExactlyInAnyOrder(0, 1, 2, 3);
             appender.clear();
 
-            // The bridge is unregistered with NO placement transition — the :2151 / :2102 shape. Note what
+            // The bridge is unregistered with NO placement transition — the `suspendSlice` shape. Note what
             // is NOT written here: `placement.activeOn(...)` is deliberately left saying SELF and PEER.
             when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.none());
             manager.reconcile();
