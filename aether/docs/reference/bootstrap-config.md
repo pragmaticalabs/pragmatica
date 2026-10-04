@@ -344,9 +344,12 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   A writer that is itself a replica cannot satisfy an old quorum with its own copy: the local slot is not fenced, so a
   put is acknowledged only on remote EVIDENCE: a success, or a refusal as stale (which fails it). Any other reply — fence
   unknown, an owner-epoch fence, a dispatch failure — is not evidence and the put keeps waiting; a `ReplicationChangeStale`
-  refusal seen before the acknowledgement fails the put and rolls the local copy back
-  [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`, `v1882r7_orderA_…`,
-  `v1882r7_orderB_…`, in-JVM]. A refusal that arrives AFTER the acknowledgement cannot revoke it; it starts the stale-writer
+  refusal seen before the acknowledgement fails the put. The writer's OWN slot is applied only AFTER that evidence arrives
+  (a success, or no evidence within the wait): a put refused as stale never writes it, so there is nothing to undo, and a
+  concurrent current writer's ack can never rest on a copy that is later rolled back. Cost: a writer that is a replica
+  applies its own copy one round trip later than before
+  [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`,
+  `v1882r10_orderA_…`, `v1882r10_orderB_…`, `v1882r10_probeS_…`, in-JVM]. A refusal that arrives AFTER the acknowledgement cannot revoke it; it starts the stale-writer
   clock, and the copies other replicas accepted are pulled by the writers-switched pass
   [verified: `v1882r7_orderC_ackThenLateStale_ackStands_andTheRecordIsKept`].
   The wait for that evidence is bounded at one tenth of the operation timeout (3 s by default): one intra-cluster round
@@ -357,9 +360,10 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it
   (`v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord`,
   `v1882r9_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord`); #1683-class]
-  A put refused this way restores the writer's own slot to what it held before the write (the displaced entry is read in
-  the same step as the write), it does not delete it [verified: `v1882r9b_stalePutRollback_restoresTheOverwrittenLocalCopy_exactly`,
-  `v1882r9b_aWriteLandingBeforeOurWrite_isRestoredByTheRollback_notLost`].
+  A put refused as stale leaves the writer's own copy untouched [verified: `v1882r10_stalePut_neverTouchesTheWritersOnlyLocalCopy`].
+  The rollback that remains is the #1818 one, for a put that lost its quorum to owner-epoch fences: it restores the entry the
+  write displaced (read in the same step as the write) instead of deleting it
+  [verified: `DHTDeposedWriterRollbackTest.deposedOwnerWrite_overwritingALocalPrior_isRestoredToThePrior_notDeleted`].
 - **Restarted replicas:** a replica refuses writes (retryable, `ReplicationFenceUnknown`) until its state is restored AND
   consensus reports no catch-up pending (`isPendingCatchUp` false). Before that, an unknown fence never accepts
   [verified: DHTReplicationChangeTest `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`,

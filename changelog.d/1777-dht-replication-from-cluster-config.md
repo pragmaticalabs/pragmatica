@@ -34,20 +34,22 @@
     `writerTaughtTheOldChange_isFencedByReplicasOnTheNewOne`]. The roster is the leader's membership view: a wrong one
     only delays or hastens the settle.
   - **A writer that is itself a replica** cannot meet an old quorum with its own unfenced local slot (v1882 r6 F10): the put
-    is acknowledged only on remote evidence (a success; any reply other than a success or a stale refusal keeps it waiting), any `ReplicationChangeStale` refusal seen first fails it and rolls
-    the local copy back, and a put refused as stale never clears the stale-writer record. A refusal after the acknowledgement
-    is recorded, not revoked. Cost: one round trip on a W=1 put whose writer is a replica
+    is acknowledged only on remote evidence (a success; any reply other than a success or a stale refusal keeps it waiting), any `ReplicationChangeStale` refusal seen first fails it, and a put
+    refused as stale never clears the stale-writer record. The writer's own slot is applied only AFTER the evidence arrives, so a
+    stale put never writes it and nothing is undone (an apply-then-undo left a concurrent current writer's ack resting on a copy
+    that was later rolled back). A refusal after the acknowledgement is recorded, not revoked. Cost: a writer that is a replica
+    applies its own copy one round trip later than before
     [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`,
-    `v1882r7_orderA_…`, `v1882r7_orderB_…`, `v1882r7_orderC_…`]
+    `v1882r10_orderA_…`, `v1882r10_orderB_…`, `v1882r10_probeS_…`, `v1882r7_orderC_…`]
     [verified: `v1882r9_orderE_nonStaleRefusalFirst_thenStale_…`, `v1882r9_nonStaleRefusalFirst_thenSuccess_acks`]
     The wait for that evidence is one tenth of the operation timeout (3 s by default), so a partitioned replica set does not
     stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_…`]
     [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot replied or the
     wait runs out — the put is acknowledged on the local slot and sets no stale record; a replica on the newer change that
     does not answer within the wait (slow, GC-paused, partitioned) cannot refute it (`v1882r7_orderD_…`,
-    `v1882r9_allRemoteRepliesNonStale_…`); #1683-class]. A put refused this way puts the writer's own slot back to what it
-    held before the write, read in the same step as the write [verified: `v1882r9b_stalePutRollback_…`,
-    `v1882r9b_aWriteLandingBeforeOurWrite_…`].
+    `v1882r9_allRemoteRepliesNonStale_…`); #1683-class]. The #1818 rollback (a put that lost its quorum to owner-epoch
+    fences) restores the entry the write displaced, read in the same step as the write, instead of deleting it
+    [verified: `DHTDeposedWriterRollbackTest.deposedOwnerWrite_overwritingALocalPrior_isRestoredToThePrior_notDeleted`].
     [unverified: M7, the consensus-caught-up wiring replaced by `true`, stays green over 2325 aether/node tests; the unsafe
     direction (never pending, so the fence is confirmed early) is the restore-prefix residual, [limit: #1683]]
     [unverified: the guard that keeps a late refusal from being cleared by the acknowledgement's own clear step is not
