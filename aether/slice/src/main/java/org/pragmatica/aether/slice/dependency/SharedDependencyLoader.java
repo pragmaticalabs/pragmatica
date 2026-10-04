@@ -310,16 +310,10 @@ public interface SharedDependencyLoader {
     }
 
     private static Result<Option<Location>> emptyWhenAbsent(Result<Location> located) {
-        return located.fold(cause -> isAbsent(cause)
+        return located.fold(cause -> Repository.isAbsent(cause)
                                      ? Result.success(Option.<Location> none())
                                      : cause.<Option<Location>> result(),
                             location -> Result.success(Option.some(location)));
-    }
-
-    /// `Repository.Absent` is what a single repository answers; the composite behind `SliceStore` reports
-    /// `Intermittent.ArtifactNotFound` once EVERY repository did (#1769), which is the same fact one level up.
-    private static boolean isAbsent(Cause cause) {
-        return cause instanceof Repository.Absent || cause instanceof SliceLoadingFailure.Intermittent.ArtifactNotFound;
     }
 
     private static Promise<Unit> registerAsRuntimeProvided(ArtifactDependency dependency,
