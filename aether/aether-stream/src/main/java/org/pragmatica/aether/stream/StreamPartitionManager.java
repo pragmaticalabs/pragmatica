@@ -2244,9 +2244,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void settleRepair(String streamName, int partition) {
         option(pendingCuts.remove(new PartitionRef(streamName, partition))).onPresent(cut -> reportCut(streamName,
-                                                                                                         partition,
-                                                                                                         cut,
-                                                                                                         confirmationFactorFor(streamName)));
+                                                                                                       partition,
+                                                                                                       cut,
+                                                                                                       confirmationFactorFor(streamName)));
     }
 
     private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor) {
