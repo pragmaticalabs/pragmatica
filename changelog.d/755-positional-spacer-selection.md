@@ -9,12 +9,18 @@
   meaning "not carried".
 - **Production callers of this path:** `ManagementRouter` (the management API dispatch), `SliceRouter` (a slice's own HTTP
   router) and Forge's API router all dispatch through `RequestRouter.findRoute`.
+- **Every node-local path is positional.** `HttpRoutePublisher.wrapHandler` rebuilds each published route for observability and
+  used to drop the slots, so the router a node actually served stayed on membership; it now passes `route.spacerSlots()`.
+  `HttpRouteDefinition` (local to the serving node, not the replicated wire record) carries the slots too, so the host's own
+  resolution (`resolveServed`) picks the slice that declared the position, and `sameShape` distinguishes shapes that differ
+  only by slot. Before, two slices under one base split by spacer position answered 404 for the other's path.
 - **Open remainder, stated rather than papered over (#1678): the gateway still matches by membership.** A node that does not
-  host a route selects over REPLICATED shapes (`pathArity`, `spacers`), which carry no positions, so those fall back to the old
-  match. Closing it carries positions through `AetherValue.HttpRoute`, `HttpRouteDefinition`, `HttpRoutePublisher`,
-  `HttpRouteRegistry` and `RouteSource`: a wire change across about ten modules, not done here. An ENABLED tripwire,
-  `HttpRouteRegistryGatewaySpacerPositionTest`, asserts today's wrong gateway behaviour and reddens when it is fixed; the real
-  assertion sits `@Disabled` beside it.
+  host a route selects over the REPLICATED entry (`AetherValue.HttpRoute`: `pathArity`, `spacers`), which carries no positions.
+  Closing it carries positions through `AetherValue.HttpRoute`, `HttpRoutePublisher`, `HttpRouteRegistry` and `RouteSource`: a
+  wire change. An ENABLED tripwire, `HttpRouteRegistryGatewaySpacerPositionTest`, asserts today's wrong gateway behaviour through
+  a fixture built by the real publisher and registry, so it reddens when positions are carried; the real assertion sits `@Disabled`
+  beside it.
 - Pinned by `PositionalSpacerSelectionTest` (both tickets' repros, a swapped spacer/parameter pair, a parameter whose value equals the
-  spacer literal, leading and trailing spacers, fallthrough to a spacer-free sibling).
+  spacer literal, leading and trailing spacers, fallthrough to a spacer-free sibling) and, for the published router and the host's
+  resolution, `SpacerPositionHostResolutionTest`.
 - [unverified: a real gateway-to-host request for the #1103 shape; the gateway half is pinned at `RouteInfo.matchingShape`, not through a bound listener]

@@ -884,9 +884,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private static boolean sameShape(HttpRouteDefinition left, HttpRouteDefinition right) {
-        return left.pathArity() == right.pathArity() && left.spacers()
-                                                            .equals(right.spacers()) && left.spacerSlots()
-                                                                                            .equals(right.spacerSlots());
+        return left.pathArity() == right.pathArity()
+               && left.spacers()
+                      .equals(right.spacers())
+               && left.spacerSlots()
+                      .equals(right.spacerSlots());
     }
 
     /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
