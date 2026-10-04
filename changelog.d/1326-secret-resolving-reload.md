@@ -1,0 +1,2 @@
+### Fixed (config)
+- A reloaded configuration provider no longer loses secret resolution. `SecretResolvingConfigurationProvider.reload()` returned the delegate's new provider undecorated, so reading it served raw `${secrets:...}` placeholders. The reload now re-resolves with the same resolver: a rotated secret is observed, repeated reloads keep the decorator, and a resolution failure fails the reload naming the key and secret path, never the value (#1326).

@@ -33,10 +33,14 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
 
     private final ConfigurationProvider delegate;
     private final Map<String, String> resolvedValues;
+    private final Fn1<Promise<String>, String> secretResolver;
 
-    private SecretResolvingConfigurationProvider(ConfigurationProvider delegate, Map<String, String> resolvedValues) {
+    private SecretResolvingConfigurationProvider(ConfigurationProvider delegate,
+                                                 Map<String, String> resolvedValues,
+                                                 Fn1<Promise<String>, String> secretResolver) {
         this.delegate = delegate;
         this.resolvedValues = Map.copyOf(resolvedValues);
+        this.secretResolver = secretResolver;
     }
 
     /// Resolve all ${secrets:path} placeholders in the provider's values.
@@ -46,7 +50,7 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     /// @return New ConfigurationProvider with all secrets resolved, or failure
     static Result<ConfigurationProvider> resolve(ConfigurationProvider provider,
                                                  Fn1<Promise<String>, String> secretResolver) {
-        return resolveAllEntries(provider, secretResolver).map(resolved -> wrapProvider(provider, resolved));
+        return resolveAllEntries(provider, secretResolver).map(resolved -> wrapProvider(provider, resolved, secretResolver));
     }
 
     /// #904: the caller has NO resolver. Succeeds with `provider` itself -- never wrapped, so a
@@ -67,8 +71,10 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
         return success(provider);
     }
 
-    private static ConfigurationProvider wrapProvider(ConfigurationProvider provider, Map<String, String> resolved) {
-        return new SecretResolvingConfigurationProvider(provider, resolved);
+    private static ConfigurationProvider wrapProvider(ConfigurationProvider provider,
+                                                      Map<String, String> resolved,
+                                                      Fn1<Promise<String>, String> secretResolver) {
+        return new SecretResolvingConfigurationProvider(provider, resolved, secretResolver);
     }
 
     private static Result<Map<String, String>> resolveAllEntries(ConfigurationProvider provider,
@@ -201,8 +207,23 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
         return "SecretResolvingConfigurationProvider[" + delegate.name() + "]";
     }
 
+    /// #1326: the delegate's reload returns a NEW undecorated provider carrying raw `${secrets:...}`
+    /// placeholders. Re-resolve it with the same resolver, so the returned provider keeps the decorator
+    /// and observes a rotated secret rather than a stale snapshot. A resolution failure is the reload's
+    /// failure, naming key and path only (see [ConfigError.SecretResolutionFailed]). A reloaded source
+    /// that is not a [ConfigurationProvider] has no values to resolve through this decorator and is
+    /// returned as the delegate gave it.
     @Override
     public Result<ConfigSource> reload() {
-        return delegate.reload();
+        return delegate.reload()
+                       .flatMap(this::reResolve);
+    }
+
+    private Result<ConfigSource> reResolve(ConfigSource reloaded) {
+        if (reloaded instanceof ConfigurationProvider provider) {
+            return resolve(provider, secretResolver).map(ConfigSource.class::cast);
+        }
+
+        return success(reloaded);
     }
 }

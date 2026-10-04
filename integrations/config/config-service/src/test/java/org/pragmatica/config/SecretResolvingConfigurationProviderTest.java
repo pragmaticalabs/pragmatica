@@ -7,7 +7,11 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import org.pragmatica.lang.Option;
+
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -153,6 +157,96 @@ class SecretResolvingConfigurationProviderTest {
                 assertThat(error.secretPath()).isEqualTo("db/password");
                 assertThat(error.message()).contains("no secrets provider");
             });
+        }
+    }
+
+    @Nested
+    class Reload {
+
+        @Test
+        void reload_returnedProviderStillResolvesSecrets() {
+            var source = new ReloadingSource(Map.of("db.password", "${secrets:db/password}"));
+            var provider = ConfigurationProvider.withSecretResolution(ConfigurationProvider.configurationProvider(source),
+                path -> Promise.resolved(Result.success("s3cret"))).unwrap();
+
+            var reloaded = (ConfigurationProvider) provider.reload().unwrap();
+
+            assertThat(reloaded.getString("db.password").unwrap()).isEqualTo("s3cret");
+        }
+
+        @Test
+        void reload_observesRotationRatherThanTheOldSnapshot() {
+            var current = new AtomicReference<>("old");
+            var source = new ReloadingSource(Map.of("db.password", "${secrets:db/password}"));
+            var provider = ConfigurationProvider.withSecretResolution(ConfigurationProvider.configurationProvider(source),
+                path -> Promise.resolved(Result.success(current.get()))).unwrap();
+
+            current.set("rotated");
+            var reloaded = (ConfigurationProvider) provider.reload().unwrap();
+
+            assertThat(provider.getString("db.password").unwrap()).isEqualTo("old");
+            assertThat(reloaded.getString("db.password").unwrap()).isEqualTo("rotated");
+        }
+
+        @Test
+        void reload_repeatedReloadKeepsTheDecorator() {
+            var source = new ReloadingSource(Map.of("db.password", "${secrets:db/password}"));
+            ConfigSource current = ConfigurationProvider.withSecretResolution(ConfigurationProvider.configurationProvider(source),
+                path -> Promise.resolved(Result.success("s3cret"))).unwrap();
+
+            for (var i = 0; i < 3; i++) {
+                current = current.reload().unwrap();
+            }
+
+            assertThat(current.getString("db.password").unwrap()).isEqualTo("s3cret");
+        }
+
+        @Test
+        void reload_resolutionFailure_failsNamingKeyAndPathWithoutTheSecret() {
+            var failing = new AtomicReference<>(false);
+            var source = new ReloadingSource(Map.of("db.password", "${secrets:db/password}"));
+            var provider = ConfigurationProvider.withSecretResolution(ConfigurationProvider.configurationProvider(source),
+                path -> failing.get()
+                        ? Promise.resolved(Result.failure(Causes.cause("vault down")))
+                        : Promise.resolved(Result.success("s3cret"))).unwrap();
+
+            failing.set(true);
+            var reloaded = provider.reload();
+
+            assertThat(reloaded.isFailure()).isTrue();
+            reloaded.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ConfigError.SecretResolutionFailed.class);
+                assertThat(((ConfigError.SecretResolutionFailed) cause).key()).isEqualTo("db.password");
+                assertThat(cause.message()).doesNotContain("s3cret");
+            });
+        }
+    }
+
+    /// A source whose reload yields a fresh copy of its raw (placeholder-bearing) values.
+    private record ReloadingSource(Map<String, String> values) implements ConfigSource {
+        @Override
+        public Option<String> getString(String key) {
+            return Option.option(values.get(key));
+        }
+
+        @Override
+        public Set<String> keys() {
+            return values.keySet();
+        }
+
+        @Override
+        public Map<String, String> asMap() {
+            return values;
+        }
+
+        @Override
+        public String name() {
+            return "reloading";
+        }
+
+        @Override
+        public Result<ConfigSource> reload() {
+            return Result.success(new ReloadingSource(values));
         }
     }
 
