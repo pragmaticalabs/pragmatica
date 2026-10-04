@@ -539,11 +539,7 @@ public interface StreamConsumerManager {
         private void forgetVanished() {
             var held = snapshotsByKey().keySet();
 
-            active.keySet()
-                  .stream()
-                  .filter(key -> !held.contains(key))
-                  .toList()
-                  .forEach(this::forgetVanished);
+            active.keySet().stream().filter(key -> !held.contains(key)).toList().forEach(this::forgetVanished);
         }
 
         private void forgetVanished(SubscriptionKey key) {
@@ -1062,7 +1058,10 @@ public interface StreamConsumerManager {
 
         private void attachAdmitted(SubscriptionKey key, ConsumerDeclaration declaration, Epoch epoch) {
             if (active.putIfAbsent(key, declaration) != null) {
-                log.debug("Declarative stream consumer {}[{}] group={} already attached", key.streamName(), key.partition(), key.consumerGroup());
+                log.debug("Declarative stream consumer {}[{}] group={} already attached",
+                          key.streamName(),
+                          key.partition(),
+                          key.consumerGroup());
 
                 return;
             }
@@ -1298,7 +1297,9 @@ public interface StreamConsumerManager {
 
         private void abandon(SubscriptionKey key) {
             forget(key);
-            runtime.abandon(key.streamName(), key.partition(), key.consumerGroup())
+            runtime.abandon(key.streamName(),
+                            key.partition(),
+                            key.consumerGroup())
                    .onFailure(cause -> reportDetachFound(key, cause));
         }
 
