@@ -87,7 +87,7 @@ public final class ForgeServer {
     private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                    false));
 
-    private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();
+    private final HttpOperations http;
     /// The credential Forge presents on its OWN control-plane calls (currently the startup blueprint
     /// deploy). Empty when no keys are configured, which is the default and leaves every request
     /// unauthenticated exactly as before.
@@ -103,8 +103,15 @@ public final class ForgeServer {
     private volatile String lastEventTimestamp = "";
 
     private ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig) {
+        this(startupConfig, forgeConfig, JdkHttpOperations.jdkHttpOperations());
+    }
+
+    /// Package-visible so the startup deploy's CALL SITE is pinnable (#1218): a test drives
+    /// [#deployBlueprintFromArtifact] against an injected transport, which a helper test cannot do.
+    ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig, HttpOperations http) {
         this.startupConfig = startupConfig;
         this.forgeConfig = forgeConfig;
+        this.http = http;
     }
 
     private static final String VERSION = "Aether Forge " + resolveVersion();
@@ -649,7 +656,7 @@ public final class ForgeServer {
         }
     }
 
-    private void deployBlueprintFromArtifact(String artifactCoords) {
+    void deployBlueprintFromArtifact(String artifactCoords) {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
@@ -661,11 +668,29 @@ public final class ForgeServer {
         var request = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
         log.info("Deploying blueprint by coordinates: POST /api/v1/blueprints/deploy — {}", artifactCoords);
-        http.sendString(request)
-            .await(TimeSpan.timeSpan(10).seconds())
-            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-            .onFailure(cause -> failStartupDeploy(artifactCoords,
-                                                  cause.message()));
+        awaitStartupDeploy(http, forgeConfig, request).onSuccess(result -> handleDeployResponse(result, artifactCoords))
+                          .onFailure(cause -> failStartupDeploy(artifactCoords,
+                                                                startupDeployTimeoutDetail(forgeConfig,
+                                                                                           cause.message())));
+    }
+
+    /// The one place the startup deploy is awaited, so a test can drive the real wait against a slow
+    /// transport and observe which budget it honours (#1218).
+    static Result<HttpResult<String>> awaitStartupDeploy(HttpOperations http, EmberConfig config, HttpRequest request) {
+        return http.sendString(request)
+                   .await(startupDeployTimeout(config));
+    }
+
+    /// #1218 — the startup deploy shares the cluster-start budget. It used to carry its own hardcoded
+    /// 10 s, which `startTimeoutSeconds` did not cover: an operator on a slow host who raised the
+    /// documented knob changed the formation wait and left the step that actually timed out alone.
+    static TimeSpan startupDeployTimeout(EmberConfig config) {
+        return TimeSpan.timeSpan(config.startTimeoutSeconds()).seconds();
+    }
+
+    /// Names the budget and its setting, so a timeout is not mistaken for a rejected deploy.
+    static String startupDeployTimeoutDetail(EmberConfig config, String detail) {
+        return detail + " (deploy budget " + config.startTimeoutSeconds() + "s, set by cluster.start_timeout_seconds)";
     }
 
     private void handleDeployResponse(HttpResult<String> result, String artifactCoords) {
