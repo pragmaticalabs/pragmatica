@@ -162,6 +162,17 @@ public interface StreamPartitionOwnershipWriter {
         List<NodeId> initialIsr(String stream, int partition, NodeId owner);
     }
 
+    /// One guarded mutation of the ownership record of `(stream, partition)`: applied only while the committed record is
+    /// exactly `committed` and the committed leader is `leader` (#1730). The owner-side commits (the ISR, the start of an
+    /// epoch) use it as the leader's writer does.
+    static KVCommand<AetherKey> guardedOwnershipWrite(LeaderValue leader,
+                                                      String stream,
+                                                      int partition,
+                                                      Option<StreamPartitionOwnershipValue> committed,
+                                                      StreamPartitionOwnershipValue next) {
+        return IsrOwnershipWriter.guarded(leader, stream, partition, committed, next);
+    }
+
     /// Reads the committed ownership record for `(stream, partition)` from committed KV — the leader's
     /// source of truth for "the current owner". [Option#none] means no record committed yet.
     interface CommittedOwnership {

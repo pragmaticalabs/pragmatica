@@ -1221,7 +1221,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// Late-bind the operator-warning sink (#1873). `AetherNode` wires the cluster one; the default is log-only. Set once at
     /// wiring.
     @Contract
-    void operatorWarnings(OperatorWarningSink sink) {
+    @Override
+    public void operatorWarnings(OperatorWarningSink sink) {
         this.operatorWarnings = sink;
     }
 

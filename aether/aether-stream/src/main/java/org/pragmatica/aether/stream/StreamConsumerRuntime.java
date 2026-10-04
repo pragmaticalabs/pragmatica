@@ -16,6 +16,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -139,6 +140,10 @@ public interface StreamConsumerRuntime extends AutoCloseable {
         /// for consumers declared by a deployment, whose lifetime is owned by the deployment.
         KEEP_UNTIL_UNSUBSCRIBED
     }
+
+    /// Late-bind where a consumer's re-seek after a replaced lineage is reported to the operator (#1873). The default ignores
+    /// it: a runtime without a node behind it only logs.
+    default void operatorWarnings(OperatorWarningSink sink) {}
 
     @FunctionalInterface
     interface ConsumerCallback {
