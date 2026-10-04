@@ -12,8 +12,12 @@
   <id> --override-floor`). A forced breach is admitted and raises operator warning `slice-floor-breached-by-force` naming
   each slice, so it is never silent. The core quorum budget is NOT overridden by `force`.
 - **`aether cluster destroy` passes `force`** on every drain and shutdown: it takes every slice below its floor by
-  definition. Rolling-restart and scale-down waves (`WaveExecutor`) do not, so they are now refused when a drain would
-  take a hosted slice below its floor.
+  definition. Rolling-restart and scale-down waves (`WaveExecutor`) and `script/rolling-aether-upgrade.sh` do not, but a
+  floor refusal inside a rolling operation is TRANSIENT (the instance the previous drain displaced is not ACTIVE on its
+  new node yet, and the node-ready wait does not wait for slices), so they re-request the drain while the answer is a
+  slice-floor 409, within the existing drain bound, instead of aborting the wave on the first refusal. Any other refusal
+  returns at once, and a floor refusal that outlasts the bound still names the slice. Without this the smallest
+  supported cluster (3 cores, default floor 2) could not complete a rolling restart.
 - Docs: per-operation guarantee table (automatic drain, operator drain, forced drain, destroy) in
   `slice-developers/deployment.md`, the routes and the new warning code in `management-api.md`, flags in `cli.md`.
 - Pinned by `NodeLifecycleRoutesSliceFloorTest` (the real guard against a real KV store, through the real routes, incl.
