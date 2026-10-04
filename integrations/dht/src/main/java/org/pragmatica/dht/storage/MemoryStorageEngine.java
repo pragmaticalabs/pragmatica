@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTError;
@@ -113,7 +114,42 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                                  false),
                                               true,
                                               true,
-                                              new AtomicBoolean()));
+                                              new AtomicBoolean(),
+                                              new AtomicReference<>()));
+    }
+
+    @Override
+    public Promise<Displaced> putVersionedDisplacing(byte[] key,
+                                                     byte[] value,
+                                                     long version,
+                                                     long epochIncarnation,
+                                                     long epochTerm,
+                                                     long epochCounter) {
+        return writeDisplacing(key,
+                               new VersionedEntry(value.clone(), version, epochIncarnation, epochTerm, epochCounter, false));
+    }
+
+    @Override
+    public Promise<Displaced> removeVersionedDisplacing(byte[] key,
+                                                        long version,
+                                                        long epochIncarnation,
+                                                        long epochTerm,
+                                                        long epochCounter) {
+        return writeDisplacing(key, new VersionedEntry(NO_VALUE, version, epochIncarnation, epochTerm, epochCounter, true));
+    }
+
+    private Promise<Displaced> writeDisplacing(byte[] key, VersionedEntry incoming) {
+        if (epochGate.isStale(key, incoming.epochIncarnation(), incoming.epochTerm(), incoming.epochCounter())) {
+            return DHTError.staleEpochWrite(incoming.epochIncarnation(), incoming.epochTerm(), incoming.epochCounter()).promise();
+        }
+
+        var displaced = new AtomicReference<VersionedEntry>();
+        var written = storeVersioned(key, incoming, true, true, new AtomicBoolean(), displaced);
+
+        return Promise.success(new Displaced(written,
+                                             written
+                                             ? Option.option(displaced.get()).map(entry -> toKeyValue(new ByteArrayKey(key), entry))
+                                             : Option.none()));
     }
 
     @Override
@@ -136,7 +172,8 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                         true),
                                      true,
                                      true,
-                                     supersededLive);
+                                     supersededLive,
+                                     new AtomicReference<>());
 
         return Promise.success(written && supersededLive.get());
     }
@@ -157,7 +194,8 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                                  false),
                                               false,
                                               true,
-                                              new AtomicBoolean()));
+                                              new AtomicBoolean(),
+                                              new AtomicReference<>()));
     }
 
     @Override
@@ -173,7 +211,8 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                                  entry.tombstone()),
                                               false,
                                               createIfAbsent,
-                                              new AtomicBoolean()));
+                                              new AtomicBoolean(),
+                                              new AtomicReference<>()));
     }
 
     @Override
@@ -246,6 +285,55 @@ public final class MemoryStorageEngine implements StorageEngine {
     }
 
     @Override
+    public Promise<Boolean> restoreIfExactly(byte[] key,
+                                             long version,
+                                             long epochIncarnation,
+                                             long epochTerm,
+                                             long epochCounter,
+                                             Option<DHTMessage.KeyValue> prior) {
+        var restored = new AtomicBoolean(false);
+
+        data.computeIfPresent(new ByteArrayKey(key),
+                              (_, existing) -> restoreUnlessSuperseded(existing,
+                                                                       version,
+                                                                       epochIncarnation,
+                                                                       epochTerm,
+                                                                       epochCounter,
+                                                                       prior,
+                                                                       restored));
+
+        return Promise.success(restored.get());
+    }
+
+    /// The `computeIfPresent` remapping for [#restoreIfExactly]: the prior entry — a value or a tombstone — replaces the
+    /// exact accept; `null` (no prior) removes it, per the JDK contract. The high-water is not touched: a restore is not a
+    /// fresh write.
+    @NullReturn
+    private static VersionedEntry restoreUnlessSuperseded(VersionedEntry existing,
+                                                          long version,
+                                                          long epochIncarnation,
+                                                          long epochTerm,
+                                                          long epochCounter,
+                                                          Option<DHTMessage.KeyValue> prior,
+                                                          AtomicBoolean restored) {
+        if (existing.version() != version || existing.epochIncarnation() != epochIncarnation || existing.epochTerm() != epochTerm || existing.epochCounter() != epochCounter) {
+            return existing;
+        }
+
+        restored.set(true);
+
+        return prior.fold(() -> null,
+                          entry -> new VersionedEntry(entry.tombstone()
+                                                      ? NO_VALUE
+                                                      : entry.value().clone(),
+                                                      entry.version(),
+                                                      entry.epochIncarnation(),
+                                                      entry.epochTerm(),
+                                                      entry.epochCounter(),
+                                                      entry.tombstone()));
+    }
+
+    @Override
     public boolean belowHighWater(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
         return epochGate.isStale(key, epochIncarnation, epochTerm, epochCounter);
     }
@@ -273,17 +361,25 @@ public final class MemoryStorageEngine implements StorageEngine {
                                    VersionedEntry incoming,
                                    boolean advanceHighWater,
                                    boolean createIfAbsent,
-                                   AtomicBoolean supersededLive) {
+                                   AtomicBoolean supersededLive,
+                                   AtomicReference<VersionedEntry> displaced) {
         var bkey = new ByteArrayKey(key);
         var written = new AtomicBoolean(true);
 
         data.compute(bkey,
-                     (_, existing) -> computeVersionedEntry(existing,
-                                                            incoming,
-                                                            createIfAbsent,
-                                                            written,
-                                                            supersededLive,
-                                                            epochGate.epochOrderingEnabled()));
+                     (_, existing) -> {
+                         var next = computeVersionedEntry(existing,
+                                                          incoming,
+                                                          createIfAbsent,
+                                                          written,
+                                                          supersededLive,
+                                                          epochGate.epochOrderingEnabled());
+
+                         // read and write are ONE step under the map's per-key lock: nothing lands in between
+                         displaced.set(existing);
+
+                         return next;
+                     });
         if (written.get() && advanceHighWater) {
             epochGate.advance(key, incoming.epochIncarnation(), incoming.epochTerm(), incoming.epochCounter());
         }

@@ -188,6 +188,54 @@ public interface StorageEngine {
         return Promise.success(false);
     }
 
+    /// The outcome of a write that reports the entry it displaced: whether it was written, and — as part of the SAME atomic
+    /// step — the entry it replaced, exactly as it was (v1882 r9b).
+    record Displaced(boolean written, Option<DHTMessage.KeyValue> prior) {}
+
+    /// [#putVersioned(byte[], byte[], long, long, long, long)] that also returns the entry it displaced, read in the same
+    /// atomic step as the write, so a writer that must roll its accept back restores what the key held when it wrote and
+    /// no concurrent write can land between a read and the write. An engine without the capability reports no prior entry.
+    default Promise<Displaced> putVersionedDisplacing(byte[] key,
+                                                      byte[] value,
+                                                      long version,
+                                                      long epochIncarnation,
+                                                      long epochTerm,
+                                                      long epochCounter) {
+        return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter).map(written -> new Displaced(written,
+                                                                                                                      Option.none()));
+    }
+
+    /// [#removeVersioned(byte[], long, long, long, long)] that also returns the entry its tombstone displaced, read in the
+    /// same atomic step as the write (v1882 r9b). `written` says the tombstone was stored; the remove found a live value
+    /// exactly when it was written and the displaced entry was a live value. An engine without the capability reports no
+    /// prior entry.
+    default Promise<Displaced> removeVersionedDisplacing(byte[] key,
+                                                         long version,
+                                                         long epochIncarnation,
+                                                         long epochTerm,
+                                                         long epochCounter) {
+        return removeVersioned(key, version, epochIncarnation, epochTerm, epochCounter).map(found -> new Displaced(true,
+                                                                                                                    Option.none()));
+    }
+
+    /// Roll a writer's own accept back to what the key held BEFORE it: while the stored entry is still exactly the given
+    /// version and owner epoch, replace it with `prior` — value, version and epoch as they were — or hard-delete it when
+    /// `prior` is empty (the key was absent). An entry since superseded is left alone, so a newer write that landed in
+    /// between survives. An engine without the capability restores nothing, which leaves the accept in place (with no
+    /// prior entry it is [#removeIfExactly]).
+    ///
+    /// @return `true` if the exact entry was replaced or removed.
+    default Promise<Boolean> restoreIfExactly(byte[] key,
+                                              long version,
+                                              long epochIncarnation,
+                                              long epochTerm,
+                                              long epochCounter,
+                                              Option<DHTMessage.KeyValue> prior) {
+        return prior.isPresent()
+               ? Promise.success(false)
+               : removeIfExactly(key, version, epochIncarnation, epochTerm, epochCounter);
+    }
+
     /// Whether an entry stamped with this owner epoch is older than this store's high-water — a copy applied
     /// with it is one the fence would have refused as a fresh write (#1818, visibility). An engine without a
     /// fence has no high-water: `false`.
