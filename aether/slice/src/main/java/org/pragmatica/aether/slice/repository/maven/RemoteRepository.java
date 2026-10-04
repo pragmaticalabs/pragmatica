@@ -10,6 +10,7 @@ import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
@@ -40,20 +41,35 @@ public interface RemoteRepository extends Repository {
     }
 
     static RemoteRepository remoteRepository(String repoId, String baseUrl, Duration httpTimeout) {
+        return remoteRepository(repoId,
+                                baseUrl,
+                                httpTimeout,
+                                () -> JdkHttpOperations.jdkHttpOperations(httpTimeout,
+                                                                          HttpClient.Redirect.NORMAL,
+                                                                          Option.none()));
+    }
+
+    /// `httpOpsFactory` builds the client for ONE download; the download closes it when it settles (#1097).
+    /// A seam so a test can hold the very client it checks, which a GC cannot then release behind its back.
+    static RemoteRepository remoteRepository(String repoId,
+                                             String baseUrl,
+                                             Duration httpTimeout,
+                                             Supplier<JdkHttpOperations> httpOpsFactory) {
         var normalizedUrl = baseUrl.endsWith("/")
                             ? baseUrl
                             : baseUrl + "/";
         var credentials = MavenSettingsCredentials.forServer(repoId);
         var localRepo = Path.of(MavenLocalRepoLocator.findLocalRepository());
 
-        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo, httpTimeout);
+        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo, httpTimeout, httpOpsFactory);
     }
 
     private static Promise<Location> resolveArtifact(Artifact artifact,
                                                      String baseUrl,
                                                      Option<MavenSettingsCredentials.Credentials> credentials,
                                                      Path localRepo,
-                                                     Duration httpTimeout) {
+                                                     Duration httpTimeout,
+                                                     Supplier<JdkHttpOperations> httpOpsFactory) {
         var cachedPath = localPath(artifact, localRepo);
         // #1599: a cached jar is loaded only if it still matches its checksum sidecar. One that does not — whether the
         // node's own mark or a Maven checksum — is refused and left untouched, never fetched over (v1617 M1, #1725
@@ -66,7 +82,7 @@ public interface RemoteRepository extends Repository {
             };
         }
 
-        return downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
+        return downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout, httpOpsFactory);
     }
 
     private static Promise<Location> cacheHit(Artifact artifact, Path cachedPath) {
@@ -79,13 +95,14 @@ public interface RemoteRepository extends Repository {
                                                       String baseUrl,
                                                       Option<MavenSettingsCredentials.Credentials> credentials,
                                                       Path targetPath,
-                                                      Duration httpTimeout) {
-        var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout, HttpClient.Redirect.NORMAL, Option.none());
+                                                      Duration httpTimeout,
+                                                      Supplier<JdkHttpOperations> httpOpsFactory) {
+        var httpOps = httpOpsFactory.get();
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
         var sha256Url = jarUrl + ".sha256";
         var sha1Url = jarUrl + ".sha1";
-
+        // One client per download, so it is released when that download settles (#1097).
         return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifyChecksumAndCache(httpOps,
                                                                                                                            sha256Url,
                                                                                                                            sha1Url,
@@ -94,7 +111,8 @@ public interface RemoteRepository extends Repository {
                                                                                                                            artifact,
                                                                                                                            targetPath,
                                                                                                                            httpTimeout))
-                          .flatMap(path -> toLocation(artifact, path));
+                          .flatMap(path -> toLocation(artifact, path))
+                          .onResult(_ -> httpOps.close());
     }
 
     private static Promise<byte[]> downloadJar(HttpOperations httpOps,

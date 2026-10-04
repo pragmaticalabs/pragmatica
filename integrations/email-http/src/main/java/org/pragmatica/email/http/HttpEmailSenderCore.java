@@ -10,13 +10,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
 /// Core implementation of HttpEmailSender using ServiceLoader-discovered vendor mappings.
-final class HttpEmailSenderCore implements HttpEmailSender {
+final class HttpEmailSenderCore implements HttpEmailSender, AsyncCloseable {
     private static final Logger log = LoggerFactory.getLogger(HttpEmailSenderCore.class);
     private static final Map<String, VendorMapping> MAPPINGS = new ConcurrentHashMap<>();
 
@@ -26,18 +28,30 @@ final class HttpEmailSenderCore implements HttpEmailSender {
 
     private final HttpEmailConfig config;
     private final HttpOperations operations;
+    private final boolean ownsOperations;
     private final VendorMapping mapping;
 
-    private HttpEmailSenderCore(HttpEmailConfig config, HttpOperations operations, VendorMapping mapping) {
+    private HttpEmailSenderCore(HttpEmailConfig config,
+                                HttpOperations operations,
+                                boolean ownsOperations,
+                                VendorMapping mapping) {
         this.config = config;
         this.operations = operations;
+        this.ownsOperations = ownsOperations;
         this.mapping = mapping;
     }
 
-    static HttpEmailSender create(HttpEmailConfig config, HttpOperations operations) {
+    /// `ownsOperations` is true only when the factory built `operations` itself: a caller-supplied
+    /// instance stays the caller's to close.
+    static HttpEmailSender create(HttpEmailConfig config, HttpOperations operations, boolean ownsOperations) {
         return Option.option(MAPPINGS.get(config.providerHint()))
-                     .map(mapping -> (HttpEmailSender) new HttpEmailSenderCore(config, operations, mapping))
-                     .or(vendorNotFoundSender(config.providerHint()));
+                     .map(mapping -> (HttpEmailSender) new HttpEmailSenderCore(config,
+                                                                               operations,
+                                                                               ownsOperations,
+                                                                               mapping))
+                     .or(() -> new VendorNotFoundSender(config.providerHint(),
+                                                        operations,
+                                                        ownsOperations));
     }
 
     @Override
@@ -76,7 +90,29 @@ final class HttpEmailSenderCore implements HttpEmailSender {
         return new HttpEmailError.RequestFailed(result.statusCode(), result.body()).promise();
     }
 
-    private static HttpEmailSender vendorNotFoundSender(String vendorId) {
-        return message -> new HttpEmailError.VendorNotFound(vendorId).promise();
+    /// Closes the operations it built itself, when they own releasable state (#1097). Operations the caller
+    /// supplied are the caller's: this does nothing for them.
+    @Override
+    public Promise<Unit> close() {
+        return closeOperations(operations, ownsOperations);
+    }
+
+    private static Promise<Unit> closeOperations(HttpOperations operations, boolean ownsOperations) {
+        return ownsOperations && operations instanceof AsyncCloseable closeable
+               ? closeable.close()
+               : Promise.unitPromise();
+    }
+
+    /// A sender that can never send must still release operations the factory built for it.
+    private record VendorNotFoundSender(String vendorId, HttpOperations operations, boolean ownsOperations) implements HttpEmailSender, AsyncCloseable {
+        @Override
+        public Promise<String> send(EmailMessage message) {
+            return new HttpEmailError.VendorNotFound(vendorId).promise();
+        }
+
+        @Override
+        public Promise<Unit> close() {
+            return closeOperations(operations, ownsOperations);
+        }
     }
 }
