@@ -77,10 +77,25 @@ public interface JooqR2dbcTransactional {
                                                         SQLDialect dialect,
                                                         Fn1<R2dbcError, Throwable> errorMapper,
                                                         Fn2<Promise<R>, DSLContext, Connection> operation) {
-        return beginTransaction(conn, errorMapper).flatMap(_ -> executeOperation(conn, dialect, operation))
-                               .flatMap(result -> commitAndReturn(conn, errorMapper, result))
-                               .onFailure(_ -> rollbackTransaction(conn))
-                               .onResult(_ -> closeConnection(conn));
+        var attempt = beginTransaction(conn, errorMapper).flatMap(_ -> executeOperation(conn, dialect, operation))
+                                      .flatMap(result -> commitAndReturn(conn, errorMapper, result));
+
+        return releaseAfterSettlement(attempt, conn);
+    }
+
+    /// Rollback (on failure) and close are steps of the returned Promise, in that order, and the result is
+    /// handed on only after both have completed (#1313). They used to be independent `onFailure` / `onResult`
+    /// observers that each blocked on `await()`, so nothing ordered the close after the rollback and the
+    /// returned Promise settled without waiting for either. The primary failure is preserved: a failing
+    /// rollback or close is logged and never replaces it, and close is attempted whatever the rollback did.
+    private static <R> Promise<R> releaseAfterSettlement(Promise<R> attempt, Connection conn) {
+        var settled = Promise.<R> promise();
+
+        attempt.onResult(result -> rollbackWhenFailed(conn,
+                                                      result.isFailure()).flatMap(_ -> closeConnection(conn))
+                                                     .onResult(_ -> settled.resolve(result)));
+
+        return settled;
     }
 
     private static <R> Promise<R> executeOperation(Connection conn,
@@ -103,11 +118,23 @@ public interface JooqR2dbcTransactional {
         return ReactiveOperations.fromVoidPublisher(conn.commitTransaction(), errorMapper);
     }
 
-    private static void rollbackTransaction(Connection conn) {
-        ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()).await();
+    private static Promise<Unit> rollbackWhenFailed(Connection conn, boolean failed) {
+        return failed
+               ? loggingFailure("rollback",
+                                ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()))
+               : Promise.success(Unit.unit());
     }
 
-    private static void closeConnection(Connection conn) {
-        ReactiveOperations.fromVoidPublisher(conn.close()).await();
+    private static Promise<Unit> closeConnection(Connection conn) {
+        return loggingFailure("close",
+                              ReactiveOperations.fromVoidPublisher(conn.close()));
+    }
+
+    private static Promise<Unit> loggingFailure(String step, Promise<Unit> stepResult) {
+        return stepResult.fold(outcome -> {
+            outcome.onFailure(cause -> TransactionCleanupLog.warnStepFailed(step, cause));
+
+            return Promise.success(Unit.unit());
+        });
     }
 }

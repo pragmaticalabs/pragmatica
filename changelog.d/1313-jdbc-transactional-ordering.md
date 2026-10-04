@@ -8,3 +8,6 @@
   until it is done. The primary failure is preserved; a failing rollback, restoration or close step is logged at
   WARNING and does not replace it, and after a successful commit a failed close does not turn committed work
   into a failure. A connection that cannot be configured is released without a rollback.
+- **`JooqR2dbcTransactional` had the identical defect** (`onFailure(rollback)` + `onResult(close)`, each blocking on
+  `await()`) and gets the same treatment: rollback, then close, composed into the returned Promise, primary failure
+  preserved, a failing step logged.
