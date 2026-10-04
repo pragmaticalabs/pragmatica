@@ -255,7 +255,7 @@ mkdir -p "$WORK/bin-realtimeout"
 cat > "$WORK/bin-realtimeout/ssh" <<'STUB'
 #!/bin/bash
 trap '' TERM
-while :; do sleep 1; done
+exec sleep 600
 STUB
 chmod +x "$WORK/bin-realtimeout/ssh"
 body_demotion_hang() {
@@ -278,16 +278,20 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
 else ok "D8 (skipped: no timeout/gtimeout binary on this host; the fallback loop kills -9)"; fi
 
 # D9 (N2c): reap_bg_job ends a job that ignores SIGTERM within its bound (+ the kill step)
+# The job's child is a uniquely-timed sleep so a survivor can be counted: a job killed AFTER its children respawns one in
+# between (#1886), and that orphan outlives the reap and the suite. Counted, then removed, so a red here cannot leak.
 body_reap() {
-    ( trap '' TERM; while :; do sleep 1; done ) &
+    ( trap '' TERM; while :; do sleep 1.37; done ) &
     local pid=$!
     local t0=$SECONDS
     reap_bg_job "$pid" 2
     local alive=no; kill -0 "$pid" 2>/dev/null && alive=yes
-    echo "REAP alive=${alive} elapsed=$(( SECONDS - t0 ))"
+    local orphans; orphans=$(pgrep -f '^sleep 1\.37$' | grep -c .)
+    pkill -KILL -f '^sleep 1\.37$' 2>/dev/null
+    echo "REAP alive=${alive} orphans=${orphans} elapsed=$(( SECONDS - t0 ))"
 }
 cloud_scenario reap body_reap
-if grep -q 'REAP alive=no elapsed=[0-5]$' "$WORK/reap/out"; then ok "D9 reap_bg_job: a job ignoring SIGTERM is gone within its bound (2s) plus the kill step"
+if grep -q 'REAP alive=no orphans=0 elapsed=[0-5]$' "$WORK/reap/out"; then ok "D9 reap_bg_job: a job ignoring SIGTERM is gone within its bound (2s) plus the kill step, and leaves no child behind"
 else fail "D9 out=$(head -c 160 "$WORK/reap/out")"; fi
 
 echo "  passed: ${PASS}"
