@@ -598,6 +598,20 @@ class SwimAnnounceSourcePinTest {
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("control: all three match").isTrue();
     }
 
+    /// An ack that only confirms an ANNOUNCE source proves who answered; it is not liveness evidence. The member stays
+    /// in its local birth state until a probe of its own is answered, as before the confirmation existed. Counting it
+    /// as HEALTHY at join made a member that dies within seconds a dead, replaceable core instead of a never-joined one.
+    @Test
+    void confirmingAnnounceSource_doesNotMakeTheMemberHealthy() {
+        protocol = manualProtocol();
+
+        pinnedMemberA();
+
+        assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.OBSERVED);
+        assertThat(protocol.everSeenHealthyForTest(NODE_A)).isFalse();
+        assertThat(observations.byType(SwimObservation.HealthyObserved.class)).isEmpty();
+    }
+
     // -- helpers --
 
     private static Ack provenAck(NodeId member, long token, long sequence) {

@@ -1597,10 +1597,24 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void handleAck(InetSocketAddress sender, Ack ack) {
-        confirmAddressCandidate(sender, ack);
-        processPiggyback(ack.piggyback(), ack.from(), answeredProbeFrom(ack));
+        var answeredCandidate = confirmAddressCandidate(sender, ack);
+
+        processPiggyback(gossipOf(ack, answeredCandidate), ack.from(), answeredProbeFrom(ack));
         processAckProbe(ack);
         forwardRelay(ack);
+    }
+
+    /// The gossip an Ack contributes. An Ack that only answered an unconfirmed ANNOUNCE source proves who answered; it
+    /// is not liveness evidence for the member, which stays in its local birth state until a probe of its own is
+    /// answered, exactly as before the confirmation existed. So the member's own entry is left out here.
+    private static List<MembershipUpdate> gossipOf(Ack ack, boolean answeredCandidate) {
+        return answeredCandidate
+               ? ack.piggyback()
+                    .stream()
+                    .filter(update -> !update.nodeId()
+                                             .equals(ack.from()))
+                    .toList()
+               : ack.piggyback();
     }
 
     /// Wave-6 Ack.from() check: an Ack only counts as a probe-ack when its sequence
@@ -1893,14 +1907,15 @@ public final class SwimProtocol implements SwimMessageHandler {
                          .removeIf(candidate -> now - candidate.issuedAt() > ADDRESS_CANDIDATE_TTL_MS || !inMembershipScope(candidate.member()));
     }
 
+    /// Confirmation proves identity, not health: it pins an address and admits a token, and it never marks the member alive.
     /// An ack that answers a probe sent to an unconfirmed source address pins that address — only when it names the
     /// announced member, carries the probe's sequence and arrives from the address the probe went to. Anything
     /// else leaves the candidate in place.
-    private void confirmAddressCandidate(InetSocketAddress sender, Ack ack) {
+    private boolean confirmAddressCandidate(InetSocketAddress sender, Ack ack) {
         var candidate = addressCandidates.get(ack.sequence());
 
         if (candidate == null || !answers(candidate, sender, ack) || !addressCandidates.remove(ack.sequence(), candidate)) {
-            return;
+            return false;
         }
 
         var id = ack.from();
@@ -1909,13 +1924,13 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (!provesToken(ack, announce)) {
             reportIdentityConflict(id, sender.getAddress());
 
-            return;
+            return true;
         }
 
         if (!admitsBootToken(id, announce.bootToken())) {
             refuseAnnounce(candidate.source(), id);
 
-            return;
+            return true;
         }
 
         var pinned = addressPins.putIfAbsent(id, sender.getAddress());
@@ -1925,6 +1940,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         } else {
             reportAddressConflict(id, pinned, sender.getAddress());
         }
+
+        return true;
     }
 
     private static boolean answers(AddressCandidate candidate, InetSocketAddress sender, Ack ack) {

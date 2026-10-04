@@ -85,14 +85,13 @@ class SwimBootTokenTest {
         assertThat(protocol.isRetiredIdentity(NODE_A)).as("a different process reused a known NodeId").isTrue();
         assertThat(protocol.members().get(NODE_A).state()).as("the known process is treated as dead").isEqualTo(MemberState.FAULTY);
         assertThat(joinAnnouncements()).as("the refused process never reaches the dial path").isEqualTo(1);
-        // the conflicting ANNOUNCE, plus the proving answer's own self-ALIVE (the same token), now refused as retired
-        assertThat(protocol.bootTokenRefusals()).isEqualTo(2);
+        assertThat(protocol.bootTokenRefusals()).isEqualTo(1);
 
         announce(7, TOKEN);
         gossip(MemberState.ALIVE, 8, TOKEN);
 
         assertThat(protocol.members().get(NODE_A).state()).as("terminal: a retired identity never returns").isEqualTo(MemberState.FAULTY);
-        assertThat(protocol.bootTokenRefusals()).isEqualTo(4);
+        assertThat(protocol.bootTokenRefusals()).isEqualTo(3);
     }
 
     /// Old expectation: a different token in gossip retired the identity. That trusted a datagram to say which process
