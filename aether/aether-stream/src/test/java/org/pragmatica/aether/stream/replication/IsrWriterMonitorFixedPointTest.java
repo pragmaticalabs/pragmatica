@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -33,18 +34,77 @@ class IsrWriterMonitorFixedPointTest {
     private static final String STREAM = "orders";
     private static final Epoch GENERATION = Epoch.epoch(1L, 2L, 0L);
 
+    private final AtomicReference<List<NodeId>> leaderLive = new AtomicReference<>(List.of(OWNER, B));
+    private final ReplicaRegistry registry = replicaRegistry();
+    private final IsrOwnershipWriter writer = writer();
+    private final IsrMonitor monitor = IsrMonitor.isrMonitor(OWNER, List::of, registry, () -> Option.some(new LeaderValue(B, 1L)),
+                                                             _ -> Promise.success(List.of()), TimeSpan.timeSpan(30).seconds(), () -> 0L);
+    private StreamPartitionOwnershipValue record = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(OWNER,
+                                                                                                               GENERATION.withCounter(1L),
+                                                                                                               1L,
+                                                                                                               HlcTimestamp.ZERO,
+                                                                                                               List.of(OWNER, B, X),
+                                                                                                               1L);
+
     @Test
     void leaderShrinkAndOwnerExpand_reachAFixedPoint_underAnAsymmetricViewOfOneReplica() {
-        var registry = replicaRegistry();
         List.of(OWNER, B, X).forEach(node -> registry.registerReplica(STREAM, 0, node));
         registry.updateWatermark(STREAM, 0, B, 10L);
         registry.updateWatermark(STREAM, 0, X, 10L);
-        var leaderLive = List.of(OWNER, B);
-        var writer = new IsrOwnershipWriter(() -> true, () -> GENERATION, HlcClock.hlcClock(OWNER), (_, _) -> Option.none(),
-                                            (_, _) -> Option.none(), new StreamPartitionOwnershipWriter.IsrInputs() {
+
+        var commits = rounds(5);
+
+        assertThat(commits).as("ISR commits in 5 rounds (isrVersion now %d, ISR %s)", record.isrVersion(), record.isr())
+                           .isLessThanOrEqualTo(1);
+        assertThat(record.isr()).containsExactly(OWNER, B);
+        assertThat(record.fenced()).containsExactly(X);
+    }
+
+    /// The member comes back in the leader's view: one unfence by the leader, one expansion by the owner, then nothing.
+    @Test
+    void memberListedLiveAgain_isUnfencedOnce_expandedOnce_thenTheRecordIsSettled() {
+        List.of(OWNER, B, X).forEach(node -> registry.registerReplica(STREAM, 0, node));
+        registry.updateWatermark(STREAM, 0, B, 10L);
+        registry.updateWatermark(STREAM, 0, X, 10L);
+        rounds(2);
+        leaderLive.set(List.of(OWNER, B, X));
+
+        var commits = rounds(5);
+
+        assertThat(commits).as("unfence + expand, then settled (isrVersion now %d, ISR %s)", record.isrVersion(), record.isr())
+                           .isEqualTo(2);
+        assertThat(record.isr()).containsExactly(OWNER, B, X);
+        assertThat(record.fenced()).isEmpty();
+    }
+
+    private int rounds(int count) {
+        var commits = 0;
+
+        for (var round = 0; round < count; round++) {
+            var leaderNext = writer.next(STREAM, 0, Option.some(record), OWNER, GENERATION, leaderLive.get());
+
+            if (leaderNext.isPresent()) {
+                record = leaderNext.unwrap();
+                commits++;
+            }
+
+            var ownerNext = monitor.nextIsr(new IsrMonitor.Owned(STREAM, 0, record, 10L), 0L);
+
+            if (ownerNext.isPresent()) {
+                record = record.withIsr(ownerNext.unwrap());
+                commits++;
+            }
+        }
+
+        return commits;
+    }
+
+    private IsrOwnershipWriter writer() {
+        return new IsrOwnershipWriter(() -> true, () -> GENERATION, HlcClock.hlcClock(OWNER), (_, _) -> Option.none(),
+                                      (_, _) -> Option.none(), new StreamPartitionOwnershipWriter.IsrInputs() {
             @Override
             public List<NodeId> liveMembers() {
-                return leaderLive;
+                return leaderLive.get();
             }
 
             @Override
@@ -52,27 +112,5 @@ class IsrWriterMonitorFixedPointTest {
                 return List.of(owner);
             }
         }, () -> Option.some(new LeaderValue(B, 1L)));
-        var monitor = IsrMonitor.isrMonitor(OWNER, List::of, registry, () -> Option.some(new LeaderValue(B, 1L)),
-                                            _ -> Promise.success(List.of()), TimeSpan.timeSpan(30).seconds(), () -> 0L);
-        var record = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(OWNER, GENERATION.withCounter(1L), 1L,
-                                                                                 HlcTimestamp.ZERO, List.of(OWNER, B, X), 1L);
-        var commits = 0;
-
-        for (var round = 0; round < 5; round++) {
-            var current = record;
-            var leaderNext = writer.next(STREAM, 0, Option.some(current), OWNER, GENERATION, leaderLive);
-            if (leaderNext.isPresent()) {
-                record = leaderNext.unwrap();
-                commits++;
-            }
-            var ownerNext = monitor.nextIsr(new IsrMonitor.Owned(STREAM, 0, record, 10L), 0L);
-            if (ownerNext.isPresent()) {
-                record = record.withIsr(ownerNext.unwrap());
-                commits++;
-            }
-        }
-
-        assertThat(commits).as("ISR commits in 5 rounds (isrVersion now %d, ISR %s)", record.isrVersion(), record.isr())
-                           .isLessThanOrEqualTo(1);
     }
 }
