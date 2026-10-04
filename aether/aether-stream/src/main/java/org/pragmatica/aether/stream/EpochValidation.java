@@ -68,12 +68,12 @@ public final class EpochValidation {
 
     private static Result<Epoch> judged(Epoch ownerEpoch, List<EpochStart> starts, Epoch consumerEpoch, long cursor) {
         return resumeBound(starts, consumerEpoch).filter(bound -> cursor > bound)
-                                                 .<Result<Epoch>> map(bound -> new StreamError.EpochDiverged(ownerEpoch,
-                                                                                                             bound,
-                                                                                                             provenLossFrom(starts,
-                                                                                                                            consumerEpoch,
-                                                                                                                            cursor)).result())
-                                                 .or(() -> Result.success(ownerEpoch));
+                          .<Result<Epoch>> map(bound -> new StreamError.EpochDiverged(ownerEpoch,
+                                                                                      bound,
+                                                                                      provenLossFrom(starts,
+                                                                                                     consumerEpoch,
+                                                                                                     cursor)).result())
+                          .or(() -> Result.success(ownerEpoch));
     }
 
     /// The offset at or below every offset an epoch after the consumer's may have re-assigned: the start that followed the
@@ -94,7 +94,9 @@ public final class EpochValidation {
     private static long provenLossFrom(List<EpochStart> starts, Epoch consumerEpoch, long cursor) {
         return starts.stream()
                      .filter(start -> start.epoch()
-                                           .compareTo(consumerEpoch) > 0 && start.exactFor(consumerEpoch) && start.startOffset() < cursor)
+                                           .compareTo(consumerEpoch) > 0
+                                      && start.exactFor(consumerEpoch)
+                                      && start.startOffset() < cursor)
                      .findFirst()
                      .map(EpochStart::startOffset)
                      .orElse(StreamError.EpochDiverged.NO_PROVEN_LOSS);

@@ -85,7 +85,7 @@ public sealed interface StreamError extends Cause {
     /// `provenLossFrom` when the record folded the starts in between. Records in `[provenLossFrom, cursor)` are proven gone.
     record EpochDiverged(Epoch ownerEpoch, long resumeAt, long provenLossFrom) implements StreamError {
         /// No loss is proven: the record cannot tell a loss from a re-read.
-        public static final long NO_PROVEN_LOSS = - 1L;
+        public static final long NO_PROVEN_LOSS = -1L;
 
         /// A divergence at an exact boundary: the loss is proven from `resumeAt`.
         public EpochDiverged(Epoch ownerEpoch, long resumeAt) {

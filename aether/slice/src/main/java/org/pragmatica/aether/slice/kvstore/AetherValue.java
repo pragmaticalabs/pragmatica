@@ -2467,14 +2467,12 @@ public sealed interface AetherValue {
             var dropped = starts.size() - EPOCH_STARTS_MAX;
             var kept = new ArrayList<>(starts.subList(dropped, starts.size()));
             var oldest = kept.getFirst();
-
             var lowest = starts.getFirst();
 
             kept.set(0,
                      new EpochStart(oldest.epoch(),
                                     Math.min(oldest.startOffset(), lowest.startOffset()),
-                                    lowest.foldedFrom()
-                                          .equals(Epoch.ZERO)
+                                    lowest.foldedFrom().equals(Epoch.ZERO)
                                     ? lowest.epoch()
                                     : lowest.foldedFrom()));
 
