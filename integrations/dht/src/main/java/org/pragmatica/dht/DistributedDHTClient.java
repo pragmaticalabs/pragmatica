@@ -279,7 +279,8 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         var timeout = config.get().operationTimeout().millis();
-        var remaining = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()), 1L);
+        var remaining = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()),
+                                 1L);
 
         return collector.remoteEvidence()
                         .timeout(timeSpan(remaining).millis())
@@ -364,7 +365,9 @@ public final class DistributedDHTClient implements DHTClient {
                : cause.promise();
     }
 
-    private Promise<Boolean> rollBackLocalAccept(byte[] key, WriteStamp stamp, Promise<StorageEngine.Displaced> localWrite) {
+    private Promise<Boolean> rollBackLocalAccept(byte[] key,
+                                                 WriteStamp stamp,
+                                                 Promise<StorageEngine.Displaced> localWrite) {
         return localWrite.fold(result -> node.storage()
                                              .restoreIfExactly(key,
                                                                stamp.version(),
@@ -1015,7 +1018,9 @@ public final class DistributedDHTClient implements DHTClient {
 
     /// A remove found a live value when its tombstone was stored over one.
     private static boolean foundLive(StorageEngine.Displaced displaced) {
-        return displaced.written() && displaced.prior().filter(prior -> !prior.tombstone()).isPresent();
+        return displaced.written() && displaced.prior()
+                                               .filter(prior -> !prior.tombstone())
+                                               .isPresent();
     }
 
     private void handleLocalExists(byte[] key, QuorumCollector<Option<DHTMessage.KeyValue>> collector) {

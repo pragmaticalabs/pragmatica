@@ -126,7 +126,12 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                      long epochTerm,
                                                      long epochCounter) {
         return writeDisplacing(key,
-                               new VersionedEntry(value.clone(), version, epochIncarnation, epochTerm, epochCounter, false));
+                               new VersionedEntry(value.clone(),
+                                                  version,
+                                                  epochIncarnation,
+                                                  epochTerm,
+                                                  epochCounter,
+                                                  false));
     }
 
     @Override
@@ -135,12 +140,16 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                         long epochIncarnation,
                                                         long epochTerm,
                                                         long epochCounter) {
-        return writeDisplacing(key, new VersionedEntry(NO_VALUE, version, epochIncarnation, epochTerm, epochCounter, true));
+        return writeDisplacing(key,
+                               new VersionedEntry(NO_VALUE, version, epochIncarnation, epochTerm, epochCounter, true));
     }
 
     private Promise<Displaced> writeDisplacing(byte[] key, VersionedEntry incoming) {
         if (epochGate.isStale(key, incoming.epochIncarnation(), incoming.epochTerm(), incoming.epochCounter())) {
-            return DHTError.staleEpochWrite(incoming.epochIncarnation(), incoming.epochTerm(), incoming.epochCounter()).promise();
+            return DHTError.staleEpochWrite(incoming.epochIncarnation(),
+                                            incoming.epochTerm(),
+                                            incoming.epochCounter())
+                           .promise();
         }
 
         var displaced = new AtomicReference<VersionedEntry>();
@@ -148,7 +157,8 @@ public final class MemoryStorageEngine implements StorageEngine {
 
         return Promise.success(new Displaced(written,
                                              written
-                                             ? Option.option(displaced.get()).map(entry -> toKeyValue(new ByteArrayKey(key), entry))
+                                             ? Option.option(displaced.get()).map(entry -> toKeyValue(new ByteArrayKey(key),
+                                                                                                      entry))
                                              : Option.none()));
     }
 
@@ -374,7 +384,6 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                           written,
                                                           supersededLive,
                                                           epochGate.epochOrderingEnabled());
-
                          // read and write are ONE step under the map's per-key lock: nothing lands in between
                          displaced.set(existing);
 
