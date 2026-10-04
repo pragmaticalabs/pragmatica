@@ -24,11 +24,17 @@ import java.util.concurrent.Executor;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 
 
 /// JDK HttpClient-based implementation of HttpOperations.
 /// Bridges CompletableFuture to Promise for seamless integration.
-public final class JdkHttpOperations implements HttpOperations {
+///
+/// Implements [AsyncCloseable] because the wrapped `HttpClient` (JDK 21+) owns a selector-manager
+/// thread and, unless one was supplied, a default executor; an instance dropped without a close keeps
+/// both until GC finalisation, which for a long-lived node is effectively never (#1097).
+public final class JdkHttpOperations implements HttpOperations, AsyncCloseable {
     private final HttpClient client;
 
     private JdkHttpOperations(HttpClient client) {
@@ -75,6 +81,17 @@ public final class JdkHttpOperations implements HttpOperations {
                                                 .whenComplete((result, error) -> Option.option(error)
                                                                                        .onPresent(e -> promise.fail(HttpClientError.fromException(e)))
                                                                                        .onEmpty(() -> promise.succeed(result))));
+    }
+
+    /// Shuts the wrapped client down: no new requests are accepted, in-flight ones complete, and the
+    /// selector thread exits once they have. Non-blocking, so it is safe on an event loop.
+    /// A client supplied through [#jdkHttpOperations(HttpClient)] is closed too: handing it over
+    /// transfers ownership.
+    @Override
+    public Promise<Unit> close() {
+        client.shutdown();
+
+        return Promise.unitPromise();
     }
 
     /// Returns the underlying HttpClient.
