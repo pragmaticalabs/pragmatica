@@ -211,6 +211,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.forward.StreamForwardTransport;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
+import org.pragmatica.aether.stream.replication.IsrMonitor;
 import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.PartitionKey;
@@ -232,10 +233,11 @@ import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.RefDurability;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.SegmentTierPressure;
-import org.pragmatica.aether.stream.segment.PressureRelief;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
@@ -475,6 +477,12 @@ public interface AetherNode extends ManageableNode {
     /// process kill with idle-timeout disabled. See [ClusterNetwork#blackhole(boolean)].
     @Contract
     default void blackhole(boolean enabled) {}
+
+    /// Test-only per-peer network partition (#1730): drop QUIC messages from, and SWIM datagrams to and from,
+    /// `unreachable`. Applied on both sides of a cut it is a symmetric partition; an empty set heals. Unlike
+    /// [#blackhole(boolean)] it cuts only the named peers, so a minority keeps talking among itself.
+    @Contract
+    default void partitionFrom(java.util.Set<NodeId> unreachable) {}
 
     /// Additive test fault injection; production authenticated-message policy remains enforced.
     default Unit setInboundFaultFilter(java.util.function.BiPredicate<NodeId, Message.Wired> filter) {
@@ -1135,6 +1143,11 @@ public interface AetherNode extends ManageableNode {
     /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
     /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
     TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// #1730: how often an owner re-evaluates its partitions' in-sync replica sets. Lag itself is bounded by
+    /// `[streaming] isr_lag_max`; this cadence only adds up to one interval to it.
+    TimeSpan ISR_MONITOR_INTERVAL = TimeSpan.timeSpan(1).seconds();
+    /// #1730: how soon a refused (moved-record) ownership write is re-decided.
+    TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
     /// third party, so partition ownership is polled; matching the reshuffle cadence keeps the
     /// handover window (during which the old and new owner may both deliver) at one tick.
@@ -1445,6 +1458,62 @@ public interface AetherNode extends ManageableNode {
     /// `PARTITION_NOT_LOCAL`, leaving RF≥2 structurally unreachable. Before the controller is bound / its
     /// first reconcile it falls back to the live placement projection ([#livePlacementMembers]), the SAME
     /// pre-reconcile fallback `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
+    /// #1730: the committed ISR of `(stream, partition)`; none for a record minted before #1730 (`isrVersion` 0),
+    /// which carries no committed ISR, and for a partition with no record.
+    static Option<List<NodeId>> committedIsr(KVStore<AetherKey, AetherValue> kvStore, String stream, int partition) {
+        return committedIsrRecord(kvStore, stream, partition).map(StreamPartitionOwnershipValue::isr);
+    }
+
+    static Option<StreamPartitionOwnershipValue> committedIsrRecord(KVStore<AetherKey, AetherValue> kvStore,
+                                                                    String stream,
+                                                                    int partition) {
+        return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                StreamPartitionOwnershipValue.class)
+                      .filter(record -> record.isrVersion() > 0);
+    }
+
+    /// #1730: what the leader's ownership writer reads besides the committed record — the live placement members and
+    /// the placement a first record's ISR is minted from — both from the stream controller.
+    static StreamPartitionOwnershipWriter.IsrInputs streamIsrInputs(AtomicReference<ReplicaSetController> controllerRef) {
+        return new StreamPartitionOwnershipWriter.IsrInputs() {
+            @Override
+            public List<NodeId> liveMembers() {
+                return Option.option(controllerRef.get())
+                             .map(ReplicaSetController::reconciledMembers)
+                             .or(List.of());
+            }
+
+            @Override
+            public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                return Option.option(controllerRef.get())
+                             .map(controller -> controller.placementWithOwner(stream, partition, owner))
+                             .or(List.of(owner));
+            }
+        };
+    }
+
+    /// #1730: the partitions this node owns AND serves (activated for the committed record), with their record and
+    /// appended head — the ISR monitor's input.
+    static List<IsrMonitor.Owned> ownedPartitions(StreamPartitionManager manager,
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  OwnerActivation activation,
+                                                  NodeId self) {
+        return manager.materializedHeads()
+                      .stream()
+                      .flatMap(head -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(head.streamName(),
+                                                                                                                head.partition()),
+                                                        StreamPartitionOwnershipValue.class)
+                                              .filter(record -> record.owner()
+                                                                      .equals(self) && activation.isActivated(head.streamName(),
+                                                                                                              head.partition()))
+                                              .map(record -> new IsrMonitor.Owned(head.streamName(),
+                                                                                  head.partition(),
+                                                                                  record,
+                                                                                  head.head()))
+                                              .stream())
+                      .toList();
+    }
+
     static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
                                                Supplier<List<NodeId>> placementMembers) {
         return Option.option(controllerRef.get())
@@ -1683,7 +1752,7 @@ public interface AetherNode extends ManageableNode {
         }
 
         applier.apply(commands)
-               .onSuccess(_ -> retry.succeeded())
+               .onSuccess(results -> retry.settled(refusedCount(results)))
                .onFailure(cause -> retry.failed(commands.size(),
                                                 cause));
     }
@@ -1704,9 +1773,15 @@ public interface AetherNode extends ManageableNode {
             return TimeSpan.timeSpan(Math.min(doubled, STREAM_OWNERSHIP_RETRY_CAP.millis())).millis();
         }
 
+        /// #1730: a write that applied may still be a REFUSED guarded transaction (an owner committed an ISR change
+        /// first). That is not a failure to back off from: the decision is re-made against the record that won.
         @Contract
-        void succeeded() {
+        void settled(long refused) {
             consecutiveFailures.set(0);
+            if (refused > 0) {
+                LOG.debug("{} stream ownership write(s) refused on a moved record; re-deciding", refused);
+                schedule.accept(reconcile, OWNERSHIP_REDRIVE_DELAY);
+            }
         }
 
         @Contract
@@ -1719,6 +1794,15 @@ public interface AetherNode extends ManageableNode {
                      delay);
             schedule.accept(reconcile, delay);
         }
+    }
+
+    /// #1730: the guarded ownership transactions of a batch the applier refused because their record moved.
+    static long refusedCount(List<Object> results) {
+        return results.stream()
+                      .filter(KVCommand.TransactionResult.class::isInstance)
+                      .map(KVCommand.TransactionResult.class::cast)
+                      .filter(result -> !result.accepted())
+                      .count();
     }
 
     /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
@@ -2814,6 +2898,15 @@ public interface AetherNode extends ManageableNode {
             public void blackhole(boolean enabled) {
                 clusterNode.network().blackhole(enabled);
                 swimHealthDetector.setSwimBlackholed(enabled);
+            }
+
+            @Contract
+            @Override
+            public void partitionFrom(java.util.Set<NodeId> unreachable) {
+                var cut = java.util.Set.copyOf(unreachable);
+
+                clusterNode.network().setInboundFaultFilter((peer, _) -> !cut.contains(peer));
+                swimHealthDetector.setSwimPeerPartition(cut);
             }
 
             @Override
@@ -5109,7 +5202,7 @@ public interface AetherNode extends ManageableNode {
         // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex,
-                                                                                                    StorageSegmentSink.RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
+                                                                                                    RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
                                                               streamMaxMemoryBytes);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
@@ -5119,9 +5212,16 @@ public interface AetherNode extends ManageableNode {
                                                                                    streamOwnerEpochSource,
                                                                                    streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
-                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
+                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager(),
+                                                                                                                                streamSegmentIndex::adoptions));
 
         streamPartitionManagerRef.set(streamPartitionManager);
+        // #1278 review: each stream's durable refs (sealed segments, reclaimed-through floors) and WAL are keyed by its
+        // incarnation; the manager adopts the committed life before a stream materializes, so another life of the
+        // name is never read, and reclaims the other lives' refs best-effort.
+        streamPartitionManager.streamFootprint(StreamFootprint.streamFootprint(streamStorage,
+                                                                               streamStorageSetup.metadataStore(),
+                                                                               streamSegmentIndex));
         // #1596: provenance failures this node detects (an N13 mismatch at catch-up, a log holding records with no
         // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
         // gate and cold-restart detection raise and read.
@@ -5210,10 +5310,10 @@ public interface AetherNode extends ManageableNode {
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
                                                                                                                       partition),
+                                                                          streamStorageSetup.snapshotManager(),
+                                                                          streamStorageSetup.garbageCollector(),
                                                                           streamSegmentReader,
-                                                                          streamSegmentTierPressure,
-                                                                          PressureRelief.snapshotBounded(streamStorageSetup.snapshotManager(),
-                                                                                                         streamStorageSetup.garbageCollector()));
+                                                                          streamSegmentTierPressure);
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
@@ -5397,7 +5497,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                   partition),
                                                                                                                                           StreamPartitionOwnershipValue.class),
                                                                                                   (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
-                                                                                                                                                                                                                                         partition)));
+                                                                                                                                                                                                                                         partition)),
+                                                                                                  streamIsrInputs(clusterEventsControllerRef),
+                                                                                                  () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                         LeaderValue.class));
         // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
         var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
                                                                              () -> reconcileReplicaSet(clusterEventsControllerRef));
@@ -5419,6 +5522,16 @@ public interface AetherNode extends ManageableNode {
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
+        // #1730 owner ruling: every node derives the failover refusal/resolution event from the committed ownership Put;
+        // the cluster-events aggregator publishes only on its partition owner, so it reaches the stream exactly once.
+        var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
+                                                                                      delegateRouter::route);
+
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamFailoverAnnouncer::onOwnershipPut)
+                                              .build()
+                                              .asRouteEntries());
         // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
         // exists); the leader's writer alone judges liveness (ReplicaSetController#desiredOwner). Backfill sources
         // from, and self-elects against, the same owner.
@@ -5426,6 +5539,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                         partition),
                                                                                                 StreamPartitionOwnershipValue.class)
                                                                                       .map(StreamPartitionOwnershipValue::owner));
+        // #1730: the committed ISR keeps its members placed (so they keep receiving the partition), and a CF >= 2
+        // confirmation needs every one of them. A record minted before #1730 (isrVersion 0) carries no committed ISR.
+        streamReplicaSetController.committedIsrSource((stream, partition) -> committedIsr(kvStore, stream, partition).or(List.of()));
         streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);
         // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
@@ -5504,7 +5620,30 @@ public interface AetherNode extends ManageableNode {
                                                                                               .suspectTimeout()));
 
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
-        streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);
+        // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
+        streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
+                                                                                      .orElse(() -> streamReplicaSetController.noInSyncReplica(stream,
+                                                                                                                                               partition)));
+        // #1730: the owner keeps its partitions' ISR current — a member lagging longer than [streaming] isr_lag_max
+        // leaves, a caught-up replica joins — through guarded consensus writes only (liveness; never safety).
+        var isrMonitor = IsrMonitor.isrMonitor(config.self(),
+                                               () -> ownedPartitions(streamPartitionManager,
+                                                                     kvStore,
+                                                                     ownerActivation,
+                                                                     config.self()),
+                                               streamReplicaRegistry,
+                                               () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
+                                               clusterCommandApplier,
+                                               streamingConfig.isrLagMax(),
+                                               System::nanoTime);
+        // #1730: a CF >= 2 confirmation needs every member of the committed ISR plus every member this owner has
+        // proposed to add to it (the maximal ISR). A record minted before #1730 (isrVersion 0) carries no ISR.
+        streamReplicationManager.inSyncReplicaSource((stream, partition) -> committedIsrRecord(kvStore,
+                                                                                               stream,
+                                                                                               partition).map(record -> isrMonitor.maximalIsr(stream,
+                                                                                                                                              partition,
+                                                                                                                                              record)));
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(isrMonitor::tick, ISR_MONITOR_INTERVAL));
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
@@ -5922,7 +6061,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                             (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                                                                                             partition),
                                                                                                                                                                                                                     StreamPartitionOwnershipValue.class),
-                                                                                                                                                                            entityArcOwner),
+                                                                                                                                                                            entityArcOwner,
+                                                                                                                                                                            streamIsrInputs(clusterEventsControllerRef),
+                                                                                                                                                                            () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                                                   LeaderValue.class)),
                                                                                             clusterCommandApplier,
                                                                                             ENTITY_RECONCILE_KICK);
         // A committed registration REMOVAL is a hosting-set shrink, which is the one edge the leader's mint
@@ -8953,6 +9095,10 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(OperationalEvent.ConfigChanged.class, eventAggregator::onConfigChanged));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeployed.class,
                                               eventAggregator::onBlueprintDeployed));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverRefused.class,
+                                              eventAggregator::onStreamFailoverRefused));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,
+                                              eventAggregator::onStreamFailoverResolved));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationUnsettled.class,

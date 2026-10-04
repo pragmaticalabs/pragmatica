@@ -19,17 +19,18 @@ import org.pragmatica.serialization.Codec;
 /// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
 /// additional variants without modifying the sealed parent.
 ///
-/// Closed-set count is **44 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// Closed-set count is **46 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
 /// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED + STREAM_MEMORY_EXCEEDED +
 /// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED + THRESHOLD_BREACHED/THRESHOLD_CLEARED +
 /// COMMUNITY_MINTED/COMMUNITY_STATE_CHANGED/COMMUNITY_MEMBER_JOINED/COMMUNITY_MEMBER_LEFT + OPERATOR_WARNING +
-/// DHT_REPLICATION_UNSETTLED/DHT_REPLICATION_SETTLED + DHT_WRITER_STALE/DHT_WRITER_STALE_RESOLVED).
+/// DHT_REPLICATION_UNSETTLED/DHT_REPLICATION_SETTLED + DHT_WRITER_STALE/DHT_WRITER_STALE_RESOLVED +
+/// STREAM_FAILOVER_REFUSED/STREAM_FAILOVER_RESOLVED).
 ///
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.DhtReplicationUnsettled, ClusterEvent.DhtReplicationSettled, ClusterEvent.DhtWriterStale, ClusterEvent.DhtWriterStaleResolved, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.DhtReplicationUnsettled, ClusterEvent.DhtReplicationSettled, ClusterEvent.DhtWriterStale, ClusterEvent.DhtWriterStaleResolved, ClusterEvent.StreamFailoverRefused, ClusterEvent.StreamFailoverResolved, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -480,6 +481,26 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
 
     /// A node was removed from a community's committed roster (#1652) — the complement of
     /// {@link CommunityMemberJoined}, with the same assignment-not-liveness meaning and `details`.
+    /// #1730 (owner ruling): a stream partition's owner is dead and no member of its in-sync replica set is live, so
+    /// failover elected nobody (unclean failover is off) and the partition is unavailable. Announced once, by the leader
+    /// whose guarded write committed the refusal. `details`: `stream`, `partition`, `owner`, `isr`, `live`, `reason`.
+    record StreamFailoverRefused(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new StreamFailoverRefused(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1730: a refused partition has an owner again — an ISR member was elected, or the owner returned. Announced once,
+    /// by the leader whose guarded write cleared the refusal. `details`: `stream`, `partition`, `owner`, `isr`, `live`,
+    /// `reason`.
+    record StreamFailoverResolved(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new StreamFailoverResolved(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
     record CommunityMemberLeft(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
         @Override
         public ClusterEvent withDetail(String key, String value) {

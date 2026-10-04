@@ -24,9 +24,9 @@
   disk" here means process-crash-durable]`
 - **A WAL that starts above the rebuilt watermark keeps its stored offsets; a hole inside the tail refuses
   before anything is appended.** With (a) in place the lost-refs restart needs a snapshot directory
-  restored from before the compaction (or lost). Recovery then follows #1258: the leading gap is
-  accepted as reclaimed history — survivors sit at their STORED offsets (offset 0 is absent, never
-  another event's payload), the range is WARNed and `walRecoveryHeadGapsAccepted` counts it — and the
+  restored from before the compaction (or lost). Recovery then refuses the partition with
+  `StreamError.WalHeadLost` (#1278, same release, which replaced #1258's accept-with-WARN once the
+  reclaimed-through floor existed), counted in `walRecoveryHeadsLost`; nothing is renumbered, and the
   sealed history below is unreachable until the snapshot is restored (after a power loss: re-point
   `LATEST` at the previous retained `snapshot-*.dat`). A gap or duplicate INSIDE the tail is
   `StreamError.WalReplayMismatch` (#1258), and #1345 adds the pass that raises it BEFORE any record is
