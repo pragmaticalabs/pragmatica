@@ -34,7 +34,43 @@ class ReplicationDefaultsParserTest {
             confirmation_factor = 2
             """;
 
-        assertThat(parse(toml).unwrap()).isEqualTo(new ReplicationDefaultsConfig(5, 3, 2));
+        assertThat(parse(toml).unwrap()).isEqualTo(new ReplicationDefaultsConfig(5, 3, 2, 1, 1));
+    }
+
+    @Test
+    void builtIn_cacheIsSingleCopy() {
+        assertThat(ReplicationDefaultsConfig.BUILT_IN.cacheReplicationFactor()).isEqualTo(1);
+        assertThat(ReplicationDefaultsConfig.BUILT_IN.cacheConfirmationFactor()).isEqualTo(1);
+    }
+
+    @Test
+    void parse_declaredCacheFactors_areRead() {
+        var toml = """
+            [cache]
+            replication_factor = 3
+            confirmation_factor = 2
+            """;
+
+        assertThat(parse(toml).unwrap()).isEqualTo(new ReplicationDefaultsConfig(3, 2, 1, 3, 2));
+    }
+
+    @Test
+    void parse_cacheConfirmationAboveFactor_refusesTheApply() {
+        var message = parse("[cache]\nreplication_factor = 1\nconfirmation_factor = 2\n").fold(cause -> cause.message(), _ -> "");
+
+        assertThat(message).contains("[cache] confirmation_factor");
+    }
+
+    @Test
+    void parse_cacheFactorZero_refusesTheApply() {
+        assertThat(parse("[cache]\nreplication_factor = 0\nconfirmation_factor = 0\n").isFailure()).isTrue();
+    }
+
+    @Test
+    void parse_cacheUnknownKey_refusesTheApplyNamingIt() {
+        var message = parse("[cache]\nttl = 5\n").fold(cause -> cause.message(), _ -> "");
+
+        assertThat(message).contains("ttl");
     }
 
     @Test

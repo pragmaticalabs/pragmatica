@@ -2400,7 +2400,16 @@ public sealed interface AetherValue {
                                          HlcTimestamp transferredAt,
                                          List<NodeId> isr,
                                          long isrVersion,
-                                         boolean failoverRefused) implements AetherValue, EpochBearing<Epoch> {
+                                         boolean failoverRefused,
+                                         List<NodeId> fenced,
+                                         long failoverRefusalSeq) implements AetherValue, EpochBearing<Epoch> {
+        /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
+        /// bounded here: the oldest entry is forgotten first. A forgotten member is no longer fenced, so if it is still
+        /// registered with the owner as caught up and invisible to the leader, the owner re-expands it and the leader
+        /// fences it again. That fight is unreachable while the core has [#FENCED_MAX] or fewer members (the registry
+        /// holds at most the replication factor, which never exceeds the core size) and perpetual beyond it.
+        public static final int FENCED_MAX = 16;
+
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
         /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences
         /// ANY `EpochBearing` value). A stale-owner takeover at the same epoch (bumping only
@@ -2422,6 +2431,11 @@ public sealed interface AetherValue {
             isr = isr == null || isr.isEmpty()
                   ? List.of(owner)
                   : List.copyOf(isr);
+            fenced = fenced == null
+                     ? List.of()
+                     : List.copyOf(fenced.size() > FENCED_MAX
+                                   ? fenced.subList(fenced.size() - FENCED_MAX, fenced.size())
+                                   : fenced);
         }
 
         /// A record whose ISR is the owner alone: the shape of every record written before #1730, and of a
@@ -2436,7 +2450,9 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      List.of(owner),
                                                      0L,
-                                                     false);
+                                                     false,
+                                                     List.of(),
+                                                     0L);
         }
 
         public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
@@ -2451,7 +2467,28 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      isr,
                                                      isrVersion,
-                                                     false);
+                                                     false,
+                                                     List.of(),
+                                                     0L);
+        }
+
+        /// A record with ISR `isr` and fenced set `fenced` (#1883).
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt,
+                                                                                  List<NodeId> isr,
+                                                                                  long isrVersion,
+                                                                                  List<NodeId> fenced) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false,
+                                                     fenced,
+                                                     0L);
         }
 
         /// The same ownership with ISR `isr`, one ISR change later.
@@ -2462,10 +2499,30 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      isr,
                                                      isrVersion + 1,
-                                                     failoverRefused);
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq);
         }
 
-        /// The same ownership and ISR with the failover verdict `refused`.
+        /// The same ownership with ISR `isr` and fenced set `fenced`, one ISR change later (#1883). `fenced` is the set of
+        /// members the leader removed from the ISR because its own liveness view does not list them; the owner never
+        /// expands a fenced member, so the two writers read ONE liveness input. Bounded by [#FENCED_MAX] at construction, newest kept.
+        public StreamPartitionOwnershipValue withIsrAndFenced(List<NodeId> isr, List<NodeId> fenced) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq);
+        }
+
+        /// The same ownership and ISR with the failover verdict `refused`. Each transition INTO refused counts one more
+        /// in `failoverRefusalSeq` WITHIN AN OWNERSHIP TERM (a move mints a fresh record, so the count restarts at 0 and the
+        /// raised term keeps ids distinct), committed with the flag, so every genuine refusal of a partition is a distinct event
+        /// (a refusal that resolves by the owner returning and recurs changes nothing else in the record).
         public StreamPartitionOwnershipValue withFailoverRefused(boolean refused) {
             return new StreamPartitionOwnershipValue(owner,
                                                      ownerEpoch,
@@ -2473,7 +2530,11 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      isr,
                                                      isrVersion,
-                                                     refused);
+                                                     refused,
+                                                     fenced,
+                                                     refused && !failoverRefused
+                                                     ? failoverRefusalSeq + 1
+                                                     : failoverRefusalSeq);
         }
     }
 
@@ -2850,4 +2911,87 @@ public sealed interface AetherValue {
             return new EntityFoldCheckpointValue(throughOffset, blockIdHex, System.currentTimeMillis());
         }
     }
+
+    /// The phase of a live DHT replication change (#1777, CTO ruling R1b).
+    @Codec
+    enum DhtReplicationStage {
+        /// Committed; members are applying the new factors. Readers and writers use the transitional quorums.
+        APPLYING,
+        /// Every expected member reported the change applied, so every write from now on is acked at W_t or higher.
+        /// Every core re-runs its catch-up for it.
+        WRITERS_SWITCHED,
+        /// Every core caught up after the writers switched: the new quorums apply cluster-wide.
+        SETTLED,
+        /// Wire sentinel: an ordinal this node cannot name decodes here. Never SETTLED, so a node that cannot read the
+        /// stage keeps the transitional quorums. Must stay LAST.
+        UNKNOWN
+    }
+
+    /// The cluster's latest DHT replication change, under [AetherKey.DhtReplicationChangeKey] (#1777, CTO ruling R1b).
+    /// The switch to the new quorums is cluster-wide and committed: every node keeps W_t = max(W_old, W_new) and
+    /// R_t = max(R_old, R_new) until this record reaches [DhtReplicationStage#SETTLED].
+    ///
+    /// - `version` — the committed cluster configuration version that carried the factors, which every report is
+    ///   compared against: a report for an earlier version never advances this change.
+    /// - `replicationFactor`, `confirmationFactor` — the factors this change installed.
+    /// - `floorWriteQuorum`, `floorReadQuorum` — the strictest quorums of the factors it replaced, and of every earlier
+    ///   change still unsettled when it was committed.
+    /// - `sourceReplicationFactor` — the largest replication factor across those changes: the replica set at that factor
+    ///   contains every replica set involved, and is what a core catches up from.
+    /// - `since` — when the leader committed it (wall-clock ms), so the age survives a leader change.
+    /// - `overdue` — the leader committed that the change has been unsettled for longer than the operator-attention
+    ///   bound; it is the dedupe of the entering/leaving events.
+    ///
+    /// Leader-authorized: only a compare-and-set leader transaction writes it, so a stale leader, or a transition
+    /// computed from a superseded record, is refused.
+    record DhtReplicationChangeValue(long version,
+                                     int replicationFactor,
+                                     int confirmationFactor,
+                                     int floorWriteQuorum,
+                                     int floorReadQuorum,
+                                     int sourceReplicationFactor,
+                                     DhtReplicationStage stage,
+                                     long since,
+                                     boolean overdue) implements AetherValue, LeaderAuthorized {
+        public DhtReplicationChangeValue {
+            if (stage == null) {
+                stage = DhtReplicationStage.UNKNOWN;
+            }
+        }
+
+        public DhtReplicationChangeValue withStage(DhtReplicationStage next) {
+            return new DhtReplicationChangeValue(version,
+                                                 replicationFactor,
+                                                 confirmationFactor,
+                                                 floorWriteQuorum,
+                                                 floorReadQuorum,
+                                                 sourceReplicationFactor,
+                                                 next,
+                                                 since,
+                                                 overdue);
+        }
+
+        public DhtReplicationChangeValue withOverdue(boolean next) {
+            return new DhtReplicationChangeValue(version,
+                                                 replicationFactor,
+                                                 confirmationFactor,
+                                                 floorWriteQuorum,
+                                                 floorReadQuorum,
+                                                 sourceReplicationFactor,
+                                                 stage,
+                                                 since,
+                                                 next);
+        }
+
+        public boolean settled() {
+            return stage == DhtReplicationStage.SETTLED;
+        }
+    }
+
+    /// What one member reports about the latest DHT replication change, under [AetherKey.DhtReplicationReportKey]
+    /// (#1777, CTO ruling R1b): `appliedVersion` is the configuration version whose factors it uses, and
+    /// `caughtUpVersion` the change whose writers-switched catch-up it completed ([DhtReplicationStage#WRITERS_SWITCHED]).
+    /// Either is `-1` before the first. `replica` says the member holds DHT partitions (a core): its catch-up is part of
+    /// the settle. A worker holds none and reports what it applied only.
+    record DhtReplicationReportValue(long appliedVersion, long caughtUpVersion, boolean replica) implements AetherValue {}
 }

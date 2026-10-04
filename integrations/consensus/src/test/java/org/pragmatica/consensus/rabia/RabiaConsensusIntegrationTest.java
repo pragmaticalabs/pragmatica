@@ -61,7 +61,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// - Multi-node proposal agreement
 /// - Voting rounds (R1 and R2)
 /// - Decision agreement
-/// - Value locking across phases
+/// - Phase-local initial votes and agreeing decisions across consecutive phases
 class RabiaConsensusIntegrationTest {
 
     record TestCommand(String value) implements Command {}
@@ -99,15 +99,13 @@ class RabiaConsensusIntegrationTest {
             cluster.simulateProposal(NODE_1, batch);
             cluster.simulateProposal(NODE_2, batch);
             cluster.simulateProposal(NODE_3, batch);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
+            cluster.deliverUntilQuiescent();
 
-            // All nodes should vote V1 since quorum agrees
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-
-            // Verify all votes are V1
-            var votes = cluster.getMessagesByType(VoteRound1.class);
+            // Every node must have voted in round 1 of phase 0, and every vote must be V1. Counting the
+            // distinct voters first keeps allMatch from passing on an empty or partial vote list.
+            var votes = cluster.getMessagesByType(VoteRound1.class).stream()
+                .filter(vote -> vote.phase().equals(Phase.ZERO) && vote.round() == 0).toList();
+            assertThat(votes.stream().map(VoteRound1::sender).distinct()).hasSize(CLUSTER_SIZE);
             assertThat(votes).allMatch(v -> v.stateValue() == StateValue.V1);
         }
 
@@ -153,14 +151,7 @@ class RabiaConsensusIntegrationTest {
             cluster.simulateProposal(NODE_1, majorityBatch);
             cluster.simulateProposal(NODE_2, majorityBatch);
             cluster.simulateProposal(NODE_3, minorityBatch);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-
-            // Complete voting rounds
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
+            cluster.deliverUntilQuiescent();
 
             var decisions = cluster.getMessagesByType(Decision.class);
             assertThat(decisions).isNotEmpty();
@@ -297,82 +288,69 @@ class RabiaConsensusIntegrationTest {
             cluster.simulateProposal(NODE_1, batch);
             cluster.simulateProposal(NODE_2, batch);
             cluster.simulateProposal(NODE_3, batch);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
+            cluster.deliverUntilQuiescent();
 
-            // Complete voting rounds for V1 decision
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-
-            // Verify state machine received the command
-            var sm1 = cluster.stateMachines.get(NODE_1);
-            // Note: state machine processing happens internally, may need to verify via other means
+            // Every node's state machine must have applied the committed command exactly once
+            for (var nodeId : List.of(NODE_1, NODE_2, NODE_3)) {
+                assertThat(cluster.stateMachines.get(nodeId).processedCommands)
+                    .as("commands applied by %s", nodeId)
+                    .containsExactly(new TestCommand("execute-me"));
+            }
         }
 
         @Test
         void promise_resolved_with_results_on_v1_decision() throws InterruptedException {
-            // Test that the Promise returned by apply() gets resolved
-            // when V1 decision is made
+            // The Promise returned by apply() must resolve with the state machine's results once the
+            // batch is decided V1
             cluster.activateAll();
 
-            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
+            var promise = cluster.engines.get(NODE_1).<String>apply(List.of(new TestCommand("cmd")));
 
-            // Simulate complete consensus
-            cluster.simulateProposal(NODE_1, batch);
-            cluster.simulateProposal(NODE_2, batch);
-            cluster.simulateProposal(NODE_3, batch);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
+            // apply() broadcasts NewBatch, which deliverMessage does not route; relay it as the network would
+            cluster.deliverUntil(() -> !cluster.getMessagesByType(NewBatch.class).isEmpty());
+            var newBatch = cluster.getMessagesByType(NewBatch.class).getFirst();
+            cluster.engines.get(NODE_2).handleNewBatch(newBatch);
+            cluster.engines.get(NODE_3).handleNewBatch(newBatch);
+            cluster.deliverUntilQuiescent();
 
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(100);
-
-            // Verify decisions were made
-            var decisions = cluster.getMessagesByType(Decision.class);
-            assertThat(decisions).isNotEmpty();
-            assertThat(decisions.stream().anyMatch(d -> d.stateValue() == StateValue.V1)).isTrue();
+            assertThat(promise.await(timeSpan(5).seconds())).isEqualTo(Result.success(List.of("result:cmd")));
         }
 
         @Test
         void multiple_consecutive_decisions_maintain_agreement() throws InterruptedException {
             cluster.activateAll();
 
+            var batches = new ArrayList<Batch<TestCommand>>();
             for (int i = 0; i < 3; i++) {
                 var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + i)));
                 var phase = new Phase(i);
+                batches.add(batch);
 
                 // Simulate complete consensus for each phase
                 for (var nodeId : List.of(NODE_1, NODE_2, NODE_3)) {
                     cluster.simulateProposalForPhase(nodeId, phase, batch);
                 }
-                cluster.deliverAllPendingMessages();
-                Thread.sleep(50);
-                cluster.deliverAllPendingMessages();
-                Thread.sleep(50);
-                cluster.deliverAllPendingMessages();
-                Thread.sleep(50);
+                cluster.deliverUntilQuiescent();
             }
 
             // All decisions should agree within each phase
             var decisions = cluster.getMessagesByType(Decision.class);
+            assertThat(decisions.stream().map(Decision::phase).distinct()).hasSize(3);
             var byPhase = decisions.stream().collect(
                 java.util.stream.Collectors.groupingBy(Decision::phase));
 
-            for (var entry : byPhase.entrySet()) {
-                var values = entry.getValue().stream()
-                    .map(Decision::stateValue)
-                    .distinct()
-                    .toList();
-                assertThat(values).as("Phase %s decisions must agree", entry.getKey()).hasSize(1);
+            for (int i = 0; i < batches.size(); i++) {
+                var phaseDecisions = byPhase.get(new Phase(i));
+                assertThat(phaseDecisions).as("Phase %s decisions", i).isNotEmpty();
+                assertThat(phaseDecisions.stream().map(Decision::stateValue).distinct())
+                    .as("Phase %s decisions must agree", i).containsExactly(StateValue.V1);
+                assertThat(phaseDecisions.stream().map(decision -> decision.value().id()).distinct())
+                    .as("Phase %s decisions must carry that phase's batch", i).containsExactly(batches.get(i).id());
             }
         }
 
         @Test
-        void locked_value_propagates_through_phases() throws InterruptedException {
+        void phase1_initial_vote_is_v1_when_phase1_proposals_agree() throws InterruptedException {
             cluster.activateAll();
 
             // Phase 0: V1 decision
@@ -380,12 +358,7 @@ class RabiaConsensusIntegrationTest {
             cluster.simulateProposal(NODE_1, batch);
             cluster.simulateProposal(NODE_2, batch);
             cluster.simulateProposal(NODE_3, batch);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(100);
+            cluster.deliverUntilQuiescent();
 
             // Verify V1 decision was made
             var phase0Decisions = cluster.getMessagesByType(Decision.class).stream()
@@ -394,21 +367,21 @@ class RabiaConsensusIntegrationTest {
             assertThat(phase0Decisions).isNotEmpty();
             assertThat(phase0Decisions.getFirst().stateValue()).isEqualTo(StateValue.V1);
 
-            // Phase 1: locked value should propagate
-            // (engines should vote V1 in round 1 due to locked value)
+            // Phase 1: a fresh slot with three identical proposals
             var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
             cluster.simulateProposalForPhase(NODE_1, new Phase(1), batch2);
             cluster.simulateProposalForPhase(NODE_2, new Phase(1), batch2);
             cluster.simulateProposalForPhase(NODE_3, new Phase(1), batch2);
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(100);
+            // Deliver until the awaited condition holds (every node has voted), not until the cluster is
+            // idle: a wrong vote must fail the value assertion below rather than a quiescence timeout.
+            cluster.deliverUntil(() -> phase1InitialVotes().stream().map(VoteRound1::sender).distinct().count() == CLUSTER_SIZE);
 
-            var phase1Votes = cluster.getMessagesByType(VoteRound1.class).stream()
-                .filter(v -> v.phase().equals(new Phase(1)))
-                .toList();
+            var phase1Votes = phase1InitialVotes();
 
-            // All votes should be V1 (from locked value)
-            assertThat(phase1Votes.stream().allMatch(v -> v.stateValue() == StateValue.V1)).isTrue();
+            // Phase 1's initial vote is evaluated from phase-1 proposals only (PhaseData.evaluateInitialVote);
+            // three identical proposals must yield V1 from every node.
+            assertThat(phase1Votes.stream().map(VoteRound1::sender).distinct()).hasSize(3);
+            assertThat(phase1Votes).allMatch(v -> v.stateValue() == StateValue.V1);
         }
     }
 
@@ -429,7 +402,7 @@ class RabiaConsensusIntegrationTest {
             // Deliver to dormant nodes (simulates network delivering NewBatch)
             cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch));
             cluster.engines.get(NODE_3).handleNewBatch(new NewBatch<>(NODE_1, batch));
-            Thread.sleep(100);
+            cluster.settleAll();
 
             // Step 3: Verify dormant nodes did NOT broadcast Propose
             var node2Messages = cluster.networks.get(NODE_2).getAllMessages();
@@ -445,15 +418,10 @@ class RabiaConsensusIntegrationTest {
 
             // Step 4: Activate node-2 and node-3 (staggered, with interval)
             cluster.activateNode(NODE_2);
-            Thread.sleep(100);
             cluster.activateNode(NODE_3);
-            Thread.sleep(100);
 
             // Step 5: Deliver all messages and complete consensus rounds
-            for (int i = 0; i < 10; i++) {
-                cluster.deliverAllPendingMessages();
-                Thread.sleep(50);
-            }
+            cluster.deliverUntilQuiescent();
 
             // Step 6: Verify consensus was reached — at least one decision must exist
             var decisions = cluster.getMessagesByType(Decision.class);
@@ -470,7 +438,7 @@ class RabiaConsensusIntegrationTest {
             var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("batch-2")));
             cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch1));
             cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch2));
-            Thread.sleep(50);
+            cluster.settleAll();
 
             // Dormant node-2 should have zero outbound messages
             assertThat(cluster.networks.get(NODE_2).getAllMessages()).isEmpty();
@@ -493,9 +461,16 @@ class RabiaConsensusIntegrationTest {
         }
     }
 
+    private List<VoteRound1> phase1InitialVotes() {
+        return cluster.getMessagesByType(VoteRound1.class).stream()
+                      .filter(v -> v.phase().equals(new Phase(1)) && v.round() == 0)
+                      .toList();
+    }
+
     // ==================== Cluster Simulator ====================
 
     static class ClusterSimulator {
+        private static final int MAX_HOPS = 100;
         private final Map<NodeId, RabiaEngine<TestCommand>> engines = new ConcurrentHashMap<>();
         private final Map<NodeId, SimulatedNetwork> networks = new ConcurrentHashMap<>();
         private final Map<NodeId, TestStateMachine> stateMachines = new ConcurrentHashMap<>();
@@ -515,34 +490,37 @@ class RabiaConsensusIntegrationTest {
         }
 
         void activateNode(NodeId nodeId) throws InterruptedException {
-            var engine = engines.get(nodeId);
-            engine.clusterState(ClusterStateNotification.active());
-            Thread.sleep(150); // Allow sync request to be sent
-
-            // Send sync responses from other nodes to trigger activation
-            for (var otherId : nodeIds) {
-                if (!nodeId.equals(otherId)) {
-                    engine.processSyncResponse(new SyncResponse<>(otherId, SavedState.empty(), ResponderState.COLD));
-                }
-            }
-            Thread.sleep(50); // Allow activation to complete
+            engines.get(nodeId).clusterState(ClusterStateNotification.active());
+            awaitActive(nodeId);
         }
 
         void activateAll() throws InterruptedException {
             for (var engine : engines.values()) {
                 engine.clusterState(ClusterStateNotification.active());
             }
-            Thread.sleep(150);
-
-            // Send sync responses to activate all nodes
             for (var nodeId : nodeIds) {
+                awaitActive(nodeId);
+            }
+        }
+
+        /// Sync responses arriving before the engine has entered Syncing are ignored, so re-offer them
+        /// until the engine reports active rather than guessing how long the sync request takes.
+        private void awaitActive(NodeId nodeId) throws InterruptedException {
+            var engine = engines.get(nodeId);
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (!engine.isActive()) {
+                if (System.nanoTime() > deadline) {
+                    throw new AssertionError(nodeId + " did not activate within 5s");
+                }
                 for (var otherId : nodeIds) {
                     if (!nodeId.equals(otherId)) {
-                        engines.get(nodeId).processSyncResponse(new SyncResponse<>(otherId, SavedState.empty(), ResponderState.COLD));
+                        engine.processSyncResponse(new SyncResponse<>(otherId, SavedState.empty(), ResponderState.COLD));
                     }
                 }
+                awaitSettled(engine);
+                Thread.sleep(10);
             }
-            Thread.sleep(50);
+            awaitSettled(engine);
         }
 
         void stopAll() {
@@ -565,13 +543,53 @@ class RabiaConsensusIntegrationTest {
             }
         }
 
-        void deliverAllPendingMessages() {
+        /// One delivery hop. Drains exactly the messages it delivers, so a message an engine broadcasts
+        /// concurrently is kept for the next hop instead of being cleared unseen.
+        boolean deliverAllPendingMessages() {
+            var delivered = false;
             for (var network : networks.values()) {
-                for (var message : network.getPendingMessages()) {
+                for (var message : network.drainPendingMessages()) {
                     deliverMessage(message);
+                    delivered = true;
                 }
-                network.clearPendingMessages();
             }
+            return delivered;
+        }
+
+        /// Waits until every engine has run all work queued so far on its single apply executor.
+        void settleAll() {
+            for (var engine : engines.values()) {
+                awaitSettled(engine);
+            }
+        }
+
+        /// A barrier that timed out has not settled anything, so it must fail rather than be read as idle.
+        private static void awaitSettled(RabiaEngine<TestCommand> engine) {
+            engine.settleForTesting()
+                  .await(timeSpan(5).seconds())
+                  .onFailure(cause -> {
+                      throw new AssertionError("engine did not settle within 5s: " + cause.message());
+                  });
+        }
+
+        /// Delivers hop by hop until no engine has work queued and no message is pending. Replaces fixed
+        /// sleeps: the outcome no longer depends on how fast the executors happen to be scheduled.
+        void deliverUntilQuiescent() {
+            deliverUntil(() -> false);
+        }
+
+        /// Delivers hop by hop until the condition holds or the cluster goes idle, whichever comes first.
+        /// Returning on idle with the condition still false is deliberate: the caller's assertion then
+        /// reports the real shortfall instead of a generic timeout.
+        void deliverUntil(java.util.function.BooleanSupplier condition) {
+            for (int hop = 0; hop < MAX_HOPS; hop++) {
+                settleAll();
+                settleAll(); // a task may enqueue a follow-up behind the first barrier (carry-forward)
+                if (condition.getAsBoolean() || !deliverAllPendingMessages()) {
+                    return;
+                }
+            }
+            throw new AssertionError("cluster did not quiesce within " + MAX_HOPS + " delivery hops");
         }
 
         @SuppressWarnings("unchecked")
@@ -607,7 +625,7 @@ class RabiaConsensusIntegrationTest {
         private final Promise<Unit> firstProposal = Promise.promise();
         private final Promise<Unit> firstVote = Promise.promise();
         private final List<ProtocolMessage> allMessages = new CopyOnWriteArrayList<>();
-        private final List<ProtocolMessage> pendingMessages = new CopyOnWriteArrayList<>();
+        private final java.util.Queue<ProtocolMessage> pendingMessages = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
         SimulatedNetwork(NodeId self, ClusterSimulator cluster) {
             this.self = self;
@@ -681,12 +699,12 @@ class RabiaConsensusIntegrationTest {
             return Collections.unmodifiableList(allMessages);
         }
 
-        List<ProtocolMessage> getPendingMessages() {
-            return Collections.unmodifiableList(new ArrayList<>(pendingMessages));
-        }
-
-        void clearPendingMessages() {
-            pendingMessages.clear();
+        List<ProtocolMessage> drainPendingMessages() {
+            var drained = new ArrayList<ProtocolMessage>();
+            for (var message = pendingMessages.poll(); message != null; message = pendingMessages.poll()) {
+                drained.add(message);
+            }
+            return drained;
         }
     }
 

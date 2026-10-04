@@ -310,10 +310,123 @@ is checked per resource at deploy and activation: an RF above the cluster's desi
 so a cluster with fewer than three desired cores cannot use the built-in default and its resources declare
 their own factors.
 
+**Changing a live stream's factors:** `confirmation_factor` can be raised online; lowering it is not applied to an existing stream online (durability only increases: `StreamPartitionManager#adoptIfMoreDurable` adopts a committed config only when its replication factor or confirmation factor is strictly higher), and a stall caused by a confirmation-factor raise is relieved by restoring replicas or by re-creating the stream, not by lowering the factor. A committed config that is not applied (a lowering, or a different partition count, which an existing stream cannot take) raises `STREAM_CONFIG_CHANGE_NOT_APPLIED`.
+
 Every key is typed and validated when the TOML is applied; a mistyped value, an RF below 3, a CF outside
 `1..RF`, a `cluster_events` CF below 1 or above the desired core count, or an unknown key refuses the apply,
 naming the key. A core scale that would drop the desired core count below the `cluster_events` CF is refused
 the same way (`ClusterEventsFactorsRefused`).
+
+**The DHT (#1777 track 1).** The DHT takes its factors from this same section: a write is acknowledged by
+`confirmation_factor` replicas and a read asks `replication_factor - confirmation_factor + 1`, so every read meets
+at least one replica that acknowledged the last write when the replica set has not changed
+[mechanism: R + W = RF + 1 > RF]. A ring smaller than `replication_factor` holds every key on every node, with the
+quorums capped at the ring size. Unlike a stream, the DHT applies a changed value **live**:
+- **Gate:** ANY change of `replication_factor` or `confirmation_factor` re-opens the catch-up gate on every partition a
+  node replicates.
+- **Transitional quorums:** every node, workers included, writes to max(old, new) and reads from max(old, new)
+  replicas, capped at the new factor, until the cluster COMMITS that the change has settled. No node switches on its
+  own.
+- **When it settles:** the leader commits three stages in one consensus record. First every member reports that it
+  applied the change. The members are the cores, the workers the leader's membership view counts, and anyone who
+  reported; the leader's view drops a member it holds `Dead`. Then every core runs a fresh catch-up pass, which copies
+  any write a slower node made at the old quorum before it applied the change. When every core reports that pass
+  complete, the change is settled and the new quorums apply.
+- **Write fence:** every put carries the replication change its writer had applied when it started. A replica that has
+  applied a newer change refuses the put with the retryable `ReplicationChangeStale`, and the writer retries once it
+  has applied the change too. A put that was in flight across the whole change, or a writer the roster missed, can
+  therefore never land an old-quorum write after the settle
+  [verified: DHTReplicationChangeTest `straddlingPut_…`, `writerExcludedFromTheSettle_…`, `writerTaughtTheOldChange_…`, in-JVM].
+  The fence is keyed on the change a replica has APPLIED, not on the writers-switched stage: every old-quorum write a
+  replica accepts then predates its report, so every core's writers-switched pass pulls it
+  [verified: `wOldWriteLandingBetweenAReplicasApplyAndItsWritersSwitched_isRefused`].
+  A writer that is itself a replica cannot satisfy an old quorum with its own copy: the local slot is not fenced, so a
+  put is acknowledged only on remote EVIDENCE: a success, or a refusal as stale (which fails it). Any other reply — fence
+  unknown, an owner-epoch fence, a dispatch failure — is not evidence and the put keeps waiting; a `ReplicationChangeStale`
+  refusal seen before the acknowledgement fails the put. The writer's OWN slot is applied only AFTER that evidence arrives
+  (a success, or no evidence within the wait): a put refused as stale never writes it, so there is nothing to undo, and a
+  concurrent current writer's ack can never rest on a copy that is later rolled back. Cost: a writer that is a replica
+  applies its own copy one round trip later than before
+  [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`,
+  `v1882r10_orderA_…`, `v1882r10_orderB_…`, `v1882r10_probeS_…`, in-JVM]. A refusal that arrives AFTER the acknowledgement cannot revoke it; it starts the stale-writer
+  clock, and the copies other replicas accepted are pulled by the writers-switched pass
+  [verified: `v1882r7_orderC_ackThenLateStale_ackStands_andTheRecordIsKept`].
+  The wait for that evidence is bounded at one tenth of the operation timeout (3 s by default): one intra-cluster round
+  trip plus a GC pause, an order of magnitude below the caller-visible timeout, so a partitioned or down replica set does
+  not stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_notTheOperationTimeout`].
+  A refusal by the owner-epoch fence (a replica that has advanced past the writer's epoch) is evidence too, and failure
+  evidence — a stale or an epoch-fence refusal — ends the operation AT ONCE with its typed failure (ReplicationChangeStale,
+  or WriteIndeterminate for an epoch fence), without waiting for a silent replica and without applying the writer's own slot
+  [verified: `v1882r11_probeU_…`, `DHTDeposedWriterRollbackTest.deposedOwnerWrite_oneFencedReplicaPlusOneSilent_…`,
+  `DHTDeposedWriterSameEpochTest.sameEpochTwoWriters_aDeposedReplicaNeverCountsAWriteItWouldRollBack`]. The gate is released
+  once every REMOTE slot has replied, not every slot.
+  [limit: inside the no-evidence window (every remote silent for the wait) two writers can each apply their own slot, and a
+  fence refusal that arrives only afterwards sinks one of them and rolls its copy back (#1818); an acknowledged write that
+  counted that copy as "superseded" is then left on one replica. Pinned as an enabled tripwire:
+  `DHTDeposedWriterSameEpochTest.residual_noEvidenceWindow_…`; #1683-class]
+  [limit: with NO evidence — every remote silent, down, or fence-unknown (a success, a stale refusal and an epoch-fence
+  refusal all count as evidence) until every remote has replied or the wait runs out — the put is acknowledged on the writer's own slot and sets no stale record; a replica on the newer
+  change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it
+  (`v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord`,
+  `v1882r9_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord`); #1683-class]
+  A put refused as stale leaves the writer's own copy untouched [verified: `v1882r10_stalePut_neverTouchesTheWritersOnlyLocalCopy`].
+  The rollback that remains is the #1818 one, for a put that lost its quorum to owner-epoch fences: it restores the entry the
+  write displaced (read in the same step as the write) instead of deleting it
+  [verified: `DHTDeposedWriterRollbackTest.deposedOwnerWrite_overwritingALocalPrior_isRestoredToThePrior_notDeleted`].
+- **Restarted replicas:** a replica refuses writes (retryable, `ReplicationFenceUnknown`) until its state is restored AND
+  consensus reports no catch-up pending (`isPendingCatchUp` false). Before that, an unknown fence never accepts
+  [verified: DHTReplicationChangeTest `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`,
+  DhtReplicationFenceRestoreTest]. Such a refusal says nothing about the writer and never counts toward `DHT_WRITER_STALE`.
+  The bound is what `isPendingCatchUp` can see: it compares against log positions the node has been TOLD about, so a
+  committed change in a log tail the node has not yet received is invisible to it, and the fence can still be too old
+  once it is confirmed (`confirmFence` runs synchronously when the state is restored).
+  [unverified: mutation M7 — the consensus-caught-up wiring in `AetherNode` replaced by a constant `true` — stays green over
+  all 2325 `aether/node` tests, and no boot route reaches "restored AND consensus pending"; the wiring is not pinned. The
+  unsafe direction is a replica that is "never pending" and so confirms its fence early, which is the restore-prefix
+  residual below [limit: #1683].]
+  [unverified: no run shows a restarted replica confirming a fence older than the committed change; the window is the one
+  recorded for #1683 (the signal can report "caught up" for up to one consensus sync-retry interval on a replica that
+  missed all traffic, `RabiaEngine.probeQuietSlot`).] [limit: #1683]
+- **Stale writer event:** a node whose writes stay refused this way for over 5 minutes without adopting the change emits
+  `DHT_WRITER_STALE`, and `DHT_WRITER_STALE_RESOLVED` once it adopts it (at most once each).
+- **The roster is the leader's membership view, not a committed fact.** A wrong roster only delays the settle (a member
+  that is gone but still counted) or hastens it (a live writer held `Dead`); the write fence keeps both safe.
+- **What a read returns while unsettled:** a value acknowledged under the old factors reads as the value or a
+  retryable `NotCaughtUp`, never "absent". This includes a value written at the old quorum by a node that had not
+  applied the change yet
+  [verified: integrations/dht/src/test/java/org/pragmatica/dht/DHTReplicationChangeTest.java, in-JVM].
+  A partition that is catching up refuses reads until it has caught up, and the catch-up runs twice per change.
+- **Liveness cost:** a member that never reports keeps the change unsettled. Reads then stay at the stricter
+  transitional quorum: they fail sooner when replicas are down, but they never return a false "absent". A member stops
+  being waited for once the leader's membership view holds it `Dead`. During the change, a put from a writer that has
+  not applied it yet is refused (retryable) by replicas that have.
+- **Operator event:** a change still unsettled after 5 minutes emits `DHT_REPLICATION_UNSETTLED` (WARNING). When it
+  settles, or a newer change replaces it, `DHT_REPLICATION_SETTLED` (INFO) follows. Each is published at most once: it
+  is missed if the cluster-events owner cannot publish at that moment. See the management API event list.
+
+Idempotency's dedup records live in this replicated DHT; only the cache uses `[cache]`. A node refuses DHT operations
+(retryable `ReplicationUnresolved`) until it
+has read the committed value after its consensus state is restored. The node-local `[dht.replication] target_rf`
+is removed; a node config that still sets it is refused.
+
+### `[cache]` — DHT cache replication (cluster-wide, #1777)
+
+The DHT cache namespace declares its own, lower factors; it holds recomputable data.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `replication_factor` | int | `1` | Copies of each cache entry. At least 1. |
+| `confirmation_factor` | int | `1` | Copies that hold a cache write before it is acknowledged. `1 <= confirmation_factor <= replication_factor`; a read asks `replication_factor - confirmation_factor + 1`. |
+
+```toml
+[cache]
+replication_factor = 1
+confirmation_factor = 1
+```
+
+Validated on apply like `[replication]`: a mistyped value, a factor out of range or an unknown key refuses the
+apply, naming the key. A change takes effect on every node without a restart; cache entries placed under the old
+factors may then miss and be recomputed.
 
 ### `[runtime.<name>]`
 

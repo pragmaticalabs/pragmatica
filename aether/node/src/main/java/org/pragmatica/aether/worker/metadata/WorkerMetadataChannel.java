@@ -52,7 +52,9 @@ public record WorkerMetadataChannel(boolean worker,
                                                               Consumer<String> report,
                                                               BiConsumer<NodeId, String> reportRejection,
                                                               WorkerMetadataLimits limits,
-                                                              LongSupplier clusterIncarnation) {
+                                                              LongSupplier clusterIncarnation,
+                                                              Supplier<Result<WorkerMetadataMessage.DhtReplication>> dhtReplication,
+                                                              Consumer<WorkerMetadataMessage.DhtReplication> dhtReplicationReceived) {
         return new WorkerMetadataChannel(worker,
                                          coreReady,
                                          new WorkerMetadataServer(self,
@@ -64,7 +66,8 @@ public record WorkerMetadataChannel(boolean worker,
                                                                   directory,
                                                                   limits,
                                                                   reportRejection,
-                                                                  clusterIncarnation),
+                                                                  clusterIncarnation,
+                                                                  dhtReplication),
                                          new WorkerMetadataClient(self,
                                                                   store,
                                                                   codec,
@@ -75,7 +78,8 @@ public record WorkerMetadataChannel(boolean worker,
                                                                   endpointDirectoryReceived,
                                                                   projectionReady,
                                                                   report,
-                                                                  limits));
+                                                                  limits,
+                                                                  dhtReplicationReceived));
     }
 
     public Unit onManifestRequest(WorkerMetadataMessage.ManifestRequest request) {
