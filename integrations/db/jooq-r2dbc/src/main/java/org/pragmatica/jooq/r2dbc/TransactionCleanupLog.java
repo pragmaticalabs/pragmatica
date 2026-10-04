@@ -1,6 +1,7 @@
 package org.pragmatica.jooq.r2dbc;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 
 
 /// Where a failed cleanup step of a finished transaction is reported. The step's failure never replaces the
@@ -10,6 +11,7 @@ final class TransactionCleanupLog {
 
     private TransactionCleanupLog() {}
 
+    @Contract
     static void warnStepFailed(String step, Cause cause) {
         log.log(System.Logger.Level.WARNING, "Transaction cleanup step '" + step + "' failed: " + cause.message());
     }

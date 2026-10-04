@@ -3,6 +3,7 @@ package org.pragmatica.jdbc;
 import java.sql.Connection;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
 
@@ -17,6 +18,7 @@ final class TransactionCleanup {
 
     private TransactionCleanup() {}
 
+    @Contract
     static void release(Connection conn, boolean rollbackFirst) {
         if (rollbackFirst) {
             report("rollback",
