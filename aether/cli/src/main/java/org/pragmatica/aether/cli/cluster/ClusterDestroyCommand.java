@@ -915,7 +915,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     private NodeResult drainSingleNode(String nodeId, org.pragmatica.lang.Option<String> servingNode) {
-        var drainResult = ClusterHttpClient.post(NODE_DRAIN, List.of(nodeId), "{}");
+        // #1720: destroy drains every node without undeploying, so it takes every slice below its floor by definition.
+        var drainResult = ClusterHttpClient.post(NODE_DRAIN, List.of(nodeId), ClusterHttpClient.forceQuery(true), "{}");
 
         if (drainResult.isFailure()) {
             var cause = drainResult.fold(c -> c, _ -> null);
@@ -989,7 +990,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
             }
 
             System.out.printf("Shutting down node %s...%n", nodeId);
-            var result = ClusterHttpClient.post(NODE_SHUTDOWN, List.of(nodeId), "{}");
+            var result = ClusterHttpClient.post(NODE_SHUTDOWN, List.of(nodeId), ClusterHttpClient.forceQuery(true), "{}");
 
             result.onFailure(cause -> System.err.printf("  Failed to shutdown %s: %s%n", nodeId, cause.message()));
             results.add(result.fold(cause -> NodeResult.failed(nodeId, refusalReason(cause)),

@@ -936,9 +936,12 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Node ID")
             private String nodeId;
 
+            @CommandLine.Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+            private boolean overrideFloor;
+
             @Override
             public Integer call() {
-                return executeTransition(NODE_DRAIN, "drain", nodeId, nodesParent);
+                return executeTransition(NODE_DRAIN, "drain", nodeId, nodesParent, overrideFloor);
             }
         }
 
@@ -950,9 +953,12 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Node ID")
             private String nodeId;
 
+            @CommandLine.Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+            private boolean overrideFloor;
+
             @Override
             public Integer call() {
-                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent);
+                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent, overrideFloor);
             }
         }
 
@@ -1088,8 +1094,9 @@ public class AetherCli implements Runnable {
         private static Integer executeTransition(ManagementRoute route,
                                                  String action,
                                                  String nodeId,
-                                                 NodesCommand nodesParent) {
-            var response = nodesParent.parent.post(route, List.of(nodeId), "");
+                                                 NodesCommand nodesParent,
+                                                 boolean overrideFloor) {
+            var response = nodesParent.parent.post(route, List.of(nodeId), overrideFloor ? "force=true" : "", "");
             var errorCode = OutputFormatter.checkResponseError(response,
                                                                nodesParent.parent.outputOptions(),
                                                                "Failed to " + action + " node " + nodeId);

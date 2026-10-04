@@ -44,6 +44,9 @@ class ClusterDrainCommand implements Callable<Integer> {
     @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
     private boolean skipConfirmation;
 
+    @Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+    private boolean overrideFloor;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -63,6 +66,7 @@ class ClusterDrainCommand implements Callable<Integer> {
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> ClusterHttpClient.post(NODE_DRAIN,
                                                                  List.of(nodeId),
+                                                                 ClusterHttpClient.forceQuery(overrideFloor),
                                                                  "{}"))
                             .flatMap(MAPPER::readTree)
                             .fold(this::onFailure, this::onDrainInitiated);

@@ -78,6 +78,7 @@ final class ScriptedDrainHttp implements HttpOperations {
     private final List<Step> lifecycleScript;
     private final AtomicInteger lifecycleCalls = new AtomicInteger();
     private final List<String> requests = new CopyOnWriteArrayList<>();
+    private final List<String> requestsWithQuery = new CopyOnWriteArrayList<>();
 
     ScriptedDrainHttp(Step drainResponse, Step... lifecycleScript) {
         this.drainResponse = drainResponse;
@@ -106,6 +107,11 @@ final class ScriptedDrainHttp implements HttpOperations {
         return List.copyOf(requests);
     }
 
+    /// Every request as `METHOD path?query` — `requests()` strips the query, which the #1720 `force` flag lives in.
+    List<String> requestsWithQuery() {
+        return List.copyOf(requestsWithQuery);
+    }
+
     long lifecycleGets() {
         return requests.stream().filter(r -> r.startsWith("GET /api/v1/nodes/lifecycle/")).count();
     }
@@ -117,6 +123,8 @@ final class ScriptedDrainHttp implements HttpOperations {
     @Override
     public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
         requests.add(request.method() + " " + request.uri().getPath());
+        requestsWithQuery.add(request.method() + " " + request.uri().getPath()
+                              + (request.uri().getRawQuery() == null ? "" : "?" + request.uri().getRawQuery()));
 
         var path = request.uri().getPath();
         var step = request.method().equals("POST")

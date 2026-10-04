@@ -1285,11 +1285,16 @@ aether nodes lifecycle --state READY+SYNCING
 aether nodes lifecycle <nodeId>
 
 # Drain a node (READY → DRAINING via the membership-v2 DRAIN-command heartbeat;
-# the target self-drains, finishing in-flight requests, respecting disruption budget)
+# the target self-drains, finishing in-flight requests, respecting the disruption budget
+# and every hosted slice's minAvailable floor: a drain that would take a slice below it
+# is refused with 409 naming the slice)
 aether nodes drain <nodeId>
 
+# Override the slice minAvailable floor (the cluster raises an operator warning)
+aether nodes drain <nodeId> --override-floor
+
 # Shut down a node (self-drain then halt via the DRAIN-command heartbeat; CTM
-# grace-terminate backstop reaps the container)
+# grace-terminate backstop reaps the container). Same floor, same --override-floor.
 aether nodes shutdown <nodeId>
 
 # Check an already matching immutable role (CORE, WORKER or SPOT).
@@ -2592,6 +2597,8 @@ aether cluster destroy --cluster=my-cluster --yes
 | `--yes` | Skip the interactive confirmation prompt |
 | `--keep-resources` | Skip cloud resource termination — remove the registry entry only |
 | `-q`, `--no-color`, `-o <format>`, `--field <field>` | Standard output controls |
+
+Destroy takes every slice below its `minAvailable` floor by definition (it drains and shuts down every node without undeploying), so it sends `force=true` on every drain and shutdown request. The operator-drain slice floor (`aether nodes drain`, #1720) therefore never refuses it, and each node's breach is reported as a `slice-floor-breached-by-force` operator warning.
 
 > **Cleanup failure is loud (#521).** If cloud resource termination fails, `destroy` exits
 > non-zero (`ExitCode.CLEANUP_FAILED`) and deliberately **keeps** the registry entry — the

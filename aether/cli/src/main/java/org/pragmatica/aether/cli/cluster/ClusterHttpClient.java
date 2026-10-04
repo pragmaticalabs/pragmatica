@@ -162,6 +162,15 @@ public sealed interface ClusterHttpClient {
                     .flatMap(path -> postPath(path, jsonBody));
     }
 
+    /// The `force` query of the operator drain/shutdown routes (#1720): `force=true` overrides the slice
+    /// `minAvailable` floor, empty otherwise. `cluster destroy` passes it unconditionally, since destroying a cluster takes every
+    /// slice below its floor by definition.
+    static String forceQuery(boolean force) {
+        return force
+               ? "force=true"
+               : "";
+    }
+
     private static String appendQuery(String path, String queryString) {
         return option(queryString).filter(query -> !query.isEmpty())
                      .map(query -> path + "?" + query)
