@@ -14,6 +14,7 @@ class R2dbcJooqConnectorFactoryTransportTest {
     void r2dbcOptions_useTheR2dbcUrlsCredentials_notTheJdbcUrls() {
         var config = databaseConnectorConfigBuilder().withName("db")
                                                      .withR2dbcUrl("r2dbc:postgresql://r2-user:r2-pw@r2-host:5432/r2-db")
+                                                     .withAsyncUrl("postgresql://async-user:async-pw@async-host:5434/async-db")
                                                      .withJdbcUrl("jdbc:postgresql://jdbc-user:jdbc-pw@jdbc-host:5433/jdbc-db")
                                                      .build()
                                                      .unwrap();
