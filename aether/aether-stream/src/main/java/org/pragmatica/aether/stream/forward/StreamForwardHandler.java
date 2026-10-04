@@ -11,6 +11,7 @@ import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -198,9 +199,35 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onReadForward(ReadForward request) {
-        serveRead(request).onSuccess(events -> sendReadSuccess(request, events))
+        if (isConsumerRead(request)) {
+            serveConsumerRead(request);
+
+            return;
+        }
+
+        serveRead(request).onSuccess(events -> sendReadSuccess(request, events, Epoch.ZERO))
                  .onFailure(cause -> sendReadFailure(request,
                                                      cause.message()));
+    }
+
+    /// A plain consumer read: not a replica's catch-up, not a linearizable one. It is the read that carries the owner
+    /// epoch the consumer last read under (#1730 phase 2 / #1873).
+    private boolean isConsumerRead(ReadForward request) {
+        return !isReplicaCatchup(request) && !request.catchup() && !request.linearizable();
+    }
+
+    /// Validated by [StreamPartitionManager#readServing(String, int, long, int, Epoch)]: the cursor is checked against the
+    /// committed epoch starts before a single event is served, and the answer carries the epoch it was served under.
+    /// A cursor that belongs to a replaced lineage is answered with the typed divergence.
+    private void serveConsumerRead(ReadForward request) {
+        partitionManager.readServing(request.streamName(),
+                                     request.partition(),
+                                     request.fromOffset(),
+                                     request.maxEvents(),
+                                     request.consumerEpoch())
+                        .async()
+                        .onSuccess(read -> sendReadSuccess(request, read.events(), read.ownerEpoch()))
+                        .onFailure(cause -> sendReadFailure(request, cause));
     }
 
     /// A `LINEARIZABLE`-class forwarded read re-runs the shared owner-side serve pipeline
@@ -382,7 +409,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// #1333: every successful answer carries this node's visible bounds of the partition, read AFTER
     /// the events so the head is never behind the last event served.
     @Contract
-    private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events) {
+    private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {
         var capped = applyCap(events);
         var bounds = partitionManager.visibleBounds(request.streamName(),
                                                     request.partition())
@@ -393,7 +420,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                              capped.events(),
                                                              bounds)
                      : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events(), bounds);
-        var response = withCatchupHistory(request, answer);
+        var response = withCatchupHistory(request, answer.withOwnerEpoch(ownerEpoch));
 
         if (capped.truncated()) {
             metrics.recordTruncated();
@@ -407,6 +434,30 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                   request.correlationId(),
                   capped.events().size(),
                   capped.truncated());
+    }
+
+    /// The typed divergence of a validated read goes out as itself (#1730 phase 2 / #1873); every other failure as its
+    /// message.
+    @Contract
+    private void sendReadFailure(ReadForward request, Cause cause) {
+        if (cause instanceof StreamError.EpochDiverged diverged) {
+            transport.send(request.sender(),
+                           ReadForwardResponse.epochDivergedResponse(selfNodeId,
+                                                                     request.correlationId(),
+                                                                     diverged.ownerEpoch(),
+                                                                     diverged.resumeAt(),
+                                                                     diverged.message()));
+            log.info("Forwarded read diverged for {}[{}] fromOffset={} correlationId={}: {}",
+                     request.streamName(),
+                     request.partition(),
+                     request.fromOffset(),
+                     request.correlationId(),
+                     diverged.message());
+
+            return;
+        }
+
+        sendReadFailure(request, cause.message());
     }
 
     @Contract

@@ -17,6 +17,7 @@ import java.util.function.LongConsumer;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
@@ -33,6 +34,12 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -83,6 +90,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
 
     private static final Consumer<CheckpointIssuePoint> NO_CHECKPOINT_ISSUE_PROBE = _ -> {};
+    private static final Logger WARNINGS_LOG = LoggerFactory.getLogger(ConsumerRuntimeState.class);
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
@@ -93,6 +101,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// nobody supplied, which resumes unchecked as before.
     private final Option<PartitionBounds> bounds;
     private final TimeSpan deadLetterAppendTimeout;
+    /// #1873: where a consumer's re-seek after a replaced lineage is reported to the operator, late-bound.
+    private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
@@ -1115,12 +1125,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         state.touchLastPollTime();
 
-        return reader.read(key.streamName(),
-                           key.partition(),
-                           state.cursor(),
-                           MAX_POLL_BATCH)
-                     .fold(result -> lifted(() -> result.fold(cause -> pollFailed(state, cause),
-                                                              events -> pollSucceeded(key, state, events))));
+        return reader.readFrom(key.streamName(),
+                               key.partition(),
+                               state.cursor(),
+                               MAX_POLL_BATCH,
+                               state.ownerEpoch())
+                     .fold(result -> lifted(() -> result.fold(cause -> pollFailed(key, state, cause),
+                                                              read -> pollSucceeded(key, state, read))));
+    }
+
+    /// The events are served under the owner epoch `read.ownerEpoch()` (#1730 phase 2 / #1873): the consumer adopts it, so
+    /// its next read is checked against the lineage these offsets belong to. A reader that reports none (a local or
+    /// legacy reader) leaves the epoch as it was.
+    private Promise<Boolean> pollSucceeded(ConsumerKey key, ConsumerState state, StreamPartitionManager.EpochRead read) {
+        state.adoptOwnerEpoch(read.ownerEpoch());
+
+        return pollSucceeded(key, state, read.events());
     }
 
     private Promise<Boolean> pollSucceeded(ConsumerKey key,
@@ -1154,10 +1174,55 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// each on its own virtual thread. The declarative path (#488) can enter that window legitimately:
     /// HRW can name this node OWNER of a partition whose ring is still materializing, so the poll path
     /// is reachable before the push listener exists.
-    private Promise<Boolean> pollFailed(ConsumerState state, Cause cause) {
+    private Promise<Boolean> pollFailed(ConsumerKey key, ConsumerState state, Cause cause) {
+        if (cause instanceof StreamError.EpochDiverged diverged) {
+            return rewind(key, state, diverged);
+        }
+
         state.adjustPollInterval(false);
 
         return cause.promise();
+    }
+
+    /// #1873 (KIP-320): the owner replaced the lineage this consumer's cursor belongs to (a restart without a WAL, a
+    /// failover to a replica that held less): it began its epoch at `resumeAt` and assigned the offsets above it again. The
+    /// consumer re-reads from there under the new epoch, so the new records at those offsets are delivered instead of
+    /// skipped. Records this group processed in the replaced lineage are gone from the log, and the operator is told once
+    /// per lineage. The next pass runs at once: the cursor moved, so more may be waiting.
+    private Promise<Boolean> rewind(ConsumerKey key, ConsumerState state, StreamError.EpochDiverged diverged) {
+        var from = state.cursor();
+
+        state.rewindTo(diverged.resumeAt(), diverged.ownerEpoch());
+        warnRewound(key, from, diverged);
+
+        return Promise.success(true);
+    }
+
+    @Contract
+    private void warnRewound(ConsumerKey key, long from, StreamError.EpochDiverged diverged) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_REWOUND,
+                               key.groupId() + ":" + key.streamName() + "[" + key.partition() + "]@" + diverged.ownerEpoch(),
+                               "Consumer group {} on {}[{}] was at offset {} when the partition's owner began epoch {} at offset {}; "
+                              + "it re-reads from {}. Records this group processed at offsets [{}, {}) belong to the replaced lineage "
+                              + "and are no longer in the log; the records now at those offsets are delivered",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               from,
+                               diverged.ownerEpoch(),
+                               diverged.resumeAt(),
+                               diverged.resumeAt(),
+                               diverged.resumeAt(),
+                               from);
+    }
+
+    /// Late-bind the operator-warning sink (#1873). `AetherNode` wires the cluster one; the default is log-only. Set once at
+    /// wiring.
+    @Contract
+    void operatorWarnings(OperatorWarningSink sink) {
+        this.operatorWarnings = sink;
     }
 
     private Promise<Unit> deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
@@ -1506,6 +1571,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private volatile Promise<CommitOutcome> periodicCommitRef = NO_PREDECESSOR;
         /// #1333: the rewind epoch the cursor was fetched under; every commit of this consumer carries it.
         private volatile RewindEpoch epoch = RewindEpoch.NONE;
+        /// #1873 (KIP-320): the OWNER epoch this consumer last read under. Zero before the first read; every read carries it
+        /// and the serving owner checks the cursor against it.
+        private volatile Epoch ownerEpoch = Epoch.ZERO;
         /// #1333: resumed under a rewound epoch and not yet checkpointed at the head — armed by
         /// [#resumeAt], consumed once by [ConsumerRuntimeState#commitRewoundCatchUp].
         private final AtomicBoolean rewoundCatchUp = new AtomicBoolean(false);
@@ -1591,6 +1659,26 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         long cursor() {
             return cursor.get();
+        }
+
+        Epoch ownerEpoch() {
+            return ownerEpoch;
+        }
+
+        /// A zero epoch is "the reader reported none" and changes nothing.
+        @Contract
+        void adoptOwnerEpoch(Epoch epoch) {
+            if (!epoch.equals(Epoch.ZERO)) {
+                ownerEpoch = epoch;
+            }
+        }
+
+        /// The one place the cursor moves BACKWARDS (#1873): to where the owner's new epoch began, under that epoch. Never
+        /// through [#advanceCursor], whose monotonicity is what keeps a late completion from rewinding a checkpoint.
+        @Contract
+        void rewindTo(long resumeAt, Epoch newEpoch) {
+            cursor.set(resumeAt);
+            ownerEpoch = newEpoch;
         }
 
         /// Monotonic (#1238): a late retry or dead-letter completion, or a stored cursor fetched after

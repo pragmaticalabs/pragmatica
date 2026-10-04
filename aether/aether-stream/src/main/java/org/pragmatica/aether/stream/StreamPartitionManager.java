@@ -228,6 +228,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Object quarantineLock = new Object();
     /// #1596: the durable partition flag, late-bound ([#partitionFlags(PartitionFlags)]).
     private volatile Option<PartitionFlags> partitionFlags = none();
+    /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
+    /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
+    private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
     /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
@@ -839,6 +842,47 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                 long fromOffset,
                                                                 int maxEvents) {
         return ownerRoleGate(streamName, partition).flatMap(_ -> readLocal(streamName, partition, fromOffset, maxEvents));
+    }
+
+    /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
+    /// #1873), which the consumer adopts.
+    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {}
+
+    /// [#readServing(String, int, long, int)] for a CONSUMER that last read under `consumerEpoch` (#1730 phase 2 / #1873,
+    /// KIP-320): after the owner gate, the cursor is checked against the committed epoch starts, and a cursor that belongs
+    /// to a replaced lineage is refused with the typed [StreamError.EpochDiverged] naming where the new lineage began,
+    /// instead of reading on from offsets the consumer's lineage no longer owns. Partitions with no committed ownership
+    /// record (legacy, unit, a first owner before the leader minted one) are served unvalidated, as before.
+    public Result<EpochRead> readServing(String streamName,
+                                         int partition,
+                                         long fromOffset,
+                                         int maxEvents,
+                                         Epoch consumerEpoch) {
+        return ownerRoleGate(streamName, partition).flatMap(_ -> admitted(streamName, partition, fromOffset, consumerEpoch))
+                                                   .flatMap(epoch -> readLocal(streamName,
+                                                                               partition,
+                                                                               fromOffset,
+                                                                               maxEvents).map(events -> new EpochRead(events,
+                                                                                                                       epoch)));
+    }
+
+    private Result<Epoch> admitted(String streamName, int partition, long fromOffset, Epoch consumerEpoch) {
+        return ownershipRecords.committed(streamName, partition)
+                               .fold(() -> Result.success(Epoch.ZERO),
+                                     record -> EpochValidation.admit(streamName,
+                                                                     partition,
+                                                                     record,
+                                                                     consumerEpoch,
+                                                                     fromOffset,
+                                                                     visibleBounds(streamName, partition).map(VisibleBounds::visibleHead)
+                                                                                                         .or(-1L)));
+    }
+
+    /// Late-bind the committed ownership records (#1730 phase 2 / #1873): `AetherNode` wires the node's applied KV state.
+    /// Until then a validated read finds no record and is served unvalidated. Set once at wiring.
+    @Contract
+    public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
+        this.ownershipRecords = source;
     }
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {

@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.util.List;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
@@ -157,6 +158,51 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                        int partition,
                                                        long fromOffset,
                                                        int maxEvents);
+
+        /// The consumer's read (#1730 phase 2 / #1873, KIP-320): the same read, carrying the owner epoch the consumer last
+        /// read under, answered with the events and the epoch they were served under, or with the typed
+        /// [StreamError.EpochDiverged] when the cursor belongs to a replaced lineage. The default is a plain read that
+        /// reports no epoch, which never diverges: a reader without an owner behind it has no lineage to be checked against.
+        default Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                   int partition,
+                                                                   long fromOffset,
+                                                                   int maxEvents,
+                                                                   Epoch consumerEpoch) {
+            return read(streamName, partition, fromOffset, maxEvents).map(events -> new StreamPartitionManager.EpochRead(events,
+                                                                                                                         Epoch.ZERO));
+        }
+    }
+
+    /// A reader that validates against the owner's epoch (#1730 phase 2 / #1873): `plain` for the unvalidated read,
+    /// `validated` for the consumer's.
+    @FunctionalInterface
+    interface ValidatedRead {
+        Promise<StreamPartitionManager.EpochRead> read(String streamName,
+                                                       int partition,
+                                                       long fromOffset,
+                                                       int maxEvents,
+                                                       Epoch consumerEpoch);
+    }
+
+    static PartitionReader validatingReader(PartitionReader plain, ValidatedRead validated) {
+        return new PartitionReader() {
+            @Override
+            public Promise<List<OffHeapRingBuffer.RawEvent>> read(String streamName,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
+                return plain.read(streamName, partition, fromOffset, maxEvents);
+            }
+
+            @Override
+            public Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                      int partition,
+                                                                      long fromOffset,
+                                                                      int maxEvents,
+                                                                      Epoch consumerEpoch) {
+                return validated.read(streamName, partition, fromOffset, maxEvents, consumerEpoch);
+            }
+        };
     }
 
     /// The default reader: this node's own ring, and nothing else.
