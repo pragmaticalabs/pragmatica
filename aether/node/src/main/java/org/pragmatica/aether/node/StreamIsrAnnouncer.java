@@ -28,7 +28,7 @@ import org.pragmatica.lang.Option;
 /// stays at or above, or stays below, the factor; an owner move; a fence change) announces nothing: the committed
 /// ISR is the dedupe, and no per-commit event can make ISR churn an event storm.
 ///
-/// A stream whose factor is not known on this node (`<= 1`: no confirmation required, or not hydrated) has no
+/// An ISR always holds its owner, so a factor of `<= 1` (no confirmation required, or not known on this node) has no
 /// minimum to fall below and announces nothing.
 public interface StreamIsrAnnouncer {
     @Contract
@@ -57,7 +57,7 @@ public interface StreamIsrAnnouncer {
 
     /// A record minted before #1730 (`isrVersion` 0) carries no committed ISR, so it is never below anything.
     private static boolean below(StreamPartitionOwnershipValue record, int confirmationFactor) {
-        return confirmationFactor > 1 && record.isrVersion() > 0 && record.isr().size() < confirmationFactor;
+        return record.isrVersion() > 0 && record.isr().size() < confirmationFactor;
     }
 
     private static OperationalEvent event(StreamPartitionOwnershipKey key,
