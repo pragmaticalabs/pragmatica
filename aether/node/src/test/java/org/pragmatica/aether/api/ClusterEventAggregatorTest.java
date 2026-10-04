@@ -425,6 +425,28 @@ class ClusterEventAggregatorTest {
                                         .containsExactly("STREAM_ISR_BELOW_MINIMUM", "STREAM_ISR_RESTORED");
     }
 
+    @Test
+    void streamConfigChangeNotApplied_reachesTheEventStream_asAWarning_withItsDetails() {
+        var h = Harness.create();
+
+        h.aggregator().onStreamConfigChangeNotApplied(OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied("orders",
+                                                                                                                                 1,
+                                                                                                                                 3,
+                                                                                                                                 "durability only increases online",
+                                                                                                                                 "cfg-id"));
+
+        assertThat(h.events()).singleElement().satisfies(event -> {
+            assertThat(event).isInstanceOf(ClusterEvent.StreamConfigChangeNotApplied.class);
+            assertThat(event.type()).isEqualTo("STREAM_CONFIG_CHANGE_NOT_APPLIED");
+            assertThat(event.severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+            assertThat(event.details()).containsEntry("stream", "orders")
+                                       .containsEntry("requestedConfirmationFactor", "1")
+                                       .containsEntry("effectiveConfirmationFactor", "3")
+                                       .containsEntry("reason", "durability only increases online")
+                                       .containsEntry("eventId", "cfg-id");
+        });
+    }
+
     /// #1883 F3: during a membership change two nodes can both pass the events-owner gate and each publish the event
     /// derived from one committed Put. The event carries a deterministic `eventId` that the aggregator keeps, so the read
     /// collapses the two copies; an event with another id (another transition) stays.

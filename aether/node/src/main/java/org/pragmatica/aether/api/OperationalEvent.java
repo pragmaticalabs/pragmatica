@@ -159,4 +159,27 @@ public sealed interface OperationalEvent extends Message.Local {
                                          System.currentTimeMillis());
         }
     }
+
+    /// #1883: a committed config lowered a running stream's confirmation factor, which is not applied online
+    /// (durability only increases), so the stream keeps enforcing `effectiveConfirmationFactor`
+    /// ([ClusterEvent.StreamConfigChangeNotApplied]). A point event: no resolved pair.
+    record StreamConfigChangeNotApplied(String stream,
+                                        int requestedConfirmationFactor,
+                                        int effectiveConfirmationFactor,
+                                        String reason,
+                                        String eventId,
+                                        long timestamp) implements OperationalEvent {
+        public static StreamConfigChangeNotApplied streamConfigChangeNotApplied(String stream,
+                                                                                int requestedConfirmationFactor,
+                                                                                int effectiveConfirmationFactor,
+                                                                                String reason,
+                                                                                String eventId) {
+            return new StreamConfigChangeNotApplied(stream,
+                                                    requestedConfirmationFactor,
+                                                    effectiveConfirmationFactor,
+                                                    reason,
+                                                    eventId,
+                                                    System.currentTimeMillis());
+        }
+    }
 }

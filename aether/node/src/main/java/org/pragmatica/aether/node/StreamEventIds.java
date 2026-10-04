@@ -17,10 +17,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 /// is a pure function of the committed record is the same on both nodes: the aggregator keeps an id that is already
 /// set, and every reader that de-duplicates by `eventId` collapses the copies.
 ///
-/// The id names the committed state the event describes: partition, ownership epoch and term, and the ISR version.
-/// The ISR version is monotone, so two genuine ISR transitions never share an id. A failover refusal changes none of
-/// those, so a partition that is refused, resolved by its owner returning, and refused again in the same state
-/// repeats the id; that limit is stated on [StreamFailoverAnnouncer].
+/// The id names the committed state the event describes: partition, ownership epoch and term, the ISR version and the
+/// failover refusal count. The ISR version is monotone, so two genuine ISR transitions never share an id; the refusal
+/// count is committed with the flag and grows on every transition into refused, so a partition that is refused,
+/// resolved by its owner returning, and refused again in an otherwise identical record still gets a new id.
 final class StreamEventIds {
     private StreamEventIds() {}
 
@@ -34,6 +34,7 @@ final class StreamEventIds {
                            String.valueOf(key.partition()),
                            epoch.incarnation() + "." + epoch.rabiaTerm() + "." + epoch.localCounter(),
                            String.valueOf(record.ownershipTerm()),
-                           String.valueOf(record.isrVersion()));
+                           String.valueOf(record.isrVersion()),
+                           String.valueOf(record.failoverRefusalSeq()));
     }
 }

@@ -19,6 +19,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// are registered. The announcer's behaviour is pinned by `StreamFailoverAnnouncementTest` and the owner gate by
 /// `ClusterEventAggregatorTest`; this pins the production wiring that connects them, which neither can reach.
 class StreamFailoverAnnouncerWiringTest {
+    /// [unverified: wiring order pinned by text only] The announcer-before-manager order and the route registrations are
+    /// source-text matches on `AetherNode`; the behaviour of the derivation is pinned by `StreamIsrAnnouncerTest` and the
+    /// manager's prediction by `StreamLifeAuthorityTest`, neither of which can reach the assembly.
     @Test
     void everyNodeFeedsCommittedOwnershipPutsToTheAnnouncer_andTheEventsReachTheAggregator() {
         var code = assemblyCode();
@@ -36,6 +39,7 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamIsrAnnouncer::onOwnershipPut)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,eventAggregator::onStreamIsrBelowMinimum)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,eventAggregator::onStreamIsrRestored)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
     }
 
     private static String assemblyCode() {

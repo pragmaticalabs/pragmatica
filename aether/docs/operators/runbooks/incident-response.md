@@ -137,7 +137,7 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 
 1. Read the event's `details`: `isr` lists the members still in sync, `fenced` the members the leader keeps out because it does not see them live.
 2. Bring the missing replica node back. When the leader sees it live it is unfenced, the owner expands it once it has caught up, and `STREAM_ISR_RESTORED` follows.
-3. If the replica is gone for good, replace the node; the replacement joins the ISR after backfill. To tolerate the loss of one replica without refusing writes, declare `confirmation_factor` below `replication_factor`.
+3. If the replica is gone for good, replace the node; the replacement joins the ISR after backfill. To tolerate the loss of one replica without refusing writes, declare `confirmation_factor` below `replication_factor`. On a running stream lowering `confirmation_factor` is not applied (durability only increases online; a committed lowering raises `STREAM_CONFIG_CHANGE_NOT_APPLIED`): restore the replicas, or re-create the stream.
 
 ### High Latency
 

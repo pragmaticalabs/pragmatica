@@ -582,6 +582,8 @@ public interface SystemTags {
         // stream ISR below the confirmation factor / restored (#1883)
         pin(table, 1746, "org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum");
         pin(table, 1747, "org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored");
+        // a committed stream config lowering that is not applied online (#1883)
+        pin(table, 1748, "org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)

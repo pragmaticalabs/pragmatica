@@ -8850,6 +8850,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onStreamIsrBelowMinimum));
         entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,
                                               eventAggregator::onStreamIsrRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,
+                                              eventAggregator::onStreamConfigChangeNotApplied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));

@@ -2401,7 +2401,8 @@ public sealed interface AetherValue {
                                          List<NodeId> isr,
                                          long isrVersion,
                                          boolean failoverRefused,
-                                         List<NodeId> fenced) implements AetherValue, EpochBearing<Epoch> {
+                                         List<NodeId> fenced,
+                                         long failoverRefusalSeq) implements AetherValue, EpochBearing<Epoch> {
         /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
         /// bounded here: the oldest entry is forgotten first. A forgotten member is no longer fenced, so if it is still
         /// registered with the owner as caught up and invisible to the leader, the owner re-expands it and the leader
@@ -2450,7 +2451,8 @@ public sealed interface AetherValue {
                                                      List.of(owner),
                                                      0L,
                                                      false,
-                                                     List.of());
+                                                     List.of(),
+                                                     0L);
         }
 
         public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
@@ -2466,7 +2468,8 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion,
                                                      false,
-                                                     List.of());
+                                                     List.of(),
+                                                     0L);
         }
 
         /// A record with ISR `isr` and fenced set `fenced` (#1883).
@@ -2484,7 +2487,8 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion,
                                                      false,
-                                                     fenced);
+                                                     fenced,
+                                                     0L);
         }
 
         /// The same ownership with ISR `isr`, one ISR change later.
@@ -2496,7 +2500,8 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion + 1,
                                                      failoverRefused,
-                                                     fenced);
+                                                     fenced,
+                                                     failoverRefusalSeq);
         }
 
         /// The same ownership with ISR `isr` and fenced set `fenced`, one ISR change later (#1883). `fenced` is the set of
@@ -2510,10 +2515,13 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion + 1,
                                                      failoverRefused,
-                                                     fenced);
+                                                     fenced,
+                                                     failoverRefusalSeq);
         }
 
-        /// The same ownership and ISR with the failover verdict `refused`.
+        /// The same ownership and ISR with the failover verdict `refused`. Each transition INTO refused counts one more
+        /// in `failoverRefusalSeq`, committed with the flag, so every genuine refusal of a partition is a distinct event
+        /// (a refusal that resolves by the owner returning and recurs changes nothing else in the record).
         public StreamPartitionOwnershipValue withFailoverRefused(boolean refused) {
             return new StreamPartitionOwnershipValue(owner,
                                                      ownerEpoch,
@@ -2522,7 +2530,10 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion,
                                                      refused,
-                                                     fenced);
+                                                     fenced,
+                                                     refused && !failoverRefused
+                                                     ? failoverRefusalSeq + 1
+                                                     : failoverRefusalSeq);
         }
     }
 

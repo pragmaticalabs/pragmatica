@@ -75,11 +75,11 @@ public interface StreamIsrAnnouncer {
                 var value = put.cause()
                                .value();
                 var config = value.config();
+                var before = confirmationFactor.applyAsInt(config.name());
+                var after = confirmationFactorAfter.applyAsInt(config);
 
-                configTransitions(value,
-                                  confirmationFactor.applyAsInt(config.name()),
-                                  confirmationFactorAfter.applyAsInt(config),
-                                  committedRecord).forEach(sink);
+                configTransitions(value, before, after, committedRecord).forEach(sink);
+                notApplied(put.oldValue(), value, before, after).onPresent(sink);
             }
         };
     }
@@ -100,6 +100,32 @@ public interface StreamIsrAnnouncer {
                           .mapToObj(partition -> configTransition(value, partition, before, after, committedRecord))
                           .flatMap(Option::stream)
                           .toList();
+    }
+
+    /// A committed config that LOWERS the confirmation factor of a running stream is not applied (durability only
+    /// increases online, `StreamPartitionManager#adoptIfMoreDurable`): the operator asked for something the system will
+    /// not do, and acks keep being refused at the old factor. Announced once per such Put, never for an adopted change
+    /// (a lowering that came with a replication-factor raise is adopted, so the factor moves), a new life, a stream
+    /// not held before, or a Put that does not lower the previously committed factor. A later raise does not resolve it:
+    /// it is a point event.
+    static Option<OperationalEvent> notApplied(Option<StreamConfigValue> previous,
+                                               StreamConfigValue value,
+                                               int before,
+                                               int after) {
+        var config = value.config();
+
+        return previous.map(StreamConfigValue::config)
+                       .filter(old -> old.incarnation() == config.incarnation())
+                       .filter(old -> before > 0 && after == before)
+                       .filter(old -> config.confirmationFactor() < old.confirmationFactor() && config.confirmationFactor() < before)
+                       .map(_ -> OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied(config.name(),
+                                                                                                            config.confirmationFactor(),
+                                                                                                            before,
+                                                                                                            "durability only increases online",
+                                                                                                            "stream-config-not-applied:" + config.name()
+                                                                                                           + ":" + config.incarnation()
+                                                                                                           + ":" + value.createdAt()
+                                                                                                           + ":" + config.confirmationFactor()));
     }
 
     private static Option<OperationalEvent> configTransition(StreamConfigValue value,

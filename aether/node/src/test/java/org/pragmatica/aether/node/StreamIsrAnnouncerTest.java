@@ -181,10 +181,56 @@ class StreamIsrAnnouncerTest {
                                                         (_, _) -> Option.none())).as("no committed record").isEmpty();
     }
 
+    /// #1883 (owner rule): a committed CF LOWERING of a running stream is not applied online; the operator asked for
+    /// something the system will not do, and that is announced once, with an id derived from the config.
+    @Test
+    void loweringThatIsNotApplied_isAnnouncedOnce_withADeterministicId() {
+        var announced = new ArrayList<OperationalEvent>();
+        var put = configPut(config(3, 1), 300L, config(3, 3));
+
+        configAnnouncer(3, 3, announced).onConfigPut(put);
+
+        var notApplied = announced.stream().filter(OperationalEvent.StreamConfigChangeNotApplied.class::isInstance)
+                                  .map(OperationalEvent.StreamConfigChangeNotApplied.class::cast).toList();
+        assertThat(notApplied).singleElement().satisfies(event -> {
+            assertThat(event.stream()).isEqualTo("orders");
+            assertThat(event.requestedConfirmationFactor()).isEqualTo(1);
+            assertThat(event.effectiveConfirmationFactor()).isEqualTo(3);
+            assertThat(event.reason()).isEqualTo("durability only increases online");
+        });
+        var again = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(3, 3, again).onConfigPut(put);
+        var later = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(3, 3, later).onConfigPut(configPut(config(3, 1), 301L, config(3, 3)));
+
+        assertThat(idOf(again.getFirst())).as("another node, or a redelivery of the same Put").isEqualTo(notApplied.getFirst().eventId());
+        assertThat(idOf(later.getFirst())).as("a later lowering request").isNotEqualTo(notApplied.getFirst().eventId());
+    }
+
+    /// The false-alert controls: an adopted change (including a lowering that came with a replication-factor raise), a
+    /// Put that does not lower the previously committed factor, a new life and a stream not held before announce nothing.
+    @Test
+    void configChange_thatIsAdoptedOrNotALowering_announcesNoNotApplied() {
+        var announced = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(3, 1, announced).onConfigPut(configPut(config(5, 1), 1L, config(3, 3)));
+        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 1), 2L, config(3, 1)));
+        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 3), 3L, config(3, 3)));
+        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 1).withIncarnation(9L), 4L, config(3, 3)));
+        configAnnouncer(0, 0, announced).onConfigPut(configPut(config(3, 1), 5L, config(3, 3)));
+        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 1), 6L, null));
+
+        assertThat(announced.stream().filter(OperationalEvent.StreamConfigChangeNotApplied.class::isInstance))
+            .as("adopted with an RF raise; previous CF already that low; unchanged; another life; not held; first commit").isEmpty();
+    }
+
     private static String idOf(OperationalEvent event) {
         return switch (event) {
             case OperationalEvent.StreamIsrBelowMinimum below -> below.eventId();
             case OperationalEvent.StreamIsrRestored restored -> restored.eventId();
+            case OperationalEvent.StreamConfigChangeNotApplied notApplied -> notApplied.eventId();
             default -> throw new AssertionError("unexpected " + event);
         };
     }
@@ -208,6 +254,13 @@ class StreamIsrAnnouncerTest {
         return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey("orders"),
                                                   StreamConfigValue.streamConfigValue(config, createdAt)),
                               Option.none());
+    }
+
+    /// A Put over a previously committed `previous` config (`null`: the first commit).
+    private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config, long createdAt, StreamConfig previous) {
+        return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey("orders"),
+                                                  StreamConfigValue.streamConfigValue(config, createdAt)),
+                              Option.option(previous).map(old -> StreamConfigValue.streamConfigValue(old, 1L)));
     }
 
     private static StreamPartitionOwnershipValue record(List<NodeId> isr, long isrVersion) {

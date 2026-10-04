@@ -28,10 +28,9 @@ import org.pragmatica.lang.Option;
 /// so nothing is derived; the committed flag is the dedupe, and it survives a leader change and a restart.
 ///
 /// Two nodes that both pass the events-owner gate during a membership change publish the same event, because its
-/// `eventId` is derived from the committed record ([StreamEventIds]), not minted per node. The limit: toggling the
-/// flag changes neither the epoch, the term nor the ISR version, so a refusal that resolves by the owner returning and
-/// is refused again in the identical state repeats its id, and a reader that de-duplicates by `eventId` keeps only the
-/// first of the two.
+/// `eventId` is derived from the committed record ([StreamEventIds]), not minted per node. The record carries a
+/// refusal count committed with the flag, so a refusal that resolves by the owner returning and recurs is a NEW event
+/// with a new id, never hidden by a reader that de-duplicates by `eventId`.
 public interface StreamFailoverAnnouncer {
     /// Derive and route the event, if any, of one committed ownership Put.
     @Contract
