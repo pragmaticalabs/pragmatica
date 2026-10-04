@@ -59,6 +59,8 @@ class JdkHttpOperationsCloseTest {
                                                                       baseline,
                                                                       selectorThreads())
                                                                   .isTrue();
-        assertThat(created[0].client().isTerminated()).isTrue();
+        for (var ops : created) {
+            assertThat(ops.client().isTerminated()).isTrue();
+        }
     }
 }

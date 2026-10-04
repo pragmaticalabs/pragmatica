@@ -28,19 +28,30 @@ final class HttpEmailSenderCore implements HttpEmailSender, AsyncCloseable {
 
     private final HttpEmailConfig config;
     private final HttpOperations operations;
+    private final boolean ownsOperations;
     private final VendorMapping mapping;
 
-    private HttpEmailSenderCore(HttpEmailConfig config, HttpOperations operations, VendorMapping mapping) {
+    private HttpEmailSenderCore(HttpEmailConfig config,
+                                HttpOperations operations,
+                                boolean ownsOperations,
+                                VendorMapping mapping) {
         this.config = config;
         this.operations = operations;
+        this.ownsOperations = ownsOperations;
         this.mapping = mapping;
     }
 
-    static HttpEmailSender create(HttpEmailConfig config, HttpOperations operations) {
+    /// `ownsOperations` is true only when the factory built `operations` itself: a caller-supplied
+    /// instance stays the caller's to close.
+    static HttpEmailSender create(HttpEmailConfig config, HttpOperations operations, boolean ownsOperations) {
         return Option.option(MAPPINGS.get(config.providerHint()))
-                     .map(mapping -> (HttpEmailSender) new HttpEmailSenderCore(config, operations, mapping))
+                     .map(mapping -> (HttpEmailSender) new HttpEmailSenderCore(config,
+                                                                               operations,
+                                                                               ownsOperations,
+                                                                               mapping))
                      .or(() -> new VendorNotFoundSender(config.providerHint(),
-                                                        operations));
+                                                        operations,
+                                                        ownsOperations));
     }
 
     @Override
@@ -79,21 +90,21 @@ final class HttpEmailSenderCore implements HttpEmailSender, AsyncCloseable {
         return new HttpEmailError.RequestFailed(result.statusCode(), result.body()).promise();
     }
 
-    /// Closes the operations it was handed when they own releasable state (#1097).
+    /// Closes the operations it built itself, when they own releasable state (#1097). Operations the caller
+    /// supplied are the caller's: this does nothing for them.
     @Override
     public Promise<Unit> close() {
-        return closeOperations(operations);
+        return closeOperations(operations, ownsOperations);
     }
 
-    private static Promise<Unit> closeOperations(HttpOperations operations) {
-        return operations instanceof AsyncCloseable closeable
+    private static Promise<Unit> closeOperations(HttpOperations operations, boolean ownsOperations) {
+        return ownsOperations && operations instanceof AsyncCloseable closeable
                ? closeable.close()
                : Promise.unitPromise();
     }
 
-    /// The factory built the operations for this sender, so one that can never send must still
-    /// release them.
-    private record VendorNotFoundSender(String vendorId, HttpOperations operations) implements HttpEmailSender, AsyncCloseable {
+    /// A sender that can never send must still release operations the factory built for it.
+    private record VendorNotFoundSender(String vendorId, HttpOperations operations, boolean ownsOperations) implements HttpEmailSender, AsyncCloseable {
         @Override
         public Promise<String> send(EmailMessage message) {
             return new HttpEmailError.VendorNotFound(vendorId).promise();
@@ -101,7 +112,7 @@ final class HttpEmailSenderCore implements HttpEmailSender, AsyncCloseable {
 
         @Override
         public Promise<Unit> close() {
-            return closeOperations(operations);
+            return closeOperations(operations, ownsOperations);
         }
     }
 }

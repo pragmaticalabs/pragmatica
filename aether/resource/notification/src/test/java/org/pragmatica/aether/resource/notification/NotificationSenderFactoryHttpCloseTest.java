@@ -45,5 +45,7 @@ class NotificationSenderFactoryHttpCloseTest {
         assertThat(eventually(() -> selectorThreads() <= baseline)).as("selector thread gone; baseline %d now %d",
                                                                       baseline,
                                                                       selectorThreads()).isTrue();
+        // Held to here so the selector thread cannot end by the sender being collected: only close() may end it.
+        java.lang.ref.Reference.reachabilityFence(sender);
     }
 }

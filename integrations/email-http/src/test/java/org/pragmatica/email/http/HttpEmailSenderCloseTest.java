@@ -35,9 +35,9 @@ class HttpEmailSenderCloseTest {
     }
 
     @Test
-    void knownVendor_closesItsOperations() {
+    void knownVendor_closesOperationsItBuilt() {
         var ops = new RecordingOperations();
-        var sender = HttpEmailSender.httpEmailSender(HttpEmailConfig.httpEmailConfig("sendgrid", "key"), ops);
+        var sender = HttpEmailSenderCore.create(HttpEmailConfig.httpEmailConfig("sendgrid", "key"), ops, true);
 
         assertThat(sender).isInstanceOf(AsyncCloseable.class);
         assertThat(((AsyncCloseable) sender).close().await(timeSpan(5).seconds()).isSuccess()).isTrue();
@@ -45,12 +45,25 @@ class HttpEmailSenderCloseTest {
     }
 
     @Test
-    void unknownVendor_stillClosesTheOperationsTheFactoryBuilt() {
+    void unknownVendor_stillClosesOperationsItBuilt() {
         var ops = new RecordingOperations();
-        var sender = HttpEmailSender.httpEmailSender(HttpEmailConfig.httpEmailConfig("no-such-vendor", "key"), ops);
+        var sender = HttpEmailSenderCore.create(HttpEmailConfig.httpEmailConfig("no-such-vendor", "key"), ops, true);
 
         assertThat(sender).isInstanceOf(AsyncCloseable.class);
         assertThat(((AsyncCloseable) sender).close().await(timeSpan(5).seconds()).isSuccess()).isTrue();
         assertThat(ops.closes.get()).isEqualTo(1);
+    }
+
+    /// Ownership ruling: the caller owns what it passes in. The public `httpEmailSender(config, ops)` must
+    /// not close `ops`, for a known and for an unknown vendor.
+    @Test
+    void callerSuppliedOperations_areNeverClosed() {
+        for (var vendor : new String[]{"sendgrid", "no-such-vendor"}) {
+            var ops = new RecordingOperations();
+            var sender = HttpEmailSender.httpEmailSender(HttpEmailConfig.httpEmailConfig(vendor, "key"), ops);
+
+            assertThat(((AsyncCloseable) sender).close().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+            assertThat(ops.closes.get()).as("caller-supplied operations for %s", vendor).isZero();
+        }
     }
 }
