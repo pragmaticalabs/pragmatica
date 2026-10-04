@@ -167,6 +167,26 @@ class OwnerActivationLineageTest {
         assertThat(commits).isEmpty();
     }
 
+    /// C4: no ring means no offset an epoch could begin at. The activation fails, commits nothing, and leaves the node
+    /// not activated (the re-drive runs it again once a ring exists).
+    @Test
+    void noRing_commitsNothing_failsWithNoRing_andIsNotActivated() {
+        record.set(Option.some(committed(List.of())));
+        incarnation.set(-1L);
+
+        var result = activation.activate(STREAM, PARTITION).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isEqualTo(OwnerActivation.ActivationError.NO_RING));
+        assertThat(commits).isEmpty();
+        assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
+
+        incarnation.set(1L);
+
+        assertThat(activate()).as("once the ring exists the same record activates").isTrue();
+        assertThat(commits).containsExactly("start@10");
+    }
+
     private boolean activate() {
         return activation.activate(STREAM, PARTITION).await().isSuccess();
     }
