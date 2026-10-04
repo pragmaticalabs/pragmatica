@@ -25,6 +25,7 @@ import java.util.function.Supplier;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -54,6 +55,8 @@ public final class DistributedDHTClient implements DHTClient {
     /// inflict on one read; past it the departed slot fails instead of being replaced.
     private static final int DEFAULT_READ_REISSUE_LIMIT = 3;
     private static final HexFormat HEX = HexFormat.of();
+    /// The evidence wait of a put acknowledged on its own slot is the operation timeout divided by this (v1882 r9b).
+    private static final long EVIDENCE_WAIT_DIVISOR = 10L;
 
     private final DHTNode node;
     private final DHTNetwork network;
@@ -209,7 +212,7 @@ public final class DistributedDHTClient implements DHTClient {
         var collector = QuorumCollector.<Unit> quorumCollector(quorum, targets.size(), promise);
         var localPut = targets.contains(node.nodeId())
                        ? Option.some(handleLocalPut(key, value, stamp, collector))
-                       : Option.<Promise<Boolean>> none();
+                       : Option.<Promise<StorageEngine.Displaced>> none();
 
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
@@ -235,10 +238,13 @@ public final class DistributedDHTClient implements DHTClient {
     /// (W_old = 1 and the writer is a replica), the local slot — which no fence guards — says nothing about the others, so
     /// the acknowledgement waits for EVIDENCE from a remote target: a success (ack) or a stale refusal (fail). Any other
     /// reply — fence unknown, an owner-epoch fence, a dispatch failure to a down replica — is not evidence, and the wait
-    /// goes on until every slot has replied or the operation timeout.
-    /// [limit: with no evidence — every remote silent, down, fence-unknown or owner-epoch-fenced for the whole operation —
-    /// the put is acknowledged on its own slot and sets no stale record; a replica that applied the newer change but is
-    /// unreachable cannot refute it; #1683-class] A refusal that arrives AFTER the acknowledgement cannot revoke it; it is recorded
+    /// goes on until every slot has replied or the evidence wait runs out. The wait is `operationTimeout /`
+    /// [#EVIDENCE_WAIT_DIVISOR] (3 s by default): one intra-cluster round trip plus a GC pause, an order of magnitude below
+    /// the caller-visible timeout, so a partitioned or down replica set cannot turn every W=1 write into a stall of that
+    /// timeout (CTO judgement on the ratio, taste).
+    /// [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot has replied
+    /// or the wait runs out — the put is acknowledged on its own slot and sets no stale record; a replica on the newer change
+    /// that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it; #1683-class] A refusal that arrives AFTER the acknowledgement cannot revoke it; it is recorded
     /// ([#noteLateStale]) and the copies the other replicas accepted are pulled by the writers-switched catch-up.
     private Promise<Unit> confirmedByReplicas(QuorumCollector<Unit> collector, int quorum, boolean hasRemote) {
         if (collector.replicationStaleCount() > 0) {
@@ -249,8 +255,8 @@ public final class DistributedDHTClient implements DHTClient {
             return Promise.success(unit());
         }
 
-        var remaining = Math.max(config.get().operationTimeout().millis() - collector.elapsedMillis(),
-                                 1L);
+        var timeout = config.get().operationTimeout().millis();
+        var remaining = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()), 1L);
 
         return collector.remoteEvidence()
                         .timeout(timeSpan(remaining).millis())
@@ -317,7 +323,10 @@ public final class DistributedDHTClient implements DHTClient {
                : cause;
     }
 
-    private Promise<Unit> afterFailedPut(byte[] key, WriteStamp stamp, Option<Promise<Boolean>> localPut, Cause cause) {
+    private Promise<Unit> afterFailedPut(byte[] key,
+                                         WriteStamp stamp,
+                                         Option<Promise<StorageEngine.Displaced>> localPut,
+                                         Cause cause) {
         return cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.ReplicationChangeStale
                ? localPut.map(local -> rollBackLocalAccept(key, stamp, local))
                          .or(Promise.success(false))
@@ -325,14 +334,20 @@ public final class DistributedDHTClient implements DHTClient {
                : cause.promise();
     }
 
-    private Promise<Boolean> rollBackLocalAccept(byte[] key, WriteStamp stamp, Promise<Boolean> localPut) {
-        return localPut.fold(_ -> node.storage()
-                                      .removeIfExactly(key,
-                                                       stamp.version(),
-                                                       stamp.epochIncarnation(),
-                                                       stamp.epochTerm(),
-                                                       stamp.epochCounter()))
-                       .onSuccess(removed -> logRollback(key, removed));
+    /// Puts this node's own slot back EXACTLY as the write found it (v1882 r9b): the entry the write displaced — read in
+    /// the same atomic step as the write — replaces our accept while the stored entry is still exactly ours, and a key that
+    /// was absent is deleted. Never a bare delete: a writer whose slot held the only copy would lose it. A newer write that
+    /// landed in between is left alone.
+    private Promise<Boolean> rollBackLocalAccept(byte[] key, WriteStamp stamp, Promise<StorageEngine.Displaced> localPut) {
+        return localPut.fold(result -> node.storage()
+                                           .restoreIfExactly(key,
+                                                             stamp.version(),
+                                                             stamp.epochIncarnation(),
+                                                             stamp.epochTerm(),
+                                                             stamp.epochCounter(),
+                                                             result.fold(_ -> Option.<DHTMessage.KeyValue> none(),
+                                                                         StorageEngine.Displaced::prior)))
+                       .onSuccess(restored -> logRollback(key, restored));
     }
 
     @Contract
@@ -844,17 +859,17 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     /// The local slot of a put. Returned so a rollback can wait for it to settle (#1818).
-    private Promise<Boolean> handleLocalPut(byte[] key,
-                                            byte[] value,
-                                            WriteStamp stamp,
-                                            QuorumCollector<Unit> collector) {
+    private Promise<StorageEngine.Displaced> handleLocalPut(byte[] key,
+                                                            byte[] value,
+                                                            WriteStamp stamp,
+                                                            QuorumCollector<Unit> collector) {
         return node.storage()
-                   .putVersioned(key,
-                                 value,
-                                 stamp.version(),
-                                 stamp.epochIncarnation(),
-                                 stamp.epochTerm(),
-                                 stamp.epochCounter())
+                   .putVersionedDisplacing(key,
+                                           value,
+                                           stamp.version(),
+                                           stamp.epochIncarnation(),
+                                           stamp.epochTerm(),
+                                           stamp.epochCounter())
                    .onSuccess(_ -> collector.onLocalSuccess(unit()))
                    .onFailure(collector::onLocalFailure);
     }
