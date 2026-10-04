@@ -876,11 +876,9 @@ public final class ClusterConfigRoutes implements RouteSource {
     private Promise<ClusterConfigValue> commitFencedConfig(ClusterConfigValue intended) {
         var node = nodeSupplier.get();
         var expected = storedClusterConfig();
-
         var committedLeader = node.kvStore()
                                   .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
                                             org.pragmatica.cluster.state.kvstore.LeaderValue.class);
-
         // No committed leader is an election in progress, which is transient (503, as the forward layer answers it).
         // A committed leader that is not this node is a state this node refuses (409): retry against the leader.
         if (committedLeader.isEmpty()) {
@@ -888,38 +886,38 @@ public final class ClusterConfigRoutes implements RouteSource {
         }
 
         return committedLeader.filter(leader -> node.isLeader())
-                   .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
-                         leader -> {
-                             var id = java.util.UUID.randomUUID()
-                                                    .toString();
-                             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                           expected.map(value -> value),
-                                                                                           Option.some(intended));
+                              .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
+                                    leader -> {
+                                        var id = java.util.UUID.randomUUID()
+                                                               .toString();
+                                        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                      expected.map(value -> value),
+                                                                                                      Option.some(intended));
 
-                             return retirementGuards(expected, intended).async()
-                                                    .flatMap(guards -> {
-                                                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                                                                       id,
-                                                                                                                                       leader,
-                                                                                                                                       guards,
-                                                                                                                                       List.of(mutation));
+                                        return retirementGuards(expected, intended).async()
+                                                               .flatMap(guards -> {
+                                                                            var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                                                                  id,
+                                                                                                                                                  leader,
+                                                                                                                                                  guards,
+                                                                                                                                                  List.of(mutation));
 
-                                                                 return node.<Object> apply(List.of(command))
-                                                                            .flatMap(results -> {
-                                                                                         var accepted = results.stream()
-                                                                                                               .filter(KVCommand.TransactionResult.class::isInstance)
-                                                                                                               .map(KVCommand.TransactionResult.class::cast)
-                                                                                                               .anyMatch(result -> result.transactionId()
-                                                                                                                                         .equals(id) && result.accepted());
+                                                                            return node.<Object> apply(List.of(command))
+                                                                                       .flatMap(results -> {
+                                                                                                    var accepted = results.stream()
+                                                                                                                          .filter(KVCommand.TransactionResult.class::isInstance)
+                                                                                                                          .map(KVCommand.TransactionResult.class::cast)
+                                                                                                                          .anyMatch(result -> result.transactionId()
+                                                                                                                                                    .equals(id) && result.accepted());
 
-                                                                                         return accepted
-                                                                                                ? Promise.success(intended)
-                                                                                                : new ClusterConfigError.VersionConflict(intended.configVersion(),
-                                                                                                                                         storedClusterConfig().map(ClusterConfigValue::configVersion)
-                                                                                                                                                            .or(0L)).promise();
-                                                                                     });
-                                                             });
-                         });
+                                                                                                    return accepted
+                                                                                                           ? Promise.success(intended)
+                                                                                                           : new ClusterConfigError.VersionConflict(intended.configVersion(),
+                                                                                                                                                    storedClusterConfig().map(ClusterConfigValue::configVersion)
+                                                                                                                                                                       .or(0L)).promise();
+                                                                                                });
+                                                                        });
+                                    });
     }
 
     private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {

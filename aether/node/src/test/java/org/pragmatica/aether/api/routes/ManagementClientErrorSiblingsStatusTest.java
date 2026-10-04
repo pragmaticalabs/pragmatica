@@ -189,8 +189,9 @@ class ManagementClientErrorSiblingsStatusTest {
         var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(new NodeId("core"), 1);
 
         when(store.get(org.mockito.ArgumentMatchers.<AetherKey> any())).thenReturn(Option.some(seed));
-        when(store.getTyped(org.mockito.ArgumentMatchers.<AetherKey> any(), org.mockito.ArgumentMatchers.<Class<AetherValue>> any()))
-            .thenReturn(Option.some((AetherValue) (Object) leader));
+        org.mockito.Mockito.doReturn(Option.some(leader))
+                           .when(store)
+                           .getTyped(org.mockito.ArgumentMatchers.<AetherKey> any(), org.mockito.ArgumentMatchers.<Class<AetherValue>> any());
 
         var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", false)));
         var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
