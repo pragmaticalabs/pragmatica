@@ -80,7 +80,6 @@ public interface ScheduledTaskManager {
     boolean tryClaim(ScheduledTaskKey key);
     /// Releases a claim taken via [#tryClaim].
     void release(ScheduledTaskKey key);
-
     /// How long a fire against a REMOTE callee is awaited for its completion before its outcome is recorded as UNKNOWN
     /// (#1930). The in-flight claim of a task is held for this long, so a SINGLE-mode task whose callee runs for longer than
     /// the invocation timeout still never overlaps its own next fire; it is the longest a lost response can keep a task from
@@ -99,7 +98,13 @@ public interface ScheduledTaskManager {
                                                      Consumer<KVCommand<AetherKey>> stateWriter,
                                                      Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                                                      LeaderManager leaderManager) {
-        return scheduledTaskManager(registry, invoker, self, stateWriter, stateReader, leaderManager, DEFAULT_COMPLETION_BOUND);
+        return scheduledTaskManager(registry,
+                                    invoker,
+                                    self,
+                                    stateWriter,
+                                    stateReader,
+                                    leaderManager,
+                                    DEFAULT_COMPLETION_BOUND);
     }
 
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
