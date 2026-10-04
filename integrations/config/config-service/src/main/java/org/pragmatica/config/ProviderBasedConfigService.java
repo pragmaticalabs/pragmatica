@@ -92,6 +92,21 @@ public final class ProviderBasedConfigService implements ConfigService {
         return provider.getBoolean(key);
     }
 
+    /// Whether `path` is a SECTION a record can bind from: something is keyed UNDER it. [#hasSection] also
+    /// answers true for a path that exists only as a scalar key (`retention = "time"` makes
+    /// `streams.x.retention` a "section"), which is right for asking whether a name is configured at all and wrong
+    /// for deciding to bind a record there: the record then fails on its first required field. A scalar where a
+    /// record is expected is NOT a record section, so a nested record falls to its default (or `none()` for an
+    /// `Option`) exactly as if the key were absent. That is the explicit choice for shorthand keys such as a
+    /// stream's `retention = "time"`, which the stream parser, not this binder, interprets (#822).
+    private boolean hasRecordSection(String path) {
+        var prefix = path + ".";
+
+        return provider.keys()
+                       .stream()
+                       .anyMatch(key -> key.startsWith(prefix));
+    }
+
     private static boolean hasSectionPrefix(String key, String prefix, String section) {
         return key.startsWith(prefix) || key.equals(section);
     }
@@ -473,7 +488,7 @@ public final class ProviderBasedConfigService implements ConfigService {
 
         var nestedSection = section + "." + toSnakeCase(key);
 
-        if (!hasSection(nestedSection)) {
+        if (!hasRecordSection(nestedSection)) {
             return some(findDefaultOrError(type, nestedSection));
         }
 
@@ -784,7 +799,7 @@ public final class ProviderBasedConfigService implements ConfigService {
             return unsupportedOptionError(fullKey, innerClass);
         }
 
-        if (!hasSection(fullKey)) {
+        if (!hasRecordSection(fullKey)) {
             return success(none());
         }
 

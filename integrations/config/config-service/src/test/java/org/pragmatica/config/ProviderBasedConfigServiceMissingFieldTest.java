@@ -115,6 +115,71 @@ class ProviderBasedConfigServiceMissingFieldTest {
         assertThat(noEndpoint.unwrap().endpoint()).isEqualTo(Option.none());
     }
 
+    /// Round 2: a path that exists only as a SCALAR key is not a record section. `retention = "time"` made
+    /// `svc.retention` a "section", so the binder tried to bind a record there and failed on its first required
+    /// field; the stream shorthand is interpreted by the stream parser, not by this binder. The nested record now
+    /// falls to its `DEFAULT` (bare) or `none()` (`Option`), as if the key were absent.
+    record Retention(String kind, int maxCount) {
+        public static final Retention DEFAULT = new Retention("count", 100);
+    }
+
+    record Stream(String name, Retention retention) {}
+
+    record OptionalRetentionHolder(String name, Option<Endpoint> endpoint) {}
+
+    @Test
+    void scalarKeyWhereABareRecordIsExpected_isNotARecordSection_fallsToItsDefault() {
+        var stream = serviceWith(Map.of("s.name", "x", "s.retention", "time")).config("s", Stream.class).unwrap();
+
+        assertThat(stream.retention()).isEqualTo(Retention.DEFAULT);
+    }
+
+    @Test
+    void scalarKeyWhereAnOptionRecordIsExpected_isNotARecordSection_bindsNone() {
+        var holder = serviceWith(Map.of("s.name", "x", "s.endpoint", "scalar")).config("s", OptionalRetentionHolder.class).unwrap();
+
+        assertThat(holder.endpoint()).isEqualTo(Option.none());
+    }
+
+    /// The control: a real section under the same name still binds.
+    @Test
+    void realSectionWhereARecordIsExpected_stillBinds() {
+        var stream = serviceWith(Map.of("s.name", "x", "s.retention.kind", "time", "s.retention.max_count", "5")).config("s", Stream.class).unwrap();
+
+        assertThat(stream.retention()).isEqualTo(new Retention("time", 5));
+    }
+
+    /// A record WITH a whole-record `DEFAULT` whose nested section IS present but partial. The nested record's
+    /// missing field used to be read as absence, so the outer `DEFAULT`'s component silently replaced the section
+    /// the operator wrote (`StreamConfig.retention` is the production instance: `[streams.x.retention]` with only
+    /// `max_count` bound `RetentionPolicy` defaults and dropped the `5`). It now fails naming the field.
+    record DefaultedOuter(String name, Endpoint endpoint) {
+        public static final DefaultedOuter DEFAULT = new DefaultedOuter("d", new Endpoint("default-host", 1));
+    }
+
+    record DefaultedOptionOuter(String name, Option<Endpoint> endpoint) {
+        public static final DefaultedOptionOuter DEFAULT = new DefaultedOptionOuter("d", Option.none());
+    }
+
+    @Test
+    void partialNestedSection_underAnOuterDefault_failsNamingTheField_insteadOfBindingTheDefault() {
+        var result = serviceWith(Map.of("svc.name", "x", "svc.endpoint.port", "25")).config("svc", DefaultedOuter.class);
+
+        assertThat(result.isFailure()).as("the outer DEFAULT must not stand in for a section the operator wrote")
+                                      .isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.MissingField.class));
+    }
+
+    @Test
+    void partialNestedOptionSection_underAnOuterDefault_failsNamingTheField_insteadOfBindingNone() {
+        var result = serviceWith(Map.of("svc.name", "x", "svc.endpoint.port", "25")).config("svc",
+                                                                                          DefaultedOptionOuter.class);
+
+        assertThat(result.isFailure()).as("the outer DEFAULT's none() must not stand in for a section the operator wrote")
+                                      .isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.MissingField.class));
+    }
+
     private static ProviderBasedConfigService serviceWith(Map<String, String> values) {
         var source = MapConfigSource.mapConfigSource("test-source", values).unwrap();
 
