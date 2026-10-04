@@ -120,6 +120,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// entirely: `closed` only stops NEW poll cycles ([#pollCycle]), it never drains a commit already
     /// issued.
     private final Set<TrackedCommit> inFlightCommits = ConcurrentHashMap.newKeySet();
+    /// #1403 (v-str-1914 F1): a graceful detach's flush still pending — held behind the old consumer's in-flight
+    /// advance for up to [#DETACH_ADVANCE_BOUND] — per key. A re-subscription of the same key on this node fetches its
+    /// cursor only after that flush settles ([#loadCursorAndStart]), so the old flush can never land after the
+    /// successor's own commits and move the group's cursor backwards.
+    private final ConcurrentHashMap<ConsumerKey, Promise<CommitOutcome>> pendingDetachFlushes = new ConcurrentHashMap<>();
     /// Test-only seam (#1355), run by [#issueCheckpoint] at each [CheckpointIssuePoint]. Volatile because the
     /// issuing thread is a delivery continuation or the shared scheduler, which already exist when a test
     /// installs it; one volatile read per checkpoint is nothing.
@@ -286,8 +291,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private void cleanupConsumer(ConsumerKey key, ConsumerState state) {
         detachWithoutFlush(key, state);
         if (!state.isFenced()) {
-            flushCursorForKey(key, state);
+            holdUntilSettled(key, flushCursorForKey(key, state));
         }
+    }
+
+    /// #1403 (v-str-1914 F1): registered before anything can chain behind it; removed once it settles — inline when it
+    /// already has — and only if it is still this key's latest flush.
+    private void holdUntilSettled(ConsumerKey key, Promise<CommitOutcome> flush) {
+        pendingDetachFlushes.put(key, flush);
+        flush.withResult(_ -> pendingDetachFlushes.remove(key, flush));
     }
 
     private void detachWithoutFlush(ConsumerKey key, ConsumerState state) {
@@ -523,8 +535,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         unsubscribe(key.streamName(), key.partition(), key.groupId());
     }
 
+    /// #1403 (v-str-1914 F1): the fetch waits for a detach flush of the same key still pending on this node, so the
+    /// successor resumes from the old consumer's final cursor and nothing of the old consumer commits after it starts.
+    /// Neither skipping that flush (it would drop the old handler's progress) nor a store-side max-fence (it would
+    /// refuse a legitimate operator rewind) is used.
     private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
-        cursorStore.onPresent(store -> fetchCursorAndStart(store, key, state, 1))
+        cursorStore.onPresent(store -> option(pendingDetachFlushes.get(key)).or(NO_PREDECESSOR)
+                                                                            .onResult(_ -> fetchCursorAndStart(store,
+                                                                                                               key,
+                                                                                                               state,
+                                                                                                               1)))
                    .onEmpty(() -> startConsumer(key, state));
     }
 

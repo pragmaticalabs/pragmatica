@@ -222,6 +222,9 @@ class DetachAwaitsInFlightAdvanceTest {
             assertThat(appendEntered.await(5, TimeUnit.SECONDS)).isTrue();
 
             skipping.unsubscribe(STREAM, 0, GROUP);
+            // v-str-1914: settled only after the flush has certainly chained behind the append — settled at once, the
+            // test thread advanced the cursor before the asynchronously dispatched flush ran, and passed without the slot.
+            Thread.sleep(300);
             pending.succeed(unit());
 
             assertThat(awaitCommits(1)).isTrue();
@@ -229,6 +232,102 @@ class DetachAwaitsInFlightAdvanceTest {
         } finally {
             skipping.close();
         }
+    }
+
+    /// v-str-1914 probe D, adopted: the dead-letter append reached from the RETRY path (outside the delivery slot), the
+    /// sink settled 300 ms after the unsubscribe. Red under "the dead-letter append holds no in-flight slot":
+    /// `commits=[0]`.
+    @Test
+    void unsubscribe_duringDeadLetterAppendAfterRetriesExhausted_commitsPastTheStoredEvent() throws InterruptedException {
+        var appendEntered = new CountDownLatch(1);
+        var pending = Promise.<Unit>promise();
+        var sink = new DeadLetterHandler() {
+            @Override
+            public Promise<Unit> append(String streamName,
+                                        int partition,
+                                        long offset,
+                                        String failingGroup,
+                                        byte[] payload,
+                                        String errorMessage,
+                                        int attemptCount) {
+                appendEntered.countDown();
+
+                return pending;
+            }
+
+            @Override
+            public List<DeadLetterEntry> read(String streamName, int maxCount) {
+                return List.of();
+            }
+        };
+        var retrying = streamConsumerRuntime(manager, sink, store);
+
+        try {
+            retrying.subscribe(STREAM,
+                               0,
+                               ConsumerConfig.consumerConfig(GROUP,
+                                                             1,
+                                                             ConsumerConfig.ProcessingMode.ORDERED,
+                                                             ConsumerConfig.ErrorStrategy.RETRY,
+                                                             1000L,
+                                                             1,
+                                                             "dlq"),
+                               (_, _, _) -> StreamError.General.BUFFER_EMPTY.promise());
+            manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+            assertThat(appendEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+            retrying.unsubscribe(STREAM, 0, GROUP);
+            Thread.sleep(300);
+            pending.succeed(unit());
+
+            assertThat(awaitCommits(1)).isTrue();
+            assertThat(commits).as("one past the event the sink stored").containsExactly(1L);
+        } finally {
+            retrying.close();
+        }
+    }
+
+    /// v-str-1914 probe R, adopted (F1): a slow handler holds offset 0; the group is unsubscribed and at once
+    /// re-subscribed on this node, and the new consumer checkpoints far ahead; then the old handler completes. The held
+    /// flush must not land after the successor's commits. Red under "the successor's fetch does not wait for the held
+    /// flush": commits `[1000, 1]`, the group rewound.
+    @Test
+    void resubscribeDuringHeldFlush_committedCursorNeverMovesBackwards() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var pending = Promise.<Unit>promise();
+        var delivered = new java.util.concurrent.atomic.AtomicLong(-1);
+
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            entered.countDown();
+
+            return pending;
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        runtime.unsubscribe(STREAM, 0, GROUP);
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (offset, _, _) -> {
+            delivered.set(offset);
+
+            return Promise.unitPromise();
+        });
+        for (var i = 1; i <= 1500; i++) {
+            manager.publishLocal(STREAM, 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+        }
+        Thread.sleep(200);
+        pending.succeed(unit());
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (delivered.get() < 1500 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        Thread.sleep(300);
+
+        var highest = commits.stream().mapToLong(Long::longValue).max().orElse(-1);
+
+        assertThat(delivered.get()).as("the successor delivered the backlog").isEqualTo(1500L);
+        assertThat(commits.getFirst()).as("the old consumer's flush lands first, one past its completed event").isEqualTo(1L);
+        assertThat(commits.getLast()).as("no commit below an earlier one: %s", commits).isEqualTo(highest);
     }
 
     private boolean awaitCommits(int count) throws InterruptedException {
