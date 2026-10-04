@@ -296,6 +296,8 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     /// Any accepted write ends a stale episode — but not one that a replica refused as stale (v1882 r6 F10).
+    /// [unverified: the race between the confirm check and this clear — a stale refusal landing in between — is not
+    /// deterministically reachable in-JVM, so the guard is not pinned: an unconditional clear stays green.]
     @Contract
     private void clearIfNoReplicaRefusedAsStale(QuorumCollector<?> collector) {
         if (collector.replicationStaleCount() == 0) {
