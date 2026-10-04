@@ -97,6 +97,10 @@ public final class DHTAntiEntropy {
     private final ConcurrentHashMap<String, PendingPull> pendingPulls = new ConcurrentHashMap<>();
     /// The live catch-up round per pending partition index.
     private final ConcurrentHashMap<Integer, CatchUpRound> rounds = new ConcurrentHashMap<>();
+    /// The current periodic round per partition, as a vote on tombstone collection (#1777 track 3).
+    private final ConcurrentHashMap<Integer, AgreementRound> agreements = new ConcurrentHashMap<>();
+    /// The agreement round each periodic digest request answers into, by correlation id.
+    private final ConcurrentHashMap<String, AgreementRound> agreementVotes = new ConcurrentHashMap<>();
     private final AtomicLong roundIds = new AtomicLong();
     /// Pulls a holder refused (ring disagreement or an unreadable store) — counted, never silent (#1777).
     private final AtomicLong refusedPulls = new AtomicLong();
@@ -251,6 +255,7 @@ public final class DHTAntiEntropy {
 
     private void synchronizePartitions() {
         expireStalePendingDigests();
+        purgeStrays();
         var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
         var owned = 0;
 
@@ -502,7 +507,7 @@ public final class DHTAntiEntropy {
         }
     }
 
-    private static boolean allStored(List<DHTMessage.KeyValue> pulled, List<DHTMessage.KeyValue> local) {
+    private boolean allStored(List<DHTMessage.KeyValue> pulled, List<DHTMessage.KeyValue> local) {
         var stored = local.stream()
                           .collect(Collectors.toMap(DHTAntiEntropy::keyOf, entry -> entry, DHTAntiEntropy::newer));
 
@@ -512,31 +517,18 @@ public final class DHTAntiEntropy {
 
     /// Stored means the local entry is at least as new as the pulled one under the store's own ordering — owner
     /// epoch first, then HLC version (#1818). A copy kept out by a newer-epoch entry with a lower HLC version is
-    /// superseded, not refused; comparing versions alone would leave the partition catching up forever.
-    private static boolean isStored(Map<String, DHTMessage.KeyValue> stored, DHTMessage.KeyValue entry) {
+    /// superseded, not refused; comparing versions alone would leave the partition catching up forever. An EXPIRED
+    /// tombstone with no local entry is satisfied too (#1777 track 3): it is deliberately never re-created.
+    private boolean isStored(Map<String, DHTMessage.KeyValue> stored, DHTMessage.KeyValue entry) {
         return Option.option(stored.get(keyOf(entry)))
-                     .filter(local -> compareOrder(local, entry) >= 0)
-                     .isPresent();
+                     .map(local -> local.compareOrder(entry) >= 0)
+                     .or(() -> node.expiredTombstone(entry));
     }
 
     private static DHTMessage.KeyValue newer(DHTMessage.KeyValue left, DHTMessage.KeyValue right) {
-        return compareOrder(left, right) >= 0
+        return left.compareOrder(right) >= 0
                ? left
                : right;
-    }
-
-    private static int compareOrder(DHTMessage.KeyValue left, DHTMessage.KeyValue right) {
-        var byIncarnation = Long.compare(left.epochIncarnation(), right.epochIncarnation());
-        var byTerm = Long.compare(left.epochTerm(), right.epochTerm());
-        var byCounter = Long.compare(left.epochCounter(), right.epochCounter());
-
-        return byIncarnation != 0
-               ? byIncarnation
-               : byTerm != 0
-                 ? byTerm
-                 : byCounter != 0
-                   ? byCounter
-                   : Long.compare(left.version(), right.version());
     }
 
     private static String keyOf(DHTMessage.KeyValue entry) {
@@ -595,22 +587,38 @@ public final class DHTAntiEntropy {
 
     private void sendDigestRequests(int partitionIndex, List<NodeId> nodes) {
         var partition = Partition.at(partitionIndex);
+        var startedAt = node.nowMillis();
 
         node.storage()
             .entriesForPartition(node.ring(),
                                  partition)
             .onSuccess(entries -> {
                            var digest = computeDigest(entries);
+                           var round = AgreementRound.agreementRound(partition,
+                                                                     startedAt,
+                                                                     coReplicas(nodes));
 
-                           sendDigestToPeers(partitionIndex, nodes, digest);
+                           agreements.put(partitionIndex, round);
+                           sendDigestToPeers(partitionIndex, nodes, digest, round);
+                           if (round.agreed()) {
+                           onAgreed(round);
+                       }
                        });
     }
 
-    private byte[] computeDigest(List<DHTMessage.KeyValue> entries) {
-        return DHTNode.computeDigest(entries);
+    private Set<NodeId> coReplicas(List<NodeId> nodes) {
+        return nodes.stream()
+                    .filter(peer -> !peer.equals(node.nodeId()))
+                    .collect(Collectors.toSet());
     }
 
-    private void sendDigestToPeers(int partitionIndex, List<NodeId> nodes, byte[] localDigest) {
+    /// The digest every exchange compares: the node's own, which leaves out tombstones expired by their stamp
+    /// (#1777 track 3), so catch-up and periodic rounds agree with what a source computes.
+    private byte[] computeDigest(List<DHTMessage.KeyValue> entries) {
+        return node.digestOf(entries);
+    }
+
+    private void sendDigestToPeers(int partitionIndex, List<NodeId> nodes, byte[] localDigest, AgreementRound round) {
         for (var peer : nodes) {
             if (peer.equals(node.nodeId())) {
                 continue;
@@ -619,11 +627,79 @@ public final class DHTAntiEntropy {
             var correlationId = IdGenerator.generate();
 
             pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest, System.nanoTime()));
+            agreementVotes.put(correlationId, round);
             sendLoudly(peer,
                        new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
                        "digest request",
-                       () -> pendingDigests.remove(correlationId));
+                       () -> forgetDigest(correlationId));
         }
+    }
+
+    private void forgetDigest(String correlationId) {
+        pendingDigests.remove(correlationId);
+        agreementVotes.remove(correlationId);
+    }
+
+    /// A periodic round in which every co-replica agreed (#1777 track 3). Tombstones expired when the round's
+    /// digest was taken are then collected — unless a holder left the partition's replica set within the
+    /// retention: its stray copy may outlive the stray horizon only by the margin, so the tombstone waits for it.
+    private void onAgreed(AgreementRound round) {
+        var partition = round.partition();
+        var now = node.nowMillis();
+
+        node.noteAgreement(partition, round.startedAtMillis());
+        // #1777 R1b: strays are kept while a replication change is unsettled (see purgeStrays), so a tombstone they could
+        // outlive waits until the change has settled here for a margin — the time every other replica needs to observe
+        // the same committed settle and drop its strays first
+        if (!node.replicationSettledSince(now - margin().millis())) {
+            log.debug("Partition {} agreed, but a replication change is unsettled or settled within the margin; tombstones wait",
+                      partition.value());
+
+            return;
+        }
+
+        if (!node.holderSetStableSince(partition,
+                                       now - node.tombstoneRetention().millis())) {
+            log.debug("Partition {} agreed, but a holder left its replica set within the tombstone retention; "
+                     + "tombstones wait",
+                      partition.value());
+
+            return;
+        }
+
+        node.collectTombstones(partition,
+                               node.expiryCutoffMillis(round.startedAtMillis()))
+            .onSuccess(collected -> logCollected(partition, collected));
+    }
+
+    private static void logCollected(Partition partition, int collected) {
+        if (collected > 0) {
+            log.debug("Partition {}: collected {} expired tombstones every co-replica agreed on",
+                      partition.value(),
+                      collected);
+        }
+    }
+
+    /// Drop the copies of every partition this node stopped replicating more than the stray horizon ago (#1777
+    /// track 3). The horizon is the tombstone retention less a margin of two anti-entropy periods and an
+    /// operation timeout, so a stray copy is always gone before a tombstone that supersedes it may be collected.
+    private void purgeStrays() {
+        // #1777 R1b: while a replication change is unsettled, a stray copy may hold the only copy of a write a slower node
+        // acked at the old quorum; the writers-switched catch-up pulls from it, so it stays until the change settles
+        if (node.replicationChangeSettling()) {
+            return;
+        }
+
+        var horizon = Math.max(0L,
+                               node.tombstoneRetention().millis() - margin().millis());
+
+        node.strayPartitionsSince(node.nowMillis() - horizon).forEach(node::dropStray);
+    }
+
+    /// Two anti-entropy periods and an operation timeout: the slack between a stray copy's purge and the earliest
+    /// collection of a tombstone it could outlive — view lag between nodes and copies in flight (#1777 track 3).
+    TimeSpan margin() {
+        return TimeSpan.timeSpan(2 * antiEntropyInterval.millis() + config.get().operationTimeout().millis()).millis();
     }
 
     /// A refused send is never silent (issue #420): the transport's refusal is logged at WARN and the
@@ -659,6 +735,7 @@ public final class DHTAntiEntropy {
         var deadline = System.nanoTime() - antiEntropyInterval.nanos();
 
         pendingDigests.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
+        agreementVotes.keySet().retainAll(pendingDigests.keySet());
         catchUpDigests.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
         pendingPulls.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
     }
@@ -668,10 +745,25 @@ public final class DHTAntiEntropy {
     @Contract
     public void onDigestResponse(DHTMessage.DigestResponse response) {
         node.noteHeardFrom(response.sender());
-        Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> handleDigestComparison(pending,
-                                                                                                               response));
+        Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> voteAndCompare(pending, response));
         Option.option(catchUpDigests.remove(response.requestId())).onPresent(pending -> onCatchUpDigest(pending,
                                                                                                         response));
+    }
+
+    private void voteAndCompare(PendingDigest pending, DHTMessage.DigestResponse response) {
+        voteAgreement(pending, response);
+        handleDigestComparison(pending, response);
+    }
+
+    private void voteAgreement(PendingDigest pending, DHTMessage.DigestResponse response) {
+        var matches = Arrays.equals(pending.localDigest(), response.digest());
+
+        Option.option(agreementVotes.remove(response.requestId()))
+              .filter(round -> agreements.get(pending.partitionIndex()) == round)
+              .filter(round -> round.answer(pending.peer(),
+                                            response.readiness(),
+                                            matches))
+              .onPresent(this::onAgreed);
     }
 
     private void handleDigestComparison(PendingDigest pending, DHTMessage.DigestResponse response) {
