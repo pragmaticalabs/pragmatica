@@ -40,7 +40,7 @@ public final class EpochValidation {
             return new StreamError.OwnerNotActivated(stream, partition).result();
         }
 
-        if (consumerEpoch.equals(Epoch.ZERO) || consumerEpoch.equals(ownerEpoch)) {
+        if (consumerEpoch.equals(Epoch.ZERO)) {
             return Result.success(ownerEpoch);
         }
 
