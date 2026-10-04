@@ -336,23 +336,46 @@ public interface HttpRouteRegistry {
                                  NodeRouteSecurity::strongerOf);
                 }
 
-                merged.forEach((entry, security) -> register(entry, security, nodeId));
+                replaceContribution(RouteSource.routeSource(nodeId,
+                                                            key.artifact().asString()),
+                                    merged);
             }
 
             private record PublishedEntry(String method, String prefix, RouteSource source) {}
 
-            private void register(PublishedEntry entry, NodeRouteSecurity security, NodeId nodeId) {
-                var ref = routesByMethod.computeIfAbsent(entry.method(), _ -> new AtomicReference<>(new TreeMap<>()));
+            /// #1314: a publication REPLACES what its (node, artifact) published before, so an entry the new value
+            /// omits is subtracted. Each method's map is swapped in one step, so a lookup never sees the contribution
+            /// half-replaced; methods the publication no longer names are visited too, to subtract them.
+            private void replaceContribution(RouteSource publisher, Map<PublishedEntry, NodeRouteSecurity> entries) {
+                var byMethod = new HashMap<String, Map<PublishedEntry, NodeRouteSecurity>>();
 
-                ref.updateAndGet(current -> addSourceToRoute(current,
-                                                             entry.method(),
-                                                             entry.prefix(),
-                                                             entry.source(),
-                                                             security));
-                log.debug("HttpRouteRegistry: Registered compound route {} {} node={}",
-                          entry.method(),
-                          entry.prefix(),
-                          nodeId);
+                entries.forEach((entry, security) -> byMethod.computeIfAbsent(entry.method(), _ -> new LinkedHashMap<>())
+                                                             .put(entry, security));
+                byMethod.keySet()
+                        .forEach(method -> routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>())));
+                routesByMethod.forEach((method, ref) -> ref.updateAndGet(current -> replaceInMethod(current,
+                                                                                                     publisher,
+                                                                                                     byMethod.getOrDefault(method,
+                                                                                                                           Map.of()))));
+                entries.keySet()
+                       .forEach(entry -> log.debug("HttpRouteRegistry: Registered compound route {} {} node={}",
+                                                   entry.method(),
+                                                   entry.prefix(),
+                                                   publisher.nodeId()));
+            }
+
+            private TreeMap<String, RouteInfo> replaceInMethod(TreeMap<String, RouteInfo> current,
+                                                               RouteSource publisher,
+                                                               Map<PublishedEntry, NodeRouteSecurity> entries) {
+                var updated = removeSourceFromAllRoutes(current, publisher);
+
+                entries.forEach((entry, security) -> addSourceToRoute(updated,
+                                                                      entry.method(),
+                                                                      entry.prefix(),
+                                                                      entry.source(),
+                                                                      security));
+
+                return updated;
             }
 
             @Override
@@ -439,17 +462,15 @@ public interface HttpRouteRegistry {
             }
 
             /// #1659: the source's own entry is REPLACED, so a republish carrying a changed policy reaches the route.
-            private TreeMap<String, RouteInfo> addSourceToRoute(TreeMap<String, RouteInfo> current,
-                                                                String method,
-                                                                String prefix,
-                                                                RouteSource source,
-                                                                NodeRouteSecurity security) {
-                var updated = new TreeMap<>(current);
+            /// Mutates `updated`, a copy private to the caller's update.
+            private static void addSourceToRoute(TreeMap<String, RouteInfo> updated,
+                                                 String method,
+                                                 String prefix,
+                                                 RouteSource source,
+                                                 NodeRouteSecurity security) {
                 var existing = Option.option(updated.get(prefix)).or(() -> new RouteInfo(method, prefix, Map.of()));
 
                 updated.put(prefix, existing.withSource(source, security));
-
-                return updated;
             }
 
             @Override

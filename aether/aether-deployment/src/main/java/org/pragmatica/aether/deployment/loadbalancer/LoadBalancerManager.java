@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.loadbalancer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -33,6 +35,7 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
@@ -85,7 +88,7 @@ public interface LoadBalancerManager {
                       int appHttpPort,
                       Set<String> trackedNodeIps,
                       Map<NodeId, String> nodeAddresses,
-                      Map<String, Set<NodeId>> routeNodes,
+                      Map<NodeRoutesKey, Set<String>> contributions,
                       AtomicBoolean activated,
                       ConcurrentLinkedDeque<PendingRouteEvent> pendingEvents,
                       ReentrantLock activationLock) implements LoadBalancerManagerState {
@@ -145,64 +148,71 @@ public interface LoadBalancerManager {
                 }
             }
 
+            /// #1314: a put REPLACES its key's contribution, so a route the new value omits is subtracted, and every
+            /// route either value names is re-announced from the aggregate.
             private void applyPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
                 var key = valuePut.cause().key();
-                var value = valuePut.cause().value();
-                var nodeId = key.nodeId();
+                var routeIdentities = routeIdentitiesOf(valuePut.cause().value());
+                var affected = new LinkedHashSet<>(routeIdentities);
 
-                for (var route : value.routes()) {
-                    if (!route.isRoutable()) {
-                        continue;
-                    }
+                Option.option(contributions.put(key, routeIdentities)).onPresent(affected::addAll);
+                affected.forEach(this::announceRoute);
+            }
 
-                    var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
+            /// #1314: only the removed key's contribution goes. The node keeps every route it still serves from
+            /// another artifact.
+            private void applyRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+                Option.option(contributions.remove(valueRemove.cause().key()))
+                      .onPresent(removed -> removed.forEach(this::announceRoute));
+            }
 
-                    routeNodes.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(nodeId);
-                    handleRouteChange(route.httpMethod(), route.pathPrefix(), routeNodes.get(routeIdentity));
+            private void announceRoute(String routeIdentity) {
+                var nodes = nodesServing(routeIdentity);
+                var parts = routeIdentity.split(":", 2);
+
+                if (nodes.isEmpty()) {
+                    handleRouteRemoval(parts[0], parts[1]);
+                } else {
+                    handleRouteChange(parts[0], parts[1], nodes);
                 }
             }
 
-            private void applyRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
-                var key = valueRemove.cause().key();
-                var nodeId = key.nodeId();
-                var affectedRoutes = routeNodes.entrySet()
-                                               .stream()
-                                               .filter(e -> e.getValue()
-                                                             .contains(nodeId))
-                                               .map(Map.Entry::getKey)
-                                               .toList();
+            private Set<NodeId> nodesServing(String routeIdentity) {
+                return contributions.entrySet()
+                                    .stream()
+                                    .filter(entry -> entry.getValue()
+                                                          .contains(routeIdentity))
+                                    .map(entry -> entry.getKey()
+                                                       .nodeId())
+                                    .collect(Collectors.toSet());
+            }
 
-                for (var routeIdentity : affectedRoutes) {
-                    var nodes = routeNodes.get(routeIdentity);
+            private Map<String, Set<NodeId>> routeNodes() {
+                var aggregated = new HashMap<String, Set<NodeId>>();
 
-                    nodes.remove(nodeId);
-                    var parts = routeIdentity.split(":", 2);
+                contributions.forEach((key, identities) -> identities.forEach(identity -> aggregated.computeIfAbsent(identity,
+                                                                                                                      _ -> new HashSet<>())
+                                                                                                    .add(key.nodeId())));
 
-                    if (nodes.isEmpty()) {
-                        routeNodes.remove(routeIdentity);
-                        handleRouteRemoval(parts[0], parts[1]);
-                    } else {
-                        handleRouteChange(parts[0], parts[1], nodes);
-                    }
-                }
+                return aggregated;
             }
 
             void reconcile() {
                 activationLock.lock();
                 try {
-                    var aggregated = new HashMap<String, Set<NodeId>>();
+                    var snapshot = new HashMap<NodeRoutesKey, Set<String>>();
 
                     kvStore.forEach(NodeRoutesKey.class,
                                     NodeRoutesValue.class,
-                                    (key, value) -> aggregateNodeRoutes(key, value, aggregated));
-                    routeNodes.clear();
-                    routeNodes.putAll(aggregated);
+                                    (key, value) -> snapshot.put(key, routeIdentitiesOf(value)));
+                    contributions.clear();
+                    contributions.putAll(snapshot);
                     replayPendingEvents();
                     activated.set(true);
                     var allNodeIps = new HashSet<String>();
                     var routes = new ArrayList<RouteChange>();
 
-                    routeNodes.forEach((identity, nodeIds) -> collectRouteForReconciliation(identity,
+                    routeNodes().forEach((identity, nodeIds) -> collectRouteForReconciliation(identity,
                                                                                             nodeIds,
                                                                                             allNodeIps,
                                                                                             routes));
@@ -289,7 +299,8 @@ public interface LoadBalancerManager {
             }
 
             public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
-                routeNodes.values().forEach(nodes -> nodes.remove(departedNode));
+                contributions.keySet().removeIf(key -> key.nodeId()
+                                                          .equals(departedNode));
                 org.pragmatica.lang.Option.option(nodeAddresses.remove(departedNode))
                                           .orElse(() -> topologyManager.get(departedNode)
                                                                        .map(NodeInfo::address)
@@ -319,18 +330,12 @@ public interface LoadBalancerManager {
                               .collect(Collectors.toSet());
             }
 
-            private static void aggregateNodeRoutes(NodeRoutesKey key,
-                                                    NodeRoutesValue value,
-                                                    Map<String, Set<NodeId>> aggregated) {
-                for (var route : value.routes()) {
-                    if (!route.isRoutable()) {
-                        continue;
-                    }
-
-                    var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
-
-                    aggregated.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(key.nodeId());
-                }
+            private static Set<String> routeIdentitiesOf(NodeRoutesValue value) {
+                return value.routes()
+                            .stream()
+                            .filter(RouteEntry::isRoutable)
+                            .map(route -> route.httpMethod() + ":" + route.pathPrefix())
+                            .collect(Collectors.toUnmodifiableSet());
             }
         }
 
