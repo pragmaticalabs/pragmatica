@@ -6,3 +6,5 @@
   `StorageFailed`. Pre-GA, so no migration path.
   [mechanism: `EntityError` is not wire-pinned (no tag in `SystemTags`, no line in the wire baseline); a repo-wide `git grep` of the name
   finds only history (CHANGELOG, handovers, changelog fragments).]
+- **Breaking (source):** a slice naming `EntityError.TimerNotSupported` no longer compiles; delete that arm. `EntityError` is
+  `DurableEntity`'s public sealed type.
