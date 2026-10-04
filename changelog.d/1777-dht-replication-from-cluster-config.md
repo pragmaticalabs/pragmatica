@@ -40,9 +40,16 @@
     [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`,
     `v1882r7_orderA_…`, `v1882r7_orderB_…`, `v1882r7_orderC_…`]
     [verified: `v1882r9_orderE_nonStaleRefusalFirst_thenStale_…`, `v1882r9_nonStaleRefusalFirst_thenSuccess_acks`]
+    The wait for that evidence is one tenth of the operation timeout (3 s by default), so a partitioned replica set does not
+    stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_…`]
     [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot replied or the
-    operation timeout — the put is acknowledged on the local slot and sets no stale record (`v1882r7_orderD_…`,
-    `v1882r9_allRemoteRepliesNonStale_…`); #1683-class]
+    wait runs out — the put is acknowledged on the local slot and sets no stale record; a replica on the newer change that
+    does not answer within the wait (slow, GC-paused, partitioned) cannot refute it (`v1882r7_orderD_…`,
+    `v1882r9_allRemoteRepliesNonStale_…`); #1683-class]. A put refused this way puts the writer's own slot back to what it
+    held before the write, read in the same step as the write [verified: `v1882r9b_stalePutRollback_…`,
+    `v1882r9b_aWriteLandingBeforeOurWrite_…`].
+    [unverified: M7, the consensus-caught-up wiring replaced by `true`, stays green over 2325 aether/node tests; the unsafe
+    direction (never pending, so the fence is confirmed early) is the restore-prefix residual, [limit: #1683]]
     [unverified: the guard that keeps a late refusal from being cleared by the acknowledgement's own clear step is not
     pinned: that race is not reachable in the in-JVM harness].
   - The two events are published at most once per transition (missed if the cluster-events owner cannot publish then).

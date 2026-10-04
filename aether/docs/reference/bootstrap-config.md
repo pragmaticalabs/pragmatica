@@ -349,10 +349,17 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   `v1882r7_orderB_…`, in-JVM]. A refusal that arrives AFTER the acknowledgement cannot revoke it; it starts the stale-writer
   clock, and the copies other replicas accepted are pulled by the writers-switched pass
   [verified: `v1882r7_orderC_ackThenLateStale_ackStands_andTheRecordIsKept`].
+  The wait for that evidence is bounded at one tenth of the operation timeout (3 s by default): one intra-cluster round
+  trip plus a GC pause, an order of magnitude below the caller-visible timeout, so a partitioned or down replica set does
+  not stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_notTheOperationTimeout`].
   [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot has replied or
-  the operation timeout — the put is acknowledged on the writer's own slot and sets no stale record; a replica that applied
-  the newer change but is unreachable cannot refute it (`v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord`,
+  the wait runs out — the put is acknowledged on the writer's own slot and sets no stale record; a replica on the newer
+  change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it
+  (`v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord`,
   `v1882r9_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord`); #1683-class]
+  A put refused this way restores the writer's own slot to what it held before the write (the displaced entry is read in
+  the same step as the write), it does not delete it [verified: `v1882r9b_stalePutRollback_restoresTheOverwrittenLocalCopy_exactly`,
+  `v1882r9b_aWriteLandingBeforeOurWrite_isRestoredByTheRollback_notLost`].
 - **Restarted replicas:** a replica refuses writes (retryable, `ReplicationFenceUnknown`) until its state is restored AND
   consensus reports no catch-up pending (`isPendingCatchUp` false). Before that, an unknown fence never accepts
   [verified: DHTReplicationChangeTest `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`,
@@ -360,6 +367,10 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   The bound is what `isPendingCatchUp` can see: it compares against log positions the node has been TOLD about, so a
   committed change in a log tail the node has not yet received is invisible to it, and the fence can still be too old
   once it is confirmed (`confirmFence` runs synchronously when the state is restored).
+  [unverified: mutation M7 — the consensus-caught-up wiring in `AetherNode` replaced by a constant `true` — stays green over
+  all 2325 `aether/node` tests, and no boot route reaches "restored AND consensus pending"; the wiring is not pinned. The
+  unsafe direction is a replica that is "never pending" and so confirms its fence early, which is the restore-prefix
+  residual below [limit: #1683].]
   [unverified: no run shows a restarted replica confirming a fence older than the committed change; the window is the one
   recorded for #1683 (the signal can report "caught up" for up to one consensus sync-retry interval on a replica that
   missed all traffic, `RabiaEngine.probeQuietSlot`).] [limit: #1683]
