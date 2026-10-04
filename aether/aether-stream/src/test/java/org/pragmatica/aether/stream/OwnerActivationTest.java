@@ -188,6 +188,69 @@ class OwnerActivationTest {
         assertThat(rounds.get()).as("first attempt, then one re-drive that finds ownership gone").isEqualTo(2);
     }
 
+    /// #1730 phase 2 (KIP-101): a candidate that was ELECTED from the committed ISR holds every acknowledged record
+    /// (an acknowledgement needs every in-sync member), so a peer whose records differ from its own within the overlap
+    /// is carrying a tail nobody acknowledged. The peer is left out of the catch-up and truncates itself when it
+    /// backfills from the new owner; the activation proceeds. Before, the first returning ex-owner with an unacknowledged
+    /// tail blocked the partition for good (`DivergentPeer`), while its own repair waited for the owner it was blocking.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentInTheOverlap_isExcluded_andActivates() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).as("the divergent peer must not block an ISR-elected candidate").isTrue();
+        assertThat(alarms).isEmpty();
+        assertThat(catchUps).isEmpty();
+    }
+
+    @Test
+    void activate_isrElectedCandidate_divergentHighestHolder_isNotTheCatchUpSource() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        peerWatermarks.put(PEER_A, 25L);
+        peerWatermarks.put(PEER_B, 22L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).isTrue();
+        assertThat(catchUps).as("the divergent ex-owner's longer tail is never pulled").containsExactly("peer-b@22");
+    }
+
+    /// Control: a record minted before #1730 carries no committed ISR, so the candidate was not elected from one and
+    /// nothing outranks the divergence: the refusal stands.
+    @Test
+    void activate_candidateWithoutACommittedIsr_peerDivergentInTheOverlap_stillRefuses() {
+        record.set(Option.some(ownedBy(SELF, 1)));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    /// Control: every peer agrees, so the ISR-elected candidate pulls from the highest as before (the exclusion is not a
+    /// way of skipping the catch-up).
+    @Test
+    void activate_isrElectedCandidate_agreeingHigherPeer_isStillTheCatchUpSource() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 25L);
+
+        assertThat(activate()).isTrue();
+        assertThat(catchUps).containsExactly("peer-a@25");
+    }
+
+    private static StreamPartitionOwnershipValue isrElected() {
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                           Epoch.epoch(0L, 3L, 0),
+                                                                           3L,
+                                                                           HlcTimestamp.ZERO,
+                                                                           List.of(SELF, PEER_A, PEER_B),
+                                                                           5L);
+    }
+
     private boolean eventuallyActivatedWithin(long millis) {
         var deadline = System.nanoTime() + millis * 1_000_000L;
 
