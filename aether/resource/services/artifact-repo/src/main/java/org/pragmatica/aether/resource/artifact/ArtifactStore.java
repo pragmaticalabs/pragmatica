@@ -10,7 +10,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -689,10 +691,57 @@ class ArtifactStoreImpl implements ArtifactStore {
         // CORRECTNESS: boundedFanOut preserves chunk order — blockIds are recorded into
         // metadata in chunk order and reassembled in that order on resolve; reordering
         // corrupts the artifact.
-        return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry).flatMap(blockIds -> storeMetadataAndVersions(file,
-                                                                                                                                    blockIds,
-                                                                                                                                    chunks.size(),
-                                                                                                                                    digest));
+        var credited = new CopyOnWriteArrayList<BlockId>();
+
+        return releaseCreditsOnFailure(boundedFanOut(chunks,
+                                                     MAX_CONCURRENT_CHUNKS,
+                                                     chunk -> storeChunkRecordingCredit(chunk, credited)),
+                                       credited).flatMap(blockIds -> storeMetadataAndVersions(file,
+                                                                                              blockIds,
+                                                                                              chunks.size(),
+                                                                                              digest));
+    }
+
+    /// The credit is recorded in a dependent step, so it is in the list before this chunk's promise settles; an
+    /// `onSuccess` callback is an independent event and could land after the fan-out had already failed.
+    private Promise<BlockId> storeChunkRecordingCredit(byte[] chunk, List<BlockId> credited) {
+        return storagePutWithRetry(chunk).map(id -> {
+            credited.add(id);
+
+            return id;
+        });
+    }
+
+    /// A chunk holds only `StorageInstance#put`'s credit and no name until the metadata is written, so a fan-out
+    /// that fails part-way leaves the chunks that DID land at refCount 1 behind no artifact: uncollectable for
+    /// ever (the same class as #1437). Only THIS deploy's own credits are given back, so a chunk shared with a
+    /// stored artifact returns to the count it had. Scoped to the chunk phase on purpose: once the metadata write
+    /// has been attempted it may have landed (`WriteIndeterminate`), and releasing then would free a live
+    /// artifact's chunks. `boundedFanOut` waits for every put of a batch to settle before failing, so the list is
+    /// complete when the failure arrives. The release is awaited before the failure is reported; a release that
+    /// itself fails is logged and does not mask the original cause.
+    private Promise<List<BlockId>> releaseCreditsOnFailure(Promise<List<BlockId>> fanOut, List<BlockId> credited) {
+        var settled = Promise.<List<BlockId>> promise();
+
+        fanOut.onResult(result -> result.onSuccess(settled::succeed)
+                                        .onFailure(cause -> releaseCredits(credited).onResult(_ -> settled.fail(cause))));
+
+        return settled;
+    }
+
+    private Promise<Unit> releaseCredits(List<BlockId> credited) {
+        return Promise.allOf(credited.stream().map(storage::release).toList()).map(results -> logFailedReleases(credited.size(),
+                                                                                                                results));
+    }
+
+    private static Unit logFailedReleases(int credits, List<Result<Unit>> results) {
+        var failed = results.stream().filter(Result::isFailure).count();
+
+        if (failed > 0) {
+            log.warn("Rollback of a failed deploy could not release {} of {} chunk credit(s)", failed, credits);
+        }
+
+        return Unit.unit();
     }
 
     @Override
@@ -932,39 +981,97 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// artifact.
     ///
     /// First-failure: on any batch failure the aggregate fails with that cause and no further
-    /// batch is started (the recursion short-circuits through `flatMap`).
+    /// batch is started.
+    ///
+    /// A LOOP, not a `flatMap` per batch (the #1392 / #1395 shape). A batch that is already settled when it
+    /// returns (a memory-tier storage answers synchronously) used to run its continuation inline, so a fan-out
+    /// over k batches nested k frame groups on the calling thread, measured at 6 frames per batch: a 100 MB
+    /// artifact of 64 KB chunks is 200 batches (about 1,300 frames), a 1 GB one is 2,000 batches (about 12,000,
+    /// past a 1 MB stack). Here a settled batch is consumed in place and the loop moves on; only a batch still
+    /// pending suspends it, which resumes on the thread that settles it. Stack depth no longer depends on the
+    /// batch count. The result list is ONE mutable list confined to the loop (batches run strictly one after
+    /// another) and copied once at the end, instead of an immutable concatenation per batch.
     private <I, R> Promise<List<R>> boundedFanOut(List<I> items, int maxInFlight, Function<I, Promise<R>> op) {
-        return runBatchFrom(items, maxInFlight, op, 0, new ArrayList<>());
+        var output = Promise.<List<R>> promise();
+
+        fanOut(items, maxInFlight, op, 0, new ArrayList<>(), output);
+
+        return output;
     }
 
-    private <I, R> Promise<List<R>> runBatchFrom(List<I> items,
-                                                 int maxInFlight,
-                                                 Function<I, Promise<R>> op,
-                                                 int start,
-                                                 List<R> accumulated) {
-        if (start >= items.size()) {
-            return Promise.success(List.copyOf(accumulated));
+    @Contract
+    private <I, R> void fanOut(List<I> items,
+                               int maxInFlight,
+                               Function<I, Promise<R>> op,
+                               int firstItem,
+                               List<R> accumulated,
+                               Promise<List<R>> output) {
+        var start = firstItem;
+
+        while (start < items.size()) {
+            var end = Math.min(start + maxInFlight, items.size());
+            var batch = containedBatch(items.subList(start, end), op);
+
+            if (!batch.isResolved()) {
+                var next = end;
+
+                batch.onResult(result -> resumeFanOut(result, items, maxInFlight, op, next, accumulated, output));
+
+                return;
+            }
+
+            switch (settledResult(batch)) {
+                case Result.Failure<List<R>>(var cause) -> {
+                    output.fail(cause);
+
+                    return;
+                }
+                case Result.Success<List<R>>(var results) -> {
+                    accumulated.addAll(results);
+                    start = end;
+                }
+            }
         }
 
-        var end = Math.min(start + maxInFlight, items.size());
-        var batchPromises = items.subList(start, end).stream().map(op).toList();
-
-        return Promise.allOf(batchPromises)
-                      .flatMap(results -> Result.firstFailureOf(results).async())
-                      .flatMap(batchResults -> runBatchFrom(items,
-                                                            maxInFlight,
-                                                            op,
-                                                            end,
-                                                            concat(accumulated, batchResults)));
+        output.succeed(List.copyOf(accumulated));
     }
 
-    private static <R> List<R> concat(List<R> head, List<R> tail) {
-        var combined = new ArrayList<R>(head.size() + tail.size());
+    /// Continues the loop after a batch that settled off-thread; a failed batch fails the whole fan-out.
+    @Contract
+    private <I, R> void resumeFanOut(Result<List<R>> result,
+                                     List<I> items,
+                                     int maxInFlight,
+                                     Function<I, Promise<R>> op,
+                                     int nextItem,
+                                     List<R> accumulated,
+                                     Promise<List<R>> output) {
+        switch (result) {
+            case Result.Failure<List<R>>(var cause) -> output.fail(cause);
+            case Result.Success<List<R>>(var results) -> {
+                accumulated.addAll(results);
+                fanOut(items, maxInFlight, op, nextItem, accumulated, output);
+            }
+        }
+    }
 
-        combined.addAll(head);
-        combined.addAll(tail);
+    /// One batch: its operations fan out concurrently and the first failure, in input order, fails it. An `op` that
+    /// THROWS instead of returning a promise is a failed batch, so the loop ends exactly once on both the inline and
+    /// the resumed path.
+    private static <I, R> Promise<List<R>> containedBatch(List<I> batch, Function<I, Promise<R>> op) {
+        return Result.lift(() -> batch.stream()
+                                      .map(op)
+                                      .toList()).fold(Cause::promise,
+                                                      promises -> Promise.allOf(promises).flatMap(results -> Result.firstFailureOf(results).async()));
+    }
 
-        return combined;
+    /// The result of a promise the caller has checked is resolved: `Promise.onResult` runs its consumer inline on a
+    /// settled promise, so the holder is filled before this returns. Not `await()`: that is the blocking join.
+    private static <T> Result<T> settledResult(Promise<T> resolved) {
+        var holder = new AtomicReference<Result<T>>();
+
+        resolved.onResult(holder::set);
+
+        return holder.get();
     }
 
     private Promise<byte[]> fetchSingleBlock(String hex, ArtifactStoreError.CorruptedArtifact error) {
