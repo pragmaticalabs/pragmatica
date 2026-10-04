@@ -42,6 +42,45 @@ class OwnerPeerReadsTest {
         };
     }
 
+    /// A peer retaining `0 .. head` whose byte cap fits `cap` events per page: a fuller page is cut and marked truncated.
+    private OwnerPeerReads.PageRead byteCapped(long head, int cap) {
+        return (_, _, _, from, max) -> {
+            requestedFrom.add(from);
+            var to = Math.min(head, from + max - 1);
+            var cut = to - from + 1 > cap;
+
+            return Promise.success(StreamForwardClient.ReadForwardResult.readForwardResult(events(from, cut ? from + cap - 1 : to),
+                                                                                          cut));
+        };
+    }
+
+    /// #1431 sibling: a byte-capped page is shorter than `page` but is not the peer's end. Read as the end, the gate's
+    /// probe understates the peer's head and can promote a candidate below records the peer holds. Red under
+    /// "ignore `truncated`": the probe reports 1 (the first cut page's end) for a peer whose head is 9.
+    @Test
+    void appendedWatermark_byteCappedPage_pagesOnToTheRealHead() {
+        var head = OwnerPeerReads.appendedWatermark(byteCapped(9, 2), PEER, STREAM, PARTITION, PAGE).await();
+
+        assertThat(head.unwrap()).isEqualTo(9L);
+    }
+
+    @Test
+    void replicaWatermark_byteCappedPage_pagesOnToTheRealHead() {
+        var head = OwnerPeerReads.replicaWatermark(byteCapped(9, 2), PEER, STREAM, PARTITION, PAGE).await();
+
+        assertThat(head.unwrap()).isEqualTo(9L);
+    }
+
+    /// A cut page with no event cannot advance: it fails (the gate fails closed) instead of reading as "holds nothing
+    /// from here" — which would understate the peer for the probe and drop the rest of the window for the range.
+    @Test
+    void cutPageWithNoEvent_failsTheProbeAndTheRange() {
+        var oversized = byteCapped(9, 0);
+
+        assertThat(OwnerPeerReads.appendedWatermark(oversized, PEER, STREAM, PARTITION, PAGE).await().isFailure()).isTrue();
+        assertThat(OwnerPeerReads.appendedRange(oversized, PEER, STREAM, PARTITION, 0, 5, PAGE).await().isFailure()).isTrue();
+    }
+
     private static List<RawEventDto> events(long from, long to) {
         return LongStream.rangeClosed(from, to)
                          .mapToObj(offset -> new RawEventDto(offset, 1L, ("rec-" + offset).getBytes(StandardCharsets.UTF_8)))
