@@ -52,6 +52,12 @@ class OperatorWarningWiringTest {
     /// #1564 N2: the cluster-events local partition built at construction takes the committed
     /// `[replication.cluster_events]` factors through `ClusterEventsLimits.streamConfig` (pinned by
     /// `ClusterEventsLimitsTest`), never a separately hardcoded config.
+    /// #1934: the stream consumer runtime reports a consumer whose delivery passes keep throwing to this node's sink.
+    @Test
+    void assembly_givesTheSinkToTheStreamConsumerRuntime() {
+        assertThat(assemblyCode()).contains("streamReadRouter::ownerBounds,operatorWarningSink);");
+    }
+
     @Test
     void assembly_buildsTheClusterEventsConfigFromTheCommittedFactors() {
         assertThat(assemblyCode()).contains("varclusterEventsStreamConfig=clusterEventsLimits.streamConfig(clusterEventsStreamName,kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,AetherValue.ClusterConfigValue.class));");
