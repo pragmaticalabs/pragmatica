@@ -2015,6 +2015,53 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
         }
 
+        /// #1937 item 2: the backfill path's refusal for a peer's oversized event is reported like the activation gate's — a
+        /// STREAM_EVENT_EXCEEDS_READ_CAP block raised once per transition, not a WARN on every redrive. Red when the refusal only
+        /// logs: no block reaches the alarm.
+        @Test
+        void backfill_freshOwner_blindSurvivorEventExceedsReadCap_raisesTheBlockOncePerTransition() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var oversizedNow = new java.util.concurrent.atomic.AtomicBoolean(true);
+            ReplicaWatermarkProbe probe = (_, _, _) -> oversizedNow.get()
+                                                       ? new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L).promise()
+                                                       : Promise.success(-1L);
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var clock = new AtomicLong(0);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             probe,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            backfill.blockAlarm(block -> {
+                raised.add(block);
+                return org.pragmatica.lang.Unit.unit();
+            });
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("three redrives of one condition raise one block").singleElement()
+                              .isInstanceOfSatisfying(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class,
+                                                      block -> {
+                                                          assertThat(block.peer()).isEqualTo(SURVIVOR);
+                                                          assertThat(block.offset()).isEqualTo(7L);
+                                                      });
+
+            oversizedNow.set(false);
+            backfill.backfill(STREAM, PARTITION).await();
+            oversizedNow.set(true);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("the condition ended and came back: a second transition, a second block").hasSize(2);
+        }
+
         @Test
         void backfill_ownerWithKnownSurvivorOffset_noProbe_localRegistryHitPathUntouched() {
             // NEGATIVE: when the local registry DOES carry the survivor's offset (not blind), aheadSurvivor is

@@ -143,6 +143,7 @@ public final class PartitionBackfill {
 
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
+    private volatile org.pragmatica.aether.stream.OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
 
     /// Per-partition `confirmedOffset` at which a CAUGHT_UP non-owner replica was last re-verified against
     /// the HRW owner (#333 write-idle residual). It quiesces {@link #redriveCandidates}: a stale CAUGHT_UP
@@ -1290,6 +1291,13 @@ public final class PartitionBackfill {
     @Contract
     public void ownerResolver(OwnerResolver resolver) {
         this.ownerResolver = resolver;
+    }
+
+    /// Where a promoted owner's catch-up refused for a peer's oversized event is reported (#1937, like the activation gate's
+    /// own alarm). Late-bound, because the operator-warning sink is built after the backfill.
+    @Contract
+    public void blockAlarm(org.pragmatica.aether.stream.OwnerActivation.BlockAlarm alarm) {
+        this.blockAlarm = alarm;
     }
 
     /// Owner promotion is LOSSLESS (#336 phase-2). A freshly HRW-elected owner can be BEHIND a surviving
