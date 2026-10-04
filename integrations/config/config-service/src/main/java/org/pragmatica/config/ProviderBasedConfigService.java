@@ -1,5 +1,6 @@
 package org.pragmatica.config;
 
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -294,7 +295,7 @@ public final class ProviderBasedConfigService implements ConfigService {
             return IndexedValue.indexedValue(index, derived.unwrap());
         }
 
-        return getDefaultComponentValue(configClass, component, index);
+        return getDefaultComponentValue(section, configClass, component, index);
     }
 
     private static Option<Object> deriveNameFromSectionSuffix(String section, RecordComponent component) {
@@ -656,13 +657,43 @@ public final class ProviderBasedConfigService implements ConfigService {
         return extracted.fold(cause -> cause instanceof ConfigError.SectionNotFound, _ -> false);
     }
 
-    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass,
+    /// What may stand in for an absent component, in order: the record's `DEFAULT` instance, then a public
+    /// static final `DEFAULT_<COMPONENT>` constant of the component's type. The per-field form exists for
+    /// records that must NOT have a whole-record default because some component has none (an `SmtpConfig` with
+    /// a `DEFAULT` would silently supply a host); each component that has a default declares it, and one that
+    /// does not stays required. Nothing left: [ConfigError.MissingField] naming the key, never "section
+    /// not found" (#822).
+    private static Result<IndexedValue> getDefaultComponentValue(String section,
+                                                                 Class<?> configClass,
                                                                  RecordComponent component,
                                                                  int index) {
         return lookupDefaultField(configClass).flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
+                                 .orElse(() -> lookupFieldDefault(configClass, component))
                                  .map(value -> new IndexedValue(index, value))
-                                 .toResult(ConfigError.sectionNotFound(configClass.getSimpleName()
-                                                                      + "." + component.getName()));
+                                 .toResult(ConfigError.missingField(section + "." + toSnakeCase(component.getName()),
+                                                                    configClass.getSimpleName()
+                                                                   + "." + component.getName()));
+    }
+
+    private static Option<Object> lookupFieldDefault(Class<?> configClass, RecordComponent component) {
+        var constant = "DEFAULT_" + toSnakeCase(component.getName()).toUpperCase();
+
+        try {
+            var field = configClass.getField(constant);
+            var modifiers = field.getModifiers();
+
+            if (Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers)) {
+                return option(field.get(null)).filter(value -> wrapperOf(component.getType()).isInstance(value));
+            }
+        } catch (NoSuchFieldException | IllegalAccessException e) {}
+
+        return none();
+    }
+
+    private static Class<?> wrapperOf(Class<?> type) {
+        return MethodType.methodType(type)
+                         .wrap()
+                         .returnType();
     }
 
     private static Option<Object> invokeAccessor(Object instance, RecordComponent component) {
