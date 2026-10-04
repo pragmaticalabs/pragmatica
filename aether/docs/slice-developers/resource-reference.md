@@ -369,11 +369,10 @@ Transport is selected automatically by priority:
 - Each URL override (`jdbc_url`, `r2dbc_url`, `async_url`) takes precedence over the discrete
   `host`/`port`/`database` fields for the transport it selects — e.g. if `async_url` embeds its
   own port, that port is used even when a discrete `port` is also set.
-- Setting **two different URL kinds to different hosts** (e.g. `jdbc_url` pointing at one host and
-  `async_url` at another) is **unsupported** today: the effective host/port/database are derived
-  by checking URL kinds in a fixed order (jdbc, then r2dbc, then async) that does not follow the
-  transport-selection priority above. Until this is reconciled, configure only the URL kind for
-  the transport you intend to use.
+- When **more than one URL kind is set**, the effective host, port, database and credentials are read from the
+  URL of the transport that will actually connect, in the same priority as transport selection: `async_url`,
+  then `r2dbc_url`, then `jdbc_url` (#784). A URL that is present but cannot supply a value (for example, no
+  port) falls through to the next kind for that value. Setting a single URL kind is unaffected.
 
 ### Database Types
 

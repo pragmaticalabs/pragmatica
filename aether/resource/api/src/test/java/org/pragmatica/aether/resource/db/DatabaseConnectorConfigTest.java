@@ -573,4 +573,90 @@ class DatabaseConnectorConfigTest {
             assertThat(r2dbcConfig.effectiveDatabase()).isEqualTo("override-db2");
         }
     }
+
+    /// #784 — when several URL kinds are set, the effective host, port, database and credentials must come from the
+    /// URL of the transport that will actually connect: async (priority 20), then r2dbc (10), then jdbc (the
+    /// default). They used to be read jdbc-first, so a config with `jdbc_url` -> host A and `async_url` -> host B
+    /// selected the async transport and then handed it host A.
+    @Nested
+    class EffectiveValuesFollowTheSelectedTransport {
+        private static final String JDBC = "jdbc:postgresql://jdbc-host:5001/jdbc-db";
+        private static final String R2DBC = "r2dbc:postgresql://r2dbc-host:5002/r2dbc-db";
+        private static final String ASYNC = "postgresql://async-user:async-pw@async-host:5003/async-db";
+
+        @Test
+        void jdbcAndAsyncBothSet_theAsyncUrlWins() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(JDBC)
+                                                         .withAsyncUrl(ASYNC)
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("async-host");
+            assertThat(config.effectivePort()).isEqualTo(5003);
+            assertThat(config.effectiveDatabase()).isEqualTo("async-db");
+            assertThat(config.effectiveUsername().unwrap()).isEqualTo("async-user");
+            assertThat(config.effectivePassword().unwrap()).isEqualTo("async-pw");
+        }
+
+        @Test
+        void r2dbcAndJdbcBothSet_theR2dbcUrlWins() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(JDBC)
+                                                         .withR2dbcUrl(R2DBC)
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("r2dbc-host");
+            assertThat(config.effectivePort()).isEqualTo(5002);
+            assertThat(config.effectiveDatabase()).isEqualTo("r2dbc-db");
+        }
+
+        @Test
+        void allThreeSet_asyncWinsOverR2dbcOverJdbc() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(JDBC)
+                                                         .withR2dbcUrl(R2DBC)
+                                                         .withAsyncUrl(ASYNC)
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("async-host");
+        }
+
+        /// The type is inferred in the same order: with a MySQL JDBC URL and a PostgreSQL async URL set, the async
+        /// transport connects, so the PostgreSQL type is the one that applies.
+        @Test
+        void typeIsInferredFromTheSelectedTransportsUrl() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl("jdbc:mysql://jdbc-host:3306/jdbc-db")
+                                                         .withAsyncUrl(ASYNC)
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
+        }
+
+        /// The control: a single URL kind is unaffected, whichever it is.
+        @Test
+        void aSingleUrlKind_isUsedWhicheverItIs() {
+            var jdbcOnly = databaseConnectorConfigBuilder().withName("db").withJdbcUrl(JDBC).build().unwrap();
+
+            assertThat(jdbcOnly.effectiveHost()).isEqualTo("jdbc-host");
+            assertThat(jdbcOnly.effectivePort()).isEqualTo(5001);
+        }
+
+        /// A URL kind that is present but cannot supply the value falls through to the next in the SAME order.
+        @Test
+        void aHigherPriorityUrlWithoutAPort_fallsThroughToTheNextForThePort() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(JDBC)
+                                                         .withAsyncUrl("postgresql://async-host/async-db")
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("async-host");
+            assertThat(config.effectivePort()).isEqualTo(5001);
+        }
+    }
 }
