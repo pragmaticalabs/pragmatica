@@ -698,13 +698,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return Promise.unitPromise();
         }
 
-        var waiter = Promise.<Unit>promise();
+        var waiter = Promise.<Unit> promise();
 
-        inFlight.done()
-                .withResult(waiter::resolve);
+        inFlight.done().withResult(waiter::resolve);
 
         return waiter.timeout(DETACH_ADVANCE_BOUND)
-                     .fold(result -> result.fold(_ -> advanceUnsettledAtDetach(key, state, inFlight.offset()),
+                     .fold(result -> result.fold(_ -> advanceUnsettledAtDetach(key,
+                                                                               state,
+                                                                               inFlight.offset()),
                                                  _ -> Promise.unitPromise()));
     }
 
@@ -1347,7 +1348,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         var inFlight = state.beginAdvance(event.offset());
 
-        invokeHandler(state, event).onSuccess(_ -> settledAfter(inFlight, () -> completeRetry(key, state, event)))
+        invokeHandler(state, event).onSuccess(_ -> settledAfter(inFlight,
+                                                                () -> completeRetry(key, state, event)))
                      .onFailure(cause -> settledAfter(inFlight,
                                                       () -> handleRetryFailureAgain(key,
                                                                                     state,
@@ -1435,9 +1437,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var inFlight = state.beginAdvance(event.offset());
 
         appendDeadLetter(key, event, errorMessage, attemptCount).onSuccess(_ -> settledAfter(inFlight,
-                                                                                            () -> completeDeadLetter(key,
-                                                                                                                     state,
-                                                                                                                     event)))
+                                                                                             () -> completeDeadLetter(key,
+                                                                                                                      state,
+                                                                                                                      event)))
                         .onFailure(cause -> settledAfter(inFlight,
                                                          () -> retryDeadLetterAppend(key,
                                                                                      state,
