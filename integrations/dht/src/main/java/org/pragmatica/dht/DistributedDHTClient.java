@@ -495,7 +495,9 @@ public final class DistributedDHTClient implements DHTClient {
                                                                 () -> markPending(key,
                                                                                   collector,
                                                                                   pending,
-                                                                                  () -> handleLocalRemove(key, stamp, collector))))
+                                                                                  () -> handleLocalRemove(key,
+                                                                                                          stamp,
+                                                                                                          collector))))
                           : Option.<Promise<StorageEngine.Displaced>> none();
 
         collector.allReplied().onSuccess(_ -> noteLateStale(collector, stamp));
