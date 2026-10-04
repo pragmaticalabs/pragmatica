@@ -3296,8 +3296,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // after this read. The store can already be ahead of this FSM: a newer publish of the same id may
             // have committed while its notification is still queued behind the failure that triggered this
             // rollback. Fencing on that newer value would remove the newer attempt's blueprint, so a rollback
-            // proceeds only while the committed blueprint is still the attempt it rolls back.
-            if (!isCommittedAttempt(rolledBack, inflight.attemptId())) {
+            // does not proceed while the committed blueprint is ANOTHER attempt. An absent blueprint is not a
+            // newer publish (a delete clears it), and the fence expects it absent, so a publish landing
+            // after this read still refuses the rollback.
+            if (committedByAnotherAttempt(rolledBack, inflight.attemptId())) {
                 log.info("ALL_OR_NOTHING: rollback of blueprint {} was superseded before it was built — the committed"
                         + " blueprint is no longer the attempt it rolls back, so the newer apply is left in place",
                          inflight.id().asString());
@@ -3409,11 +3411,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             handleBatchFailure(cause, submitted);
         }
 
-        private static boolean isCommittedAttempt(Option<AetherValue> committed, String attemptId) {
+        private static boolean committedByAnotherAttempt(Option<AetherValue> committed, String attemptId) {
             return committed.filter(AppBlueprintValue.class::isInstance)
                             .map(AppBlueprintValue.class::cast)
-                            .filter(value -> value.attemptId()
-                                                  .equals(attemptId))
+                            .filter(value -> !value.attemptId()
+                                                   .equals(attemptId))
                             .isPresent();
         }
 

@@ -25,6 +25,9 @@
     blueprint.
   - After a refusal the leader re-reads. If the blueprint moved, the rollback is superseded. Otherwise
     it rebuilds, bounded by five attempts.
+  - The store can be AHEAD of the FSM: a newer publish may have committed while its notification is still
+    queued behind the failure that triggers the rollback. A rollback is therefore not built while the
+    committed blueprint belongs to another attempt; it takes the superseded path, logged at INFO with no event.
   - Deallocation runs only once the rollback has landed.
   - Without a committed leader record, the rollback is applied unfenced, as before, and logged at WARN.
   - Pinned by `AttemptBoundOutcomeTest.aLateRollbackOfThePreviousAttempt_doesNotRemoveTheNewerAttemptsBlueprint` (unit, real fenced `KVStore`); [design intent — unverified] on a live cluster.
