@@ -137,6 +137,7 @@ class StreamPartitionManagerDivergentTailTest {
     void repairDivergence_atConfirmationFactor2_raisesNoOperatorWarning() {
         quarantineAt(5);
         manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap();
+        manager.quarantineView().repairSettled(STREAM, PARTITION);
         quietPeriod();
 
         assertThat(warnings).isEmpty();
@@ -152,18 +153,51 @@ class StreamPartitionManagerDivergentTailTest {
            .onFailure(cause -> fail(cause.message()));
         one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
         for (var i = 0; i < 8; i++) {
-            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
         }
         one.syncReplicated("single", PARTITION).await();
-        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
 
         one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        quietPeriod();
+        assertThat(warnings).as("nothing is reported before the repair settles").isEmpty();
+
+        one.quarantineView().repairSettled("single", PARTITION);
         awaitWarnings(1);
 
         assertThat(warnings).singleElement().satisfies(warning -> {
             assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_DIVERGENT_TAIL_TRUNCATED);
-            assertThat(warning.message()).contains("[3, 7]").contains("5 events");
+            assertThat(warning.message()).contains("[3, 7]").contains("5 events").contains("epoch 1:2:3").contains("ackedAtOwner=true");
         });
+        one.close();
+    }
+
+    /// B9 (v1890): a divergence older than the compared window is cut back one window per run. The operator is told ONCE, when the
+    /// repair settles, with the FINAL range (from the last cut's first offset up to the original local head), not once per step.
+    @Test
+    void repairDivergence_inSeveralSteps_atConfirmationFactor1_raisesOneWarning_withTheFinalRange() {
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir.resolve("cf1-steps")));
+
+        one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        for (var i = 0; i < 12; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 9, "different".getBytes(UTF_8), 1009L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        one.appendRecovered("single", PARTITION, 5, "different".getBytes(UTF_8), 1005L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        quietPeriod();
+
+        assertThat(warnings).as("two steps, nothing reported yet").isEmpty();
+
+        one.quarantineView().repairSettled("single", PARTITION);
+        awaitWarnings(1);
+        quietPeriod();
+
+        assertThat(warnings).as("ONE event for the whole truncation").singleElement().satisfies(warning -> assertThat(warning.message()).contains("[5, 11]").contains("7 events"));
         one.close();
     }
 

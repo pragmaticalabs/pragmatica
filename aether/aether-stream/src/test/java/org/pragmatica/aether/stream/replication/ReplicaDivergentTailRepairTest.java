@@ -125,6 +125,37 @@ class ReplicaDivergentTailRepairTest {
         assertThat(await.isResolved()).as("offset 5 was never received by the only replica").isFalse();
     }
 
+    /// B9 (v1890), through the real backfill: at confirmation_factor 1 the stepped-back repair (three runs here) tells the operator
+    /// ONCE, when the backfill completes, with the final range from the first divergent offset to the old local head.
+    @Test
+    void divergenceOlderThanTheWindow_atCf1_isReportedOnceWithTheFinalRange_whenTheBackfillCompletes() throws InterruptedException {
+        manager.close();
+        manager = streamPartitionManager(Long.MAX_VALUE);
+        manager.createStream(StreamConfig.streamConfig(STREAM).withReplication(org.pragmatica.aether.slice.ReplicationFactors.replicationFactors(1, 1).unwrap()))
+               .onFailure(cause -> fail(cause.message()));
+        var warnings = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+
+        manager.operatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warnings::add));
+        seedReplica(2000, 100);
+
+        backfill(owner(1500, 100, new AtomicLong()));
+        backfill(owner(1500, 100, new AtomicLong()));
+        Thread.sleep(300);
+        assertThat(warnings).as("repair still in progress: nothing reported").isEmpty();
+
+        backfill(owner(1500, 100, new AtomicLong()));
+
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (warnings.isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        Thread.sleep(300);
+        assertThat(warnings).as("one event for the whole truncation").singleElement()
+                            .satisfies(warning -> assertThat(warning.message()).contains("[100, 1999]").contains("ackedAtOwner=true"));
+    }
+
     /// The verification window is 1024 records. A divergence OLDER than the window (here at offset 100, owner head 1499,
     /// window starts at 476) must not leave the records between it and the window's start in place: after the repair the
     /// replica's log is the owner's from the first divergent offset on.

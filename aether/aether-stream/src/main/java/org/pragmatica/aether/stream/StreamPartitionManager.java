@@ -260,6 +260,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The offsets at which a PROVENANCE comparison found this copy divergent (N13), while the partition stays quarantined for
     /// it. The durable flag is raised only if the divergence is not repaired ([#flagUnrepaired]): a repair removes the entry.
     private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
+    /// What the repair in progress of a partition has discarded so far; reported once when it settles ([#settleRepair]).
+    private final ConcurrentHashMap<PartitionRef, TailCut> pendingCuts = new ConcurrentHashMap<>();
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
@@ -2086,7 +2088,16 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// What a repair of a quarantined replica removed: everything above `keptThrough`, which is `removed` events
     /// spanning `[firstRemoved, lastRemoved]`.
-    public record TailCut(long keptThrough, long removed, long firstRemoved, long lastRemoved) {}
+    public record TailCut(long keptThrough, long removed, long firstRemoved, long lastRemoved, Option<Epoch> epoch) {
+        /// This cut and a LATER one of the same repair (a window step further back): one range `[firstRemoved, lastRemoved]`.
+        TailCut then(TailCut next) {
+            return new TailCut(Math.min(keptThrough, next.keptThrough),
+                               removed + next.removed,
+                               Math.min(firstRemoved, next.firstRemoved),
+                               Math.max(lastRemoved, next.lastRemoved),
+                               epoch.orElse(() -> next.epoch));
+        }
+    }
 
     /// Repairs a quarantined REPLICA copy by cutting its tail back to the last offset it shares with its sender
     /// (#1730 phase 2, KIP-101): the divergent entry sits at `quarantinedAt`, so every offset below it is kept and
@@ -2177,12 +2188,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                                     QuarantineView.RepairAuthority authority) {
         var head = ring.headOffset();
         var wal = walFor(streamName, partition);
+        var epoch = divergentEpoch(streamName, partition, divergedAtOffset);
 
         return ring.truncateSuffix(keep,
                                    () -> authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
                                                                                                                         .or(Result.unitResult())),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
-                   .map(removed -> new TailCut(keep, removed, keep + 1, head));
+                   .map(removed -> new TailCut(keep, removed, keep + 1, head, epoch));
     }
 
     /// Evaluated inside the cut's ordered section, immediately before the first thing it removes: the committed owner that
@@ -2219,22 +2231,39 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// is the stated acks=1 window, and the operator is told exactly which offsets.
     @Contract
     private void reportCut(String streamName, int partition, TailCut cut) {
-        if (cut.removed() == 0) {
-            return;
+        if (cut.removed() > 0) {
+            pendingCuts.merge(new PartitionRef(streamName, partition), cut, TailCut::then);
         }
+    }
 
-        if (confirmationFactorFor(streamName) <= 1) {
+    /// The repair of `(streamName, partition)` is over: ONE report for everything it discarded, however many window steps it
+    /// took (a divergence older than the compared window is cut back one window per run), carrying the final range
+    /// `[cut + 1, localHead]`, the epoch of the discarded records when the copy's history names it, and that the writer's
+    /// acknowledgement was the old owner's alone (`confirmation_factor` 1). With a factor of 2 or more nothing was acknowledged
+    /// by the old owner alone and it is only logged.
+    @Contract
+    private void settleRepair(String streamName, int partition) {
+        option(pendingCuts.remove(new PartitionRef(streamName, partition))).onPresent(cut -> reportCut(streamName,
+                                                                                                         partition,
+                                                                                                         cut,
+                                                                                                         confirmationFactorFor(streamName)));
+    }
+
+    private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor) {
+        if (confirmationFactor <= 1) {
             OperatorWarnings.raise(log,
                                    operatorWarnings,
                                    OperatorWarningCode.STREAM_DIVERGENT_TAIL_TRUNCATED,
                                    streamName + "[" + partition + "]@" + cut.firstRemoved(),
-                                   "Replica {}[{}] discarded offsets [{}, {}] ({} events) that diverged from its owner; "
-                                  + "confirmation_factor is 1, so they may have been acknowledged by their writer and are lost",
+                                   "Replica {}[{}] discarded offsets [{}, {}] ({} events, epoch {}) that diverged from its owner; "
+                                  + "ackedAtOwner=true: confirmation_factor is 1, so they may have been acknowledged by their writer "
+                                  + "and are lost",
                                    streamName,
                                    partition,
                                    cut.firstRemoved(),
                                    cut.lastRemoved(),
-                                   cut.removed());
+                                   cut.removed(),
+                                   cut.epoch().map(Epoch::toString).or("unknown"));
 
             return;
         }
@@ -2309,6 +2338,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         @Override
         public boolean verifiedForCurrentEpoch(String streamName, int partition) {
             return replicaVerified(streamName, partition);
+        }
+
+        @Contract
+        @Override
+        public void repairSettled(String streamName, int partition) {
+            settleRepair(streamName, partition);
         }
 
         @Contract

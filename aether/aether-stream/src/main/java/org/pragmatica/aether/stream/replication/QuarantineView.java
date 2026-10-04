@@ -40,6 +40,11 @@ public interface QuarantineView {
         boolean holds(Option<Epoch> divergentEpoch);
     }
 
+    /// The repair of this copy is over (it is CAUGHT_UP again): report what the repair discarded, once, however many window
+    /// steps it took. Views without a partition manager report nothing.
+    @Contract
+    default void repairSettled(String streamName, int partition) {}
+
     /// This copy has been compared with the committed owner of `epoch` (#1730 phase 2): from then on, and while the committed
     /// epoch is still `epoch`, it may serve and acknowledge what it holds at and above that epoch's start. Views without a
     /// partition manager behind them ignore it.
