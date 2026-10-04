@@ -79,9 +79,12 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleDown (at:org.pragmatica.hlc.Hl
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleUp (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$SelfDrainInitiated (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$SliceFailure (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$StreamConfigChangeNotApplied (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamDeleted (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>,address:org.pragmatica.aether.slice.resource.ResourceAddress)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamFailoverRefused (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamFailoverResolved (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$StreamIsrBelowMinimum (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$StreamIsrRestored (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamMemoryExceeded (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamRegistered (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>,address:org.pragmatica.aether.slice.resource.ResourceAddress)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ThresholdBreached (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -242,7 +245,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue (instan
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus (level:java.lang.String,usedBytes:long,maxBytes:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue (config:org.pragmatica.aether.slice.StreamConfig,createdAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValue (committedOffset:long,commitTimestamp:long,token:org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken,rewindIncarnation:long,rewindGeneration:long,rewindSequence:long,rewind:boolean)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue (owner:org.pragmatica.consensus.NodeId,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch,ownershipTerm:long,transferredAt:org.pragmatica.hlc.HlcTimestamp,isr:java.util.List<org.pragmatica.consensus.NodeId>,isrVersion:long,failoverRefused:boolean)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue (owner:org.pragmatica.consensus.NodeId,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch,ownershipTerm:long,transferredAt:org.pragmatica.hlc.HlcTimestamp,isr:java.util.List<org.pragmatica.consensus.NodeId>,isrVersion:long,failoverRefused:boolean,fenced:java.util.List<org.pragmatica.consensus.NodeId>,failoverRefusalSeq:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue (state:org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryState,reasons:java.util.Set<org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReason>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue (nodeId:org.pragmatica.consensus.NodeId,consumerGroup:java.lang.String,batchMode:boolean,eventType:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryValue (entry:org.pragmatica.aether.slice.stream.StreamRegistryEntry)
@@ -417,9 +420,12 @@ TAG  org.pragmatica.aether.api.ClusterEvent$ScaleUp 282
 TAG  org.pragmatica.aether.api.ClusterEvent$SelfDrainInitiated 283
 TAG  org.pragmatica.aether.api.ClusterEvent$Severity 284
 TAG  org.pragmatica.aether.api.ClusterEvent$SliceFailure 285
+TAG  org.pragmatica.aether.api.ClusterEvent$StreamConfigChangeNotApplied 1750
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamDeleted 286
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamFailoverRefused 1744
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamFailoverResolved 1745
+TAG  org.pragmatica.aether.api.ClusterEvent$StreamIsrBelowMinimum 1746
+TAG  org.pragmatica.aether.api.ClusterEvent$StreamIsrRestored 1747
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamMemoryExceeded 287
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamRegistered 288
 TAG  org.pragmatica.aether.api.ClusterEvent$ThresholdBreached 290

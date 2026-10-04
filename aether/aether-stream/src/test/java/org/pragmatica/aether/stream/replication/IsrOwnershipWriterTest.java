@@ -212,6 +212,66 @@ class IsrOwnershipWriterTest {
         store.process(store.createBatch(List.of(command)));
     }
 
+    /// #1883: the leader records the members it removes for liveness, in the same commit, so the owner and the leader
+    /// read ONE liveness input.
+    @Nested
+    class Fenced {
+        @Test
+        void next_isrMemberDropped_isFencedInTheSameCommit() {
+            var current = record(A, 3L, List.of(A, B, C), 4L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(A, B)).unwrap();
+
+            assertThat(next.isr()).containsExactly(A, B);
+            assertThat(next.fenced()).containsExactly(C);
+            assertThat(next.isrVersion()).as("one commit, one version step").isEqualTo(5L);
+        }
+
+        @Test
+        void next_settledFencedRecord_writesNothing() {
+            var current = fencedRecord(A, List.of(A, B), List.of(C), 5L);
+
+            assertThat(writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(A, B)).isEmpty())
+                .as("a reconcile of a settled record must not commit (it would re-fire every node's reconcile)")
+                .isTrue();
+        }
+
+        @Test
+        void next_fencedMemberListedLiveAgain_isUnfenced_notReadmitted() {
+            var current = fencedRecord(A, List.of(A, B), List.of(C), 5L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(A, B, C)).unwrap();
+
+            assertThat(next.fenced()).isEmpty();
+            assertThat(next.isr()).as("expansion is the owner's, on its own evidence").containsExactly(A, B);
+            assertThat(next.isrVersion()).isEqualTo(6L);
+        }
+
+        @Test
+        void next_deadOwnerElectedAway_isFenced() {
+            var current = record(A, 3L, List.of(A, B, C), 4L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(B, C)).unwrap();
+
+            assertThat(next.owner()).isIn(B, C);
+            assertThat(next.fenced()).containsExactly(A);
+        }
+
+        @Test
+        void next_fencedSetIsBounded_newestKept_andSettlesThere() {
+            var stale = java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.FENCED_MAX)
+                                                  .mapToObj(i -> new NodeId("gone-" + i))
+                                                  .toList();
+            var newest = new NodeId("gone-newest");
+            var current = fencedRecord(A, List.of(A, newest), stale, 5L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(A)).unwrap();
+
+            assertThat(next.fenced()).hasSize(StreamPartitionOwnershipValue.FENCED_MAX)
+                                     .doesNotContain(stale.getFirst())
+                                     .endsWith(newest);
+            assertThat(writer.next(STREAM, PARTITION, Option.some(next), A, GENERATION, List.of(A)).isEmpty())
+                .as("at the cap the record is settled, not rewritten on every reconcile")
+                .isTrue();
+        }
+    }
+
     private static Option<StreamPartitionOwnershipValue> committed(KVStore<AetherKey, AetherValue> store) {
         return store.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, PARTITION),
                               StreamPartitionOwnershipValue.class);
@@ -224,6 +284,16 @@ class IsrOwnershipWriterTest {
                                                                            HlcTimestamp.ZERO,
                                                                            isr,
                                                                            isrVersion);
+    }
+
+    private static StreamPartitionOwnershipValue fencedRecord(NodeId owner, List<NodeId> isr, List<NodeId> fenced, long isrVersion) {
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
+                                                                           GENERATION.withCounter(3L),
+                                                                           3L,
+                                                                           HlcTimestamp.ZERO,
+                                                                           isr,
+                                                                           isrVersion,
+                                                                           fenced);
     }
 
     private static IsrOwnershipWriter writer(List<NodeId> live, InitialIsr initialIsr) {
