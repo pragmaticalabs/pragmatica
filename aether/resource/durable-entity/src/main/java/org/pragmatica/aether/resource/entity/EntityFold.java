@@ -835,7 +835,11 @@ final class EntityFold {
 
     /// One replay batch: applies `records` (read from `from`) in order and answers the next offset to read. An empty
     /// read below the head means the log stopped being readable mid-replay and refuses ([#truncatedCause]).
-    private Result<Long> replayStep(int partition, FoldedPartition building, long from, long head, List<byte[]> records) {
+    private Result<Long> replayStep(int partition,
+                                    FoldedPartition building,
+                                    long from,
+                                    long head,
+                                    List<byte[]> records) {
         if (records.isEmpty()) {
             return truncatedCause(partition, from, head).result();
         }
@@ -873,7 +877,7 @@ final class EntityFold {
     /// count — the same property `SegmentReader.readSegments` got in #1392 and the sealer's drain in #1234.
     /// Callers guarantee `from <= head`.
     private Promise<Unit> chaseBatches(int partition, long from, long head, BatchStep step) {
-        var output = Promise.<Unit>promise();
+        var output = Promise.<Unit> promise();
 
         chase(partition, from, head, step, output);
 
@@ -929,7 +933,8 @@ final class EntityFold {
 
     /// A substrate that THROWS instead of returning a promise is a failed read, for the same reason.
     private Promise<List<byte[]>> containedRead(int partition, long from) {
-        return Result.lift(() -> substrate.read(keyspace, partition, from, REPLAY_BATCH)).fold(Cause::promise, read -> read);
+        return Result.lift(() -> substrate.read(keyspace, partition, from, REPLAY_BATCH)).fold(Cause::promise,
+                                                                                               read -> read);
     }
 
     /// The result of a promise the caller has checked is resolved: `Promise.onResult` runs its consumer inline on a
