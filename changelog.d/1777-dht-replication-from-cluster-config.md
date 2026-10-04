@@ -44,7 +44,13 @@
     [verified: `v1882r9_orderE_nonStaleRefusalFirst_thenStale_…`, `v1882r9_nonStaleRefusalFirst_thenSuccess_acks`]
     The wait for that evidence is one tenth of the operation timeout (3 s by default), so a partitioned replica set does not
     stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_…`]
-    [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot replied or the
+    An owner-epoch fence refusal is evidence like a stale one, and failure evidence ends the operation at once with its typed
+    failure (no waiting for a silent replica, no local apply); the gate releases once every REMOTE slot has replied
+    [verified: `v1882r11_probeU_…`, `DHTDeposedWriterSameEpochTest`]
+    [limit: inside the no-evidence window two writers can each apply their own slot and a late fence refusal rolls one back,
+    leaving an acknowledged write that counted it as "superseded" on one replica; pinned as an enabled tripwire
+    `DHTDeposedWriterSameEpochTest.residual_noEvidenceWindow_…`; #1683-class]
+    [limit: with NO evidence — every remote silent, down or fence-unknown until every remote replied or the
     wait runs out — the put is acknowledged on the local slot and sets no stale record; a replica on the newer change that
     does not answer within the wait (slow, GC-paused, partitioned) cannot refute it (`v1882r7_orderD_…`,
     `v1882r9_allRemoteRepliesNonStale_…`); #1683-class]. The #1818 rollback (a put that lost its quorum to owner-epoch

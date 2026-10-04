@@ -352,8 +352,18 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   The wait for that evidence is bounded at one tenth of the operation timeout (3 s by default): one intra-cluster round
   trip plus a GC pause, an order of magnitude below the caller-visible timeout, so a partitioned or down replica set does
   not stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_notTheOperationTimeout`].
-  [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot has replied or
-  the wait runs out — the put is acknowledged on the writer's own slot and sets no stale record; a replica on the newer
+  A refusal by the owner-epoch fence (a replica that has advanced past the writer's epoch) is evidence too, and failure
+  evidence — a stale or an epoch-fence refusal — ends the operation AT ONCE with its typed failure (ReplicationChangeStale,
+  or WriteIndeterminate for an epoch fence), without waiting for a silent replica and without applying the writer's own slot
+  [verified: `v1882r11_probeU_…`, `DHTDeposedWriterRollbackTest.deposedOwnerWrite_oneFencedReplicaPlusOneSilent_…`,
+  `DHTDeposedWriterSameEpochTest.sameEpochTwoWriters_aDeposedReplicaNeverCountsAWriteItWouldRollBack`]. The gate is released
+  once every REMOTE slot has replied, not every slot.
+  [limit: inside the no-evidence window (every remote silent for the wait) two writers can each apply their own slot, and a
+  fence refusal that arrives only afterwards sinks one of them and rolls its copy back (#1818); an acknowledged write that
+  counted that copy as "superseded" is then left on one replica. Pinned as an enabled tripwire:
+  `DHTDeposedWriterSameEpochTest.residual_noEvidenceWindow_…`; #1683-class]
+  [limit: with NO evidence — every remote silent, down, or fence-unknown (a success, a stale refusal and an epoch-fence
+  refusal all count as evidence) until every remote has replied or the wait runs out — the put is acknowledged on the writer's own slot and sets no stale record; a replica on the newer
   change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it
   (`v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord`,
   `v1882r9_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord`); #1683-class]
