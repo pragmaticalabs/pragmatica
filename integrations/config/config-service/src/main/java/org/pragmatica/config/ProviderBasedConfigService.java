@@ -683,7 +683,7 @@ public final class ProviderBasedConfigService implements ConfigService {
             var modifiers = field.getModifiers();
 
             if (Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers)) {
-                return option(field.get(null)).filter(value -> wrapperOf(component.getType()).isInstance(value));
+                return option(field.get(configClass)).filter(value -> wrapperOf(component.getType()).isInstance(value));
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {}
 
