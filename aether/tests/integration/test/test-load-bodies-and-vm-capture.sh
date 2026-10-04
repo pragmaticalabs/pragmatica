@@ -294,6 +294,21 @@ cloud_scenario reap body_reap
 if grep -q 'REAP alive=no orphans=0 elapsed=[0-5]$' "$WORK/reap/out"; then ok "D9 reap_bg_job: a job ignoring SIGTERM is gone within its bound (2s) plus the kill step, and leaves no child behind"
 else fail "D9 out=$(head -c 160 "$WORK/reap/out")"; fi
 
+# D9b (#1886): a GRANDCHILD of the job (here a bash child running a uniquely-timed sleep) must not outlive the reap either.
+# Killing only the job's direct children orphans it deterministically; it then outlives the suite.
+body_reap_tree() {
+    ( trap '' TERM; while :; do bash -c 'sleep 1.41; :'; done ) &
+    local pid=$!
+    sleep 0.3
+    reap_bg_job "$pid" 1
+    local orphans; orphans=$(pgrep -f '^sleep 1\.41$' | grep -c .)
+    pkill -KILL -f '^sleep 1\.41$' 2>/dev/null
+    echo "TREE orphans=${orphans}"
+}
+cloud_scenario reaptree body_reap_tree
+if grep -q 'TREE orphans=0$' "$WORK/reaptree/out"; then ok "D9b reap_bg_job: the job's grandchildren are reaped too, nothing outlives it"
+else fail "D9b out=$(head -c 160 "$WORK/reaptree/out")"; fi
+
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"
 [ "$FAIL" -eq 0 ]
