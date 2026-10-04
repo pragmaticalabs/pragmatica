@@ -68,7 +68,11 @@ public enum OperatorWarningCode {
     /// An operator drain or shutdown was FORCED past the slice `minAvailable` floor (#1720): the target hosts
     /// ACTIVE slice instances whose remaining count falls below the floor, so those slices run degraded, or go
     /// dark, until re-placed. The subject is the target node; the message names each slice and its counts.
-    SLICE_FLOOR_BREACHED_BY_FORCE("slice-floor-breached-by-force", "deployment", WarningLevel.WARNING);
+    SLICE_FLOOR_BREACHED_BY_FORCE("slice-floor-breached-by-force", "deployment", WarningLevel.WARNING),
+    /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
+    /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
+    /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
+    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

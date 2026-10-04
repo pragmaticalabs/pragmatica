@@ -39,7 +39,8 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                                    deriveSliceMethod(route),
                                    security,
                                    route.pathParamCount(),
-                                   route.spacers());
+                                   route.spacers(),
+                                   route.spacerSlots());
     }
 
     private static SecurityPolicy resolveSecurityPolicy(Route<?> route) {
