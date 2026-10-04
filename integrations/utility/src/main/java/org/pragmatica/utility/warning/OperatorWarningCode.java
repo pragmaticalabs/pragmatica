@@ -64,7 +64,10 @@ public enum OperatorWarningCode {
     /// A configured core member died on this node's membership view without this node ever observing it
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
-    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING);
+    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// A SWIM datagram claimed a member identity from a source address other than the one that identity is
+    /// pinned to, and was refused. A restart is not this: a new process carries a new identity and gets its own pin.
+    SWIM_MEMBER_ADDRESS_CONFLICT("swim-member-address-conflict", "membership", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

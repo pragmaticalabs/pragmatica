@@ -221,11 +221,11 @@ class SwimBootTokenTest {
         var answering = SwimProtocol.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                     .unwrap();
 
-        answering.onMessage(ADDR_A, Announce.announce(INFO_A, "", 5, TOKEN));
+        answering.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(INFO_A, "", 5, TOKEN));
         assertThat(transport.sentMessages).as("control: an admitted announce is not refused")
                                           .noneMatch(SwimMessage.IdentityRefused.class::isInstance);
 
-        answering.onMessage(ADDR_A, Announce.announce(INFO_A, "", 6, OTHER_TOKEN));
+        answering.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(INFO_A, "", 6, OTHER_TOKEN));
 
         assertThat(transport.sentMessages).filteredOn(SwimMessage.IdentityRefused.class::isInstance)
                                           .singleElement()
@@ -251,7 +251,7 @@ class SwimBootTokenTest {
     }
 
     private void announce(long incarnation, long bootToken) {
-        protocol.onMessage(ADDR_A, Announce.announce(INFO_A, "", incarnation, bootToken));
+        protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(INFO_A, "", incarnation, bootToken));
     }
 
     private void gossip(MemberState state, long incarnation, long bootToken) {

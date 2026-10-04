@@ -338,7 +338,7 @@ class SwimProtocolTest {
 
         @Test
         void handleAnnounce_selfAnnounceOfUnknown_introducedAsObservedNotAlive() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.members()).containsKey(NODE_A);
             assertThat(protocol.members().get(NODE_A).state())
@@ -348,7 +348,7 @@ class SwimProtocolTest {
 
         @Test
         void handleAnnounce_selfAnnounceOfUnknown_doesNotSetEverSeenHealthyNorEmitHealthy() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.everSeenHealthyForTest(NODE_A))
                 .as("OBSERVED birth is not yet proven-healthy — a probe-ack sets ever-seen-healthy later")
@@ -360,7 +360,7 @@ class SwimProtocolTest {
 
         @Test
         void handleAnnounce_selfAnnounceOfUnknown_armsNoSuspectTimer() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.suspectTimestampForTest(NODE_A).isEmpty())
                 .as("OBSERVED introduction must NOT arm a decay-to-FAULTY suspect timer at birth")
@@ -371,7 +371,7 @@ class SwimProtocolTest {
         void handleAnnounce_unknownMember_stillDeliversJoinAnnounced() {
             // The legitimate reachability probe (clusterNetwork.connect) is driven by
             // JoinAnnounced — formation must remain unaffected.
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(observations.byType(SwimObservation.JoinAnnounced.class))
                 .as("JoinAnnounced must still fire so the reachability probe proceeds")
@@ -396,42 +396,34 @@ class SwimProtocolTest {
         }
 
         @Test
-        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_refreshesProbeAddress() {
-            // Wave 9 Fix C — the ROOT of the post-partition-heal self-destruct: a Docker IP
-            // reshuffle changes a KNOWN member's address. Without adopting the fresh ANNOUNCE
-            // source IP, SWIM keeps probing the stale pre-partition IP, acks go silent, and the
-            // healthy member is falsely declared FAULTY. The re-ANNOUNCE (higher incarnation on
-            // rejoin) for an already-resident member must refresh its probe address.
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_keepsProbeAddress() {
+            // The mid-life address refresh (Wave 9 Fix C) is gone: a pinned member's address does not follow a
+            // later ANNOUNCE. A changed address for a live process is refused and reported instead, and a
+            // restarted process takes a new identity.
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
             var originalAddress = protocol.members().get(NODE_A).address();
 
-            // Same NODE_A re-ANNOUNCEs (rejoin, incarnation 1) but its datagram now arrives from a
-            // NEW source IP — the reshuffled container address.
             var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
             protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
 
-            assertThat(protocol.members().get(NODE_A).address().getAddress().getHostAddress())
-                .as("a re-ANNOUNCE from a new source IP must refresh the resident member's probe address")
-                .isEqualTo("127.0.0.2");
             assertThat(protocol.members().get(NODE_A).address())
-                .as("the probe address actually changed from the stale pre-reshuffle address")
-                .isNotEqualTo(originalAddress);
+                .as("a re-ANNOUNCE from a new source IP must not move the pinned member's probe address")
+                .isEqualTo(originalAddress);
+            assertThat(protocol.addressConflictsReportedForTest()).as("and is reported").isEqualTo(1);
         }
 
         @Test
-        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_nextProbeTargetsNewAddress() {
-            // The behavioural consequence of the refresh: the very next probe must target the new
-            // (reachable) source IP, not the stale one — killing the stale-IP probe storm at the root.
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_nextProbeStillTargetsPinnedAddress() {
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
             var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
             protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
             transport.sentMessages.clear();
 
             protocol.probeOnceForTest();
 
-            assertThat(transport.sentMessages.getFirst().target().getAddress().getHostAddress())
-                .as("the next probe must target the refreshed (new) source IP, not the stale pre-reshuffle one")
-                .isEqualTo("127.0.0.2");
+            assertThat(transport.sentMessages.getFirst().target())
+                .as("the next probe still targets the pinned address")
+                .isEqualTo(ADDR_A);
         }
 
         private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
@@ -463,7 +455,7 @@ class SwimProtocolTest {
 
         @Test
         void dialInfoFor_announceWithRoleAndSource_exposesLabels() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
 
             var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
             assertThat(discovered).hasSize(1);
@@ -475,7 +467,7 @@ class SwimProtocolTest {
 
         @Test
         void dialInfoFor_announceWithoutLabels_exposesAddressOnlyNodeInfo() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoNoLabels(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoNoLabels(NODE_A, ADDR_A), "", 0L));
 
             var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
             assertThat(discovered).hasSize(1);
@@ -486,7 +478,7 @@ class SwimProtocolTest {
 
         @Test
         void member_announceWithLabels_retainsLabelsOnSwimMember() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.members().get(NODE_A).labels())
                 .containsEntry(NodeInfo.LABEL_ROLE, "active")

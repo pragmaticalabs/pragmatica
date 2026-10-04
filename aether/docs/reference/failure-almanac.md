@@ -48,6 +48,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Stream owner loss (RF = 3, default `confirmation_factor` 2) | none today — ownership stays on the dead owner; replicated history held on survivors | `StreamDefaultRfOwnerReplacementTest` |
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
 | QUIC connection churn | missing-peer reconcile 5–60 s | 12-network connectedPeerCount |
+| SWIM member address change refused | none — restart the node (a new process takes a new identity) | `SwimAnnounceSourcePinTest` (unit; no multi-node proof yet) |
 | Full-cluster restart | derived state rebuilds; snapshot-only KV | guarantees.md §1–§2 · **partial (#349)** |
 | DHT / artifact loss under churn | mitigation only | **pending full fix (#420 / #349)** |
 | Pub/sub message loss | none (at-most-once) | guarantees.md §5 |
@@ -215,6 +216,16 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Degraded / at risk:** transient mesh under-connectivity; no data at risk.
 - **Operator action:** usually self-heals; if `connectedPeerCount` stays low past ~60 s, restart the isolated node.
 - **Proof anchor:** 12-network `connectedPeerCount` contracts; incident ledger #131.
+
+### SWIM member address change refused
+
+- **Symptom:** a live member's SWIM address differs from the one its identity is pinned to on a peer, for example after its IP changed (a container reconnected to a network with a new address). The peer refuses its ANNOUNCE and keeps probing the pinned address, so the member goes SUSPECT and is declared dead on that peer.
+- **Detection surface:** the `OPERATOR_WARNING` event with `details.code` = `swim-member-address-conflict` (subject: the member id; the message names the pinned and the refused address), and the same text in the node log, which is not throttled.
+- **Automatic response:** none. The ANNOUNCE is refused whole: no reply, no address change, no tombstone clear. A restarted process carries a new identity and is pinned afresh, so a restart raises no warning.
+- **Budget:** the event is throttled to one per member per 60 s.
+- **Degraded / at risk:** the member whose address changed is unreachable for SWIM on the refusing peers until it is restarted. No data is at risk beyond what losing that node costs.
+- **Operator action:** restart the node, or restore its address. Check for a firewall or NAT rule that changes a node's source address, and for a container runtime that reassigns addresses on reconnect.
+- **Proof anchor:** `SwimAnnounceSourcePinTest` (unit level through the real protocol with a fake transport) `[unverified: multi-node run]`.
 
 ## Pub/sub, scaling, and resource pressure
 
