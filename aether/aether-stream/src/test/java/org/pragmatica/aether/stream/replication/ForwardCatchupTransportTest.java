@@ -159,6 +159,7 @@ class ForwardCatchupTransportTest {
                               .await();
 
         assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("maxReadResponseBytes"));
         assertThat(source.reads().get()).isEqualTo(1);
     }
 
