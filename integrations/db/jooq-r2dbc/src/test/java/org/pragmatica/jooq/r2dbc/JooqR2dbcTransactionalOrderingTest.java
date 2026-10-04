@@ -97,6 +97,38 @@ class JooqR2dbcTransactionalOrderingTest {
         assertThat(events).containsExactly("begin", "rollback", "close");
     }
 
+    /// The commit path has the same shape as the cleanup path: a driver that THROWS from a transaction call
+    /// instead of returning a failing publisher must still end in a settled Promise with the connection
+    /// released, never a hang.
+    @Test
+    void commitThatThrows_settlesAsAFailure_rollsBack_andCloses() {
+        var settled = run(Promise.success("done"), Behaviour.throwing("commit")).await(TimeSpan.timeSpan(5).seconds());
+
+        assertThat(settled.isFailure()).as("a throwing commit must settle as a failure, not hang").isTrue();
+        assertThat(events).containsExactly("begin", "commit", "rollback", "close");
+    }
+
+    @Test
+    void beginThatThrows_settlesAsAFailure_andCloses() {
+        var settled = run(Promise.success("never reached"), Behaviour.throwing("begin")).await(TimeSpan.timeSpan(5).seconds());
+
+        assertThat(settled.isFailure()).as("a throwing begin must settle as a failure, not hang").isTrue();
+        assertThat(events).contains("begin", "close");
+    }
+
+    @Test
+    void operationThatThrowsSynchronously_settlesAsAFailure_rollsBack_andCloses() {
+        var settled = JooqR2dbcTransactional.<String> withTransaction(factory(Behaviour.none()),
+                                                                      SQLDialect.DEFAULT,
+                                                                      R2dbcError::fromException,
+                                                                      (_, _) -> {
+                                                                          throw new IllegalStateException("boom");
+                                                                      }).await(TimeSpan.timeSpan(5).seconds());
+
+        assertThat(settled.isFailure()).as("a throwing operation must settle as a failure, not hang").isTrue();
+        assertThat(events).containsExactly("begin", "rollback", "close");
+    }
+
     /// The chain starts on the promise executor, so a held step is awaited before anything is asserted about it.
     private void awaitEvent(String name) {
         var deadline = System.currentTimeMillis() + 5_000;

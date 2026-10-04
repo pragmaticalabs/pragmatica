@@ -111,12 +111,21 @@ public interface JooqR2dbcTransactional {
         return commitTransaction(conn, errorMapper).map(_ -> result);
     }
 
+    /// Lifted, so a driver that throws instead of returning a failing publisher is a failed step: the attempt
+    /// then exists and its settlement releases the connection. Unlifted, a throw from `begin` escaped before
+    /// the attempt was built and the connection was never closed.
     private static Promise<Unit> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromVoidPublisher(conn.beginTransaction(), errorMapper);
+        return lifted(errorMapper, conn::beginTransaction);
     }
 
     private static Promise<Unit> commitTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromVoidPublisher(conn.commitTransaction(), errorMapper);
+        return lifted(errorMapper, conn::commitTransaction);
+    }
+
+    private static Promise<Unit> lifted(Fn1<R2dbcError, Throwable> errorMapper,
+                                        java.util.function.Supplier<Publisher<Void>> publisher) {
+        return Promise.<Publisher<Void>> lift(errorMapper, publisher::get).flatMap(created -> ReactiveOperations.fromVoidPublisher(created,
+                                                                                                                                   errorMapper));
     }
 
     private static Promise<Unit> rollbackWhenFailed(Connection conn, boolean failed) {
