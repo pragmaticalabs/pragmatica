@@ -82,6 +82,18 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A suffix truncation asked to cut below the ring's retained range (#1730 phase 2): offsets between `keepThrough`
+    /// and `tailOffset` were evicted (and possibly sealed), so the ring cannot say they are gone. Nothing changed.
+    record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
+        @Override
+        public String message() {
+            return "Cannot truncate %s[%d] back to offset %d: the ring retains only offsets from %d".formatted(streamName,
+                                                                                                                partition,
+                                                                                                                keepThrough,
+                                                                                                                tailOffset);
+        }
+    }
+
     /// Ring seed-offset precondition rejection (spec PHASE A-WAL §W1): {@link OffHeapRingBuffer#seedHead}
     /// requires a FRESH ring (`headOffset() == -1`, no appends yet) and a non-negative `base`. The seed
     /// is a replay-only positioning op; this rejects a misuse — a non-fresh ring or a negative `base` —

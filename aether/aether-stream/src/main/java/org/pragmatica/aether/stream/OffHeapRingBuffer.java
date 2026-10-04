@@ -147,6 +147,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// baseline does not pin virtual threads on `synchronized` (JEP 491), and [#appendOrdered] re-enters it.
     private final Object appendLock = new Object();
 
+    /// Seqlock sequence of suffix truncations (#1730 phase 2): odd while [#truncateSuffix] rewrites the header, even
+    /// otherwise. A reader that copied while it changed, or across a completed one, retries: a truncation lowers the
+    /// head and the next append rewrites those slots, so a copy that straddles it can pair one record's index entry
+    /// with another's bytes. Written only under `appendLock`.
+    private volatile long truncationSeq;
+
     /// Sentinel for "no notification pending".
     private static final long NO_PENDING_NOTIFICATION = Long.MIN_VALUE;
 
@@ -758,6 +764,89 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
     }
 
+    /// Discard every event above `keepThrough` (#1730 phase 2, KIP-101): the log above the last offset this ring has in
+    /// common with its committed owner holds records the owner never acknowledged, and they must leave before the
+    /// owner's records can take their offsets. Returns the number of events removed; `keepThrough` at or above the
+    /// head removes nothing.
+    ///
+    /// Refused with [StreamError.TruncateBelowRetained] when `keepThrough` is below `tailOffset() - 1`: the offsets in
+    /// between were evicted (and possibly sealed), so the ring cannot say they are gone. Nothing changes then.
+    ///
+    /// The head is lowered FIRST and published with a fence before the count and the data position follow, so a
+    /// reader bounded by the head never meets a slot the cut already reclaimed. Durable and visible are lowered to
+    /// `keepThrough` (they are otherwise monotonic). A listener told earlier that visibility advanced past the cut
+    /// simply finds nothing above it on its next read. Readers retry across the cut, see [#truncationSeq].
+    public Result<Long> truncateSuffix(long keepThrough) {
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
+        synchronized (appendLock) {
+            return guardedAccess(() -> truncateSuffixChecked(keepThrough));
+        }
+    }
+
+    private Result<Long> truncateSuffixChecked(long keepThrough) {
+        var head = rawHeadOffset();
+        var tail = rawTailOffset();
+
+        if (keepThrough >= head) {
+            return success(0L);
+        }
+
+        if (keepThrough < tail - 1) {
+            return new StreamError.TruncateBelowRetained(streamName, partition, keepThrough, tail).result();
+        }
+
+        return success(cutSuffix(keepThrough, head));
+    }
+
+    private long cutSuffix(long keepThrough, long head) {
+        var removed = head - keepThrough;
+        var removedBytes = bytesOf(keepThrough + 1, head);
+
+        truncationSeq = truncationSeq + 1;
+        VarHandle.storeStoreFence();
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, keepThrough);
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - removed);
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() - removedBytes);
+        durableOffset.updateAndGet(value -> Math.min(value, keepThrough));
+        visibleOffset.updateAndGet(value -> Math.min(value, keepThrough));
+        VarHandle.storeStoreFence();
+        truncationSeq = truncationSeq + 1;
+
+        return removed;
+    }
+
+    private long bytesOf(long fromOffset, long toOffset) {
+        var bytes = 0L;
+
+        for (var offset = fromOffset; offset <= toOffset; offset++) {
+            bytes += dataLengthAt(Math.floorMod(offset, capacity));
+        }
+
+        return bytes;
+    }
+
+    /// Re-runs `read` until it ran entirely between two suffix truncations (the seqlock reader half, see
+    /// [#truncationSeq]); a read that overlapped one is discarded.
+    private <T> Result<T> stableAcrossTruncation(Supplier<Result<T>> read) {
+        while (true) {
+            var before = truncationSeq;
+
+            if ((before & 1L) == 0L) {
+                var result = read.get();
+
+                VarHandle.acquireFence();
+                if (truncationSeq == before) {
+                    return result;
+                }
+            }
+
+            Thread.onSpinWait();
+        }
+    }
+
     /// Native half of [#seedHead], behind the [#guardedAccess] boundary: the `closed` check above is a
     /// TOCTOU test that a concurrent release can win, so the header reads and writes here must still fail
     /// closed as `BUFFER_CLOSED` rather than throw out of the `Result` chain (#999).
@@ -887,7 +976,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> readSliceChecked(offset));
+        return guardedAccess(() -> stableAcrossTruncation(() -> readSliceChecked(offset)));
     }
 
     private Result<MemorySegment> readSliceChecked(long offset) {
@@ -973,7 +1062,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> readChecked(fromOffset, maxEvents, visibleOffset.get()));
+        return guardedAccess(() -> stableAcrossTruncation(() -> readChecked(fromOffset, maxEvents, visibleOffset.get())));
     }
 
     /// Replication read, bounded by the APPENDED head: a replica catching up, a new owner pulling from a
@@ -984,7 +1073,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> readChecked(fromOffset, maxEvents, Long.MAX_VALUE));
+        return guardedAccess(() -> stableAcrossTruncation(() -> readChecked(fromOffset, maxEvents, Long.MAX_VALUE)));
     }
 
     private Result<List<RawEvent>> readChecked(long fromOffset, int maxEvents, long bound) {
