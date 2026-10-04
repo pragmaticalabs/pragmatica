@@ -48,7 +48,7 @@ class MavenVersionLevelMetadataTest {
 
     @Test
     void put_ofVersionLevelMetadata_isRefusedAs400_namingWhy_andStoresNothing() {
-        for (var suffix : List.of("", ".sha1", ".md5")) {
+        for (var suffix : List.of("", ".sha1", ".md5", ".sha256", ".sha512")) {
             var response = put(VERSION_METADATA + suffix);
 
             assertThat(response.statusCode()).as("PUT %s", suffix).isEqualTo(400);
@@ -63,7 +63,7 @@ class MavenVersionLevelMetadataTest {
 
     @Test
     void get_ofVersionLevelMetadata_is404_namingWhy() {
-        for (var suffix : List.of("", ".sha1", ".md5")) {
+        for (var suffix : List.of("", ".sha1", ".md5", ".sha256", ".sha512")) {
             var response = get(VERSION_METADATA + suffix);
 
             assertThat(response.statusCode()).as("GET %s", suffix).isEqualTo(404);
