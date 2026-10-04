@@ -92,6 +92,11 @@ public sealed interface EmberPorts {
             this(slots, mgmtOffset, appOffset, List.of());
         }
 
+        /// The same offsets for a cluster of `slots` slots: what a cluster of that pool size would use.
+        public Layout withSlots(int newSlots) {
+            return new Layout(newSlots, mgmtOffset, appOffset, reservedOffsets);
+        }
+
         /// Ports from the base up to and including the highest offset the layout uses.
         public int extent() {
             var highest = Math.max(Math.max(slots, SWIM_PORT_OFFSET + slots),
@@ -102,7 +107,7 @@ public sealed interface EmberPorts {
         }
     }
 
-    /// A cluster's lease on a sub-window: the base its ports are computed from. Closing it returns the sub-window to the
+    /// A cluster's lease on a sub-window (every port of its layout was free when it was leased): the base its ports are computed from. Closing it returns the sub-window to the
     /// JVM's window (idempotent); it does not touch the cluster's own sockets.
     record PortLease(int base, Layout layout, Runnable release) implements AutoCloseable {
         public int mgmtBase() {

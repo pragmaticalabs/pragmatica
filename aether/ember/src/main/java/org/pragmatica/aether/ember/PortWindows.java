@@ -93,32 +93,89 @@ final class PortWindows {
                      held.base + windows.windowPorts() - 1);
         }
 
-        return leaseSub(held, layout);
+        return leaseSub(held, layout, waitMs);
     }
 
-    private static Result<PortLease> leaseSub(Window window, Layout layout) {
+    /// The next free sub-window after the one used last. A sub-window whose ports are still held (by the cluster that used it
+    /// a moment ago, which has stopped but not yet closed its sockets) is skipped; when none is free the scan repeats until
+    /// `waitMs` has passed, then fails naming each sub-window and why.
+    private static Result<PortLease> leaseSub(Window window, Layout layout, long waitMs) {
         var count = window.leased.length;
+        var deadline = System.nanoTime() + waitMs * 1_000_000L;
 
-        for (int i = 0; i < count; i++) {
-            var sub = (window.next + i) % count;
+        while (true) {
+            var reasons = new ArrayList<String>();
 
-            if (!window.leased[sub]) {
-                window.leased[sub] = true;
-                window.next = (sub + 1) % count;
+            for (int i = 0; i < count; i++) {
+                var sub = (window.next + i) % count;
+                var base = window.base + sub * EmberPorts.SUB_WINDOW_PORTS;
+                var busy = window.leased[sub]
+                           ? 0
+                           : firstBusyInLayout(base, layout);
 
-                return Result.success(new PortLease(window.base + sub * EmberPorts.SUB_WINDOW_PORTS,
-                                                    layout,
-                                                    () -> unlease(window, sub)));
+                if (window.leased[sub]) {
+                    reasons.add("sub-window " + sub + " is leased to a cluster of this JVM");
+                } else if (busy == 0) {
+                    window.leased[sub] = true;
+                    window.next = (sub + 1) % count;
+
+                    return Result.success(new PortLease(base, layout, () -> unlease(window, sub)));
+                } else {
+                    reasons.add("sub-window " + sub + ": port " + busy + " is still bound");
+                }
+            }
+
+            if (System.nanoTime() >= deadline) {
+                return Causes.cause("no free sub-window in this JVM's port window (slot " + window.slot
+                                   + ") for " + waitMs
+                                   + " ms (" + String.join("; ", reasons)
+                                   + ")").result();
+            }
+
+            pause();
+        }
+    }
+
+    /// Waits on the class monitor, which releases it: a cluster that stops meanwhile can free its sub-window.
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-03"})
+    private static void pause() {
+        try {
+            PortWindows.class.wait(RESCAN_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// The first port the layout uses at `base` that cannot be bound as the nodes bind it, or 0 when all can.
+    private static int firstBusyInLayout(int base, Layout layout) {
+        for (int slot = 0; slot < layout.slots(); slot++) {
+            var quic = base + slot;
+
+            for (var port : new int[]{quic, base + layout.mgmtOffset() + slot, base + layout.appOffset() + slot}) {
+                if (!tcpFree(port)) {
+                    return port;
+                }
+            }
+
+            for (var port : new int[]{quic, quic + EmberPorts.SWIM_PORT_OFFSET}) {
+                if (!udpFree(port)) {
+                    return port;
+                }
             }
         }
 
-        return Causes.cause("all " + count
-                           + " sub-windows of this JVM's port window (slot " + window.slot
-                           + ") are leased: a test holds more clusters at once than the window has sub-windows").result();
+        for (var offset : layout.reservedOffsets()) {
+            if (!tcpFree(base + offset) || !udpFree(base + offset)) {
+                return base + offset;
+            }
+        }
+
+        return 0;
     }
 
     private static synchronized void unlease(Window window, int sub) {
         window.leased[sub] = false;
+        PortWindows.class.notifyAll();
     }
 
     /// Drop this JVM's window for `windows` (closes the sentinel). For tests of the allocator itself.

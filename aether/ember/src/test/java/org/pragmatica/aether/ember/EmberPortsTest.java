@@ -58,7 +58,7 @@ class EmberPortsTest {
         try {
             assertThat(first.base()).isEqualTo(ROTATION_FIRST);
             assertThat(second.base()).as("the next sub-window follows").isEqualTo(ROTATION_FIRST + SLOT_PORTS);
-            assertThat(EmberPorts.lease(ROTATION, LAYOUT, _ -> 0).isFailure()).as("a third cluster at once has no sub-window").isTrue();
+            assertThat(EmberPorts.lease(ROTATION, LAYOUT, _ -> 0, 300L).isFailure()).as("a third cluster at once has no sub-window").isTrue();
 
             first.close();
             first.close();
@@ -138,6 +138,66 @@ class EmberPortsTest {
         outcome.onFailure(cause -> assertThat(cause.message()).contains("no free port window").contains("port " + (FIRST + 1)));
     }
 
+    /// A cluster that has stopped may not have closed its sockets yet, so the sub-window it used is skipped while a port of it
+    /// is still bound, instead of handing it to the next cluster to fail with BindException.
+    @Test
+    void lease_subWindowWhosePortIsStillBound_isSkipped() throws IOException {
+        try {
+            EmberPorts.lease(ROTATION, LAYOUT, _ -> 0).unwrap().close();
+
+            var lingering = new DatagramSocket(null);
+
+            opened.add(lingering);
+            lingering.setReuseAddress(false);
+            lingering.bind(new InetSocketAddress(ROTATION_FIRST + SLOT_PORTS + 1));
+
+            assertThat(EmberPorts.lease(ROTATION, LAYOUT, _ -> 0).unwrap().base())
+                .as("rotation points at sub-window 1, which still holds a bound port, so the lease goes to sub-window 0")
+                .isEqualTo(ROTATION_FIRST);
+        } finally {
+            PortWindows.release(ROTATION);
+        }
+    }
+
+    @Test
+    void lease_everySubWindowLeasedOrBound_failsAfterTheBoundNamingEach() throws IOException {
+        try {
+            var leased = EmberPorts.lease(ROTATION, LAYOUT, _ -> 0).unwrap();
+            var lingering = new DatagramSocket(null);
+
+            opened.add(lingering);
+            lingering.setReuseAddress(false);
+            lingering.bind(new InetSocketAddress(ROTATION_FIRST + SLOT_PORTS + 1));
+
+            var startedAt = System.nanoTime();
+            var outcome = EmberPorts.lease(ROTATION, LAYOUT, _ -> 0, 400L);
+
+            assertThat(leased.base()).isEqualTo(ROTATION_FIRST);
+            assertThat(outcome.isFailure()).isTrue();
+            assertThat((System.nanoTime() - startedAt) / 1_000_000L).as("it waited the bound").isGreaterThanOrEqualTo(350L);
+            outcome.onFailure(cause -> assertThat(cause.message()).contains("sub-window 0 is leased")
+                                                                  .contains("sub-window 1: port " + (ROTATION_FIRST + SLOT_PORTS + 1)));
+        } finally {
+            PortWindows.release(ROTATION);
+        }
+    }
+
+    /// The slot check is by pool extent: a cluster whose pool of 2N+extra slots runs past the sub-window is refused at start.
+    @Test
+    void cluster_poolRunningPastTheSubWindow_refusesToStart() {
+        try (var lease = EmberPorts.lease(TEST, new Layout(3, 40, 80), _ -> 0).unwrap()) {
+            var cluster = EmberCluster.emberCluster(3, lease.base(), lease.mgmtBase(), lease.appHttpBase(), "pool");
+
+            cluster.adoptPortLease(lease).unwrap();
+            cluster.withAdditionalNodeSlots(32).unwrap();
+
+            var outcome = cluster.start().await();
+
+            assertThat(outcome.isFailure()).isTrue();
+            outcome.onFailure(cause -> assertThat(cause.message()).contains("run past its sub-window"));
+        }
+    }
+
     /// A previous JVM's closed connections leave TIME_WAIT on its window ports. The claim must not read that as busy: the nodes'
     /// servers bind through it (JDK default SO_REUSEADDR), so the probe binds the same way. Red when the TCP probe is made
     /// exclusive (`setReuseAddress(false)`).
@@ -187,11 +247,15 @@ class EmberPortsTest {
     @Timeout(120)
     void lease_everySlotHeldByOtherJvms_waitsTheBoundThenFailsNamingEverySentinel() throws Exception {
         var first = startHolder();
-        var second = startHolder();
+        Process second = null;
 
-        try (var firstOut = new BufferedReader(new InputStreamReader(first.getInputStream()));
-             var secondOut = new BufferedReader(new InputStreamReader(second.getInputStream()))) {
+        try (var firstOut = new BufferedReader(new InputStreamReader(first.getInputStream()))) {
             assertThat(heldLine(firstOut)).isEqualTo("HELD " + FIRST);
+            // started only after the first announced, so the claim order is not a race between the two holders
+            second = startHolder();
+
+            var secondOut = new BufferedReader(new InputStreamReader(second.getInputStream()));
+
             assertThat(heldLine(secondOut)).as("the second holder walks past the held slot 0").isEqualTo("HELD " + (FIRST + SLOT_PORTS));
 
             var startedAt = System.nanoTime();
@@ -206,7 +270,9 @@ class EmberPortsTest {
                 .contains("sentinel " + (SENTINEL_FIRST + 1) + " is HELD"));
         } finally {
             first.destroyForcibly();
-            second.destroyForcibly();
+            if (second != null) {
+                second.destroyForcibly();
+            }
         }
     }
 

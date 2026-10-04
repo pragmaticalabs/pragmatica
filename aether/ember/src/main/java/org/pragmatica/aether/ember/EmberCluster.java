@@ -674,10 +674,10 @@ public final class EmberCluster {
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
         var lease = portLease.get();
 
-        if (lease != null && poolSize > lease.layout().slots()) {
+        if (lease != null && lease.layout().withSlots(poolSize).extent() > EmberPorts.SUB_WINDOW_PORTS) {
             return org.pragmatica.lang.utils.Causes.cause("cluster needs " + poolSize
-                                                         + " port slots but its lease holds " + lease.layout()
-                                                                                                     .slots())
+                                                         + " port slots, which run past its sub-window of " + EmberPorts.SUB_WINDOW_PORTS
+                                                         + " ports")
                                                    .promise();
         }
 
