@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -100,6 +101,57 @@ class StreamLifeAuthorityTest {
 
         assertThat(served).as("the removed life is not served").isFalse();
         assertThat(afterRemoval.isFailure()).as("the removed life accepts nothing: %s", afterRemoval).isTrue();
+    }
+
+    /// #1883: what a committed config will make [StreamPartitionManager#confirmationFactorFor] report, read BEFORE
+    /// the config is applied, follows the adoption rule: only a strictly stronger config of the same life and shape
+    /// changes the factor. A lowering stays at the old factor, because that is what acks keep enforcing.
+    @Test
+    void confirmationFactorAfter_followsTheAdoptionRule_andAgreesWithWhatIsEnforcedOnceApplied() {
+        var node = manager(new RecordingClusterNode(), AppendLog.Opener.directory(walDir));
+        var life = config().withIncarnation(COMMITTED_LIFE);
+        var rf3cf2 = life.withReplication(new ReplicationFactors(3, 2));
+
+        assertThat(node.confirmationFactorAfter(rf3cf2)).as("a stream not held yet has no factor to move from").isZero();
+        node.onStreamConfigPut(committed(rf3cf2));
+        assertThat(node.confirmationFactorFor(STREAM)).isEqualTo(2);
+
+        var raised = life.withReplication(new ReplicationFactors(3, 3));
+        var lowered = life.withReplication(new ReplicationFactors(3, 1));
+        var anotherLife = raised.withIncarnation(COMMITTED_LIFE + 1);
+
+        assertThat(node.confirmationFactorAfter(raised)).as("a raise is adopted").isEqualTo(3);
+        assertThat(node.confirmationFactorAfter(lowered)).as("a lowering is not adopted: acks keep the old factor").isEqualTo(2);
+        assertThat(node.confirmationFactorAfter(rf3cf2)).as("an unchanged config moves nothing").isEqualTo(2);
+        assertThat(node.confirmationFactorAfter(anotherLife)).as("a new life is a recreate, not a factor change").isEqualTo(2);
+
+        node.onStreamConfigPut(committed(lowered));
+        assertThat(node.confirmationFactorFor(STREAM)).as("the prediction held: the lowering was not enforced").isEqualTo(2);
+        node.onStreamConfigPut(committed(raised));
+        assertThat(node.confirmationFactorFor(STREAM)).as("the prediction held: the raise was enforced").isEqualTo(3);
+        node.close();
+    }
+
+    /// #1883: why a committed config is not applied over the enforced one follows the adoption rule exactly, and names
+    /// the actual cause: a partition-count change (either direction) first, otherwise weaker-or-equal durability.
+    @Test
+    void notAppliedReason_followsTheAdoptionRule_andNamesTheCause() {
+        var enforced = config().withIncarnation(COMMITTED_LIFE).withReplication(new ReplicationFactors(3, 3));
+        var weaker = enforced.withReplication(new ReplicationFactors(3, 2));
+        var mixedRfUp = enforced.withReplication(new ReplicationFactors(5, 1));
+        var stronger = enforced.withReplication(new ReplicationFactors(5, 4));
+
+        assertThat(StreamPartitionManager.notAppliedReason(weaker, enforced).or("")).startsWith("durability only increases online");
+        assertThat(StreamPartitionManager.notAppliedReason(enforced, enforced).isEmpty()).as("unchanged").isTrue();
+        assertThat(StreamPartitionManager.notAppliedReason(stronger, enforced).isEmpty()).as("adopted").isTrue();
+        assertThat(StreamPartitionManager.notAppliedReason(mixedRfUp, enforced).isEmpty()).as("RF up adopts the whole config").isTrue();
+        assertThat(StreamPartitionManager.notAppliedReason(enforced.withIncarnation(COMMITTED_LIFE + 1).withReplication(new ReplicationFactors(3, 1)), enforced).isEmpty())
+            .as("another life is a recreate").isTrue();
+        var morePartitions = new StreamConfig(STREAM, enforced.partitions() * 2, enforced.retention(), enforced.autoOffsetReset(), enforced.maxEventSizeBytes(),
+                                              enforced.consistencyMode(), 5, 4, enforced.compression(), enforced.encryptionKeyId(), COMMITTED_LIFE);
+
+        assertThat(StreamPartitionManager.notAppliedReason(morePartitions, enforced).or("")).as("a stronger config with another partition count is not adopted")
+                                                                                          .startsWith("partition count of an existing stream cannot change");
     }
 
     private static StreamPartitionManager manager(RecordingClusterNode cluster, AppendLog.Opener opener) {

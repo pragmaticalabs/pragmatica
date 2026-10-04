@@ -5241,7 +5241,20 @@ public interface AetherNode extends ManageableNode {
         // config into replicaCatalog() FIRST (onStreamConfigPut), then place its replica set
         // (reconcileReplicaSetOnConfigPut). clusterEventsControllerRef is the late-bound holder for the
         // stream ReplicaSetController (set below, after the controller is built).
+        // #1883: the in-sync set falling below / returning to the confirmation factor, derived from the committed ownership
+        // Put AND from a committed config Put that moves the factor. The config handler runs FIRST: it reads the factor
+        // the manager enforces before the Put and the one it will enforce after it, which the manager's own handler
+        // (next) then installs.
+        var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
+                                                                       streamPartitionManager::confirmationFactorAfter,
+                                                                       streamPartitionManager::enforcedConfig,
+                                                                       (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                                       partition),
+                                                                                                               StreamPartitionOwnershipValue.class),
+                                                                       delegateRouter::route);
         var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                       .onPut(AetherKey.StreamConfigKey.class,
+                                                              streamIsrAnnouncer::onConfigPut)
                                                        .onPut(AetherKey.StreamConfigKey.class,
                                                               streamPartitionManager::onStreamConfigPut)
                                                        .onPut(AetherKey.StreamConfigKey.class,
@@ -5530,6 +5543,8 @@ public interface AetherNode extends ManageableNode {
         allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                               .onPut(AetherKey.StreamPartitionOwnershipKey.class,
                                                      streamFailoverAnnouncer::onOwnershipPut)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamIsrAnnouncer::onOwnershipPut)
                                               .build()
                                               .asRouteEntries());
         // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
@@ -9105,6 +9120,12 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onStreamFailoverRefused));
         entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,
                                               eventAggregator::onStreamFailoverResolved));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,
+                                              eventAggregator::onStreamIsrBelowMinimum));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,
+                                              eventAggregator::onStreamIsrRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,
+                                              eventAggregator::onStreamConfigChangeNotApplied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationUnsettled.class,

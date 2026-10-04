@@ -312,6 +312,8 @@ is checked per resource at deploy and activation: an RF above the cluster's desi
 so a cluster with fewer than three desired cores cannot use the built-in default and its resources declare
 their own factors.
 
+**Changing a live stream's factors:** `confirmation_factor` can be raised online; lowering it is not applied to an existing stream online (durability only increases: `StreamPartitionManager#adoptIfMoreDurable` adopts a committed config only when its replication factor or confirmation factor is strictly higher), and a stall caused by a confirmation-factor raise is relieved by restoring replicas or by re-creating the stream, not by lowering the factor. A committed config that is not applied (a lowering, or a different partition count, which an existing stream cannot take) raises `STREAM_CONFIG_CHANGE_NOT_APPLIED`.
+
 Every key is typed and validated when the TOML is applied; a mistyped value, an RF below 3, a CF outside
 `1..RF`, a `tombstone_retention` that is not a duration or is below `"6m30s"`, a `cluster_events` CF below 1 or
 above the desired core count, or an unknown key refuses the apply,

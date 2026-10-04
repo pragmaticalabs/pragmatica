@@ -105,6 +105,28 @@ class IsrMonitorTest {
         assertThat(applied).hasSize(1);
     }
 
+    /// #1883: a member the leader fenced is never expanded, however caught up the owner's registry shows it, and is
+    /// never counted toward an acknowledgement (it would never join, so an ack would wait on it forever).
+    @Test
+    void nextIsr_fencedReplicaCaughtUp_isNeverAdmitted_andNeverCounted() {
+        record = record.withIsrAndFenced(List.of(OWNER, B), List.of(C));
+        confirm(B, HEAD);
+        confirm(C, HEAD);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).isEmpty()).as("C is fenced: no expansion").isTrue();
+        assertThat(monitor.maximalIsr(STREAM, PARTITION, record)).as("nothing pending for a fenced member")
+                                                                  .containsExactly(OWNER, B);
+    }
+
+    @Test
+    void nextIsr_unfencedReplicaCaughtUp_isAdmitted_control() {
+        record = record.withIsrAndFenced(List.of(OWNER, B), List.of());
+        confirm(B, HEAD);
+        confirm(C, HEAD);
+
+        assertThat(monitor.nextIsr(owned(HEAD), clock.get()).unwrap()).containsExactly(OWNER, B, C);
+    }
+
     private IsrMonitor.Owned owned(long head) {
         return new IsrMonitor.Owned(STREAM, PARTITION, record, head);
     }

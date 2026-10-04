@@ -170,4 +170,62 @@ class StreamFailoverAnnouncementTest {
             }
         });
     }
+
+    /// #1730 round 2 (F3): the id of a failover event is a pure function of the committed record, so two nodes that both
+    /// pass the events-owner gate publish the SAME `eventId`; a different epoch is a different event.
+    @Test
+    void eventId_isDeterministicOverTheCommittedRecord_andDiffersAcrossEpochTermAndIsrVersion() {
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, PARTITION);
+        var owned = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(1L), 1L, HlcTimestamp.ZERO, List.of(A, B), 3L);
+        var otherEpoch = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(2L), 1L, HlcTimestamp.ZERO, List.of(A, B), 3L);
+        var otherTerm = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(1L), 2L, HlcTimestamp.ZERO, List.of(A, B), 3L);
+        var otherIsrVersion = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(1L), 1L, HlcTimestamp.ZERO, List.of(A, B), 4L);
+
+        var onNodeOne = refusedId(key, owned);
+        var onNodeTwo = refusedId(key, owned);
+        var resolved = (OperationalEvent.StreamFailoverResolved) StreamFailoverAnnouncer.transition(key,
+                                                                                                    Option.some(owned.withFailoverRefused(true)),
+                                                                                                    owned,
+                                                                                                    List.of(A)).unwrap();
+
+        assertThat(onNodeOne).as("two derivations of one committed Put").isEqualTo(onNodeTwo).isNotBlank();
+        assertThat(refusedId(key, otherEpoch)).as("another epoch, same term").isNotEqualTo(onNodeOne);
+        assertThat(refusedId(key, otherTerm)).as("another term, same epoch").isNotEqualTo(onNodeOne);
+        assertThat(refusedId(key, otherIsrVersion)).as("another ISR version").isNotEqualTo(onNodeOne);
+        assertThat(resolved.eventId()).as("the resolution is not the refusal").isNotEqualTo(onNodeOne).isNotBlank();
+    }
+
+    /// A refusal that resolves by the owner returning and recurs changes neither epoch, term nor ISR version; the
+    /// refusal count committed with the flag makes it a NEW event, so a reader de-duplicating by `eventId` cannot hide
+    /// the second genuine refusal. The resolution carries the id of the refusal it resolves, distinct from it.
+    @Test
+    void refusedResolvedRefusedAgain_giveDistinctIds_andTheSamePutGivesTheSameId() {
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, PARTITION);
+        var owned = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(1L), 1L, HlcTimestamp.ZERO, List.of(A, B), 3L);
+        var refused1 = owned.withFailoverRefused(true);
+        var resolved = refused1.withFailoverRefused(false);
+        var refused2 = resolved.withFailoverRefused(true);
+
+        var first = refusedId(key, owned, refused1);
+        var second = refusedId(key, resolved, refused2);
+        var resolution = ((OperationalEvent.StreamFailoverResolved) StreamFailoverAnnouncer.transition(key, Option.some(refused1), resolved, List.of(A)).unwrap()).eventId();
+
+        assertThat(first).as("two nodes deriving the same Put").isEqualTo(refusedId(key, owned, refused1));
+        assertThat(second).as("the same partition refused again in an otherwise identical record").isNotEqualTo(first);
+        assertThat(resolution).isNotEqualTo(first).isNotEqualTo(second);
+        assertThat(refused2.failoverRefusalSeq()).isEqualTo(2L);
+    }
+
+    private static String refusedId(StreamPartitionOwnershipKey key, StreamPartitionOwnershipValue owned) {
+        return refusedId(key, owned, owned.withFailoverRefused(true));
+    }
+
+    private static String refusedId(StreamPartitionOwnershipKey key,
+                                    StreamPartitionOwnershipValue before,
+                                    StreamPartitionOwnershipValue after) {
+        return ((OperationalEvent.StreamFailoverRefused) StreamFailoverAnnouncer.transition(key,
+                                                                                            Option.some(before),
+                                                                                            after,
+                                                                                            List.of(C)).unwrap()).eventId();
+    }
 }
