@@ -175,15 +175,34 @@ class StreamPartitionOwnershipValueTest {
                                        .containsExactly(new AetherValue.EpochStart(e1.withCounter(3L), 0L));
     }
 
-    /// Bounded, newest kept: a consumer older than what is kept falls back to the conservative resume.
+    /// Bounded, newest kept, and the dropped starts are FOLDED (C2, v1873 round 2): the oldest kept start takes the lowest
+    /// dropped offset, so a consumer older than the history is checked against a bound at or below every offset a dropped epoch
+    /// may have re-assigned. Keeping the oldest kept start's own offset (30 here) would let such a consumer be admitted at a
+    /// cursor of 25 and skip records re-assigned from offset 0.
     @Test
-    void epochStarts_areBounded_keepingTheNewest() {
+    void epochStarts_areBounded_keepingTheNewest_andFoldingTheLowestDroppedOffsetIntoTheOldestKept() {
         var owner = NodeId.nodeId("core-1").unwrap();
         var starts = java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.EPOCH_STARTS_MAX + 3)
                                                .mapToObj(i -> new AetherValue.EpochStart(Epoch.epoch(1L, 2L, i), i * 10L))
                                                .toList();
         var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
 
-        assertThat(v.epochStarts()).hasSize(StreamPartitionOwnershipValue.EPOCH_STARTS_MAX).isEqualTo(starts.subList(3, starts.size()));
+        assertThat(v.epochStarts()).hasSize(StreamPartitionOwnershipValue.EPOCH_STARTS_MAX);
+        assertThat(v.epochStarts().getFirst()).as("the oldest kept epoch, at the lowest dropped offset")
+                                              .isEqualTo(new AetherValue.EpochStart(starts.get(3).epoch(), 0L));
+        assertThat(v.epochStarts().subList(1, v.epochStarts().size())).as("the rest is untouched")
+                                                                      .isEqualTo(starts.subList(4, starts.size()));
+    }
+
+    /// Under the cap nothing is folded.
+    @Test
+    void epochStarts_underTheBound_areKeptAsGiven() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+        var starts = java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.EPOCH_STARTS_MAX)
+                                               .mapToObj(i -> new AetherValue.EpochStart(Epoch.epoch(1L, 2L, i), 100L + i * 10L))
+                                               .toList();
+
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts).epochStarts())
+            .isEqualTo(starts);
     }
 }
