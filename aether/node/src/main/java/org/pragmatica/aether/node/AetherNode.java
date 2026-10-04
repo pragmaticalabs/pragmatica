@@ -5765,8 +5765,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                               fromOffset,
                                                                                                                                                                                               maxEvents,
                                                                                                                                                                                               ReadPreference.GOVERNOR),
-                                                                                                                       streamReadRouter::readValidated),
-                                                                                streamReadRouter::ownerBounds);
+                                                                                                                       streamReadRouter::readValidated));
         streamConsumerRuntime.operatorWarnings(operatorWarningSink);
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,

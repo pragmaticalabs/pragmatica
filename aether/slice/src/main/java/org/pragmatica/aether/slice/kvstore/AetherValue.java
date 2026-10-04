@@ -1873,7 +1873,8 @@ public sealed interface AetherValue {
                                        long rewindIncarnation,
                                        long rewindGeneration,
                                        long rewindSequence,
-                                       boolean rewind) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
+                                       boolean rewind,
+                                       Epoch ownerEpoch) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
         @Override
         public Object guardToken() {
             return token;
@@ -1887,13 +1888,23 @@ public sealed interface AetherValue {
         public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
                                                                               ConsumerAssignmentValue.AssignmentToken token,
                                                                               RewindEpoch epoch) {
+            return streamCursorCheckpointValue(committedOffset, token, epoch, Epoch.ZERO);
+        }
+
+        /// A checkpoint that also records the owner epoch the cursor was read under (#1873, KIP-320): a resume presents it to
+        /// the partition's owner, which refuses a cursor that belongs to a replaced lineage. [Epoch#ZERO] is "no claim".
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
+                                                                              ConsumerAssignmentValue.AssignmentToken token,
+                                                                              RewindEpoch epoch,
+                                                                              Epoch ownerEpoch) {
             return new StreamCursorCheckpointValue(committedOffset,
                                                    System.currentTimeMillis(),
                                                    token,
                                                    epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
-                                                   false);
+                                                   false,
+                                                   ownerEpoch);
         }
 
         /// The rewind record: the group's cursor moved to `fromOffset` under the minted `epoch`, written
@@ -1907,7 +1918,8 @@ public sealed interface AetherValue {
                                                    epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
-                                                   true);
+                                                   true,
+                                                   Epoch.ZERO);
         }
 
         public RewindEpoch rewindEpoch() {

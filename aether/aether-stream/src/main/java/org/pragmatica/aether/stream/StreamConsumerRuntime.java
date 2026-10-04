@@ -219,22 +219,6 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                                                  .async();
     }
 
-    /// What the partition a consumer reads holds right now, asked of the node that ASSIGNS its offsets (#1441).
-    /// A resumed cursor above `visibleHead + 1` points past the log, and the offsets between will be assigned
-    /// to records the consumer would never read; [ConsumerRuntimeState] clamps it.
-    @FunctionalInterface
-    interface PartitionBounds {
-        Promise<VisibleBounds> bounds(String streamName, int partition);
-    }
-
-    /// The default bounds: this node's own ring, the one [#localPartitionReader] reads. Fails while the ring is
-    /// not materialized here.
-    static PartitionBounds localPartitionBounds(StreamPartitionManager partitionManager) {
-        return (streamName, partition) -> partitionManager.visibleBounds(streamName, partition)
-                                                          .toResult(StreamError.General.PARTITION_NOT_LOCAL)
-                                                          .async();
-    }
-
     @FunctionalInterface
     interface BatchConsumerCallback {
         Promise<Unit> onBatch(List<OffHeapRingBuffer.RawEvent> events);
@@ -272,21 +256,5 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                        ConsumerCursorStore cursorStore,
                                                        PartitionReader reader) {
         return new ConsumerRuntimeState(partitionManager, deadLetterHandler, some(cursorStore), none(), reader);
-    }
-
-    /// The production overload (#1441): the routed reader, and the bounds of the partition as its owner reports
-    /// them, so a resumed cursor is checked against the head the owner will assign offsets above.
-    static StreamConsumerRuntime streamConsumerRuntime(StreamPartitionManager partitionManager,
-                                                       DeadLetterHandler deadLetterHandler,
-                                                       ConsumerCursorStore cursorStore,
-                                                       PartitionReader reader,
-                                                       PartitionBounds bounds) {
-        return new ConsumerRuntimeState(partitionManager,
-                                        deadLetterHandler,
-                                        some(cursorStore),
-                                        none(),
-                                        reader,
-                                        some(bounds),
-                                        ConsumerRuntimeState.DEAD_LETTER_APPEND_TIMEOUT);
     }
 }

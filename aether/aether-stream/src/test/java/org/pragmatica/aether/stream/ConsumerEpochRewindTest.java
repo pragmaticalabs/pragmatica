@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.lang.Promise;
 
 import org.junit.jupiter.api.AfterEach;
@@ -136,6 +137,146 @@ class ConsumerEpochRewindTest {
         keepWaking(() -> delivered.size() >= 2);
 
         assertThat(delivered).startsWith("0:x", "1:y");
+    }
+
+    /// #1441 -> #1873: the resume is validated like any read. The group's checkpoint says the cursor is 5 under E1; the owner
+    /// since began E2 at offset 3 (it restarted without a WAL and kept 0..2). The first read carries the stored claim, is
+    /// answered with the typed divergence, and the consumer delivers the NEW records at 3 and 4. There is no head query: the
+    /// clamp this replaces is gone, so nothing can fail "forever" asking an owner that is down.
+    @Test
+    void resume_withACursorFromAReplacedLineage_isValidatedLikeAnyRead() throws InterruptedException {
+        var owner = scriptedOwner((from, claim) -> {
+            if (claim.equals(E1) && from == 5L) {
+                return new StreamError.EpochDiverged(E2, 3L).promise();
+            }
+
+            if (claim.equals(E2) && from == 3L) {
+                return Promise.success(new StreamPartitionManager.EpochRead(List.of(event(3, "new-3"), event(4, "new-4")), E2));
+            }
+
+            return Promise.success(new StreamPartitionManager.EpochRead(List.of(), claim));
+        });
+
+        runtime = StreamConsumerRuntime.streamConsumerRuntime(manager,
+                                                              DeadLetterHandler.deadLetterHandler(),
+                                                              checkpoints(Cursor.cursor(5L, org.pragmatica.aether.slice.generation.RewindEpoch.NONE, E1), new java.util.concurrent.atomic.AtomicReference<>()),
+                                                              owner);
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig("group-1"), recording(), org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE, FENCE);
+        keepWaking(() -> delivered.size() >= 2);
+
+        assertThat(delivered).as("the new records at the re-assigned offsets (reads %s)", reads).startsWith("3:new-3", "4:new-4");
+        assertThat(reads.getFirst()).as("the first read presents the stored claim").isEqualTo("from=5,epoch=1");
+    }
+
+    /// The owner epoch a consumer adopted is what its next checkpoint records, so the claim survives a restart.
+    @Test
+    void checkpoint_recordsTheOwnerEpochTheConsumerAdopted() throws InterruptedException {
+        var owner = scriptedOwner((from, claim) -> Promise.success(new StreamPartitionManager.EpochRead(from == 0L
+                                                                                                           ? List.of(event(0, "a"), event(1, "b"))
+                                                                                                           : List.of(), E2)));
+        var committed = new java.util.concurrent.atomic.AtomicReference<Epoch>();
+
+        runtime = StreamConsumerRuntime.streamConsumerRuntime(manager,
+                                                              DeadLetterHandler.deadLetterHandler(),
+                                                              checkpoints(null, committed),
+                                                              owner);
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig("group-1"), recording(), org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE, FENCE);
+        keepWaking(() -> delivered.size() >= 2);
+        runtime.unsubscribe(STREAM, 0, "group-1");
+
+        assertThat(committed.get()).as("the detach flush records the epoch the records were served under").isEqualTo(E2);
+    }
+
+    /// With no clamp there is no bounds query to fail forever: while the owner is not activated the resume read is refused
+    /// with the typed error and retried by the ordinary poll backoff, and the consumer delivers once the owner serves.
+    @Test
+    void resume_whileTheOwnerIsNotActivated_backsOffAndThenDelivers() throws InterruptedException {
+        var refusals = new AtomicInteger(3);
+        var owner = scriptedOwner((from, claim) -> refusals.getAndDecrement() > 0
+                                                   ? new StreamError.OwnerNotActivated(STREAM, 0).promise()
+                                                   : Promise.success(new StreamPartitionManager.EpochRead(from == 5L
+                                                                                                          ? List.of(event(5, "x"))
+                                                                                                          : List.of(), E1)));
+
+        runtime = StreamConsumerRuntime.streamConsumerRuntime(manager,
+                                                              DeadLetterHandler.deadLetterHandler(),
+                                                              checkpoints(Cursor.cursor(5L, org.pragmatica.aether.slice.generation.RewindEpoch.NONE, E1), new java.util.concurrent.atomic.AtomicReference<>()),
+                                                              owner);
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig("group-1"), recording(), org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE, FENCE);
+        keepWaking(() -> delivered.contains("5:x"));
+
+        assertThat(refusals.get()).as("control: the refusals were served").isNegative();
+        assertThat(delivered).contains("5:x");
+    }
+
+    private static final org.pragmatica.aether.stream.ConsumerFence FENCE = new org.pragmatica.aether.stream.ConsumerFence() {
+        @Override
+        public Epoch epoch() {
+            return Epoch.epoch(1L, 1L, 9L);
+        }
+
+        @Override
+        public boolean admitted() {
+            return true;
+        }
+    };
+
+    private org.pragmatica.aether.stream.StreamConsumerRuntime.ConsumerCallback recording() {
+        return (offset, payload, ts) -> {
+            delivered.add(offset + ":" + new String(payload, UTF_8));
+
+            return Promise.unitPromise();
+        };
+    }
+
+    private StreamConsumerRuntime.PartitionReader scriptedOwner(java.util.function.BiFunction<Long, Epoch, Promise<StreamPartitionManager.EpochRead>> script) {
+        return new StreamConsumerRuntime.PartitionReader() {
+            @Override
+            public Promise<List<OffHeapRingBuffer.RawEvent>> read(String stream, int partition, long from, int max) {
+                throw new AssertionError("a consumer reads through readFrom");
+            }
+
+            @Override
+            public Promise<StreamPartitionManager.EpochRead> readFrom(String stream, int partition, long from, int max, Epoch consumerEpoch) {
+                reads.add("from=" + from + ",epoch=" + consumerEpoch.localCounter());
+
+                return script.apply(from, consumerEpoch);
+            }
+        };
+    }
+
+    /// A fenced store that holds `stored` as the group's checkpoint and records the owner epoch of each commit.
+    private static org.pragmatica.aether.stream.segment.ConsumerCursorStore checkpoints(Cursor stored,
+                                                                                         java.util.concurrent.atomic.AtomicReference<Epoch> committedOwnerEpoch) {
+        return new org.pragmatica.aether.stream.segment.ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String group, String stream, int partition, long offset) {
+                return Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<CommitOutcome> commit(String group,
+                                                 String stream,
+                                                 int partition,
+                                                 long offset,
+                                                 Epoch assignmentEpoch,
+                                                 org.pragmatica.aether.slice.generation.RewindEpoch rewindEpoch,
+                                                 Epoch ownerEpoch) {
+                committedOwnerEpoch.set(ownerEpoch);
+
+                return Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<org.pragmatica.lang.Option<Long>> fetch(String group, String stream, int partition) {
+                return Promise.success(org.pragmatica.lang.Option.none());
+            }
+
+            @Override
+            public Promise<org.pragmatica.lang.Option<Cursor>> fetchCursor(String group, String stream, int partition, Epoch assignmentEpoch) {
+                return Promise.success(org.pragmatica.lang.Option.option(stored));
+            }
+        };
     }
 
     /// The consumer's ring is local, so appends wake it; a scripted owner needs a wake-up per stage.
