@@ -12,7 +12,7 @@
   `ManagementServerError.NotLeader` (which had no constructor before this change), matching `SchemaNotLeader`. It fires when
   task-group owner resolution itself fails, which is when an operator most needs a typed answer. The manager-level
   `AbTestDeploymentError.NotLeader` (a node that is leader but not yet activated), `TestNotFound`, `VariantNotFound` and
-  `TestAlreadyExists` are typed too (409 / 404 / 404 / 409). Not every not-leader refusal in the codebase answers 409:
+  `TestAlreadyExists` are typed too (409 / 404 / 400 / 409). Not every not-leader refusal in the codebase answers 409:
   `DeploymentError.NOT_ASSIGNED` answers 503.
 - **`POST /api/v1/cluster/keys/revoke/{id}`:** an unknown key is now 404 and a key declared in node configuration is 409.
 - `POST /api/v1/cluster/config` and `/cluster/scale` already answered typed 4xx at this base (`ClusterConfigError`); not changed.
