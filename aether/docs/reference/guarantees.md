@@ -38,7 +38,7 @@
 | 5 | KV (Store-A) | `epoch.fence` (Put) | monotonic single-writer (reject stale epoch/leader) | deterministic, reconstructible from KV | — | enforced when writes resume | LIVE |
 | 6 | DHT (Store-B) | `dht.write` (system maps) | **eventual**, W=1 single-node ack | **not crash-durable** (in-mem) | — | side with ≥W replicas (≈local) | LIVE *(eventual)* |
 | 7 | DHT (Store-B) | `dht.read` (system maps) | **eventual**, first-non-empty (no read-repair) | — | — | any live replica | LIVE *(eventual)* |
-| 8 | DHT (Store-B) | `dht.write` (artifact repo) | quorum **LWW by HLC** (W=R=majority) | quorum in-mem | — | majority | LIVE *(eventual/LWW)* |
+| 8 | DHT (Store-B) | `dht.write` (artifact repo) | quorum **LWW by HLC** (W = CF, R = RF − CF + 1 from the committed `[replication]`; W=R=2 at the default RF 3/CF 2, #1777; after a live change, max(old, new) on every node until the leader commits the change settled, #1777 R1b) | quorum in-mem | — | majority | LIVE *(eventual/LWW)* |
 | 9 | DHT (Store-B) | `dht.epoch-gate` | per-partition single-writer fence — **authority = consensus KV**, enforced node-local at the DHT engine (not a DHT keyspace); transient accept during KV-apply lag, monotonic convergence | — | — | — | LIVE |
 | 10 | Availability | `cluster.accept-writes` | — | — | — | **majority only**; minority `QuorumPaused` | LIVE |
 | 11 | Availability | `minority.self-fence` | — | — | — | minority **halts** ~15 s after quorum loss (**C-over-A**) | LIVE |
@@ -175,7 +175,30 @@ Consensus runs in memory on every node; the old per-node consensus snapshot (`Gi
 > specified `W=1, R=1` semantics for maps that no longer exist. **The artifact-repository and epoch-gate
 > bullets below remain live and are unchanged** — the DHT itself is still in use for artifacts.
 
-- **`dht.write` (artifact repository)** — stronger: **quorum LWW by HLC version** (W=R=majority, `Main.java:323`). Still eventual (HLC is a logical clock; concurrent writes are LWW-dropped), not linearizable.
+- **`dht.write` (artifact repository)** — stronger: **quorum LWW by HLC version** (W = CF and R = RF − CF + 1 from the cluster's committed `[replication]` section, #1777 track 1; W=R=2 at the default RF 3/CF 2). Still eventual (HLC is a logical clock; concurrent writes are LWW-dropped), not linearizable.
+- **`dht.remove` (#1777 track 3)** — a remove stores a **tombstone** on CF replicas, stamped like a put (owner
+  epoch, then HLC version) and fenced like one; a quorum lost to fences is `WriteIndeterminate`
+  [mechanism: fenced tombstone write through `QuorumCollector`]. After a remove acknowledged at CF and no later put,
+  a read or `exists` returns absent or a retryable refusal — never the removed value — against a replica that missed
+  the remove, anti-entropy, migration, the departure hand-off, the #428 fallback probe, a stray copy a ring change
+  left, and a node that rejoins after being removed while running
+  [verified: `integrations/dht/src/test/java/org/pragmatica/dht/DHTDurableDeleteTest.java`, in-JVM multi-node]
+  [mechanism: the read keeps the newest stamp; every copy path carries tombstones; the fallback re-homes a copy
+  with its original stamp]. **Tombstone lifetime:** a tombstone is collected only once it is older than
+  `[replication] tombstone_retention` (default 1 h), every co-replica answered SERVING with an equal digest in a round
+  started after it expired, and no holder left the partition's replica set within the retention. A node drops its
+  stray copies of a partition it stopped replicating after the retention less 90 s, and a node removed from the
+  cluster while running drops its whole store [mechanism: the stray purge precedes any collection the stray could
+  outlive]. A co-replica that stays silent or diverged blocks collection — memory, not data, is what that costs;
+  `aether.dht.gc.unagreed.partitions` counts such partitions and clears when the co-replica answers again or is
+  removed. Concurrent put and remove: the newer `(epoch, HLC)` stamp wins on every replica (LWW, unchanged).
+  [design intent — unverified: a node whose membership apply lags the cluster's by more than 90 s; clock skew beyond
+  the HLC bound shortening an observed tombstone age; a track-2 anchorless catch-up that lost every holder of a
+  tombstone at once.]
+  [limit: deposed-writer residual — #1777 track 3 does NOT close it (owner ruling 2026-10-03, Q8).] A deposed owner's
+  write that a lagging replica accepted can still spread through anti-entropy on a key the new owner never rewrites:
+  it is a spread VALUE, which no tombstone exists to supersede. Signal: `DHTNode.belowHighWaterCopyCount`. Recovery:
+  the current owner's next write of the key supersedes it everywhere. See `ownership-fence-spec.md` §7.
 - **`dht.epoch-gate`** — a per-(keyspace,partition) single-writer fence over entity-keyed puts. **Authority is the consensus KV**, not the DHT plane: the `OwnershipEpochHighWater` table is seeded from and advances by observing committed `EpochBearing` values (`OwnershipEpochHighWater.ownershipEpochHighWater(kvStore)`, `AetherNode.java:420`). **Enforcement is at the DHT storage engine**, where `HighWaterOwnerEpochGate` reads the node-**local applied** high-water (`MemoryStorageEngine` built over the gate, `:420-421`). So it is **not a DHT keyspace — neither FULL nor quorum**: a deposed writer's put can be **transiently accepted during local KV-apply lag**, then rejected once the high-water converges (monotonic max-merge, deterministic per node).
 
 > ✅ **Fixed #380 (`0f34a084c`).** `DHTConfig` previously claimed "Full replication is always strongly consistent. R + W > N ensures any read will see the most recent write." `FULL` is W=R=1 (R+W=2 ≤ N) and the read path never reconciles versions, so that was false. The `FULL` docstring now states *eventually consistent, not linearizable*, and the dead, misnamed `isStronglyConsistent()` (zero callers) was renamed `hasQuorumOverlap()` with an honest "necessary-but-not-sufficient" contract. Adding real read-repair/reconciliation remains future work (not this fix).

@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -59,9 +60,8 @@ import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
 public final class SliceRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
-
-    private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
-
+    private static final Cause MISSING_ARTIFACT = new ManagementServerError.MissingField("artifact");
+    private static final Cause MISSING_INSTANCES = new ManagementServerError.MissingField("instances");
     private static final Cause BLUEPRINT_NOT_FOUND = Causes.cause("Blueprint not found");
     private static final Cause SLICE_NOT_LOADED = Causes.cause("Slice not loaded or no per-slice config available");
 
@@ -137,11 +137,15 @@ public final class SliceRoutes implements RouteSource {
     private record ScaleParams(String artifact, int instances, Option<String> placement) {}
 
     private Result<ScaleParams> validateScaleRequest(ScaleRequest request) {
-        return Result.all(Option.option(request.artifact()).toResult(MISSING_ARTIFACT_OR_INSTANCES),
-                          Option.option(request.instances()).toResult(MISSING_ARTIFACT_OR_INSTANCES))
-                     .map((art, inst) -> new ScaleParams(art,
-                                                         inst,
-                                                         Option.option(request.placement())));
+        // Sequential, not Result.all: a composite of two refusals is not HttpStatusAware, so the 400 would be lost
+        // and a request missing both fields would answer 500 (#954).
+        return Option.option(request.artifact())
+                     .toResult(MISSING_ARTIFACT)
+                     .flatMap(art -> Option.option(request.instances())
+                                           .toResult(MISSING_INSTANCES)
+                                           .map(inst -> new ScaleParams(art,
+                                                                        inst,
+                                                                        Option.option(request.placement()))));
     }
 
     private record ValidatedScale(ScaleParams params, Artifact artifact) {}
@@ -157,6 +161,7 @@ public final class SliceRoutes implements RouteSource {
 
     private Promise<ValidatedScale> resolveScaleArtifact(ScaleParams params) {
         return Artifact.artifact(params.artifact())
+                       .mapError(cause -> new ManagementServerError.InvalidRequest(cause.message()))
                        .async()
                        .map(artifact -> new ValidatedScale(params, artifact));
     }
@@ -228,7 +233,7 @@ public final class SliceRoutes implements RouteSource {
                                                         cause.message()));
     }
 
-    private static final Cause MISSING_ARTIFACT_COORDS = Causes.cause("Missing 'artifact' field");
+    private static final Cause MISSING_ARTIFACT_COORDS = new ManagementServerError.InvalidRequest("Missing 'artifact' field");
 
     /// #759 — "deployed" must mean every declared instance is verified ACTIVE at response time, not
     /// merely that the publish command committed. `deployStatus` reads `deploymentMap()` to name three

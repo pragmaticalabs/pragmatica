@@ -53,7 +53,6 @@ import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.ObservabilityRoutes;
-import org.pragmatica.aether.api.routes.RepositoryRoutes;
 import org.pragmatica.aether.api.routes.AbTestRoutes;
 import org.pragmatica.aether.api.routes.RouteHandler;
 import org.pragmatica.aether.api.routes.ScheduledTaskRoutes;
@@ -106,6 +105,7 @@ import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.aether.api.routes.EntityCheckpointRoutes;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
+import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
@@ -344,7 +344,6 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
         routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier));
-        routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,
@@ -699,6 +698,28 @@ class ManagementServerImpl implements ManagementServer {
                                                    .or(0);
 
         observability.gauge("aether.dht.catchup.stuck.partitions", stuck);
+        registerDhtTombstoneMetrics();
+    }
+
+    /// #1777 track 3: tombstones held and collected, stray partitions dropped, and partitions without a recent full
+    /// agreement round — non-zero means a co-replica is silent, diverged or catching up, so that partition's expired
+    /// tombstones cannot be collected yet (memory, not data, is what that costs).
+    private void registerDhtTombstoneMetrics() {
+        var agreementWindow = org.pragmatica.lang.io.TimeSpan.timeSpan(3 * DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL.millis())
+                                                             .millis();
+
+        observability.gauge("aether.dht.tombstones", dhtGauge(DHTNode::tombstoneCount));
+        observability.gauge("aether.dht.tombstones.collected", dhtGauge(DHTNode::collectedTombstoneCount));
+        observability.gauge("aether.dht.strays.purged.partitions", dhtGauge(DHTNode::purgedStrayPartitionCount));
+        observability.gauge("aether.dht.gc.unagreed.partitions",
+                            dhtGauge(node -> node.unagreedPartitions(agreementWindow)));
+    }
+
+    private Supplier<Number> dhtGauge(org.pragmatica.lang.Functions.Fn1<Number, DHTNode> reading) {
+        return () -> nodeSupplier.get()
+                                 .dhtNode()
+                                 .map(reading)
+                                 .or(0);
     }
 
     private static double computeStreamMemoryRatio(StreamPartitionManager spm) {

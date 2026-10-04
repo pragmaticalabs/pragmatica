@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -90,8 +91,8 @@ class AbTestOperatorFloorTest {
 
     @Nested
     class TheCanaryWrite {
-        /// The first write that touches a live slice. It legitimately places the variant at one
-        /// instance; it has no business touching the floor.
+        /// The first write that touches a live slice. It places the variant at the slice floor; it
+        /// has no business touching the operator's floor.
         @Test
         void createTest_preservesOperatorFloor_onTheVariantWrite() {
             startTest();
@@ -100,15 +101,15 @@ class AbTestOperatorFloorTest {
                                                             .isEqualTo(OPERATOR_FLOOR);
         }
 
-        /// Opposite polarity, and the reason the fix is not "stop writing instance counts at all".
-        /// The canary must still be a canary — an implementation that preserved the floor by leaving
-        /// `targetInstances` alone would pass the test above and deploy the variant at full scale.
+        /// Opposite polarity: the canary must still be a canary. An implementation that preserved
+        /// the floor by leaving `targetInstances` alone would pass the test above and deploy the
+        /// variant at the baseline's full scale (6 here).
         @Test
-        void createTest_stillPlacesTheVariantAtOneInstance() {
+        void createTest_placesTheVariantAtTheSliceFloor_neverBelow() {
             startTest();
 
-            assertThat(onlySliceTargetWrite().targetInstances()).as("the variant is a canary: one instance, whatever the floor says")
-                                                               .isEqualTo(1);
+            assertThat(onlySliceTargetWrite().targetInstances()).as("#1721: the slice's own target must never go below the runtime floor")
+                                                               .isEqualTo(SliceSpec.MIN_INSTANCES);
         }
     }
 
@@ -122,7 +123,7 @@ class AbTestOperatorFloorTest {
             var canary = onlySliceTargetWrite();
 
             assertThat(canary.targetInstances()).as("the canary write must have happened, or the promotion below is vacuous")
-                                               .isEqualTo(1);
+                                               .isEqualTo(SliceSpec.MIN_INSTANCES);
 
             observe(canary);
 
@@ -138,7 +139,7 @@ class AbTestOperatorFloorTest {
 
         /// Rollback is the other conclusion write and carries the identical defect, so pinning only
         /// the promotion would leave an auto-rollback — the path a failing variant actually takes —
-        /// free to strand the slice at one instance.
+        /// free to strand the slice at the canary's count.
         @Test
         void rollbackTest_restoresOperatorFloor_afterTheCanaryWrite() {
             var testId = startTest();
@@ -156,15 +157,15 @@ class AbTestOperatorFloorTest {
                                                  .isEqualTo(SliceTargetOverridePreservationTest.V1);
             assertThat(restored.minInstances()).as("#982: rollback must restore the operator's floor")
                                                .isEqualTo(OPERATOR_FLOOR);
-            assertThat(restored.targetInstances()).as("#982: the restored baseline must not be left at the canary's single instance")
+            assertThat(restored.targetInstances()).as("#982: the restored baseline must not be left at the canary's count")
                                                   .isEqualTo(OPERATOR_FLOOR);
         }
 
-        /// A slice whose floor is genuinely 1 must conclude at 1. Without this, an implementation
-        /// that ignored the observed floor and wrote a constant would pass every assertion above,
-        /// and every slice in the cluster would be promoted to five instances.
+        /// An operator floor of 1 is carried as written (#982) but the slice still concludes at the
+        /// runtime floor of 3 (#1721). Without the observed floor being read, an implementation that
+        /// wrote a constant 5 would pass every assertion above.
         @Test
-        void concludeTest_withAFloorOfOne_concludesAtOneInstance() {
+        void concludeTest_withAFloorOfOne_concludesAtTheSliceFloor() {
             seedSliceTarget(operatorTarget(SliceTargetOverridePreservationTest.V1, 1));
 
             var testId = startTest();
@@ -175,8 +176,8 @@ class AbTestOperatorFloorTest {
 
             assertThat(promoted.minInstances()).as("a floor of 1 is a real floor, carried like any other")
                                                .isEqualTo(1);
-            assertThat(promoted.targetInstances()).as("the conclusion write restores the floor's worth of capacity — here, one")
-                                                  .isEqualTo(1);
+            assertThat(promoted.targetInstances()).as("#1721: the conclusion never parks the slice under the runtime floor, whatever minInstances says")
+                                                  .isEqualTo(SliceSpec.MIN_INSTANCES);
         }
 
         /// The overrides #424, #698 and #937 fixed must still survive now that the conclusion write
