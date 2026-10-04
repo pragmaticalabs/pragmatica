@@ -84,6 +84,11 @@ public interface ScheduledTaskManager {
     /// (#1930). The in-flight claim of a task is held for this long, so a SINGLE-mode task whose callee runs for longer than
     /// the invocation timeout still never overlaps its own next fire; it is the longest a lost response can keep a task from
     /// firing. A callee hosted on the firing node is awaited without a bound. Not configurable per task.
+    ///
+    /// Why 10 minutes (a marked guess, CTO-accepted): scheduled tasks are periodic maintenance, so a bound well above the longest
+    /// plausible run keeps a healthy long task from ever reading as unknown, while still ending a lost response. The trade-off is
+    /// deliberate: a lost response (a message the transport dropped, with no node departure to end the wait) means up to this long
+    /// of skipped SINGLE-mode fires (each tick a recorded skipped overlap), in exchange for a guaranteed no-overlap.
     TimeSpan DEFAULT_COMPLETION_BOUND = TimeSpan.timeSpan(10).minutes();
 
     /// The bound the manager awaits a remote fire for (see [#DEFAULT_COMPLETION_BOUND]); the trigger route holds the same
