@@ -16,6 +16,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -91,10 +92,11 @@ public interface AbTestManager {
                              Map<String, AbTestDeployment> tests,
                              AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
-            /// The canary runs at exactly one instance. Named so the argument below cannot be
-            /// misread as a placeholder for the current count — and deliberately NOT applied to
-            /// `minInstances`, which belongs to the operator (#982).
-            private static final int VARIANT_INSTANCES = 1;
+            /// The canary runs at the slice floor. The variant IS the slice's own target (same key, new
+            /// version), so the runtime floor of [SliceSpec#MIN_INSTANCES] applies to it at every phase
+            /// (#1721, #1495). Deliberately NOT applied to `minInstances`, which belongs to the
+            /// operator (#982).
+            private static final int VARIANT_INSTANCES = SliceSpec.MIN_INSTANCES;
 
             @Override
             public Promise<Unit> activate() {
@@ -313,7 +315,7 @@ public interface AbTestManager {
                               .map(SliceTargetValue.class::cast);
             }
 
-            /// The canary write. The variant runs at one instance, and the operator's floor is
+            /// The canary write. The variant runs at the slice floor, and the operator's floor is
             /// carried untouched.
             ///
             /// #982: this write used to set `minInstances = 1` as well, which silently replaced an
@@ -327,7 +329,7 @@ public interface AbTestManager {
             /// `targetInstances`. `minInstances` is only ever read as a cap on scale-DOWN removals
             /// (`issueScaleDownCommands`) and as a scale-down gate (`DecisionTreeController`), and
             /// teardown bypasses both by issuing unload commands directly. A preserved floor
-            /// therefore cannot hold the canary above one instance, nor pin a variant that has to
+            /// therefore cannot hold the canary above the slice floor, nor pin a variant that has to
             /// be removed.
             private SliceTargetValue variantTarget(SliceTargetKey key, Version version) {
                 return observedTarget(key).map(current -> current.withVersion(version)
@@ -338,11 +340,12 @@ public interface AbTestManager {
             /// The conclusion writes — promote a winner, or restore the baseline on rollback.
             ///
             /// The concluded version takes over the slice, so it must not be left running at the
-            /// canary's single instance while the operator's floor says otherwise: the allocation
+            /// canary's instance count while the operator's floor says otherwise: the allocation
             /// engine drives to `targetInstances`, and nothing climbs from below the floor on its
-            /// own, so `target = 1, min = 5` is a slice permanently parked under its own declared
+            /// own, so `target = 3, min = 5` is a slice permanently parked under its own declared
             /// minimum. `effectiveMinInstances()` is the operator's floor clamped to at least one,
-            /// so this is never below [#VARIANT_INSTANCES] and needs no second clamp.
+            /// but an operator floor below the slice floor (`min = 1`) must not park the winner under it
+            /// (#1721), so the count is clamped to at least [#VARIANT_INSTANCES].
             ///
             /// This restores the floor's worth of capacity, not necessarily the pre-test
             /// `targetInstances` — a slice scaled to 8 above a floor of 5 concludes at 5 and climbs
@@ -351,7 +354,8 @@ public interface AbTestManager {
             /// guarantee and is already in the record, so it is the honest thing to restore here.
             private SliceTargetValue concludedTarget(SliceTargetKey key, Version version) {
                 return observedTarget(key).map(current -> current.withVersion(version)
-                                                                 .withInstances(current.effectiveMinInstances()))
+                                                                 .withInstances(Math.max(current.effectiveMinInstances(),
+                                                                                         VARIANT_INSTANCES)))
                                      .or(() -> newSliceTarget(version));
             }
 
