@@ -122,6 +122,22 @@ class ReplicaDivergentTailRepairTest {
         assertThat(await.isResolved()).as("offset 5 was never received by the only replica").isFalse();
     }
 
+    /// The verification window is 1024 records. A divergence OLDER than the window (here at offset 100, owner head 1499,
+    /// window starts at 476) must not leave the records between it and the window's start in place: after the repair the
+    /// replica's log is the owner's from the first divergent offset on.
+    @Test
+    void divergenceOlderThanTheVerificationWindow_isCutBackToItsFirstOffset() {
+        seedReplica(2000, 100);
+
+        backfill(owner(1500, 100, new AtomicLong()));
+        backfill(owner(1500, 100, new AtomicLong()));
+        backfill(owner(1500, 100, new AtomicLong()));
+
+        assertThat(texts(95, 10)).containsExactly("c95", "c96", "c97", "c98", "c99", "owner-100", "owner-101", "owner-102", "owner-103", "owner-104");
+        assertThat(texts(470, 10)).as("between the divergence and the window start").doesNotContain("replica-470", "replica-475");
+        assertThat(descriptor().confirmedOffset()).isEqualTo(1499L);
+    }
+
     @Test
     void replicaAtTheOwnersHead_divergingAtOffset3_isRepaired() {
         seedReplica(5, 3);

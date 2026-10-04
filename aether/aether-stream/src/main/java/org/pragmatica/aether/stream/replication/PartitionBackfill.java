@@ -690,7 +690,36 @@ public final class PartitionBackfill {
                  partition,
                  keptThrough);
 
-        return runBackfill(streamName, partition, false);
+        return verifyBelowTheCut(streamName, partition, keptThrough);
+    }
+
+    /// A divergence found by comparing records (no provenance) is the first one inside the window that was compared, and
+    /// may begin earlier: records are compared in windows of [#TAIL_VERIFY_WINDOW], so a copy that diverged further back
+    /// than the window shows its first conflict at the window's start. Before the refetch, the window ENDING at the cut is
+    /// compared too; a conflict there quarantines again and the next run cuts further back, one window at a time, until
+    /// the copy agrees with the owner or is empty. A copy that agrees there costs one extra window request.
+    private Promise<Long> verifyBelowTheCut(String streamName, int partition, long keptThrough) {
+        var owner = hrwOwner(streamName, partition);
+
+        if (keptThrough < 0 || owner.isEmpty()) {
+            return runBackfill(streamName, partition, false);
+        }
+
+        var source = owner.unwrap();
+        var from = Math.max(0L, keptThrough - TAIL_VERIFY_WINDOW + 1);
+
+        return transport.requestCatchup(source,
+                                        catchupRequest(source, streamName, partition, from),
+                                        () -> progress(streamName, partition))
+                        .flatMap(response -> response.payloads()
+                                                     .isEmpty()
+                                             ? runBackfill(streamName, partition, false)
+                                             : applyEvents(streamName, partition, response).fold(cause -> failApply(streamName,
+                                                                                                                      partition,
+                                                                                                                      cause),
+                                                                                                 _ -> runBackfill(streamName,
+                                                                                                                  partition,
+                                                                                                                  false)));
     }
 
     private Promise<Long> repairRefused(String streamName, int partition, Cause cause) {
