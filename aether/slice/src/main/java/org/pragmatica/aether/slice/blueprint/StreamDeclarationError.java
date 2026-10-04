@@ -105,6 +105,15 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
+    /// A value above its key's maximum (#1937): a `max-event-size` that cannot travel in one replication or catch-up frame.
+    record ValueAboveMaximum(String alias, String key, String value, long maximum) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias + "' has " + key + " = '" + value + "', above the maximum of " + maximum
+                   + " bytes: one event must fit a single replication or catch-up frame";
+        }
+    }
+
     /// The node supplied no [org.pragmatica.aether.slice.ReplicationContext.Source], so the section's factors cannot be
     /// resolved against the committed cluster defaults. Refused rather than resolved against a guess (#1564).
     record ReplicationContextUnavailable(String alias) implements StreamDeclarationError {
