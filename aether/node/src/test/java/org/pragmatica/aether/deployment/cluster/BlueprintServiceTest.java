@@ -422,6 +422,7 @@ class BlueprintServiceTest {
         private TestClusterNode liveCluster;
         private TestKVStore liveStore;
         private BlueprintService liveService;
+        private Repository liveRepository;
 
         @BeforeEach
         void setUpLivePublish() throws IOException {
@@ -430,7 +431,7 @@ class BlueprintServiceTest {
             liveCluster.setStore(liveStore);
 
             var sliceJar = writeRedeploySliceJar();
-            Repository liveRepository = artifact -> REDEPLOY_SLICE.equals(artifact)
+            liveRepository = artifact -> REDEPLOY_SLICE.equals(artifact)
                                                     ? sliceLocation(sliceJar, artifact)
                                                     : Causes.cause("Artifact not present in local repository").promise();
 
@@ -630,6 +631,48 @@ class BlueprintServiceTest {
             assertThat(liveStatusResponse(deploymentMap).overallStatus())
                     .as("the live deployment's own progress, not the earlier attempt's FAILED")
                     .isEqualTo("IN_PROGRESS");
+        }
+
+        /// #972 — every apply-start write of a publish loses to a terminal for an EARLIER attempt, the
+        /// exhaustion `confirmOutcomeStart` used to fail the publish on. The blueprint is committed and
+        /// the earlier terminal no longer attributes to it, so the publish succeeds rather than telling the
+        /// caller its live blueprint failed to publish.
+        @Test
+        void publish_whoseApplyStartWritesAllLoseToAnEarlierAttemptsTerminal_stillSucceeds() {
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+            var racingCluster = new TestClusterNode() {
+                @Override
+                public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                    Promise<List<R>> applied = super.apply(commands);
+
+                    liveStore.processCommand(new KVCommand.Put<>(outcomeKey,
+                                                                 AetherValue.DeploymentOutcomeValue.succeeded(1L,
+                                                                                                              99L,
+                                                                                                              "an-earlier-attempt")));
+                    return applied;
+                }
+            };
+            racingCluster.setStore(liveStore);
+            var racedService = BlueprintService.blueprintService(racingCluster, liveStore, liveRepository);
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            racedService.publish(dsl)
+                        .await()
+                        .onFailure(cause -> fail("the publish must succeed, got: " + cause.message()));
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("precondition: every apply-start write lost — the earlier attempt's terminal holds the record")
+                    .isEqualTo(Option.some("an-earlier-attempt"));
+            assertThat(racedService.get(REDEPLOY_ID).isPresent()).as("the blueprint is committed").isTrue();
+            assertThat(racedService.attributedOutcome(REDEPLOY_ID).isEmpty())
+                    .as("and the earlier attempt's terminal does not attribute to it")
+                    .isTrue();
         }
 
         private void publishRedeployApp() {
