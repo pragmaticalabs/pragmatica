@@ -341,6 +341,15 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   The fence is keyed on the change a replica has APPLIED, not on the writers-switched stage: every old-quorum write a
   replica accepts then predates its report, so every core's writers-switched pass pulls it
   [verified: `wOldWriteLandingBetweenAReplicasApplyAndItsWritersSwitched_isRefused`].
+  A writer that is itself a replica cannot satisfy an old quorum with its own copy: the local slot is not fenced, so a
+  put is acknowledged only after a remote replica answered (and none refused it as stale), and any `ReplicationChangeStale`
+  refusal seen before the acknowledgement fails the put and rolls the local copy back
+  [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`, `v1882r7_orderA_…`,
+  `v1882r7_orderB_…`, in-JVM]. A refusal that arrives AFTER the acknowledgement cannot revoke it; it starts the stale-writer
+  clock, and the copies other replicas accepted are pulled by the writers-switched pass
+  [verified: `v1882r7_orderC_ackThenLateStale_ackStands_andTheRecordIsKept`].
+  [limit: a replica that applied the newer change but stays silent for the whole operation timeout cannot refute an
+  acknowledgement made on the writer's own slot (`v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord`); #1683-class]
 - **Restarted replicas:** a replica refuses writes (retryable, `ReplicationFenceUnknown`) until its state is restored AND
   consensus reports no catch-up pending (`isPendingCatchUp` false). Before that, an unknown fence never accepts
   [verified: DHTReplicationChangeTest `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`,
