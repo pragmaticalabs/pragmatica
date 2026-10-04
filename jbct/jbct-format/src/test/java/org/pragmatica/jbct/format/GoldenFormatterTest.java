@@ -54,7 +54,8 @@ class GoldenFormatterTest {
     "BlankLineEdges.java",
     "LambdaBlockArgs.java",
     "WrappedArgsChain.java",
-    "StatementChains.java"})
+    "StatementChains.java",
+    "ShiftOperatorsAndNestedBlocks.java"})
     void formatter_isIdempotent_onGoldenExamples(String fileName) throws IOException {
         var path = EXAMPLES_DIR.resolve(fileName);
         var content = Files.readString(path);
