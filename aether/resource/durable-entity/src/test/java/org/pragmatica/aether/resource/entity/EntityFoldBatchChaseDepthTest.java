@@ -27,9 +27,10 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// number of batches: the substrate below serves ONE record per read, so a log of N records is N batches, and it
 /// records the stack depth of every read.
 ///
-/// The bound is relative, N=2,000 against N=20: an absolute figure would depend on the test runner's own depth.
-/// Reverted to the recursive chase, 2,000 batches nest about 14,000 frames more than 20 do (and may overflow the
-/// stack outright, which fails the replay itself).
+/// The depth is counted with `StackWalker` (uncapped; `Thread.getStackTrace` stops at 1,024 frames, which would hide
+/// exactly the growth this measures). The bound is relative, N=2,000 against N=20: an absolute figure would depend on
+/// the test runner's own depth. Reverted to the recursive chase, the replay at 2,000 batches overflows the stack
+/// outright, which fails the replay itself (`BootstrapMethodError`) before the depth comparison is reached.
 class EntityFoldBatchChaseDepthTest {
     private static final String KEYSPACE = "orders";
     private static final int PARTITION = 3;
@@ -162,7 +163,7 @@ class EntityFoldBatchChaseDepthTest {
         public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
             var count = reads.incrementAndGet();
 
-            depths.add(Thread.currentThread().getStackTrace().length);
+            depths.add((int) (long) StackWalker.getInstance().walk(frames -> frames.count()));
 
             if (throwFromRead > 0 && count >= throwFromRead) {
                 throw new IllegalStateException("substrate threw instead of failing its promise");
