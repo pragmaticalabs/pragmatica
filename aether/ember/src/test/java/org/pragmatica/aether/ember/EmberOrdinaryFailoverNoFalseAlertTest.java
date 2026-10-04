@@ -70,6 +70,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
     private static final List<String> FORBIDDEN_EVENT_MARKERS = List.of("stream-divergent-tail-truncated",
                                                                          "STREAM_PARTITION_FLAGGED",
                                                                          "MARKED_DIVERGED",
+                                                                         "stream-catchup-source-not-answering",
                                                                          "stream-consumer-rewound");
 
     @TempDir
@@ -135,8 +136,13 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
 
             if (firstAckAt < 0) {
                 var payload = "after-" + attempt++;
+                var response = publishResponse(anyLiveMgmtPort(ownerId), chosen.name(), payload);
 
-                if (publish(anyLiveMgmtPort(ownerId), chosen.name(), payload)) {
+                if (!response.startsWith("2")) {
+                    System.out.println("FAILOVER-PUBLISH-REFUSED " + payload + " -> " + response.lines().findFirst().orElse(""));
+                }
+
+                if (response.startsWith("2")) {
                     firstAckAt = System.nanoTime();
                     acked.add(payload);
                     sampleUntil = System.currentTimeMillis() + SAMPLE_AFTER_FIRST_ACK_MS;

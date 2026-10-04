@@ -452,6 +452,23 @@ class PartitionProvenanceRecordingTest {
             assertThat(raised.getFirst().evidence()).contains("above head 0");
         }
 
+        /// A page from a source that VOUCHED for an empty history (it keeps no log: non-durable, Forge) is applied, as before the
+        /// #1730 phase 2 vouched-flag redesign: the receiver cannot tell it from any other empty slice here, and refusing it
+        /// would keep a WAL replica of a log-less owner from ever catching up. Related to #1938 (such a copy is later quarantined
+        /// at its next re-verify, a separate defect). Red under "refuse every empty slice" (the 51e78b7e0 guard).
+        @Test
+        void emptySliceFromASourceThatKeepsNoLog_isApplied() {
+            var applied = manager.applyAttributed(STREAM, PARTITION, 0, 2, List.of(), () -> {
+                for (var offset = 0; offset <= 2; offset++) {
+                    caughtUp(offset);
+                }
+                return Result.success(3L);
+            });
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(manager.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(3L);
+        }
+
         @Test
         void attributedLog_raisesNothing() {
             publish(E1, 3);

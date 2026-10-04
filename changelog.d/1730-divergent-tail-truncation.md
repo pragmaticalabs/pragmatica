@@ -62,5 +62,5 @@
   next pull (a live-batch gap, or the 5 s backfill redrive) asks again. A vouched page with an empty history, a source that keeps no
   log, is delivered as before.
   A source that keeps answering as a consumer read for a minute raises the operator warning `stream-catchup-source-not-answering`
-  (once per partition episode): the replica is out of the in-sync set until the source's placement view lists it.
+  (once per partition episode, ended by `stream-catchup-source-answering-restored`): the replica is out of the in-sync set until the source's placement view lists it. Every page of a catch-up that carries records must be vouched; a mixed catch-up is refused whole.
 - Removed `verifyBelowTheCut` (dead since the window request: `backfillFromOwner` already requests the window below the head).

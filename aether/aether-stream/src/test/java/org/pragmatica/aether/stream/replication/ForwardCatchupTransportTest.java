@@ -180,6 +180,9 @@ class ForwardCatchupTransportTest {
 
         unvouched.vouched(true);
         transport.requestCatchup(SOURCE, request).await();
+        for (var i = 0; i < 100 && raised.size() < 2; i++) {
+            settle();
+        }
         unvouched.vouched(false);
         raised.clear();
         now.addAndGet(ForwardCatchupTransport.NOT_ANSWERED_REPORT_AFTER_MS);
@@ -196,6 +199,176 @@ class ForwardCatchupTransportTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /// Probe K (v1890): an episode ends at ANY vouched answer, records or not; a refusal after one starts a new episode
+    /// instead of inheriting a stale start (an alert that names hours not spent refused). Red under "only a vouched page
+    /// with records ends an episode".
+    @Test
+    void requestCatchup_anEmptyVouchedAnswerEndsTheEpisode_soALaterRefusalIsNotReportedAtOnce() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000L);
+        var source = new FakeForwardSource(eventsFrom(0, 3), false);
+        var transport = forwardCatchupTransport(source, 4, OperatorWarningSink.handingOffTo(raised::add), now::get);
+
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+        source.vouched(true);
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 3L)).await();
+        source.vouched(false);
+        now.addAndGet(2L * 3_600_000L);
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+        settle();
+
+        assertThat(raised).as("a refusal two hours after the last one is a new episode").isEmpty();
+    }
+
+    /// The vouched answer ends the episode on its own, before any staleness rule could: refusals 60 s apart in total (the bound, so the staleness rule does not apply) but
+    /// split by an empty vouched answer are two short episodes, not one reported minute. Red under "only a vouched page with
+    /// records ends an episode".
+    @Test
+    void requestCatchup_anEmptyVouchedAnswerBetweenRefusals_splitsTheEpisode() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000L);
+        var source = new FakeForwardSource(eventsFrom(0, 3), false);
+        var transport = forwardCatchupTransport(source, 4, OperatorWarningSink.handingOffTo(raised::add), now::get);
+
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+        now.addAndGet(30_000L);
+        source.vouched(true);
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 3L)).await();
+        source.vouched(false);
+        now.addAndGet(30_000L);
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+        settle();
+
+        assertThat(raised).isEmpty();
+    }
+
+    /// An episode is a run of refusals no further apart than the bound: a refusal after a longer silence with NO vouched
+    /// answer between (the redrive stopped asking) does not inherit the old start either.
+    @Test
+    void requestCatchup_aRefusalAfterALongSilence_startsANewEpisode() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000L);
+        var transport = forwardCatchupTransport(new FakeForwardSource(eventsFrom(0, 3), false),
+                                                4,
+                                                OperatorWarningSink.handingOffTo(raised::add),
+                                                now::get);
+        var request = catchupRequest(SOURCE, STREAM, PARTITION, 0L);
+
+        transport.requestCatchup(SOURCE, request).await();
+        now.addAndGet(2L * 3_600_000L);
+        transport.requestCatchup(SOURCE, request).await();
+        settle();
+
+        assertThat(raised).isEmpty();
+    }
+
+    /// Owner rule: the transition back is an event too, raised only if the episode was reported.
+    @Test
+    void requestCatchup_aVouchedAnswerAfterAReportedEpisode_raisesTheRestoredEvent_once() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000L);
+        var source = new FakeForwardSource(eventsFrom(0, 3), false);
+        var transport = forwardCatchupTransport(source, 4, OperatorWarningSink.handingOffTo(raised::add), now::get);
+        var request = catchupRequest(SOURCE, STREAM, PARTITION, 0L);
+
+        transport.requestCatchup(SOURCE, request).await();
+        now.addAndGet(ForwardCatchupTransport.NOT_ANSWERED_REPORT_AFTER_MS);
+        transport.requestCatchup(SOURCE, request).await();
+        for (var i = 0; i < 100 && raised.isEmpty(); i++) {
+            settle();
+        }
+        source.vouched(true);
+        transport.requestCatchup(SOURCE, request).await();
+        transport.requestCatchup(SOURCE, request).await();
+        for (var i = 0; i < 100 && raised.size() < 2; i++) {
+            settle();
+        }
+        settle();
+
+        assertThat(raised).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
+                                           OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED);
+    }
+
+    /// An episode that was never reported ends silently: no restored event for an alert nobody got.
+    @Test
+    void requestCatchup_aVouchedAnswerAfterAnUnreportedEpisode_raisesNothing() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var source = new FakeForwardSource(eventsFrom(0, 3), false);
+        var transport = forwardCatchupTransport(source, 4, OperatorWarningSink.handingOffTo(raised::add), () -> 1_000L);
+        var request = catchupRequest(SOURCE, STREAM, PARTITION, 0L);
+
+        transport.requestCatchup(SOURCE, request).await();
+        source.vouched(true);
+        transport.requestCatchup(SOURCE, request).await();
+        settle();
+
+        assertThat(raised).isEmpty();
+    }
+
+    /// Multi-page: EVERY page that carries records must be vouched, not only the last -- a catch-up whose first page was a
+    /// consumer-read answer and whose last page was vouched is refused whole (the last page's history is the source's log
+    /// at that moment, but the first page's records were never answered as a replica's). Red under "only the last page
+    /// decides".
+    @Test
+    void requestCatchup_firstPageUnvouched_lastPageVouched_isRefusedWhole() {
+        var source = new PerCursorSource(eventsFrom(0, 3), cursor -> cursor >= 2L);
+        var transport = forwardCatchupTransport(source, 2);
+
+        assertThat(transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await().isFailure()).isTrue();
+    }
+
+    /// The opposite mix (first vouched, last unvouched with records) is refused too: records of the last page would be
+    /// applied with no provenance.
+    @Test
+    void requestCatchup_firstPageVouched_lastPageUnvouched_isRefusedWhole() {
+        var source = new PerCursorSource(eventsFrom(0, 3), cursor -> cursor < 2L);
+        var transport = forwardCatchupTransport(source, 2);
+
+        assertThat(transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await().isFailure()).isTrue();
+    }
+
+    /// Both pages vouched: delivered whole.
+    @Test
+    void requestCatchup_everyPageVouched_isDelivered() {
+        var transport = forwardCatchupTransport(new PerCursorSource(eventsFrom(0, 3), cursor -> true), 2);
+        var response = transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L))
+                                .await()
+                                .or((ReplicationMessage.CatchupResponse) null);
+
+        assertThat(response).isNotNull();
+        assertThat(response.payloads()).hasSize(3);
+    }
+
+    /// A source whose vouched flag depends on the page's cursor, to model a catch-up whose pages were answered differently.
+    private static final class PerCursorSource implements StreamForwardClient {
+        private final List<RawEventDto> events;
+        private final java.util.function.LongPredicate vouchedAt;
+
+        private PerCursorSource(List<RawEventDto> events, java.util.function.LongPredicate vouchedAt) {
+            this.events = List.copyOf(events);
+            this.vouchedAt = vouchedAt;
+        }
+
+        @Override public Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp) {
+            return Promise.success(0L);
+        }
+
+        @Override public Promise<ReadForwardResult> readRemote(NodeId replicaId,
+                                                               String streamName,
+                                                               int partition,
+                                                               long fromOffset,
+                                                               int maxEvents) {
+            var page = events.stream().filter(event -> event.offset() >= fromOffset).limit(maxEvents).toList();
+
+            return Promise.success(new ReadForwardResult(page, false, Option.none(), List.of(), vouchedAt.test(fromOffset)));
+        }
+
+        @Override public void onPublishForwardResponse(PublishForwardResponse response) {}
+
+        @Override public void onReadForwardResponse(ReadForwardResponse response) {}
     }
 
     @Test

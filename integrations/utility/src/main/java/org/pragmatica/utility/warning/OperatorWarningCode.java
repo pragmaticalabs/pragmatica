@@ -75,7 +75,12 @@ public enum OperatorWarningCode {
     /// `stream[partition]@source`.
     STREAM_CATCHUP_SOURCE_NOT_ANSWERING("stream-catchup-source-not-answering",
                                         "stream-replication",
-                                        WarningLevel.WARNING);
+                                        WarningLevel.WARNING),
+    /// The end of a `stream-catchup-source-not-answering` episode: the source lists the replica again and its catch-up is answered
+    /// as a replica. Raised only when that warning was; informational, at the lowest level this enum has. Same subject.
+    STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED("stream-catchup-source-answering-restored",
+                                             "stream-replication",
+                                             WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
