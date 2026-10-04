@@ -9,8 +9,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.storage.AppendLog;
@@ -147,10 +145,7 @@ class CatchUpWalDurabilityTest {
                                                0L,
                                                EVENTS - 1,
                                                IntStream.range(0, EVENTS).mapToObj(i -> payload(i)).toList(),
-                                               IntStream.range(0, EVENTS).mapToObj(i -> 1000L + i).toList(),
-                                               // these tests pin fsync counts, not provenance: a source that keeps a log ships a slice,
-                                               // and a slice-less page is refused (SourceProvenanceMissing)
-                                               List.of(ProvenanceEntry.provenanceEntry(Epoch.epoch(0, 1, 0), Option.none(), 0L))));
+                                               IntStream.range(0, EVENTS).mapToObj(i -> 1000L + i).toList()));
     }
 
     private static byte[] payload(int i) {

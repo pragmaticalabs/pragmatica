@@ -157,6 +157,15 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Proof anchor:** `ReplicaDivergentTailRepairTest`, `StreamPartitionManagerDivergentTailTest`, `OwnerActivationTest` (the `isrElected` cases and the legacy-record control), `ReplicaRestartVisibilityTest`, `AppendLogTruncateSuffixTest`, `OffHeapRingBufferTruncateSuffixTest`.
 - **Limits:** a replica without a WAL has no provenance, so a divergent prefix below the offsets the owner re-offers is not detected (payload comparison only where offsets are re-offered). A replica that acknowledges a live batch contiguous to an unverified recovered tail is counted before its tail is compared, because the provenance comparison runs at backfill.
 
+### Stream replica's catch-up answered as a consumer read — nothing applied (#1730 phase 2)
+
+- **Symptom:** a replica stays SYNCING and out of the partition's in-sync set; the node log shows `Catch-up page was answered as a consumer read ... not applied` on every backfill pull.
+- **Detection surface:** after one minute of it, the operator warning **`stream-catchup-source-not-answering`** (`OPERATOR_WARNING`, WARNING; subject `stream[partition]@source`), once per episode.
+- **Automatic response:** the source answers a catch-up as a replica only when its own replica view lists the puller; otherwise it answers as a consumer read, which carries no owner-epoch history. The replica applies nothing (the records would have no provenance and the next live append would flag `HISTORY_MISSING`) and asks again on the next live-batch gap or the 5 s backfill redrive. Seconds after a failover this heals by itself.
+- **Degraded / at risk:** a source whose view never lists the replica leaves it out of the in-sync set; a stream at or below its `confirmation_factor` of in-sync members then refuses publishes (`STREAM_ISR_BELOW_MINIMUM`).
+- **Operator action:** none while it heals. If the warning stands, the source's placement view disagrees with this node's: check cluster membership (`aether status`) and restart the source node's membership view, or the replica.
+- **Proof anchor:** `ForwardCatchupTransportTest`, `StreamForwardHandlerTest` (`historyVouched`), `ReadForwardCodecTest`, `EmberOrdinaryFailoverNoFalseAlertTest`.
+
 ### Stream partition below its confirmation factor — acknowledged publishes refused (#1883)
 
 - **Symptom:** publishes to one stream partition fail with `NOT_ENOUGH_REPLICAS` before anything is appended, while reads of acknowledged data still work: the partition's committed in-sync set (ISR) holds fewer members than the stream's `confirmation_factor` (min-ISR = CF).

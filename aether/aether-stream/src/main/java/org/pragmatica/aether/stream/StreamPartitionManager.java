@@ -3606,12 +3606,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// this copy on the partition flag ([PartitionFlags]), which survives a restart and blocks the partition
     /// cluster-wide until operator resolution (AD14).
     ///
-    /// A page of records with NO slice is refused first ([StreamError.SourceProvenanceMissing]): a source that keeps a log
-    /// has a history for every record it serves, so an empty one means the source answered as a consumer read -- it does
-    /// not yet list this node as a replica of the partition (#1235) -- and applying the records would leave this copy
-    /// holding history-less records that `HISTORY_MISSING` then flags at its next live append. Nothing is applied; the
-    /// backfill redrive pulls again.
-    ///
     /// Then every slice entry starting in `[fromOffset, toOffset]` that this log does not already hold is recorded, in
     /// order; one it already holds (same key, same start) is skipped, so a re-install is idempotent. The returned
     /// [InstalledSlice] names what this install recorded and every entry of its range it relies on (#1638 F1); it
@@ -3635,17 +3629,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<InstalledSlice> installProvenance(AppendLog wal,
-                                                     String streamName,
-                                                     int partition,
-                                                     long fromOffset,
-                                                     long toOffset,
-                                                     List<ProvenanceEntry> slice) {
-        return slice.isEmpty() && toOffset >= fromOffset
-               ? new StreamError.SourceProvenanceMissing(streamName, partition, fromOffset).result()
-               : installAttributed(wal, streamName, partition, fromOffset, toOffset, slice);
-    }
-
-    private Result<InstalledSlice> installAttributed(AppendLog wal,
                                                      String streamName,
                                                      int partition,
                                                      long fromOffset,

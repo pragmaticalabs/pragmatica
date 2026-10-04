@@ -452,34 +452,6 @@ class PartitionProvenanceRecordingTest {
             assertThat(raised.getFirst().evidence()).contains("above head 0");
         }
 
-        /// #1730 phase 2 (the ordinary-failover false flag): a catch-up page that carries records but no slice -- the source
-        /// answered a not-yet-registered replica as a consumer read -- is refused with nothing applied, so the copy never
-        /// holds history-less records for the next live append to flag. Red under "apply a slice-less page": the page lands,
-        /// the live offset 3 then raises HISTORY_MISSING for an ordinary failover.
-        @Test
-        void sliceLessCatchUpPage_isRefusedWithNothingApplied_soTheNextLiveAppendRaisesNothing() {
-            var refused = manager.applyAttributed(STREAM, PARTITION, 0, 2, List.of(), () -> {
-                for (var offset = 0; offset <= 2; offset++) {
-                    caughtUp(offset);
-                }
-                return Result.success(3L);
-            });
-
-            assertThat(refused.isFailure()).as("the page is refused").isTrue();
-            assertThat(manager.nextExpectedOffset(STREAM, PARTITION)).as("nothing was applied").isZero();
-
-            manager.applyAttributed(STREAM, PARTITION, 0, 2, List.of(at(E1, 0)), () -> {
-                for (var offset = 0; offset <= 2; offset++) {
-                    caughtUp(offset);
-                }
-                return Result.success(3L);
-            }).onFailure(cause -> fail(cause.message()));
-            live(3, E1);
-
-            assertThat(history()).containsExactly(at(E1, 0));
-            assertThat(raised).as("an attributed page, then a live append: no flag").isEmpty();
-        }
-
         @Test
         void attributedLog_raisesNothing() {
             publish(E1, 3);

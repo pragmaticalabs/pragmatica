@@ -117,17 +117,20 @@ public interface StreamForwardClient {
     /// `bounds` (#1333): the serving node's visible span of the partition at answer time; none when it held
     /// no ring, or from a client that does not carry it.
     /// `history` (#1596): the serving node's owner-epoch history on a replica catch-up read, empty otherwise.
+    /// `historyVouched`: the source answered as a replica catch-up, so an empty `history` means it keeps none
+    /// ([ReadForwardResponse#historyVouched]). The shorter constructors model a source that does.
     record ReadForwardResult(List<RawEventDto> events,
                              boolean truncated,
                              Option<VisibleBounds> bounds,
-                             List<ProvenanceEntry> history) {
+                             List<ProvenanceEntry> history,
+                             boolean historyVouched) {
         public ReadForwardResult {
             events = List.copyOf(events);
             history = List.copyOf(history);
         }
 
         public ReadForwardResult(List<RawEventDto> events, boolean truncated) {
-            this(events, truncated, Option.none(), List.of());
+            this(events, truncated, Option.none(), List.of(), true);
         }
 
         public static ReadForwardResult readForwardResult(List<RawEventDto> events, boolean truncated) {
@@ -347,7 +350,8 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
             promise.succeed(new ReadForwardResult(response.events(),
                                                   response.truncated(),
                                                   response.bounds(),
-                                                  response.history()));
+                                                  response.history(),
+                                                  response.historyVouched()));
         } else {
             promise.resolve(new StreamForwardError.ReadForwardFailed(response.errorMessage()).result());
         }

@@ -69,7 +69,13 @@ public enum OperatorWarningCode {
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas
     /// discards only unacknowledged records on the same cut, and that is only logged.
-    STREAM_DIVERGENT_TAIL_TRUNCATED("stream-divergent-tail-truncated", "stream-replication", WarningLevel.WARNING);
+    STREAM_DIVERGENT_TAIL_TRUNCATED("stream-divergent-tail-truncated", "stream-replication", WarningLevel.WARNING),
+    /// #1730 phase 2: a replica's catch-up has been answered as a consumer read for a minute -- the source does not list it
+    /// as a replica of the partition -- so nothing is applied and it stays out of the in-sync set. Subject is
+    /// `stream[partition]@source`.
+    STREAM_CATCHUP_SOURCE_NOT_ANSWERING("stream-catchup-source-not-answering",
+                                        "stream-replication",
+                                        WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

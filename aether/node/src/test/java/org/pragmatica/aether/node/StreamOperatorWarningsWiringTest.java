@@ -24,6 +24,14 @@ class StreamOperatorWarningsWiringTest {
         assertThat(assemblyCode()).contains("streamPartitionManager.operatorWarnings(operatorWarningSink);");
     }
 
+    /// [weak pin] source text, like the test above: the catch-up transport reports a source that never answers as a replica
+    /// through the node's own sink (`stream-catchup-source-not-answering`). What is raised is pinned behaviourally by
+    /// `ForwardCatchupTransportTest`; only this wiring is a grep.
+    @Test
+    void theNodeBindsItsOperatorWarningSinkIntoTheCatchupTransport() {
+        assertThat(assemblyCode()).contains("forwardCatchupTransport(streamForwardClient,STREAM_CATCHUP_BATCH_SIZE,operatorWarningSink,System::currentTimeMillis)");
+    }
+
     private static String assemblyCode() {
         var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
 

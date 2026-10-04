@@ -5419,7 +5419,9 @@ public interface AetherNode extends ManageableNode {
                                                           .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
                                                                                        cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
-                                                                                     STREAM_CATCHUP_BATCH_SIZE);
+                                                                                     STREAM_CATCHUP_BATCH_SIZE,
+                                                                                     operatorWarningSink,
+                                                                                     System::currentTimeMillis);
         // Cold-start deadlock-break: a watermark+reachability probe over the same forward-read transport.
         // A REACHABLE peer answers with the highest local offset it holds (its watermark; -1 when empty), or,
         // for a partition it holds but has not materialized, its durable watermark; an UNREACHABLE peer's

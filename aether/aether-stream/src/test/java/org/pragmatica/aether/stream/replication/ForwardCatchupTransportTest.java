@@ -11,7 +11,11 @@ import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -105,6 +109,95 @@ class ForwardCatchupTransportTest {
         assertThat(source.reads().get()).isEqualTo(2);
     }
 
+    /// #1730 phase 2 (the ordinary-failover false flag): a source that does not yet list the puller as a replica answers
+    /// as a consumer read -- records, no history, NOT vouched. The catch-up fails, so nothing is applied unattributed.
+    /// Red under "accept an unvouched page": the records would reach the apply with an empty slice.
+    @Test
+    void requestCatchup_pageNotVouchedByTheSource_failsInsteadOfDeliveringUnattributedRecords() {
+        var transport = forwardCatchupTransport(new FakeForwardSource(eventsFrom(0, 3), false), 4);
+
+        var outcome = transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+
+        assertThat(outcome.isFailure()).isTrue();
+    }
+
+    /// The other half, so the guard is not a livelock: a vouched answer with an EMPTY history is a source that keeps no
+    /// log (non-durable or log-less owner), and its records are delivered as before. Red under "refuse every empty slice".
+    @Test
+    void requestCatchup_vouchedPageWithEmptyHistory_isDelivered() {
+        var transport = forwardCatchupTransport(new FakeForwardSource(eventsFrom(0, 3), true), 4);
+
+        var response = transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L))
+                                .await()
+                                .or((ReplicationMessage.CatchupResponse) null);
+
+        assertThat(response).isNotNull();
+        assertThat(response.payloads()).hasSize(3);
+        assertThat(response.history()).isEmpty();
+    }
+
+    /// An unvouched answer with no records applies nothing, so it is not refused (a caught-up replica probing the owner).
+    @Test
+    void requestCatchup_unvouchedPageWithNoRecords_isNotRefused() {
+        var transport = forwardCatchupTransport(new FakeForwardSource(List.of(), false), 4);
+
+        var response = transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 5L))
+                                .await()
+                                .or((ReplicationMessage.CatchupResponse) null);
+
+        assertThat(response).isNotNull();
+        assertThat(response.payloads()).isEmpty();
+    }
+
+    /// Operator-facing: a source that keeps answering as a consumer read is a placement disagreement, so after the bound it
+    /// is reported ONCE per partition, and a vouched page ends the episode. Red under "no report" and "report every pull".
+    @Test
+    void requestCatchup_notVouchedForAMinute_reportsOnce_andAVouchedPageEndsTheEpisode() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000L);
+        var unvouched = new FakeForwardSource(eventsFrom(0, 3), false);
+        var transport = forwardCatchupTransport(unvouched, 4, OperatorWarningSink.handingOffTo(raised::add), now::get);
+        var request = catchupRequest(SOURCE, STREAM, PARTITION, 0L);
+
+        transport.requestCatchup(SOURCE, request).await();
+        now.addAndGet(ForwardCatchupTransport.NOT_ANSWERED_REPORT_AFTER_MS - 1L);
+        transport.requestCatchup(SOURCE, request).await();
+
+        settle();
+        assertThat(raised).as("inside the bound: log only").isEmpty();
+
+        now.addAndGet(1L);
+        transport.requestCatchup(SOURCE, request).await();
+        transport.requestCatchup(SOURCE, request).await();
+
+        for (var i = 0; i < 100 && raised.isEmpty(); i++) {
+            settle();
+        }
+        settle();
+        assertThat(raised).hasSize(1);
+        assertThat(raised.getFirst().code()).isEqualTo(OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING);
+        assertThat(raised.getFirst().subject()).isEqualTo(STREAM + "[" + PARTITION + "]@" + SOURCE.id());
+
+        unvouched.vouched(true);
+        transport.requestCatchup(SOURCE, request).await();
+        unvouched.vouched(false);
+        raised.clear();
+        now.addAndGet(ForwardCatchupTransport.NOT_ANSWERED_REPORT_AFTER_MS);
+        transport.requestCatchup(SOURCE, request).await();
+
+        settle();
+        assertThat(raised).as("a new episode starts its own bound at its first refusal").isEmpty();
+    }
+
+    /// The operator sink hands off on another thread; give a wrongly raised warning time to arrive before asserting none did.
+    private static void settle() {
+        try {
+            Thread.sleep(300L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Test
     void requestCatchup_sourceUnreachable_failsWithoutCorruption() {
         var transport = forwardCatchupTransport(new UnreachableForwardSource(), 4);
@@ -143,9 +236,19 @@ class ForwardCatchupTransportTest {
         private final List<RawEventDto> events;
         private final AtomicInteger reads = new AtomicInteger(0);
         private final AtomicInteger catchupReads = new AtomicInteger(0);
+        private volatile boolean vouched;
 
         private FakeForwardSource(List<RawEventDto> events) {
+            this(events, true);
+        }
+
+        private FakeForwardSource(List<RawEventDto> events, boolean vouched) {
             this.events = List.copyOf(events);
+            this.vouched = vouched;
+        }
+
+        void vouched(boolean value) {
+            this.vouched = value;
         }
 
         AtomicInteger reads() {
@@ -183,7 +286,7 @@ class ForwardCatchupTransportTest {
                              .filter(event -> event.offset() >= fromOffset)
                              .limit(maxEvents)
                              .toList();
-            return Promise.success(new ReadForwardResult(page, false));
+            return Promise.success(new ReadForwardResult(page, false, Option.none(), List.of(), vouched));
         }
 
         @Override public void onPublishForwardResponse(PublishForwardResponse response) {}

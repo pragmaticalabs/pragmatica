@@ -56,6 +56,11 @@
 - **A new replica no longer raises `HISTORY_MISSING` after an ordinary failover.** A source that does not yet list the pulling
   node as a replica of the partition answers its catch-up as a consumer read, which carries no owner-epoch history; the replica
   applied those records with no provenance and its first live append (the first publish after the failover) then raised
-  `STREAM_PARTITION_FLAGGED ... HISTORY_MISSING`, blocking nothing yet but standing with nothing to clear it. A catch-up page of
-  a log-backed partition that carries records and no history is now refused with the retriable `SourceProvenanceMissing`; nothing
-  is applied and the backfill redrive pulls again once the source lists the node.
+  `STREAM_PARTITION_FLAGGED ... HISTORY_MISSING`, with nothing to clear it. The catch-up answer now says whether it was given as a
+  replica (`ReadForwardResponse.historyVouched`, wire change: true only when the source treated the reader as a replica, so an empty
+  history then means the source keeps no log). A page of records that is not vouched fails the catch-up; nothing is applied and the
+  next pull (a live-batch gap, or the 5 s backfill redrive) asks again. A vouched page with an empty history, a source that keeps no
+  log, is delivered as before.
+  A source that keeps answering as a consumer read for a minute raises the operator warning `stream-catchup-source-not-answering`
+  (once per partition episode): the replica is out of the in-sync set until the source's placement view lists it.
+- Removed `verifyBelowTheCut` (dead since the window request: `backfillFromOwner` already requests the window below the head).

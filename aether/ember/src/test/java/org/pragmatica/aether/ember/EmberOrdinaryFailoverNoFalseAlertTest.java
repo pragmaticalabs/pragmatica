@@ -110,7 +110,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
         for (var i = 0; i < 20; i++) {
             var payload = "before-" + i;
 
-            assertThat(publish(anyLiveMgmtPort(ownerId), chosen.name(), payload)).as("publish %s before the kill", payload).isTrue();
+            assertThat(publishResponse(anyLiveMgmtPort(ownerId), chosen.name(), payload)).as("publish %s before the kill", payload).startsWith("2");
             acked.add(payload);
         }
 
@@ -165,7 +165,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
         for (var i = 0; i < 10; i++) {
             var payload = "later-" + i;
 
-            assertThat(publish(anyLiveMgmtPort(ownerId), chosen.name(), payload)).as("publish %s after the failover", payload).isTrue();
+            assertThat(publishResponse(anyLiveMgmtPort(ownerId), chosen.name(), payload)).as("publish %s after the failover", payload).startsWith("2");
             acked.add(payload);
         }
 
@@ -255,7 +255,12 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
     }
 
     private boolean publish(int mgmtPort, String name, String payload) {
-        return post(mgmtPort, "/api/v1/streams/" + NAMESPACE + "/" + name + "/" + VERSION + "/publish", "{\"data\":\"" + payload + "\"}").startsWith("2");
+        return publishResponse(mgmtPort, name, payload).startsWith("2");
+    }
+
+    /// `status body`: an assertion on it names the refusal when a publish fails, instead of a bare false.
+    private String publishResponse(int mgmtPort, String name, String payload) {
+        return post(mgmtPort, "/api/v1/streams/" + NAMESPACE + "/" + name + "/" + VERSION + "/publish", "{\"data\":\"" + payload + "\"}");
     }
 
     private EmberCluster fiveNodes(int basePort) {
