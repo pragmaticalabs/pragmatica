@@ -37,7 +37,12 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// #1777 track 2, the node-assembly half of the catch-up gate: a core's DHT store starts empty, so the
 /// node must begin catching up at construction — refusing, not answering "absent" — and become serving once
 /// it has formed and anti-entropy has run. Pinned through a REAL single-node core. Red with the
-/// `dhtNode.beginCatchUp()` call removed from `AetherNode` (the unstarted node then answers absent).
+/// `dhtNode.beginCatchUp()` call removed from `AetherNode` (the node then answers absent once its replication
+/// is resolved).
+///
+/// #1777 track 1 put an earlier gate in front: until the committed `[replication]` factors are read — after the
+/// consensus state is restored — the node refuses with `ReplicationUnresolved`. The test therefore resolves the
+/// factors itself before start to reach the catch-up gate, and start then resolves them for real.
 class AetherNodeDhtCatchUpBootTest {
     /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
     @TempDir
@@ -63,6 +68,12 @@ class AetherNodeDhtCatchUpBootTest {
         var dht = node.dhtClient().unwrap();
         var key = "never-written".getBytes(StandardCharsets.UTF_8);
 
+        var unresolved = dht.get(key).await();
+
+        assertThat(unresolved.isFailure()).as("factors not read yet: refuse, never answer: %s", unresolved).isTrue();
+        unresolved.onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.ReplicationUnresolved.class));
+
+        node.dhtNode().unwrap().resolveReplication(DHTConfig.DEFAULT);
         var beforeStart = dht.get(key).await();
 
         assertThat(beforeStart.isFailure()).as("an empty core is catching up, not authoritative: %s", beforeStart).isTrue();
@@ -81,6 +92,32 @@ class AetherNodeDhtCatchUpBootTest {
 
         assertThat(afterStart).as("once formed and caught up, an absent key reads absent")
                               .isEqualTo(Result.success(Option.<byte[]>none()));
+    }
+
+    /// #1777 track 1, the wiring half: nothing resolves the factors but the node itself, on consensus state restore.
+    /// Red with the `onStateRestored` resolution removed from `AetherNode` (the node then refuses forever).
+    @Test
+    @Timeout(value = 90, unit = SECONDS)
+    void startedCore_resolvesItsReplicationOnStateRestore_andServes() throws InterruptedException {
+        node = AetherNode.aetherNode(minimalConfig(tempDir), () -> {})
+                         .onFailure(cause -> fail("construction must succeed: " + cause.message()))
+                         .unwrap();
+        var dht = node.dhtClient().unwrap();
+        var key = "never-written".getBytes(StandardCharsets.UTF_8);
+
+        node.start().await(timeSpan(30).seconds())
+            .onFailure(cause -> fail("start() must resolve on the single-node formation: " + cause.message()));
+
+        var deadline = System.nanoTime() + timeSpan(15).seconds().nanos();
+        var afterStart = dht.get(key).await();
+
+        while (afterStart.isFailure() && System.nanoTime() < deadline) {
+            Thread.sleep(200);
+            afterStart = dht.get(key).await();
+        }
+
+        assertThat(node.dhtNode().unwrap().replicationResolved()).as("resolved on state restore").isTrue();
+        assertThat(afterStart).isEqualTo(Result.success(Option.<byte[]>none()));
     }
 
     private static AetherNodeConfig minimalConfig(Path storageRoot) {

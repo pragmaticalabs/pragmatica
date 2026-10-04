@@ -1606,6 +1606,76 @@ public final class ClusterEventAggregator {
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
+    /// #1777 R1b: every node derives this from the committed change record, so it goes through the owner-gated [#emit]
+    /// and is published at most once (missed if the owner cannot publish at that moment).
+    @Contract
+    public void onDhtReplicationUnsettled(OperationalEvent.DhtReplicationUnsettled event) {
+        emit(new ClusterEvent.DhtReplicationUnsettled(hlcClock.now(),
+                                                      Severity.WARNING,
+                                                      "DHT replication change " + event.changeVersion()
+                                                     + " (RF " + event.replicationFactor()
+                                                     + ", CF " + event.confirmationFactor()
+                                                     + ") is " + event.reason()
+                                                     + "; the stricter transitional quorums stay in force",
+                                                      Map.of("changeVersion",
+                                                             String.valueOf(event.changeVersion()),
+                                                             "replicationFactor",
+                                                             String.valueOf(event.replicationFactor()),
+                                                             "confirmationFactor",
+                                                             String.valueOf(event.confirmationFactor()),
+                                                             "stage",
+                                                             event.stage(),
+                                                             "since",
+                                                             String.valueOf(event.since()),
+                                                             "reason",
+                                                             event.reason())));
+    }
+
+    @Contract
+    public void onDhtReplicationSettled(OperationalEvent.DhtReplicationSettled event) {
+        emit(new ClusterEvent.DhtReplicationSettled(hlcClock.now(),
+                                                    Severity.INFO,
+                                                    "DHT replication change " + event.changeVersion()
+                                                   + " is no longer unsettled: " + event.reason(),
+                                                    Map.of("changeVersion",
+                                                           String.valueOf(event.changeVersion()),
+                                                           "replicationFactor",
+                                                           String.valueOf(event.replicationFactor()),
+                                                           "confirmationFactor",
+                                                           String.valueOf(event.confirmationFactor()),
+                                                           "since",
+                                                           String.valueOf(event.since()),
+                                                           "reason",
+                                                           event.reason())));
+    }
+
+    /// #1777 (owner rule): a per-node fact raised by the stale writer itself, so it bypasses the owner gate
+    /// ([#emitLocal]); published at most once per episode.
+    @Contract
+    public void onDhtWriterStale(OperationalEvent.DhtWriterStale event) {
+        emitLocal(new ClusterEvent.DhtWriterStale(hlcClock.now(),
+                                                  Severity.WARNING,
+                                                  "DHT writes of node " + event.nodeId()
+                                                 + " have been refused for over 5 minutes as stamped under replication change " + event.fence()
+                                                 + "; the node has not adopted the cluster's newer change",
+                                                  writerStaleDetails(event.nodeId(), event.fence(), event.since())));
+    }
+
+    @Contract
+    public void onDhtWriterStaleResolved(OperationalEvent.DhtWriterStaleResolved event) {
+        emitLocal(new ClusterEvent.DhtWriterStaleResolved(hlcClock.now(),
+                                                          Severity.INFO,
+                                                          "DHT writes of node " + event.nodeId()
+                                                         + " are stamped under the cluster's replication change again",
+                                                          writerStaleDetails(event.nodeId(),
+                                                                             event.fence(),
+                                                                             event.since())));
+    }
+
+    private static Map<String, String> writerStaleDetails(String nodeId, long fence, long since) {
+        return Map.of("nodeId", nodeId, "fence", String.valueOf(fence), "since", String.valueOf(since));
+    }
+
     @Contract
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         emit(new ConnectionFailed(hlcClock.now(),

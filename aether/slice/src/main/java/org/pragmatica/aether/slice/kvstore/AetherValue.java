@@ -3095,4 +3095,87 @@ public sealed interface AetherValue {
             return new EntityFoldCheckpointValue(throughOffset, blockIdHex, System.currentTimeMillis());
         }
     }
+
+    /// The phase of a live DHT replication change (#1777, CTO ruling R1b).
+    @Codec
+    enum DhtReplicationStage {
+        /// Committed; members are applying the new factors. Readers and writers use the transitional quorums.
+        APPLYING,
+        /// Every expected member reported the change applied, so every write from now on is acked at W_t or higher.
+        /// Every core re-runs its catch-up for it.
+        WRITERS_SWITCHED,
+        /// Every core caught up after the writers switched: the new quorums apply cluster-wide.
+        SETTLED,
+        /// Wire sentinel: an ordinal this node cannot name decodes here. Never SETTLED, so a node that cannot read the
+        /// stage keeps the transitional quorums. Must stay LAST.
+        UNKNOWN
+    }
+
+    /// The cluster's latest DHT replication change, under [AetherKey.DhtReplicationChangeKey] (#1777, CTO ruling R1b).
+    /// The switch to the new quorums is cluster-wide and committed: every node keeps W_t = max(W_old, W_new) and
+    /// R_t = max(R_old, R_new) until this record reaches [DhtReplicationStage#SETTLED].
+    ///
+    /// - `version` — the committed cluster configuration version that carried the factors, which every report is
+    ///   compared against: a report for an earlier version never advances this change.
+    /// - `replicationFactor`, `confirmationFactor` — the factors this change installed.
+    /// - `floorWriteQuorum`, `floorReadQuorum` — the strictest quorums of the factors it replaced, and of every earlier
+    ///   change still unsettled when it was committed.
+    /// - `sourceReplicationFactor` — the largest replication factor across those changes: the replica set at that factor
+    ///   contains every replica set involved, and is what a core catches up from.
+    /// - `since` — when the leader committed it (wall-clock ms), so the age survives a leader change.
+    /// - `overdue` — the leader committed that the change has been unsettled for longer than the operator-attention
+    ///   bound; it is the dedupe of the entering/leaving events.
+    ///
+    /// Leader-authorized: only a compare-and-set leader transaction writes it, so a stale leader, or a transition
+    /// computed from a superseded record, is refused.
+    record DhtReplicationChangeValue(long version,
+                                     int replicationFactor,
+                                     int confirmationFactor,
+                                     int floorWriteQuorum,
+                                     int floorReadQuorum,
+                                     int sourceReplicationFactor,
+                                     DhtReplicationStage stage,
+                                     long since,
+                                     boolean overdue) implements AetherValue, LeaderAuthorized {
+        public DhtReplicationChangeValue {
+            if (stage == null) {
+                stage = DhtReplicationStage.UNKNOWN;
+            }
+        }
+
+        public DhtReplicationChangeValue withStage(DhtReplicationStage next) {
+            return new DhtReplicationChangeValue(version,
+                                                 replicationFactor,
+                                                 confirmationFactor,
+                                                 floorWriteQuorum,
+                                                 floorReadQuorum,
+                                                 sourceReplicationFactor,
+                                                 next,
+                                                 since,
+                                                 overdue);
+        }
+
+        public DhtReplicationChangeValue withOverdue(boolean next) {
+            return new DhtReplicationChangeValue(version,
+                                                 replicationFactor,
+                                                 confirmationFactor,
+                                                 floorWriteQuorum,
+                                                 floorReadQuorum,
+                                                 sourceReplicationFactor,
+                                                 stage,
+                                                 since,
+                                                 next);
+        }
+
+        public boolean settled() {
+            return stage == DhtReplicationStage.SETTLED;
+        }
+    }
+
+    /// What one member reports about the latest DHT replication change, under [AetherKey.DhtReplicationReportKey]
+    /// (#1777, CTO ruling R1b): `appliedVersion` is the configuration version whose factors it uses, and
+    /// `caughtUpVersion` the change whose writers-switched catch-up it completed ([DhtReplicationStage#WRITERS_SWITCHED]).
+    /// Either is `-1` before the first. `replica` says the member holds DHT partitions (a core): its catch-up is part of
+    /// the settle. A worker holds none and reports what it applied only.
+    record DhtReplicationReportValue(long appliedVersion, long caughtUpVersion, boolean replica) implements AetherValue {}
 }

@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.net.InetSocketAddress;
 
+import org.pragmatica.aether.worker.metadata.WorkerMetadataMessage;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
@@ -99,6 +100,7 @@ import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
+import org.pragmatica.aether.resource.interceptor.CacheDhtClient;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
@@ -275,6 +277,7 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
+import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
@@ -316,6 +319,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
@@ -664,7 +668,17 @@ public interface AetherNode extends ManageableNode {
                                    .equals(config.self()) || !configuredWorker(config))
               .filter(peer -> "core".equalsIgnoreCase(peer.labels().getOrDefault(NodeInfo.LABEL_ROLE, "core")))
               .forEach(peer -> dhtRing.addNode(peer.id()));
-        var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
+        // #1777 track 1: the DHT's replication factors come from the cluster's COMMITTED `[replication]` section, which
+        // this node can read only once its consensus state is restored. Until then the node places nothing and its
+        // clients refuse (retryable); [#resolveDhtReplication] applies the factors. FULL replication (the Ember
+        // harness) has no placement and needs none.
+        var dhtNode = config.artifactRepo().isFullReplication()
+                      ? DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo())
+                      : DHTNode.dhtNodeAwaitingReplication(config.self(),
+                                                           dhtStorage,
+                                                           dhtRing,
+                                                           config.artifactRepo(),
+                                                           HlcClock.hlcClock(config.self()));
         // #1777 track 2: the store starts empty, so every partition this core owns starts catching up — it
         // refuses rather than answers "absent" until anti-entropy has filled it from the nodes that may hold
         // its data (the 1 s catch-up tick armed below with the node's other periodic work).
@@ -2056,7 +2070,6 @@ public interface AetherNode extends ManageableNode {
         var periodicTasks = PeriodicTasks.periodicTasks();
         var baseDhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
                                                                       dhtNetwork,
-                                                                      config.artifactRepo(),
                                                                       KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
                                                                                                             BootstrapModule.CORE_PARTITION_ID));
         // An all-miss resolve reads as a bare "absent" everywhere above the client; this observer writes the WARN that
@@ -2067,7 +2080,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                 LOG::warn,
                                                                                                                                 LOG::debug,
                                                                                                                                 LOG::info));
-        var cacheDhtClient = baseDhtClient.scoped(config.cache());
+        // The cache namespace declares its own replication in the committed `[cache]` section (#1777 track 1),
+        // re-read on every operation; `config.cache()` supplies its timeout and retry policy, and its factors
+        // until the committed ones are resolved.
+        var cacheDhtConfig = new AtomicReference<>(config.cache());
+        var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
         // #253 BLOCKING #1 (2026-09-04 ruling): a configured storage instance that fails to create
         // is a boot failure -- `createAll` now returns `Result` and this aborts naming the instance
@@ -2175,17 +2192,40 @@ public interface AetherNode extends ManageableNode {
                                                // silently — omitting it is a compile error, not a
                                                // slice that deploys and then fails at load.
                                               );
-        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
+        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork);
         // #1818 round 3: departure pushes are accepted only from departing senders. The predicate needs the
         // ClusterSyncCollector, built further down, so it is resolved through this holder (strict until then).
         var departingSendersRef = new AtomicReference<Predicate<NodeId>>(_ -> false);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode,
                                                            dhtNetwork,
-                                                           config.artifactRepo(),
                                                            sender -> departingSendersRef.get()
                                                                                         .test(sender));
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer, dhtAntiEntropy);
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
+        // #1777 CTO ruling R1b: a replication change switches the DHT to its new quorums cluster-wide, by a committed fact
+        var dhtSettlement = DhtReplicationSettlement.dhtReplicationSettlement(new DhtReplicationSettlement.Inputs(config.self(),
+                                                                                                                  !configuredWorker(config),
+                                                                                                                  kvStore,
+                                                                                                                  dhtNode,
+                                                                                                                  config.artifactRepo(),
+                                                                                                                  () -> clusterNode.leaderManager()
+                                                                                                                                   .isLeader(),
+                                                                                                                  switchableCluster::apply,
+                                                                                                                  () -> dhtWritingWorkers(Option.option(membershipFsmRef.get())),
+                                                                                                                  member -> committedDeparture(Option.option(membershipFsmRef.get()),
+                                                                                                                                               member),
+                                                                                                                  delegateRouter::route,
+                                                                                                                  System::currentTimeMillis,
+                                                                                                                  () -> !clusterNode.isPendingCatchUp()
+                                                                                                                  // v1882 r5: a replica accepts writes only once consensus has applied its log tail
+                                                                                                                 ));
+
+        dhtNode.onReplicationCaughtUp(_ -> dhtSettlement.report());
+        // #1777 (owner rule): this node announces its own writes being refused as stale beyond the bound
+        var dhtWriterStaleWatch = DhtWriterStaleWatch.dhtWriterStaleWatch(config.self(),
+                                                                          dhtNode,
+                                                                          delegateRouter::route,
+                                                                          System::currentTimeMillis);
         var corePeerIds = config.topology()
                                 .coreNodes()
                                 .stream()
@@ -3031,6 +3071,18 @@ public interface AetherNode extends ManageableNode {
         clusterNode.onStateRestored(() -> refreshCommittedLeader(kvStore, clusterNode.leaderManager()));
         clusterNode.onStateRestored(() -> restoreRetirementIndex(kvStore, communityRetirements));
         restoreRetirementIndex(kvStore, communityRetirements);
+        // #1777 track 1: restored state is when the committed `[replication]` / `[cache]` factors become readable —
+        // or are known to be absent, which means the built-in ones. Later commits re-resolve through the
+        // ClusterConfigKey put below.
+        clusterNode.onStateRestored(() -> {
+            resolveDhtReplication(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                   AetherValue.ClusterConfigValue.class),
+                                  dhtNode,
+                                  config,
+                                  cacheDhtConfig,
+                                  dhtSettlement);
+            dhtSettlement.reapply();
+        });
         var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> retirementCandidates(communityRetirements.including(cdmDrainingNodesRef.get()
                                                                                                                                             .get()),
@@ -3710,6 +3762,7 @@ public interface AetherNode extends ManageableNode {
                              .onPresent(spi -> registerRuntimeExtensions(spi,
                                                                          topicSubscriptionRegistry,
                                                                          sliceInvoker,
+                                                                         baseDhtClient,
                                                                          cacheDhtClient,
                                                                          contentStorage,
                                                                          kvStore,
@@ -4320,7 +4373,23 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
                                                                                                                       org.pragmatica.aether.worker.metadata.WorkerMetadataLimits.DEFAULT,
-                                                                                                                      epochSources.incarnation()::current);
+                                                                                                                      epochSources.incarnation()::current,
+                                                                                                                      () -> workerDhtReplication(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                                                                  AetherValue.ClusterConfigValue.class),
+                                                                                                                                                 kvStore.getTyped(AetherKey.DhtReplicationChangeKey.dhtReplicationChangeKey(),
+                                                                                                                                                                  AetherValue.DhtReplicationChangeValue.class)),
+                                                                                                                      replication -> applyWorkerDhtReplication(replication,
+                                                                                                                                                               dhtNode,
+                                                                                                                                                               config.artifactRepo(),
+                                                                                                                                                               config.cache(),
+                                                                                                                                                               cacheDhtConfig,
+                                                                                                                                                               dhtSettlement)
+                                                                                                                      // #1777 track 1 (CTO ruling B): a worker never
+                                                                                                                      // restores consensus state and is never served the
+                                                                                                                      // cluster TOML, so the core derives the DHT
+                                                                                                                      // replication into every projection, and the worker
+                                                                                                                      // applies it on every install — live changes included
+                                                                                                                     );
 
         workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection);
         allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest.class,
@@ -4334,7 +4403,12 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(ValuePut.class, workerMetadataChannel::onValuePut));
         allEntries.add(MessageRouter.Entry.route(ValueRemove.class, workerMetadataChannel::onValueRemove));
         clusterNode.onStateRestored(workerMetadataChannel::onStateRestored);
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(workerMetadataChannel::tick,
+        // #1777 R1b: the same tick retries this node's DHT replication report until it is filed (a no-op once it is)
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> {
+                                                                          workerMetadataChannel.tick();
+                                                                          dhtSettlement.report();
+                                                                          dhtWriterStaleWatch.tick();
+                                                                      },
                                                                       TimeSpan.timeSpan(100).millis()));
         communityDirectory.restore(kvStore.snapshot());
         membershipFsm.setJoinGraceReapEligibility(node -> configuredWorker(config) || (communityDirectory.assignment(node)
@@ -4841,6 +4915,12 @@ public interface AetherNode extends ManageableNode {
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, leaderReconcilerRef);
         });
+        // #1777 R1b: the pong cadence the leader already receives is what notices that time passed (the overdue bound)
+        // and that a member's departure is now committed (it is no longer waited for, and its report is dropped); no timer
+        // of its own, and no second consumer on the single-slot DEAD edge above
+        metricsCollector.addPongListener(_ -> dhtSettlement.evaluate());
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> onDhtLeaderChange(change, kvStore, dhtSettlement)));
         // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
         // death signal that drives auto-heal above — instead of the quorum-gated
         // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
@@ -5052,6 +5132,24 @@ public interface AetherNode extends ManageableNode {
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,
                                                                                                                                                                              leaderReconciler))
+                                                 // #1777 track 1: a committed `[replication]` change re-places the DHT live; R1b: the
+                                                 // leader commits the change record it carries
+                                                 .onPut(AetherKey.ClusterConfigKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> {
+                                                            resolveDhtReplication(Option.some(put.cause().value()),
+                                                                                  dhtNode,
+                                                                                  config,
+                                                                                  cacheDhtConfig,
+                                                                                  dhtSettlement);
+                                                            dhtSettlement.onConfigCommitted(put.cause().value());
+                                                        })
+                                                 // #1777 R1b: every node follows the committed change; the leader advances it on reports
+                                                 .onPut(AetherKey.DhtReplicationChangeKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.DhtReplicationChangeKey, AetherValue.DhtReplicationChangeValue> put) -> dhtSettlement.onChangeCommitted(put.oldValue(),
+                                                                                                                                                                                                        put.cause()
+                                                                                                                                                                                                           .value()))
+                                                 .onPut(AetherKey.DhtReplicationReportKey.class,
+                                                        _ -> dhtSettlement.evaluate())
                                                  .build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
@@ -6506,6 +6604,175 @@ public interface AetherNode extends ManageableNode {
                                 + " — correct [replication.cluster_events] and re-apply the cluster config")
                     .onFailure(failure -> LOG.warn("Cluster-events refusal alert injection failed: {}",
                                                    failure.message()));
+    }
+
+    /// #1777 track 1: apply the cluster's committed DHT replication — `[replication]` for the DHT itself (W = CF,
+    /// R = RF − CF + 1, re-placed through the catch-up gate when it changes) and `[cache]` for the cache namespace.
+    /// No committed config means the built-in factors. A committed config that does not parse was refused at
+    /// apply, so failing here is a defect: it is logged at ERROR and the node keeps what it had — still refusing,
+    /// if nothing was resolved yet, rather than guessing a factor. FULL replication is a harness declaration and is
+    /// kept as declared.
+    ///
+    /// `committed` is the configuration being applied — the one a commit notification carries, so its version is the
+    /// version this node reports as applied (#1777 R1b), never a later one read back from the store.
+    @Contract
+    private static void resolveDhtReplication(Option<AetherValue.ClusterConfigValue> committed,
+                                              DHTNode dhtNode,
+                                              AetherNodeConfig config,
+                                              AtomicReference<DHTConfig> cacheDhtConfig,
+                                              DhtReplicationSettlement settlement) {
+        var version = committed.map(AetherValue.ClusterConfigValue::configVersion).or(DHTNode.NO_CHANGE);
+
+        ClusterReplication.defaults(committed)
+                          .onSuccess(defaults -> applyDhtReplication(defaults,
+                                                                     version,
+                                                                     dhtNode,
+                                                                     config.artifactRepo(),
+                                                                     config.cache(),
+                                                                     cacheDhtConfig))
+                          .onSuccess(_ -> settlement.applied(version))
+                          .onFailure(cause -> LOG.error("DHT replication not resolved from the committed cluster configuration: {}",
+                                                        cause.message()));
+    }
+
+    /// `declared` and `declaredCache` supply the timeout and retry policy; their factors are replaced by the
+    /// committed ones, except a declared FULL replication (the Ember harness), which has no placement to resolve.
+    /// `version` is the committed configuration version that carries the factors (#1777 R1b).
+    @Contract
+    static void applyDhtReplication(ReplicationDefaultsConfig defaults,
+                                    long version,
+                                    DHTNode dhtNode,
+                                    DHTConfig declared,
+                                    DHTConfig declaredCache,
+                                    AtomicReference<DHTConfig> cacheDhtConfig) {
+        var resolved = declared.isFullReplication()
+                       ? Result.success(declared)
+                       : declared.withFactors(defaults.replicationFactor(), defaults.confirmationFactor());
+
+        resolved.onSuccess(dht -> logIfReplicationChanged(dhtNode, dht))
+                .onSuccess(dht -> dhtNode.resolveReplication(dht, version))
+                .onFailure(cause -> LOG.error("DHT replication factors refused: {}",
+                                              cause.message()));
+        declaredCache.withFactors(defaults.cacheReplicationFactor(),
+                                  defaults.cacheConfirmationFactor())
+                     .onSuccess(cacheDhtConfig::set)
+                     .onFailure(cause -> LOG.error("DHT cache replication factors refused: {}",
+                                                   cause.message()));
+    }
+
+    /// #1777 track 1 (CTO ruling B), core side: the DHT replication a worker's projection carries, derived from this
+    /// core's committed `[replication]` and `[cache]` sections — the narrow subset, never the TOML itself (#1390) — and,
+    /// for CTO ruling R1b, the committed configuration version and the latest replication change: its floor while it is
+    /// unsettled, so a worker keeps the transitional quorums exactly as long as the cores do.
+    static Result<WorkerMetadataMessage.DhtReplication> workerDhtReplication(Option<AetherValue.ClusterConfigValue> committed,
+                                                                             Option<AetherValue.DhtReplicationChangeValue> change) {
+        var configVersion = committed.map(AetherValue.ClusterConfigValue::configVersion).or(DHTNode.NO_CHANGE);
+
+        return ClusterReplication.defaults(committed).map(defaults -> new WorkerMetadataMessage.DhtReplication(defaults.replicationFactor(),
+                                                                                                               defaults.confirmationFactor(),
+                                                                                                               defaults.cacheReplicationFactor(),
+                                                                                                               defaults.cacheConfirmationFactor(),
+                                                                                                               configVersion,
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::version)
+                                                                                                                     .or(DHTNode.NO_CHANGE),
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::floorWriteQuorum)
+                                                                                                                     .or(0),
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::floorReadQuorum)
+                                                                                                                     .or(0),
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::settled)
+                                                                                                                     .or(true)));
+    }
+
+    /// #1777 track 1 (CTO ruling B), worker side: apply a projection's DHT replication exactly as a core applies its
+    /// committed configuration — the same resolution and, on a change, the same catch-up diff — then the committed
+    /// replication change it carries (CTO ruling R1b), and report the applied version through the settlement.
+    @Contract
+    static void applyWorkerDhtReplication(WorkerMetadataMessage.DhtReplication replication,
+                                          DHTNode dhtNode,
+                                          DHTConfig declared,
+                                          DHTConfig declaredCache,
+                                          AtomicReference<DHTConfig> cacheDhtConfig,
+                                          DhtReplicationSettlement settlement) {
+        applyDhtReplication(new ReplicationDefaultsConfig(replication.replicationFactor(),
+                                                          replication.confirmationFactor(),
+                                                          ReplicationDefaultsConfig.BUILT_IN.clusterEventsConfirmationFactor(),
+                                                          replication.cacheReplicationFactor(),
+                                                          replication.cacheConfirmationFactor()),
+                            replication.configVersion(),
+                            dhtNode,
+                            declared,
+                            declaredCache,
+                            cacheDhtConfig);
+        if (replication.changeVersion() != DHTNode.NO_CHANGE) {
+            DhtReplicationSettlement.applyCommitted(dhtNode, declared, workerChange(replication));
+        }
+        // a worker holds no partitions and receives no DHT writes; its fence is what its projection says
+        dhtNode.confirmReplicationFence();
+        settlement.applied(replication.configVersion());
+    }
+
+    /// The committed change a worker projection carries, as the record a core reads. A worker holds no partitions, so
+    /// the writers-switched stage means nothing to it: unsettled is all it needs.
+    private static AetherValue.DhtReplicationChangeValue workerChange(WorkerMetadataMessage.DhtReplication replication) {
+        return new AetherValue.DhtReplicationChangeValue(replication.changeVersion(),
+                                                         replication.replicationFactor(),
+                                                         replication.confirmationFactor(),
+                                                         replication.floorWriteQuorum(),
+                                                         replication.floorReadQuorum(),
+                                                         replication.replicationFactor(),
+                                                         replication.changeSettled()
+                                                         ? AetherValue.DhtReplicationStage.SETTLED
+                                                         : AetherValue.DhtReplicationStage.APPLYING,
+                                                         0L,
+                                                         false);
+    }
+
+    @Contract
+    private static void logIfReplicationChanged(DHTNode dhtNode, DHTConfig resolved) {
+        var current = dhtNode.config();
+
+        if (!dhtNode.replicationResolved() || current.replicationFactor() != resolved.replicationFactor() || current.writeQuorum() != resolved.writeQuorum()) {
+            LOG.info("DHT replication: replication factor {}, write quorum {}, read quorum {}",
+                     resolved.replicationFactor(),
+                     resolved.writeQuorum(),
+                     resolved.readQuorum());
+        }
+    }
+
+    /// #1777 R1b: a new leader takes over the replication change where the last one left it — it commits the change the
+    /// current configuration carries if its predecessor had not, and advances what the reports already allow.
+    @Contract
+    private static void onDhtLeaderChange(LeaderNotification.LeaderChange change,
+                                          KVStore<AetherKey, AetherValue> kvStore,
+                                          DhtReplicationSettlement settlement) {
+        if (!change.localNodeIsLeader()) {
+            return;
+        }
+
+        kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+               .onPresent(settlement::onConfigCommitted);
+        settlement.evaluate();
+    }
+
+    /// #1777 R1b: the workers a replication change waits for — every worker the membership tracks that has not been
+    /// marked Dead in the leader's membership view. Any of them may write to the DHT. The view decides only WHEN a change
+    /// settles; the replication-change fence on every put keeps a writer it misses safe (#1777 R1c).
+    static Set<NodeId> dhtWritingWorkers(Option<MembershipFsm> membershipFsm) {
+        return membershipFsm.map(fsm -> fsm.memberDescriptors()
+                                           .entrySet()
+                                           .stream()
+                                           .filter(entry -> "worker".equalsIgnoreCase(entry.getValue().role()))
+                                           .map(Map.Entry::getKey)
+                                           .filter(fsm::isTrackedAndNotDead)
+                                           .collect(Collectors.toSet()))
+                            .or(Set.of());
+    }
+
+    /// #1777 R1b: whether the leader's membership view holds `member` `Dead`. Not a committed fact: a wrong verdict only
+    /// hastens or delays a settle (#1777 R1c).
+    static boolean committedDeparture(Option<MembershipFsm> membershipFsm, NodeId member) {
+        return membershipFsm.map(fsm -> "Dead".equals(fsm.memberStates().get(member)))
+                            .or(false);
     }
 
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —
@@ -8894,6 +9161,13 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onStreamConfigChangeNotApplied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationUnsettled.class,
+                                              eventAggregator::onDhtReplicationUnsettled));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationSettled.class,
+                                              eventAggregator::onDhtReplicationSettled));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtWriterStale.class, eventAggregator::onDhtWriterStale));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtWriterStaleResolved.class,
+                                              eventAggregator::onDhtWriterStaleResolved));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
@@ -9116,6 +9390,18 @@ public interface AetherNode extends ManageableNode {
         };
     }
 
+    /// #1777 (CTO ruling R2 / Q4): the bare `DHTClient` extension is the cluster's REPLICATED DHT at the committed
+    /// `[replication]` factors — what idempotency and every other namespace resolve. The cache namespace's lower `[cache]`
+    /// replication is a separate extension type ([CacheDhtClient]) that only the cache asks for. Registering the cache
+    /// client as `DHTClient`, as before, put idempotency's dedup records at RF 1.
+    @Contract
+    static void registerDhtExtensions(SpiResourceProvider spi,
+                                      DHTClient replicatedDhtClient,
+                                      DHTClient cacheDhtClient) {
+        spi.registerExtension(DHTClient.class, replicatedDhtClient);
+        spi.registerExtension(CacheDhtClient.class, new CacheDhtClient(cacheDhtClient));
+    }
+
     private static Repository compositeRepository(List<Repository> repositories) {
         if (repositories.isEmpty()) {
             return artifact -> Causes.cause("No repositories configured").promise();
@@ -9127,13 +9413,14 @@ public interface AetherNode extends ManageableNode {
     private static void registerRuntimeExtensions(SpiResourceProvider spi,
                                                   TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                   SliceInvoker sliceInvoker,
+                                                  DHTClient replicatedDhtClient,
                                                   DHTClient cacheDhtClient,
                                                   StorageInstance contentStorage,
                                                   KVStore<AetherKey, AetherValue> kvStore,
                                                   OperatorWarningSink operatorWarningSink) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
-        spi.registerExtension(DHTClient.class, cacheDhtClient);
+        registerDhtExtensions(spi, replicatedDhtClient, cacheDhtClient);
         // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
         // Register a tiered content store so slice-facing ContentStore resources can provision.
         spi.registerExtension(StorageInstance.class, contentStorage);
