@@ -388,6 +388,267 @@ class DHTReplicationChangeTest {
         assertThat(cluster.nodes.get(writer).staleRefusal()).isEqualTo(Option.none());
     }
 
+    /// V1882 r6 PROBE (not for merge). A put stamped under the OLD change is in flight while the writer applies the change;
+    /// its refusals arrive AFTER the writer adopted. The writer is current; nothing else is written (an idle writer).
+    @Test
+    void v1882r6_refusalArrivingAfterTheWriterAdopted_leavesNoStaleRecord() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+
+        cluster.holdPuts = true;
+        var straddling = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        assertThat(cluster.held).as("arming: in flight to every replica").hasSize(3);
+
+        cluster.changeAll(factors(3, 2));
+        assertThat(cluster.nodes.get(writer).replicationFence()).as("arming: the writer adopted the change").isEqualTo(CHANGE);
+        replicas.forEach(cluster::deliverHeldTo);
+        var outcome = straddling.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        System.out.println("V1882-R6 race: outcome=" + outcome + " record=" + cluster.nodes.get(writer).staleRefusal()
+                           + " writerFence=" + cluster.nodes.get(writer).replicationFence());
+        assertThat(stale).as("arming: refused by the newer-fence path: " + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("a CURRENT writer is not stale").isEqualTo(Option.none());
+    }
+
+    /// V1882 r6 PROBE (not for merge): the roster-excluded writer is itself a REPLICA of the key. Its local slot is not
+    /// fenced (`handleLocalPut`), and W_old = 1. Does its put succeed at W1 after the settle, and does the success clear
+    /// the genuine stale record (alert suppression)? Then: does a read at R_new from the other replicas answer absent?
+    @Test
+    void v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.nodes.get(writer).noteStaleRefusal(DHTNode.NO_CHANGE, 1_000L);
+
+        var outcome = cluster.client(writer).put(KEY, VALUE).await();
+        var reader = replicas.get(1);
+        var read = cluster.client(reader).get(KEY).await();
+
+        System.out.println("V1882-R6 replica-writer: outcome=" + outcome + " record=" + cluster.nodes.get(writer).staleRefusal()
+                           + " holds=" + replicas.stream().map(id -> id.id() + ":" + cluster.holds(id)).toList()
+                           + " readerR=" + cluster.config(reader).readQuorum() + " read=" + read);
+        assertThat(outcome.isSuccess()).as("a stale writer's put is refused: " + outcome).isFalse();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("the genuine record survives").isNotEqualTo(Option.none());
+    }
+
+    /// v1882 r7 F10, order (a): the local slot answers FIRST (W_old = 1 met by the writer's own copy), the remote
+    /// refusals arrive after. The put must not be acknowledged, and the local copy it wrote is rolled back.
+    @Test
+    void v1882r7_orderA_localSuccessThenRemoteStale_failsAndRollsBackTheLocalCopy() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+
+        cluster.holdPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+
+        assertThat(cluster.holds(writer)).as("arming: the local slot accepted, meeting W_old = 1").isTrue();
+        assertThat(put.isResolved()).as("the local slot alone does not acknowledge the put").isFalse();
+
+        others.forEach(cluster::deliverHeldTo);
+        var outcome = put.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale, not acknowledged: " + outcome).isTrue();
+        assertThat(cluster.holds(writer)).as("the writer's own accepted copy was rolled back").isFalse();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("the writer is recorded stale").isNotEqualTo(Option.none());
+    }
+
+    /// v1882 r7 F10, order (b): the remote refusal arrives FIRST, the local slot answers after. The quorum arithmetic is
+    /// met by the late local copy, but a replica already said this writer is behind: the put fails.
+    @Test
+    void v1882r7_orderB_remoteStaleThenLocalSuccess_fails() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+
+        cluster.holdLocalPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        assertThat(cluster.heldLocalPuts).as("arming: the local slot has not answered").hasSize(1);
+        cluster.releaseLocalPuts();
+        var outcome = put.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale: " + outcome).isTrue();
+        assertThat(cluster.holds(writer)).as("the local copy was rolled back").isFalse();
+    }
+
+    /// v1882 r7 F10, order (b), remote form: two replicas refuse as stale and only THEN a replica that had not applied the
+    /// change accepts. A remote success exists, so no evidence is awaited, yet the refusals already said this writer is
+    /// behind: the put fails instead of being acknowledged by the one lagging replica.
+    @Test
+    void v1882r7_orderB_remoteStaleThenRemoteSuccess_fails() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+        var unaware = replicas.getFirst();
+        var applied = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        applied.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, applied);
+
+        cluster.holdPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        replicas.stream().filter(id -> !id.equals(unaware)).forEach(cluster::deliverHeldTo);
+        cluster.deliverHeldTo(unaware);
+        var outcome = put.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale although one replica accepted: " + outcome).isTrue();
+    }
+
+    /// v1882 r7 F10, order (c): a replica that has not applied the change accepts first, the put is acknowledged, and a
+    /// replica that HAS applied it refuses afterwards. The acknowledgement stands; the late refusal is still recorded,
+    /// because it is evidence this writer is behind.
+    @Test
+    void v1882r7_orderC_ackThenLateStale_ackStands_andTheRecordIsKept() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+        var unaware = replicas.getFirst();
+        var applied = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        applied.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, applied);
+
+        cluster.holdPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        cluster.deliverHeldTo(unaware);
+        var outcome = put.await();
+
+        assertThat(outcome.isSuccess()).as("acknowledged by the replica that had not applied the change: " + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("nothing refused yet").isEqualTo(Option.none());
+
+        replicas.stream().filter(id -> !id.equals(unaware)).forEach(cluster::deliverHeldTo);
+
+        var deadline = System.nanoTime() + 2_000_000_000L;
+
+        // the record is written by the collector's completion callback, which runs after the last reply is routed
+        while (cluster.nodes.get(writer).staleRefusal().isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("the late refusal is recorded").isNotEqualTo(Option.none());
+    }
+
+    /// v1882 r7 F10, order (d): the writer is a replica, every other replica stays silent for the whole operation. With no
+    /// evidence either way the put is acknowledged on its own slot — the named limit — and NO stale record is set.
+    @Test
+    void v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+
+        cluster.dropPutsTo = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).collect(java.util.stream.Collectors.toSet());
+        var outcome = cluster.client(writer).put(KEY, VALUE).await();
+
+        assertThat(outcome.isSuccess()).as("acknowledged on the local slot after the silence: " + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).isEqualTo(Option.none());
+    }
+
+    /// v1882 r7 F10, REMOVE form of `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold` (#1885): the roster-excluded
+    /// writer is itself a replica. Its local tombstone is unfenced and W_old = 1, so without the evidence gate the remove
+    /// is acknowledged on that one copy and clears the genuine stale record.
+    @Test
+    void v1882r7_remove_excludedWriterThatIsAReplica_localSlotAcceptsAtWold() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.nodes.get(writer).noteStaleRefusal(DHTNode.NO_CHANGE, 1_000L);
+
+        var outcome = cluster.client(writer).remove(KEY).await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("a stale writer's remove is refused: " + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("the genuine record survives").isNotEqualTo(Option.none());
+    }
+
+    /// v1882 r7 F10, REMOVE, order (a) with the remote replies in flight: the local tombstone alone does not acknowledge.
+    @Test
+    void v1882r7_remove_orderA_localSlotAlone_doesNotAcknowledge_thenRemoteStaleFails() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+
+        assertThat(remove.isResolved()).as("the local slot alone does not acknowledge the remove").isFalse();
+
+        others.forEach(cluster::deliverHeldRemovesTo);
+        var outcome = remove.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale: " + outcome).isTrue();
+    }
+
+    /// v1882 r7 F10, REMOVE, order (b): two replicas refuse as stale, then a replica that had not applied the change accepts.
+    @Test
+    void v1882r7_remove_orderB_remoteStaleThenRemoteSuccess_fails() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+        var unaware = replicas.getFirst();
+        var applied = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        applied.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, applied);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        replicas.stream().filter(id -> !id.equals(unaware)).forEach(cluster::deliverHeldRemovesTo);
+        cluster.deliverHeldRemovesTo(unaware);
+        var outcome = remove.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale although one replica accepted: " + outcome).isTrue();
+    }
+
+    /// V1882 r6 CONTROL: the same refusals delivered BEFORE the writer adopts; adoption clears the record.
+    @Test
+    void v1882r6_control_refusalBeforeAdoption_isClearedByAdoption() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+
+        replicas.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        var outcome = cluster.client(writer).put(KEY, VALUE).await();
+
+        boolean refusedStale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+        assertThat(refusedStale).as("" + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("arming: the genuine refusal is recorded").isNotEqualTo(Option.none());
+        cluster.nodes.get(writer).resolveReplication(factors(3, 2), CHANGE);
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("adoption clears it").isEqualTo(Option.none());
+    }
+
     /// Any accepted write ends a stale-refusal episode: the writer's writes are fine again (v1882 round 5).
     @Test
     void acceptedWrite_clearsARecordedStaleRefusal() {
@@ -511,6 +772,11 @@ class DHTReplicationChangeTest {
         volatile Set<NodeId> dropPutsTo = Set.of();
         volatile boolean holdPuts;
         final List<Map.Entry<NodeId, DHTMessage.PutRequest>> held = new java.util.ArrayList<>();
+        /// While set, a node's OWN storage put stays pending until [#releaseLocalPuts] (the local slot answering late).
+        volatile boolean holdRemoves;
+        final List<Map.Entry<NodeId, DHTMessage.RemoveRequest>> heldRemoves = new java.util.ArrayList<>();
+        volatile boolean holdLocalPuts;
+        final List<Runnable> heldLocalPuts = new java.util.ArrayList<>();
 
         Cluster(int size, DHTConfig config) {
             var ids = IntStream.range(0, size).mapToObj(i -> new NodeId("node-" + i)).toList();
@@ -528,12 +794,50 @@ class DHTReplicationChangeTest {
                 var ring = ConsistentHashRing.<NodeId>consistentHashRing();
 
                 ids.forEach(ring::addNode);
-                nodes.put(id, dhtNode(id, memoryStorageEngine(), ring, config));
+                nodes.put(id, dhtNode(id, holdingLocalPuts(memoryStorageEngine()), ring, config));
             });
             ids.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), this::route, _ -> false)));
             ids.forEach(id -> clients.put(id,
                                           distributedDHTClient(nodes.get(id), this::route, OwnerEpochSource.zero())
                                               .withResolveFallbackObserver(observer)));
+        }
+
+        @SuppressWarnings("unchecked")
+        private org.pragmatica.dht.storage.StorageEngine holdingLocalPuts(org.pragmatica.dht.storage.StorageEngine real) {
+            return (org.pragmatica.dht.storage.StorageEngine) java.lang.reflect.Proxy.newProxyInstance(
+                org.pragmatica.dht.storage.StorageEngine.class.getClassLoader(),
+                new Class<?>[]{org.pragmatica.dht.storage.StorageEngine.class},
+                (proxy, method, args) -> {
+                    try {
+                        if (holdLocalPuts && method.getName().equals("putVersioned") && args.length == 6) {
+                            var pending = org.pragmatica.lang.Promise.<Boolean> promise();
+
+                            heldLocalPuts.add(() -> {
+                                try {
+                                    ((org.pragmatica.lang.Promise<Boolean>) invoke(real, method, args)).onResult(pending::resolve);
+                                } catch (Exception e) {
+                                    throw new IllegalStateException(e);
+                                }
+                            });
+
+                            return pending;
+                        }
+
+                        return invoke(real, method, args);
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+        }
+
+        private static Object invoke(Object target, java.lang.reflect.Method method, Object[] args) throws Exception {
+            return method.invoke(target, args);
+        }
+
+        void releaseLocalPuts() {
+            holdLocalPuts = false;
+            heldLocalPuts.forEach(Runnable::run);
+            heldLocalPuts.clear();
         }
 
         NodeId anyId() {
@@ -585,6 +889,12 @@ class DHTReplicationChangeTest {
             antiEntropies.put(id, dhtAntiEntropy(fresh, this::route, _ -> false));
 
             return fresh;
+        }
+
+        void deliverHeldRemovesTo(NodeId target) {
+            heldRemoves.stream()
+                       .filter(entry -> entry.getKey().equals(target))
+                       .forEach(entry -> nodes.get(target).handleRemoveRequest(entry.getValue(), resp -> route(entry.getValue().sender(), resp)));
         }
 
         void deliverHeldTo(NodeId target) {
@@ -672,7 +982,13 @@ class DHTReplicationChangeTest {
                     }
                 }
                 case DHTMessage.PutResponse r -> client.onPutResponse(r);
-                case DHTMessage.RemoveRequest r -> node.handleRemoveRequest(r, resp -> route(r.sender(), resp));
+                case DHTMessage.RemoveRequest r -> {
+                    if (holdRemoves) {
+                        heldRemoves.add(Map.entry(target, r));
+                    } else {
+                        node.handleRemoveRequest(r, resp -> route(r.sender(), resp));
+                    }
+                }
                 case DHTMessage.RemoveResponse r -> client.onRemoveResponse(r);
                 case DHTMessage.DigestRequest r -> node.handleDigestRequest(r, resp -> route(r.sender(), resp));
                 case DHTMessage.DigestResponse r -> antiEntropy.onDigestResponse(r);

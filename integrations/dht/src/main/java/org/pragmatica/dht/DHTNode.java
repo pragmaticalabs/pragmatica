@@ -361,9 +361,11 @@ public final class DHTNode {
         clearStaleRefusalBelow(replicationFence.get());
     }
 
-    /// This node's fence reflects the committed replication change (#1777, v1882 rounds 4-5): it has adopted the latest
-    /// committed record — or found none — AFTER applying the consensus log up to the commit point it observed, so no newer
-    /// record is still waiting in its log tail. From here on it accepts writes stamped at or above its fence.
+    /// This node's fence is taken as the committed replication change (#1777, v1882 rounds 4-6): it has adopted the latest
+    /// committed record — or found none — once consensus reported no catch-up pending. That signal sees only log positions
+    /// the node has been told about, so a record in a tail not yet received is NOT excluded
+    /// [unverified: no run shows a confirmed fence older than the committed change] [limit: #1683]. From here on it accepts
+    /// writes stamped at or above its fence.
     @Contract
     public void confirmReplicationFence() {
         replicationFenceKnown.set(true);
@@ -378,7 +380,13 @@ public final class DHTNode {
     /// (#1777, owner rule). Only the first refusal since the last adoption is kept: it starts the clock.
     @Contract
     public void noteStaleRefusal(long fence, long nowMillis) {
+        if (fence < replicationFence.get()) {
+            return;
+        }
+
         staleRefusal.updateAndGet(current -> Option.some(current.or(() -> new StaleRefusal(fence, nowMillis))));
+        // an adoption that raced the check above has already cleared; its raised fence is visible here, so re-clear (v1882 r6 F9)
+        clearStaleRefusalBelow(replicationFence.get());
     }
 
     /// The ongoing refusal of this node's writes as stale, if any (#1777, owner rule).

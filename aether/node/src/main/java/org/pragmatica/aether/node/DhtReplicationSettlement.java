@@ -390,7 +390,9 @@ public interface DhtReplicationSettlement {
             /// v1882 rounds 4-5: this node's fence becomes KNOWN — and it accepts DHT writes as a replica — only once its
             /// state is restored AND it has applied the consensus log up to the commit point it observed
             /// (`RabiaNode.isPendingCatchUp` false, `inputs.consensusCaughtUp`). A restored snapshot may precede a committed
-            /// change still in the log tail; until the tail is applied, its fence could be too old. Re-adopts the latest
+            /// change still in the log tail; until the tail is applied, its fence could be too old. The signal only sees log
+            /// positions this node has been told about, so a tail it has not yet received is not excluded
+            /// [unverified: no run shows a confirmed fence older than the committed change] [limit: #1683]. Re-adopts the latest
             /// committed record (or none — the baseline) at that point. Driven by [#report], which runs on every relevant
             /// commit and on the worker-metadata tick, so it needs no trigger of its own. A worker holds no partitions and
             /// receives no writes, so its fence is confirmed as it applies its projection.

@@ -53,6 +53,10 @@ public final class QuorumCollector<T> {
     private final AtomicReference<String> valueSource = new AtomicReference<>();
     private final AtomicInteger departed = new AtomicInteger();
     private final Promise<Unit> allReplied = Promise.promise();
+    /// Successes that came from the coordinator's own slot, and the first reply of any kind from a REMOTE slot (#1777 v1882
+    /// r6 F10): a quorum met by the local slot alone has no evidence about the replicas' fences yet.
+    private final AtomicInteger localSuccesses = new AtomicInteger(0);
+    private final Promise<Unit> remoteReplied = Promise.promise();
 
     private QuorumCollector(int quorum,
                             int total,
@@ -98,6 +102,39 @@ public final class QuorumCollector<T> {
     @Contract
     public void onSuccess(T value) {
         onSuccess(value, "");
+        // after the count is recorded: a waiter released by this reply must read it
+        remoteReplied.succeed(Unit.unit());
+    }
+
+    /// Record the coordinator's own slot succeeding: it counts toward the quorum but is not evidence about any remote
+    /// replica (#1777 v1882 r6 F10), so it does not resolve [#remoteReplied].
+    @Contract
+    public void onLocalSuccess(T value) {
+        localSuccesses.incrementAndGet();
+        onSuccess(value, "");
+    }
+
+    /// Record the coordinator's own slot failing; like [#onLocalSuccess] it is no remote reply.
+    @Contract
+    public void onLocalFailure(Cause cause) {
+        recordFailure(cause);
+    }
+
+    /// Successes from remote slots only.
+    public int remoteSuccessCount() {
+        return successCount.get() - localSuccesses.get();
+    }
+
+    /// Resolves with the first reply of any kind from a remote slot: success, refusal or a dispatch failure. Never
+    /// resolves if no remote slot ever answers, so callers bound it with their own timeout.
+    public Promise<Unit> remoteReplied() {
+        return remoteReplied;
+    }
+
+    /// Slots refused because the replica had applied a NEWER replication change than the writer's stamp. Authoritative
+    /// evidence that the coordinator is behind, including those arriving after the promise settled.
+    public int replicationStaleCount() {
+        return replicationStale.get();
     }
 
     /// Record a successful response and who sent it. The first replica whose reply carried a PRESENT value is
@@ -129,6 +166,12 @@ public final class QuorumCollector<T> {
     /// replica still catching up ([DHTError.ReplicaCatchingUp]) makes that failure [DHTError.NotCaughtUp].
     @Contract
     public void onFailure(Cause cause) {
+        recordFailure(cause);
+        // after the refusal is counted: a waiter released by this reply must see it
+        remoteReplied.succeed(Unit.unit());
+    }
+
+    private void recordFailure(Cause cause) {
         if (cause instanceof DHTError.ReplicaCatchingUp) {
             refusals.incrementAndGet();
         }

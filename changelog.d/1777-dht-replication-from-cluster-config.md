@@ -35,11 +35,13 @@
     only delays or hastens the settle.
   - The two events are published at most once per transition (missed if the cluster-events owner cannot publish then).
   - A replica restarted after a change refuses writes (`ReplicationFenceUnknown`, retryable) until its state is restored
-    and consensus has applied its log tail: an unknown fence refuses, never accepts [verified: DHTReplicationChangeTest
+    and consensus reports no catch-up pending: an unknown fence refuses, never accepts [verified: DHTReplicationChangeTest
     `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`,
     aether/node/src/test/java/org/pragmatica/aether/node/DhtReplicationFenceRestoreTest.java]. That refusal marks no writer
     stale, and any accepted write ends a stale episode [verified: `healthyWriterRefusedByUnknownFences_recordsNoStaleness`,
-    `acceptedWrite_clearsARecordedStaleRefusal`].
+    `acceptedWrite_clearsARecordedStaleRefusal`]. The catch-up signal sees only log positions the node has been told
+    about, so a committed change in a tail it has not yet received is not detected
+    [unverified: no run shows a confirmed fence older than the committed change] [limit: #1683].
   - A node whose writes the fence keeps refusing for over 5 minutes, without it adopting the change, emits
     `DHT_WRITER_STALE` itself, and `DHT_WRITER_STALE_RESOLVED` once it adopts (at most once each)
     [verified: aether/node/src/test/java/org/pragmatica/aether/node/DhtWriterStaleWatchTest.java].

@@ -100,6 +100,25 @@ class DhtReplicationFenceRestoreTest {
         assertThat(put(dhtNode, DHTNode.NO_CHANGE).success()).isTrue();
     }
 
+    /// v1882 r6 (M6): a caught-up consensus alone does not make the fence known — the state must have been restored first.
+    /// The tick (`report`) runs before any restore here, and must not confirm a fence nothing has adopted.
+    @Test
+    void consensusCaughtUpButStateNotRestored_isNotKnown() {
+        var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), CODEC, CODEC);
+        var dhtNode = DHTNode.dhtNodeAwaitingReplication(SELF, memoryStorageEngine(), ring(), DHTConfig.DEFAULT, HlcClock.hlcClock(SELF));
+        var settlement = settlement(kvStore, dhtNode, new AtomicBoolean(true));
+
+        dhtNode.resolveReplication(OLD, OLD_CHANGE);
+        settlement.report();
+
+        assertThat(dhtNode.acceptsWrites()).as("caught up but nothing restored: unknown").isFalse();
+        assertThat(put(dhtNode, OLD_CHANGE).fenceUnknown()).isTrue();
+
+        settlement.reapply();
+
+        assertThat(dhtNode.acceptsWrites()).as("control: restored and caught up: known").isTrue();
+    }
+
     private static DHTMessage.PutResponse put(DHTNode node, long stamp) {
         var response = new AtomicReference<DHTMessage.PutResponse>();
 

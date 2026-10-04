@@ -342,12 +342,15 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   replica accepts then predates its report, so every core's writers-switched pass pulls it
   [verified: `wOldWriteLandingBetweenAReplicasApplyAndItsWritersSwitched_isRefused`].
 - **Restarted replicas:** a replica refuses writes (retryable, `ReplicationFenceUnknown`) until its state is restored AND
-  consensus has applied its log up to the commit point it observed (`isPendingCatchUp` false), so a committed change still
-  in the log tail cannot be missed. An unknown fence never accepts
+  consensus reports no catch-up pending (`isPendingCatchUp` false). Before that, an unknown fence never accepts
   [verified: DHTReplicationChangeTest `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`,
   DhtReplicationFenceRestoreTest]. Such a refusal says nothing about the writer and never counts toward `DHT_WRITER_STALE`.
-  [limit: the catch-up signal itself can report "caught up" for up to one consensus sync-retry interval on a replica that
-  missed all traffic in a quiet cluster (#1683, documented at `RabiaEngine.probeQuietSlot`).]
+  The bound is what `isPendingCatchUp` can see: it compares against log positions the node has been TOLD about, so a
+  committed change in a log tail the node has not yet received is invisible to it, and the fence can still be too old
+  once it is confirmed (`confirmFence` runs synchronously when the state is restored).
+  [unverified: no run shows a restarted replica confirming a fence older than the committed change; the window is the one
+  recorded for #1683 (the signal can report "caught up" for up to one consensus sync-retry interval on a replica that
+  missed all traffic, `RabiaEngine.probeQuietSlot`).] [limit: #1683]
 - **Stale writer event:** a node whose writes stay refused this way for over 5 minutes without adopting the change emits
   `DHT_WRITER_STALE`, and `DHT_WRITER_STALE_RESOLVED` once it adopts it (at most once each).
 - **The roster is the leader's membership view, not a committed fact.** A wrong roster only delays the settle (a member
