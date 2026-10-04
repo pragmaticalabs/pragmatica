@@ -127,7 +127,7 @@ class QuicClusterNetworkBlackHoleTest {
 
         awaitTrue(() -> !acceptorLink.isActive() || acceptor.activeConnectionForTests(dialerId).map(c -> c != acceptorLink).or(true),
                   DETECTION_BOUND,
-                  "the deaf acceptor evicts the black-holed link (dropped=" + dropped.get() + ")");
+                  "the deaf acceptor evicts the black-holed link");
         awaitTrue(() -> !dialerLink.isActive(),
                   DETECTION_BOUND,
                   "the dialer's end of the black-holed link closes, so the loss surfaces as a disconnect");
