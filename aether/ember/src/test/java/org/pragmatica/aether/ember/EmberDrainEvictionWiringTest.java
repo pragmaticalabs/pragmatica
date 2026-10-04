@@ -76,22 +76,14 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// A fabricated worker id is used as the drainee (as in `EmberDrainAcknowledgementWiringTest`) so the
 /// reconciler neither drains nor dials a real peer; it holds no slice, which is what makes
 /// `completeDrain` the terminal step.
-@PortBudget
 class EmberDrainEvictionWiringTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`.
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Disjoint from every other Ember test's candidate range (25600, 25700-27500, 27700-29500).
-    private static final int FIRST_CANDIDATE_BASE = 29700;
-    private static final int LAST_CANDIDATE_BASE = 31500;
-    private static final int CANDIDATE_STEP = 200;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();

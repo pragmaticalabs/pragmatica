@@ -46,25 +46,14 @@ import static org.assertj.core.api.Assertions.fail;
 /// reaches the defect; the second control is time-sensitive (a join faster than the assertions would trip
 /// it), and it can only fail in the red direction. Reverting `currentLeader()` to `findFirst()` +
 /// [AetherNode#leader] turns the pin red.
-@PortBudget
 class EmberClusterCurrentLeaderTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`; the newborn takes the fourth slot.
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Disjoint from the ranges `EmberClusterObservedNodeStateTest` (25700–27500) and
-    /// `EmberBootstrapAdminKeyAuthTest` (27700–29500) probe, so the three never contend. The fixed blocks of
-    /// `EmberClusterSwimStartFailureTest` (31700) and `EmberClusterHeldBackSwimStartFailureTest` (31900) sit
-    /// above this range's last candidate (31500 + 102).
-    private static final int FIRST_CANDIDATE_BASE = 29700;
-    private static final int LAST_CANDIDATE_BASE = 31500;
-    private static final int CANDIDATE_STEP = 200;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final String PREFIX = "newborn";

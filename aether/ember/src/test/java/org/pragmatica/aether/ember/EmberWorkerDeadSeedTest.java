@@ -31,7 +31,6 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// A worker is added whose configured peers are the three live cores PLUS a core that never started: an
 /// address with nothing listening. The worker must still join, become ready and be counted by the leader.
 /// Armed by asserting the dead seed really is in the worker's own configured topology.
-@PortBudget
 class EmberWorkerDeadSeedTest {
     private static final int CORES = 3;
     private static final int SLOTS = 2 * CORES;
@@ -39,15 +38,8 @@ class EmberWorkerDeadSeedTest {
     private static final int APP_OFFSET = 80;
     /// A port inside the block that no slot ever uses: the dead seed's address.
     private static final int DEAD_OFFSET = 30;
-    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
-    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
-    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
-    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_OFFSET,
                                                                                 java.util.List.of(DEAD_OFFSET));

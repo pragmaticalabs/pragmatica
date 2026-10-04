@@ -190,5 +190,39 @@ class LiteralTest(unittest.TestCase):
             self.assertEqual(2, ctp.main(["--root", root]))
 
 
+class DynamicWindowTest(unittest.TestCase):
+    def _root_with(self, text, java=None):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, os.path.dirname(ctp.TABLE)))
+        with open(os.path.join(root, ctp.TABLE), "w", encoding="utf-8") as f:
+            f.write(text)
+        if java is not None:
+            d = os.path.join(root, "m", "src", "test", "java")
+            os.makedirs(d)
+            with open(os.path.join(d, "PinnedTest.java"), "w", encoding="utf-8") as f:
+                f.write(java)
+        return root
+
+    def test_real_table_registers_the_dynamic_window_and_it_overlaps_nothing(self):
+        rows = ctp.parse_table(real_table())
+        dyn = [r for r in rows if r.get("dynamic")]
+        self.assertEqual(1, len(dyn), "the EmberPorts window table is the one dynamic row")
+        self.assertIn(("udp", 26208, 27407, "cluster"), dyn[0]["ranges"])
+        self.assertEqual([], ctp.overlaps(rows))
+
+    def test_a_row_overlapping_the_dynamic_window_goes_red_through_the_cli(self):
+        text = real_table()
+        seeded = text.replace("| ClusterFormationTest ", "| SeededInWindowTest | 26500 | 26600 | 0 | 3 nodes |\n| ClusterFormationTest ", 1)
+        self.assertNotEqual(text, seeded)
+        self.assertEqual(1, ctp.main(["--root", self._root_with(seeded)]))
+        self.assertEqual(0, ctp.main(["--root", self._root_with(text)]), "control: the real table passes")
+
+    def test_a_pinned_literal_inside_the_dynamic_window_goes_red_through_the_cli(self):
+        text = real_table()
+        self.assertEqual(1, ctp.main(["--root", self._root_with(text, "class P { static final int BASE_PORT = 26500; }\n")]))
+        self.assertEqual(0, ctp.main(["--root", self._root_with(text, "class P { static final int BASE_PORT = 11111; }\n")]),
+                         "control: a literal outside the window is only a warning")
+
+
 if __name__ == "__main__":
     unittest.main()

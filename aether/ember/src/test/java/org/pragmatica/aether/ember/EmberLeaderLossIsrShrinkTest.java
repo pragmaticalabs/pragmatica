@@ -44,17 +44,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// The in-run precondition: before the kill, the committed record names the leader as an ISR member that is not the
 /// owner, so the expected record is exactly "same owner, ISR minus the leader".
-@PortBudget
 class EmberLeaderLossIsrShrinkTest {
     private static final int CLUSTER_SIZE = 5;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
 
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
-                                                                               EmberTestPorts.POOL_LAST,
-                                                                               EmberTestPorts.POOL_STEP,
-                                                                               SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                MGMT_OFFSET,
                                                                                APP_HTTP_OFFSET);
 

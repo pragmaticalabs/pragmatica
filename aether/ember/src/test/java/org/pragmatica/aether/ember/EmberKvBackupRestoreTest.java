@@ -55,17 +55,13 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   `AetherNode`, turns the first assertion red.
 /// - **§6.4.** Consensus runs in memory, so a node that starts late with an OLD backup of another lineage in
 ///   its directory installs nothing of it: it ends holding the running cluster's lineage.
-@PortBudget
 class EmberKvBackupRestoreTest {
     static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
-                                                                                EmberTestPorts.POOL_LAST,
-                                                                                EmberTestPorts.POOL_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();

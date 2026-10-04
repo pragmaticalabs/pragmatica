@@ -6,19 +6,14 @@ package org.pragmatica.aether.ember;
 
 import java.io.IOException;
 import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.IntFunction;
-import java.util.function.ToIntFunction;
 
-import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.aether.ember.EmberPorts.Layout;
+import org.pragmatica.aether.ember.EmberPorts.PortLease;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -30,260 +25,61 @@ import org.slf4j.LoggerFactory;
 import static org.assertj.core.api.Assertions.fail;
 
 
-/// Port blocks for Ember cluster tests (#939, #1189, #1667).
+/// Port leases for Ember cluster tests (#939, #1189, #1667): the test-side shape over [EmberPorts].
 ///
-/// A probed block is only a GOOD GUESS: the probe releases each port before the cluster binds it, and CI runs a
-/// module-parallel reactor (`-T 1C`), so another process can take a port in between. [#startedCluster] therefore
-/// retries on a bind collision with a fresh block, a bounded number of times, instead of failing the test on a
-/// port it never chose. A start failure that is not a bind collision fails at once.
+/// A test names the block it needs (slots and offsets) and leases a sub-window of this JVM's port window. The window was claimed
+/// from a table shared by every JVM on the host, so concurrent Maven reactors do not collide on ports (the claim is the lock,
+/// see [EmberPorts]); the tests of one JVM run one after another and reuse the window, rotating through its sub-windows. The
+/// lease is handed to the cluster, which frees it when it stops.
 ///
-/// A block is `slots` consecutive ports from `base` for QUIC, the same slots at `base + mgmtOffset` (management) and
-/// `base + appOffset` (app HTTP), all TCP, plus SWIM's UDP port at QUIC port + [#SWIM_PORT_OFFSET].
+/// What remains probabilistic is only a process outside the allocator binding a window port after the claim, so
+/// [#startedCluster] still retries a start that fails on a bind collision on the next sub-window, a bounded number of times,
+/// and any other start failure fails the test at once.
 final class EmberTestPorts {
     private static final Logger log = LoggerFactory.getLogger(EmberTestPorts.class);
-    /// SWIM binds UDP at the node's cluster port plus this: the production constant itself (AetherNode binds SWIM at
-    /// `port + CoreSwimHealthDetector.SWIM_PORT_OFFSET`), so the probe cannot drift from the bind (#1698's CI flake).
-    static final int SWIM_PORT_OFFSET = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
+    static final int SWIM_PORT_OFFSET = EmberPorts.SWIM_PORT_OFFSET;
     static final int START_ATTEMPTS = 5;
-    /// Longer than TCP TIME_WAIT (60 s) on Linux, so a pool whose every base is dirty becomes free again within it.
-    static final long EXHAUSTION_WAIT_MS = 90_000L;
-    static final long RESCAN_MS = 2_000L;
-    /// The back-off is a budget per TEST, not per call: a test that probes several times (or retries) can wait
-    /// EXHAUSTION_WAIT_MS in total, so it fails with "no free port block" at about (time before its last probe) + 90 s,
-    /// inside every pool test's own `@Timeout` (the shortest that probes is 120 s), never as a JUnit timeout. Reset before
-    /// each test by [EmberPortBudgetReset].
-    private static final AtomicLong backoffBudgetMs = new AtomicLong(EXHAUSTION_WAIT_MS);
-    /// True only while a test whose class carries [PortBudget] is running.
-    private static volatile boolean armed;
-    /// The one probed pool every Ember test that scans for a free block draws from. Below the Linux ephemeral floor
-    /// (32768): a base inside 32768-60999 can be taken by any concurrent module's outbound connection between probe and
-    /// bind. The tests of this module run one after another and share it; a block still held, or in TCP TIME_WAIT from
-    /// the test before, is skipped by the probe. A few tests do run two clusters at once (EmberClusterForeignAdmissionTest):
-    /// that is safe because the probe binds every port of a candidate, so a candidate that overlaps a live cluster's ports
-    /// fails the probe and is skipped, and one that passes shares no port with it. The step is a quarter of a block (50),
-    /// which gives 17 candidates. Registered as one scan row in TEST_PORT_ALLOCATION.md.
-    static final int POOL_FIRST = 1030;
-    static final int POOL_LAST = 1830;
-    static final int POOL_STEP = 50;
 
     /// `reservedOffsets`: further ports (TCP and UDP) the test uses at `base + offset`, e.g. a dead seed's address.
-    record Block(int first,
-                 int last,
-                 int step,
-                 int slots,
-                 int mgmtOffset,
-                 int appOffset,
-                 List<Integer> reservedOffsets) {
-        Block(int first, int last, int step, int slots, int mgmtOffset, int appOffset) {
-            this(first, last, step, slots, mgmtOffset, appOffset, List.of());
+    record Block(int slots, int mgmtOffset, int appOffset, List<Integer> reservedOffsets) {
+        Block(int slots, int mgmtOffset, int appOffset) {
+            this(slots, mgmtOffset, appOffset, List.of());
+        }
+
+        Layout layout() {
+            return new Layout(slots, mgmtOffset, appOffset, reservedOffsets);
         }
     }
+
+    /// A base for a cluster that is built but never started or bound (storage-config and wiring tests): nothing listens
+    /// on it, so it needs no lease.
+    static final int UNBOUND_BASE = 1030;
 
     private EmberTestPorts() {}
 
-    /// The first block in range whose every port is free right now.
-    static int freeBase(Block block) {
-        return freeBase(block, Set.of());
+    /// An UNSTARTED cluster on a leased sub-window, for a test that starts it in its own way. The cluster owns the lease and frees it
+    /// when it stops; a test that never stops it closes `cluster.releasePortLease()`.
+    static EmberCluster clusterOnFreeLease(Block block, IntFunction<EmberCluster> clusterAt) {
+        var lease = claim(block);
+        var cluster = clusterAt.apply(lease.base());
+
+        cluster.adoptPortLease(lease).onFailure(cause -> fail(cause.message()));
+        return cluster;
     }
 
-    /// As [#freeBase(Block)], skipping `excluded` bases (#1707 review: a base that lost a bind is not retried, even if
-    /// the port that collided has since been released).
-    static int freeBase(Block block, Set<Integer> excluded) {
-        if (!armed) {
-            return fail("EmberTestPorts probed outside a test whose class carries @PortBudget: the back-off budget would"
-                        + " be stale (shared with the test before). Add @PortBudget to the test class.");
-        }
-
-        var allowed = backoffBudgetMs.get();
-        var startedAt = System.nanoTime();
-
-        try {
-            return freeBase(block, excluded, allowed);
-        } finally {
-            backoffBudgetMs.addAndGet(-Math.min(allowed, (System.nanoTime() - startedAt) / 1_000_000L));
-        }
+    /// A sub-window lease for `block`, from this JVM's port window. The caller closes it, or hands it to a cluster
+    /// ([EmberCluster#adoptPortLease]) that frees it on stop.
+    static PortLease claim(Block block) {
+        return EmberPorts.lease(block.layout())
+                         .fold(cause -> fail("no port sub-window: " + cause.message()), lease -> lease);
     }
 
-    static void arm(boolean value) {
-        armed = value;
-    }
-
-    static void resetBackoffBudget(long ms) {
-        backoffBudgetMs.set(ms);
-    }
-
-    /// As above. When EVERY candidate is busy (a port still held, or a TCP port in TIME_WAIT: the probe binds without
-    /// `SO_REUSEADDR`) the scan backs off and repeats until `waitMs` has passed, which must exceed TIME_WAIT's 60 s, and
-    /// only then fails: a pool shared by sequential tests runs dry for a moment, which is not a failure of the test.
-    static int freeBase(Block block, Set<Integer> excluded, long waitMs) {
-        var deadline = System.nanoTime() + waitMs * 1_000_000L;
-
-        while (true) {
-            for (int base = block.first(); base <= block.last(); base += block.step()) {
-                if (!excluded.contains(base) && isFree(block, base)) {
-                    return base;
-                }
-            }
-
-            if (System.nanoTime() >= deadline) {
-                return fail("no free port block between " + block.first() + " and " + block.last() + " after " + waitMs
-                              + " ms of back-off (the per-test budget)");
-            }
-
-            log.warn("Every port block between {} and {} is busy (held, or TCP TIME_WAIT); rescanning in {} ms",
-                     block.first(),
-                     block.last(),
-                     RESCAN_MS);
-            sleep(RESCAN_MS);
-        }
-    }
-
-    /// One port a test occupies on purpose, at `base + offset`.
-    record Hold(int offset, boolean udp) {
-        static Hold tcp(int offset) {
-            return new Hold(offset, false);
-        }
-
-        static Hold udp(int offset) {
-            return new Hold(offset, true);
-        }
-    }
-
-    /// The sockets a test holds on purpose, on a block that was free when they were bound.
-    record Held(int base, List<AutoCloseable> sockets) implements AutoCloseable {
-        @Override
-        public void close() {
-            sockets.forEach(socket -> {
-                try {
-                    socket.close();
-                } catch (Exception e) {
-                    log.warn("closing a held test socket failed: {}", e.getMessage());
-                }
-            });
-        }
-    }
-
-    /// Binds `holds` on a free block. A test that occupies a port itself races the probe like any other bind, so a bind
-    /// that fails is retried on a fresh block (the failed base is added to `attempted`), a bounded number of times.
-    static Held hold(Block block, Set<Integer> attempted, List<Hold> holds) {
-        for (int attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
-            var base = freeBase(block, attempted);
-            var opened = new ArrayList<AutoCloseable>();
-
-            attempted.add(base);
-            try {
-                for (var hold : holds) {
-                    var port = base + hold.offset();
-
-                    // The wildcard address and the JDK's default options, as the tests took these ports before: it
-                    // collides with the node's bind on any interface.
-                    opened.add(hold.udp() ? new DatagramSocket(port) : new ServerSocket(port));
-                }
-                return new Held(base, List.copyOf(opened));
-            } catch (IOException e) {
-                new Held(base, opened).close();
-                log.warn("Test port hold on base {} lost a port between probe and bind (attempt {}/{}): {}",
-                         base,
-                         attempt,
-                         START_ATTEMPTS,
-                         e.getMessage());
-            }
-        }
-
-        return fail("every one of " + START_ATTEMPTS + " port holds lost a port between probe and bind");
-    }
-
-    private static void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            fail("interrupted while waiting for a free port block");
-        }
-    }
-
-    /// A started cluster on a free block. `clusterAt` builds the (unstarted) cluster for a base port.
-    static EmberCluster startedCluster(Block block, IntFunction<EmberCluster> clusterAt, TimeSpan startBound) {
-        return startedCluster(block, clusterAt, EmberCluster::start, EmberCluster::stop, startBound);
-    }
-
-    /// The block's retry path over any cluster type: the production base choice, excluding every attempted base.
-    static <C> C startedCluster(Block block,
-                                IntFunction<C> clusterAt,
-                                Function<C, Promise<Unit>> start,
-                                Function<C, Promise<Unit>> stop,
-                                TimeSpan startBound) {
-        return startedCluster(clusterAt, start, stop, startBound, attempted -> freeBase(block, attempted));
-    }
-
-    /// As above, with the base choice given the bases already attempted (a seam for EmberTestPortsTest).
-    static EmberCluster startedCluster(IntFunction<EmberCluster> clusterAt,
-                                       TimeSpan startBound,
-                                       ToIntFunction<Set<Integer>> chooseBase) {
-        return startedCluster(clusterAt, EmberCluster::start, EmberCluster::stop, startBound, chooseBase);
-    }
-
-    /// The retry loop over any cluster type, so EmberTestPortsTest can inject start and stop outcomes deterministically
-    /// (#1707 review round 2: a real cluster cannot be made to fail its stop on demand).
-    static <C> C startedCluster(IntFunction<C> clusterAt,
-                                Function<C, Promise<Unit>> start,
-                                Function<C, Promise<Unit>> stop,
-                                TimeSpan startBound,
-                                ToIntFunction<Set<Integer>> chooseBase) {
-        var lastCollision = "";
-        var attempted = new HashSet<Integer>();
-
-        for (int attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
-            var base = chooseBase.applyAsInt(Set.copyOf(attempted));
-
-            attempted.add(base);
-            var cluster = clusterAt.apply(base);
-            var outcome = start.apply(cluster).await(startBound).fold(Cause::message, _ -> "started");
-
-            if ("started".equals(outcome)) {
-                return cluster;
-            }
-
-            var stopped = stop.apply(cluster).await(startBound).fold(Cause::message, _ -> "stopped");
-
-            if (!"stopped".equals(stopped)) {
-                // A cluster that did not stop may still hold sockets; starting another beside it proves nothing.
-                return fail("cluster start on base " + base
-                           + " failed (" + outcome
-                           + ") and its cleanup failed too: " + stopped);
-            }
-
-            if (!isBindCollision(outcome)) {
-                return fail("cluster start on base " + base + " failed: " + outcome);
-            }
-
-            lastCollision = outcome;
-            log.warn("Ember test cluster on base {} lost a port between probe and bind (attempt {}/{}); retrying on a "
-                    + "fresh block: {}",
-                     base,
-                     attempt,
-                     START_ATTEMPTS,
-                     outcome);
-        }
-
-        return fail("every one of " + START_ATTEMPTS
-                   + " cluster starts lost a port between probe and bind; last: " + lastCollision);
-    }
-
-    static boolean isBindCollision(String startFailure) {
-        return startFailure.contains("Address already in use") || startFailure.contains("BindException");
-    }
-
+    /// Whether every port of `block` at `base` is free right now.
     static boolean isFree(Block block, int base) {
-        for (int slot = 0; slot < block.slots(); slot++) {
-            if (!slotFree(block, base, slot)) {
-                return false;
-            }
-        }
+        var layout = block.layout();
 
-        return block.reservedOffsets()
-                    .stream()
-                    .allMatch(offset -> tcpFree(base + offset) && udpFree(base + offset));
+        return java.util.stream.IntStream.range(0, layout.slots()).allMatch(slot -> slotFree(block, base, slot))
+               && layout.reservedOffsets().stream().allMatch(offset -> tcpFree(base + offset) && udpFree(base + offset));
     }
 
     /// One node's ports in the block: QUIC (TCP and UDP), SWIM UDP, management and app HTTP.
@@ -300,7 +96,7 @@ final class EmberTestPorts {
     private static boolean tcpFree(int port) {
         try (var socket = new ServerSocket()) {
             socket.setReuseAddress(false);
-            socket.bind(loopback(port));
+            socket.bind(new java.net.InetSocketAddress(port));
 
             return true;
         } catch (IOException e) {
@@ -311,7 +107,7 @@ final class EmberTestPorts {
     private static boolean udpFree(int port) {
         try (var socket = new DatagramSocket(null)) {
             socket.setReuseAddress(false);
-            socket.bind(loopback(port));
+            socket.bind(new java.net.InetSocketAddress(port));
 
             return true;
         } catch (IOException e) {
@@ -319,7 +115,133 @@ final class EmberTestPorts {
         }
     }
 
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
+    /// One port a test occupies on purpose, at `base + offset`.
+    record Hold(int offset, boolean udp) {
+        static Hold tcp(int offset) {
+            return new Hold(offset, false);
+        }
+
+        static Hold udp(int offset) {
+            return new Hold(offset, true);
+        }
+    }
+
+    /// The sockets a test holds on purpose, on a lease claimed for it; closing frees the sockets and the lease.
+    record Held(int base, PortLease lease, List<AutoCloseable> sockets) implements AutoCloseable {
+        @Override
+        public void close() {
+            sockets.forEach(socket -> {
+                try {
+                    socket.close();
+                } catch (Exception e) {
+                    log.warn("closing a held test socket failed: {}", e.getMessage());
+                }
+            });
+            lease.close();
+        }
+    }
+
+    /// Binds `holds` on a claimed lease. A hold that fails to bind lost a port to a process outside the allocator
+    /// between the claim's probe and this bind, so it is retried on a fresh lease, a bounded number of times.
+    static Held hold(Block block, List<Hold> holds) {
+        for (int attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
+            var lease = claim(block);
+            var opened = new ArrayList<AutoCloseable>();
+
+            try {
+                for (var hold : holds) {
+                    var port = lease.base() + hold.offset();
+
+                    // The wildcard address and the JDK's default options, as the tests took these ports before: it
+                    // collides with the node's bind on any interface.
+                    opened.add(hold.udp() ? new DatagramSocket(port) : new ServerSocket(port));
+                }
+                return new Held(lease.base(), lease, List.copyOf(opened));
+            } catch (IOException e) {
+                new Held(lease.base(), lease, opened).close();
+                log.warn("Test port hold on lease {} lost a port between claim and bind (attempt {}/{}): {}",
+                         lease.base(),
+                         attempt,
+                         START_ATTEMPTS,
+                         e.getMessage());
+            }
+        }
+
+        return fail("every one of " + START_ATTEMPTS + " port holds lost a port between claim and bind");
+    }
+
+    /// A started cluster on a free lease. `clusterAt` builds the (unstarted) cluster for a base port; the lease is handed
+    /// to the cluster, which frees it when it stops.
+    static EmberCluster startedCluster(Block block, IntFunction<EmberCluster> clusterAt, TimeSpan startBound) {
+        return startedCluster(block, clusterAt, EmberCluster::start, EmberCluster::stop, startBound);
+    }
+
+    /// As above for a cluster that a test starts in its own way (`start` returns the start promise); `adopt` hands over the lease.
+    static EmberCluster startedCluster(Block block,
+                                       IntFunction<EmberCluster> clusterAt,
+                                       Function<EmberCluster, Promise<Unit>> start,
+                                       Function<EmberCluster, Promise<Unit>> stop,
+                                       TimeSpan startBound) {
+        return startedCluster(() -> claim(block),
+                              lease -> {
+                                  var cluster = clusterAt.apply(lease.base());
+
+                                  cluster.adoptPortLease(lease).onFailure(cause -> fail(cause.message()));
+                                  return cluster;
+                              },
+                              start,
+                              stop,
+                              startBound);
+    }
+
+    /// The retry loop over any cluster type, so EmberTestPortsTest can inject start and stop outcomes deterministically
+    /// (a real cluster cannot be made to fail its stop on demand). `claim` yields a fresh lease per attempt; `clusterOn`
+    /// builds the cluster on it and is responsible for handing the lease over.
+    static <C> C startedCluster(java.util.function.Supplier<PortLease> claim,
+                                Function<PortLease, C> clusterOn,
+                                Function<C, Promise<Unit>> start,
+                                Function<C, Promise<Unit>> stop,
+                                TimeSpan startBound) {
+        var lastCollision = "";
+
+        for (int attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
+            var lease = claim.get();
+            var cluster = clusterOn.apply(lease);
+            var outcome = start.apply(cluster).await(startBound).fold(Cause::message, _ -> "started");
+
+            if ("started".equals(outcome)) {
+                return cluster;
+            }
+
+            var stopped = stop.apply(cluster).await(startBound).fold(Cause::message, _ -> "stopped");
+
+            lease.close();
+
+            if (!"stopped".equals(stopped)) {
+                // A cluster that did not stop may still hold sockets; starting another beside it proves nothing.
+                return fail("cluster start on base " + lease.base()
+                           + " failed (" + outcome
+                           + ") and its cleanup failed too: " + stopped);
+            }
+
+            if (!isBindCollision(outcome)) {
+                return fail("cluster start on base " + lease.base() + " failed: " + outcome);
+            }
+
+            lastCollision = outcome;
+            log.warn("Ember test cluster on lease {} lost a port between claim and bind (attempt {}/{}); retrying on a "
+                    + "fresh lease: {}",
+                     lease.base(),
+                     attempt,
+                     START_ATTEMPTS,
+                     outcome);
+        }
+
+        return fail("every one of " + START_ATTEMPTS
+                   + " cluster starts lost a port between claim and bind; last: " + lastCollision);
+    }
+
+    static boolean isBindCollision(String startFailure) {
+        return startFailure.contains("Address already in use") || startFailure.contains("BindException");
     }
 }

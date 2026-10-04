@@ -44,16 +44,12 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// The control runs in the same cluster before the cut: the same publish to the same owner is acknowledged, so a
 /// refusal after the cut is the cut's doing, not a broken publish path.
-@PortBudget
 class EmberMinorityOwnerIsrTest {
     private static final int CLUSTER_SIZE = 5;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
-                                                                                EmberTestPorts.POOL_LAST,
-                                                                                EmberTestPorts.POOL_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();

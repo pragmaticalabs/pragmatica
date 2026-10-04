@@ -36,27 +36,13 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Run for both addresses of the relaunched process: a different port (next free slot) and the killed
 /// node's own port (same address, the container-restart shape).
-@PortBudget
 class EmberSameIdentityRelaunchTest {
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Registered in forge-tests' `TEST_PORT_ALLOCATION.md`: blocks 23000-23300 (step 100; one block spans
-    /// base..base+85), BELOW the Linux ephemeral range 32768-60999 — the former 36100-37900 lay inside it,
-    /// and under load a kernel-assigned port left no free block in 4 of 9 bigboy runs (#1558). The previous
-    /// 22000-23800 scan was not disjoint: five forge-tests classes bind fixed ports at 22000-22885 and
-    /// 23500-23702. 23000-23499 is bound by no test in the repository (searched for every five-digit
-    /// literal under `src/test`), and sits between those classes and `SurvivorLivenessAfterGracefulKillTest`
-    /// (24500).
-    private static final int FIRST_CANDIDATE_BASE = 23000;
-    private static final int LAST_CANDIDATE_BASE = 23300;
-    private static final int CANDIDATE_STEP = 100;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
@@ -130,8 +116,8 @@ class EmberSameIdentityRelaunchTest {
     }
 
     private void relaunchedProcessNeverRestoresQuorum(boolean sameAddress) {
-        var basePort = EmberTestPorts.freeBase(PORTS);
-        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+        cluster = EmberTestPorts.clusterOnFreeLease(PORTS, basePort -> emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk"));
+        var basePort = cluster.basePort();
         assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
         var survivor = cluster.getNode("btk-1").unwrap();
 

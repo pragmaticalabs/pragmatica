@@ -33,20 +33,12 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// The control is half of the pin: it proves the pre-vote's answers actually cross the wire, because a
 /// follower's round can only conclude "proceed" on affirmative doubt from peers — a dead wire would keep a
 /// dead leader in office, and the first test alone would pass vacuously on it.
-@PortBudget
 class EmberFollowerLinkLossKeepsLeaderTest {
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
-    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
-    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
-    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();

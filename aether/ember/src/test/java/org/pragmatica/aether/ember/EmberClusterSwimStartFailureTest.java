@@ -7,7 +7,6 @@ package org.pragmatica.aether.ember;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.ServerSocket;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -36,12 +35,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The pin is on the CAUSE, not merely on "it failed": a bounded `await` returns a `Timeout` failure
 /// too, and that is exactly the hang. Reverting the join turns this red with the `START_BOUND`
 /// `Timeout` cause instead of `Address already in use`.
-@PortBudget
 class EmberClusterSwimStartFailureTest {
     /// The shared Ember pool (EmberTestPorts.POOL_*), below the Linux ephemeral floor.
     /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with
     /// another process would read as the behaviour under test. The port it occupies on purpose it binds itself.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(3, 40, 80);
     private static final String NODE_PREFIX = "swimfail";
     /// Well above the measured green (node 1's stop plus the abort's bounded stops of the other two),
     /// well below the 90 s the reviewer's probe hung for: a `Timeout` here IS the hang.
@@ -71,7 +69,6 @@ class EmberClusterSwimStartFailureTest {
         int basePort;
 
         try (var held = EmberTestPorts.hold(PORTS,
-                                            new HashSet<>(),
                                             List.of(EmberTestPorts.Hold.udp(CoreSwimHealthDetector.SWIM_PORT_OFFSET)))) {
             basePort = held.base();
             var baseMgmtPort = basePort + PORTS.mgmtOffset();

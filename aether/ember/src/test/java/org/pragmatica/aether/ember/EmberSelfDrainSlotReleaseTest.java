@@ -24,7 +24,7 @@ class EmberSelfDrainSlotReleaseTest {
     @Test
     @SuppressWarnings("unchecked")
     void selfDrainReclaimsEveryRegistryAndReturnsSlotOnceAfterStop() throws ReflectiveOperationException {
-        var cluster = EmberCluster.emberCluster(1, EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST + 100, "self-drain");
+        var cluster = EmberCluster.emberCluster(1, EmberTestPorts.UNBOUND_BASE, EmberTestPorts.UNBOUND_BASE + 100, "self-drain");
         var id = new NodeId("self-drain-worker");
         var stop = Promise.<Unit>promise();
         var stops = new AtomicInteger();
@@ -35,7 +35,7 @@ class EmberSelfDrainSlotReleaseTest {
                 case "toString" -> id.id();
                 default -> null;
             });
-        cluster.adoptNode(NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("localhost", EmberTestPorts.POOL_FIRST).unwrap()), node);
+        cluster.adoptNode(NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("localhost", EmberTestPorts.UNBOUND_BASE).unwrap()), node);
         var slots = (Map<String, Integer>) field(cluster, "slotsByNodeId");
         var available = (Queue<Integer>) field(cluster, "availableSlots");
         var tags = (Map<String, Map<String, String>>) field(cluster, "instanceTags");

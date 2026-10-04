@@ -68,7 +68,6 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Ports are probed free at run time, following `EmberClusterObservedNodeStateTest`: module test phases
 /// run concurrently in CI, so a fixed port block is exposed to every other module (#939).
-@PortBudget
 class EmberBootstrapAdminKeyAuthTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`, so a block must cover twice the
@@ -76,14 +75,8 @@ class EmberBootstrapAdminKeyAuthTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    private static final int FIRST_CANDIDATE_BASE = 27700;
-    private static final int LAST_CANDIDATE_BASE = 29500;
-    private static final int CANDIDATE_STEP = 200;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();

@@ -6,7 +6,6 @@ package org.pragmatica.aether.ember;
 
 import java.io.IOException;
 import java.net.ServerSocket;
-import java.util.HashSet;
 import java.util.List;
 
 import org.pragmatica.lang.Cause;
@@ -32,12 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The pin is on the CAUSE, not merely on "it failed": a bounded `await` returns a `Timeout` failure
 /// too, and that is exactly the old behaviour. Reverting `EmberCluster.abortStart` turns this red
 /// with a 60-second `Timeout` cause instead of the bind failure.
-@PortBudget
 class EmberClusterPartialStartFailureTest {
     /// #939: a probed block, not fixed ports: a fixed port collides with whatever else holds it (CI runs a
     /// module-parallel reactor), and this test's own failure mode IS a bind failure, so a collision would read as
     /// the behaviour under test. The two management ports it occupies on purpose are bound by the test itself.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(3, 40, 80);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(30).seconds();
 
@@ -66,7 +64,6 @@ class EmberClusterPartialStartFailureTest {
         int base;
 
         try (var held = EmberTestPorts.hold(PORTS,
-                                            new HashSet<>(),
                                             List.of(EmberTestPorts.Hold.tcp(PORTS.mgmtOffset()),
                                                     EmberTestPorts.Hold.tcp(PORTS.mgmtOffset() + 1)))) {
             base = held.base();

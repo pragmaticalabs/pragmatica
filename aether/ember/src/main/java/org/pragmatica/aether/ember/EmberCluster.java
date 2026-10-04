@@ -134,6 +134,8 @@ public final class EmberCluster {
     private final int basePort;
     private final int baseMgmtPort;
     private final int baseAppHttpPort;
+    /// The sub-window lease this cluster runs on, when it was leased from [EmberPorts]; freed when the cluster stops.
+    private final AtomicReference<EmberPorts.PortLease> portLease = new AtomicReference<>();
     private final String nodeIdPrefix;
     private final AtomicBoolean rollingRestartActive = new AtomicBoolean(false);
     private final ScheduledExecutorService rollingRestartExecutor = Executors.newSingleThreadScheduledExecutor();
@@ -670,6 +672,14 @@ public final class EmberCluster {
                  heldBackNodeIds.size(),
                  heldBackNodeIds);
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
+        var lease = portLease.get();
+
+        if (lease != null && poolSize > lease.layout().slots()) {
+            return org.pragmatica.lang.utils.Causes.cause("cluster needs " + poolSize
+                                                         + " port slots but its lease holds " + lease.layout()
+                                                                                                     .slots())
+                                                   .promise();
+        }
 
         genesisExcluded = Set.copyOf(excludedFromGenesis);
         availableSlots.clear();
@@ -936,6 +946,7 @@ public final class EmberCluster {
 
     private Unit clearClusterStateOnFailure(Unit unit) {
         releaseUnwritableStorageBase();
+        releasePortLease();
         nodes.clear();
         // Held-back instances were never started, so dropping the references disposes them fully.
         heldBackNodes.clear();
@@ -980,6 +991,7 @@ public final class EmberCluster {
 
     private Unit clearClusterState(Unit unit) {
         releaseUnwritableStorageBase();
+        releasePortLease();
         nodes.clear();
         // Still-held instances were never started — nothing to stop, dropping them disposes them.
         heldBackNodes.clear();
@@ -1337,6 +1349,47 @@ public final class EmberCluster {
 
     public int getAppHttpPort() {
         return baseAppHttpPort;
+    }
+
+    /// First QUIC/consensus UDP port: node slot `i` binds `basePort() + i`.
+    public int basePort() {
+        return basePort;
+    }
+
+    /// First management TCP port: node slot `i` binds `baseMgmtPort() + i`.
+    public int baseMgmtPort() {
+        return baseMgmtPort;
+    }
+
+    /// First app HTTP TCP port: node slot `i` binds `baseAppHttpPort() + i`.
+    public int baseAppHttpPort() {
+        return baseAppHttpPort;
+    }
+
+    /// Hand a lease from [EmberPorts] to this cluster: it is freed when the cluster stops (or its start is aborted).
+    /// Every port the cluster uses must lie inside the lease.
+    public Result<Unit> adoptPortLease(EmberPorts.PortLease lease) {
+        if (!lease.contains(basePort) || !lease.contains(baseMgmtPort) || !lease.contains(baseAppHttpPort)) {
+            return org.pragmatica.lang.utils.Causes.cause("cluster ports " + basePort
+                                                         + "/" + baseMgmtPort
+                                                         + "/" + baseAppHttpPort
+                                                         + " are not inside the lease " + lease.base()
+                                                         + "+" + lease.layout()
+                                                                      .extent())
+                                                   .result();
+        }
+
+        if (!portLease.compareAndSet(null, lease)) {
+            return org.pragmatica.lang.utils.Causes.cause("this cluster already owns a port lease")
+                                                   .result();
+        }
+
+        return Result.unitResult();
+    }
+
+    /// Free the lease now. Idempotent.
+    public void releasePortLease() {
+        Option.option(portLease.getAndSet(null)).onPresent(EmberPorts.PortLease::close);
     }
 
     public List<NodeInfo> getNodeInfos() {

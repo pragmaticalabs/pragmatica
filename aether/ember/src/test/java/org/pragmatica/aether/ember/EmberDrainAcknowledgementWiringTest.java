@@ -56,21 +56,14 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// core dial set, so the leader neither drains real peers nor dials the fakes (a failed dial would inject
 /// liveness-loss death evidence). The final check also asserts every real peer is still `Member`, so any
 /// reconciler interference turns this test red instead of hiding.
-@PortBudget
 class EmberDrainAcknowledgementWiringTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`.
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    private static final int FIRST_CANDIDATE_BASE = 27700;
-    private static final int LAST_CANDIDATE_BASE = 29500;
-    private static final int CANDIDATE_STEP = 200;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();

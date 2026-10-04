@@ -20,6 +20,9 @@ can see each other (#1688 and #1703 both took 14500+; each branch's own grep was
     parse: fewer than 5 cells, an empty Test Class or an indented row is fatal. A table set that yields 0 rows exits 2
     ("EXAMINED NOTHING"), as does a tree with no TEST_PORT_ALLOCATION.md at all. Every such file in the tree is read
     (glob), so a second table cannot be ignored silently; ranges are compared across all of them.
+(1b) DYNAMIC rows (a row whose Test Class says "(dynamic"). Their range is claimed at run time (EmberPorts windows), so the
+    range is not "registered" for any test class: a port-like literal on a `src/test` line that mentions "port" and falls
+    inside one is always fatal, because that test would bind a port a dynamic claimant may hold.
 (2) Unregistered literals (WARN-ONLY unless --strict). A 4-5 digit number (1024-65535) on a non-comment line of
     */src/test/**/*.java that mentions "port" must fall in a registered range. rc4 already binds fixed ports that
     the table does not list (the table says so itself), so this starts as a report; --strict makes it fatal.
@@ -84,7 +87,8 @@ def parse_row(cells, lineno):
     scan = re.fullmatch(r"(\d+)\s*-\s*(\d+)\s+scan", base_cell)
     if scan:
         lo, hi = int(scan.group(1)), int(scan.group(2)) + SWIM_PORT_OFFSET + span - 1
-        return {"name": name, "line": lineno, "ranges": [("udp", lo, hi, "scan"), ("tcp", lo, hi, "scan")]}
+        return {"name": name, "line": lineno, "dynamic": "(dynamic" in name,
+                "ranges": [("udp", lo, hi, "scan"), ("tcp", lo, hi, "scan")]}
     if not re.fullmatch(r"\d+", base_cell):
         raise RowError("%s: Base Port %r is neither a number nor 'a-b scan'" % (where, base_cell))
     base = int(base_cell)
@@ -105,7 +109,7 @@ def parse_row(cells, lineno):
     if app:
         a = rel(app.group(1).replace(" ", ""), "app-http")
         ranges.append(("tcp", a, a + span - 1, "app-http"))
-    return {"name": name, "line": lineno, "ranges": ranges}
+    return {"name": name, "line": lineno, "dynamic": "(dynamic" in name, "ranges": ranges}
 
 
 def overlaps(rows):
@@ -146,6 +150,33 @@ def unregistered_literals(root, rows):
     return hits
 
 
+def pinned_in_dynamic(root, rows):
+    """Literals on port lines of src/test Java files that fall inside a dynamic row's range: [(path, line, port, row)]."""
+    spans = [(r["name"], lo, hi) for r in rows if r.get("dynamic") for (_, lo, hi, _) in r["ranges"]]
+    hits = []
+    if not spans:
+        return hits
+    for d, dirs, files in os.walk(root):
+        prune(dirs)
+        if "/src/test" not in d.replace(os.sep, "/") + "/":
+            continue
+        for f in files:
+            if not f.endswith(".java"):
+                continue
+            path = os.path.join(d, f)
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    s = line.strip()
+                    if s.startswith(("//", "*", "/*")) or "port" not in s.lower():
+                        continue
+                    for m in NUMBER.finditer(s):
+                        p = int(m.group(1))
+                        for name, lo, hi in spans:
+                            if lo <= p <= hi:
+                                hits.append((os.path.relpath(path, root), n, p, name))
+    return hits
+
+
 def find_tables(root):
     found = []
     for d, dirs, files in os.walk(root):
@@ -181,6 +212,10 @@ def main(argv=None):
     for a, b in bad:
         print("check-test-ports: FAIL overlap %s %s %d-%d (%s, %s:%d) vs %s %d-%d (%s, %s:%d)"
               % (a[2].upper(), a[5], a[3], a[4], a[0], a[6], a[7], b[5], b[3], b[4], b[0], b[6], b[7]), file=sys.stderr)
+    dynamic_hits = pinned_in_dynamic(args.root, rows)
+    for path, n, p, name in dynamic_hits:
+        print("check-test-ports: FAIL %s:%d: port-like literal %d is inside the dynamic range of %r; use the allocator"
+              % (path, n, p, name), file=sys.stderr)
     hits = unregistered_literals(args.root, rows)
     files = sorted({h[0] for h in hits})
     for path, n, p in hits:
@@ -188,7 +223,7 @@ def main(argv=None):
               % ("FAIL" if args.strict else "WARN", path, n, p))
     print("check-test-ports: %d table(s), %d row(s), %d range(s); %d overlap(s); %d unregistered literal(s) in %d file(s)%s"
           % (len(tables), len(rows), nranges, len(bad), len(hits), len(files), "" if args.strict else " (warn-only)"))
-    return 1 if bad or (args.strict and hits) else 0
+    return 1 if bad or dynamic_hits or (args.strict and hits) else 0
 
 
 if __name__ == "__main__":

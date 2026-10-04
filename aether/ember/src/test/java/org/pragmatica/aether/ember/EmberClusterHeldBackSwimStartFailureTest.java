@@ -7,7 +7,6 @@ package org.pragmatica.aether.ember;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.ServerSocket;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -35,12 +34,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// SETTLE (reverting it: `Timeout`, not `Address already in use`). `EmberCluster.stopFailedHeldBackNode`
 /// makes the failure REACH the node (reverting it: the release settles, but the node's management
 /// port is still bound).
-@PortBudget
 class EmberClusterHeldBackSwimStartFailureTest {
     /// The shared Ember pool (EmberTestPorts.POOL_*), below the Linux ephemeral floor.
     /// #939: a probed block, not fixed ports: this test's own failure mode IS a bind failure, so a collision with
     /// another process would read as the behaviour under test. The port it occupies on purpose it binds itself.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_LAST, EmberTestPorts.POOL_STEP, 3, 40, 80);
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(3, 40, 80);
     private static final String NODE_PREFIX = "heldswim";
     private static final String HELD_BACK_ID = NODE_PREFIX + "-3";
     private static final int HELD_BACK_SLOT = 2;
@@ -95,12 +93,10 @@ class EmberClusterHeldBackSwimStartFailureTest {
     /// is NOT retried: its bind failure is the behaviour under test. The port is held from before formation, which is
     /// equivalent: the held-back node binds nothing until `startHeldBackNodes()`.
     private EmberTestPorts.Held formedHoldingTheHeldBackSwimPort() {
-        var attempted = new HashSet<Integer>();
         var failure = "";
 
         for (int attempt = 1; attempt <= EmberTestPorts.START_ATTEMPTS; attempt++) {
             var held = EmberTestPorts.hold(PORTS,
-                                           attempted,
                                            List.of(EmberTestPorts.Hold.udp(HELD_BACK_SLOT
                                                                            + CoreSwimHealthDetector.SWIM_PORT_OFFSET)));
 

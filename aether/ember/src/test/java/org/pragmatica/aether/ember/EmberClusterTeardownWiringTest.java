@@ -47,8 +47,8 @@ class EmberClusterTeardownWiringTest {
     private static final Cause START_FAILED = Causes.cause("start failed");
     private static final TimeSpan HELD = TimeSpan.timeSpan(300).millis();
     private static final TimeSpan SETTLED = TimeSpan.timeSpan(10).seconds();
-    private static final int BASE_PORT = EmberTestPorts.POOL_FIRST;
-    private static final int BASE_MGMT_PORT = EmberTestPorts.POOL_FIRST + 100;
+    private static final int BASE_PORT = EmberTestPorts.UNBOUND_BASE;
+    private static final int BASE_MGMT_PORT = EmberTestPorts.UNBOUND_BASE + 100;
 
     @Test
     @Timeout(30)

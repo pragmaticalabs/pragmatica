@@ -28,17 +28,13 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// cannot pin it. Bootstrap commits it just BEFORE the registrar commits the genesis incarnation (observed
 /// 52 ms apart), so it carries incarnation 0 whatever the wiring does, and a takeover rewrite runs only on a
 /// later leader gain (killing the owner did not produce one within 120 s).
-@PortBudget
 class EmberIncarnationWiringTest {
     private static final int CORES = 3;
     private static final int SLOTS = 2 * CORES;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_OFFSET = 80;
     /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
-                                                                                EmberTestPorts.POOL_LAST,
-                                                                                EmberTestPorts.POOL_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();

@@ -9,7 +9,6 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
@@ -43,21 +42,13 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// their tokens, so it must be stopped too before the cores start; Ember admits workers only into a formed
 /// cluster, so this class cannot put one next to pending cores, and the worker half of the procedure is
 /// stated from the #1545 mechanism, not measured here.
-@PortBudget
 class EmberGenesisRecoveryTest {
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
-    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
-    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
-    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
-                                                                                SLOTS,
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
@@ -126,14 +117,17 @@ class EmberGenesisRecoveryTest {
     /// retry is done here instead: a start that fails settles at once, and a bind collision retries on a fresh block.
     /// Returns the base the cores run on.
     private int stuckPending(String prefix) {
-        var attempted = new HashSet<Integer>();
         var base = 0;
         var collision = "";
 
         for (int attempt = 1; attempt <= EmberTestPorts.START_ATTEMPTS; attempt++) {
-            base = EmberTestPorts.freeBase(PORTS, attempted);
-            attempted.add(base);
-            cluster = emberCluster(CLUSTER_SIZE, base, base + MGMT_OFFSET, base + APP_HTTP_OFFSET, prefix);
+            cluster = EmberTestPorts.clusterOnFreeLease(PORTS,
+                                                       leaseBase -> emberCluster(CLUSTER_SIZE,
+                                                                                leaseBase,
+                                                                                leaseBase + MGMT_OFFSET,
+                                                                                leaseBase + APP_HTTP_OFFSET,
+                                                                                prefix));
+            base = cluster.basePort();
             var starting = cluster.startWithLateGenesisMembers(Set.of(prefix + "-3"));
             var current = cluster;
 
