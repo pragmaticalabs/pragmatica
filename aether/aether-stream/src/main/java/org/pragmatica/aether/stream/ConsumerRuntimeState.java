@@ -120,11 +120,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// entirely: `closed` only stops NEW poll cycles ([#pollCycle]), it never drains a commit already
     /// issued.
     private final Set<TrackedCommit> inFlightCommits = ConcurrentHashMap.newKeySet();
+
     /// #1403 (v-str-1914 F1): a graceful detach's flush still pending — held behind the old consumer's in-flight
     /// advance for up to [#DETACH_ADVANCE_BOUND] — per key. A re-subscription of the same key on this node fetches its
     /// cursor only after that flush settles ([#loadCursorAndStart]), so the old flush can never land after the
     /// successor's own commits and move the group's cursor backwards.
     private final ConcurrentHashMap<ConsumerKey, Promise<CommitOutcome>> pendingDetachFlushes = new ConcurrentHashMap<>();
+
     /// Test-only seam (#1355), run by [#issueCheckpoint] at each [CheckpointIssuePoint]. Volatile because the
     /// issuing thread is a delivery continuation or the shared scheduler, which already exist when a test
     /// installs it; one volatile read per checkpoint is nothing.
@@ -541,10 +543,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// refuse a legitimate operator rewind) is used.
     private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
         cursorStore.onPresent(store -> option(pendingDetachFlushes.get(key)).or(NO_PREDECESSOR)
-                                                                            .onResult(_ -> fetchCursorAndStart(store,
-                                                                                                               key,
-                                                                                                               state,
-                                                                                                               1)))
+                                             .onResult(_ -> fetchCursorAndStart(store, key, state, 1)))
                    .onEmpty(() -> startConsumer(key, state));
     }
 
