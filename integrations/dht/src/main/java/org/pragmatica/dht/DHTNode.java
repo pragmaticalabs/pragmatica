@@ -15,6 +15,7 @@
  */
 package org.pragmatica.dht;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -92,6 +93,7 @@ public final class DHTNode {
 
     /// The first refusal of this node's own writes by the replication-change fence since it last adopted a change (#1777,
     /// owner rule): the fence version its writes carried and when. Empty while its writes are accepted.
+    private final ConcurrentHashMap<ByteBuffer, PendingLocalWrite> pendingLocalWrites = new ConcurrentHashMap<>();
     private final AtomicReference<Option<StaleRefusal>> staleRefusal = new AtomicReference<>(Option.none());
 
     /// This node's writes refused as stamped below a replica's applied replication change, since `sinceMillis`, while its
@@ -375,6 +377,37 @@ public final class DHTNode {
     public boolean acceptsWrites() {
         return replicationResolved.get() && replicationFenceKnown.get();
     }
+
+    /// A write this node coordinates has applied its own slot for `key` and has not resolved yet (v1882 r12): until
+    /// [#endLocalWrite], another writer's put on the key is refused `writePending`, never answered "superseded". The mark
+    /// carries a deadline of `timeoutNanos` from now, so a missed end can never refuse the key forever.
+    @Contract
+    public void beginLocalWrite(byte[] key, long timeoutNanos) {
+        var deadline = System.nanoTime() + timeoutNanos;
+
+        pendingLocalWrites.merge(ByteBuffer.wrap(key.clone()),
+                                 new PendingLocalWrite(1, deadline),
+                                 (current, added) -> new PendingLocalWrite(current.count() + 1,
+                                                                           Math.max(current.deadlineNanos(), deadline)));
+    }
+
+    /// The write begun with [#beginLocalWrite] resolved — acknowledged, failed, timed out or aborted.
+    @Contract
+    public void endLocalWrite(byte[] key) {
+        pendingLocalWrites.computeIfPresent(ByteBuffer.wrap(key.clone()),
+                                            (_, current) -> current.count() <= 1
+                                                            ? null
+                                                            : new PendingLocalWrite(current.count() - 1, current.deadlineNanos()));
+    }
+
+    /// Whether this node has its own write to `key` applied and unresolved (and not past its deadline).
+    public boolean localWritePending(byte[] key) {
+        return Option.option(pendingLocalWrites.get(ByteBuffer.wrap(key.clone())))
+                     .filter(pending -> System.nanoTime() - pending.deadlineNanos() < 0)
+                     .isPresent();
+    }
+
+    private record PendingLocalWrite(int count, long deadlineNanos) {}
 
     /// Record that a write this node coordinated, stamped with `fence`, was refused by the replication-change fence
     /// (#1777, owner rule). Only the first refusal since the last adoption is kept: it starts the clock.
@@ -865,6 +898,25 @@ public final class DHTNode {
                                                               false,
                                                               true,
                                                               false));
+
+            return;
+        }
+
+        // an owner-epoch fence is stronger evidence and still answers fenced; otherwise a write of OUR OWN to this key is in
+        // flight, and answering "superseded" to another writer could let it count a copy we may roll back (v1882 r12)
+        if (localWritePending(request.key())
+            && !storage.belowHighWater(request.key(),
+                                       request.epochIncarnation(),
+                                       request.epochTerm(),
+                                       request.epochCounter())) {
+            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                              nodeId,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              true));
 
             return;
         }

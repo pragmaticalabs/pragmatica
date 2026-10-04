@@ -62,14 +62,13 @@ class DHTDeposedWriterSameEpochTest {
             .isGreaterThanOrEqualTo(2);
     }
 
-    /// RESIDUAL, named and pinned as an ENABLED TRIPWIRE (v1882 r11): the same shape, but no replica answers within the
-    /// evidence wait, so BOTH writers apply their own slot per the named no-evidence limit [limit: #1683-class] before any fence
-    /// refusal arrives. X then reaches A after A applied W and is answered "superseded", and W's late fence refusals sink W
-    /// (WriteIndeterminate) and A rolls it back: X, acknowledged on R plus A's superseded copy, is left on ONE replica. The
-    /// gate cannot close this window — it applies on silence by design. When a mechanism closes it, this test reddens: delete
-    /// it and enable the invariant assertion in the test above for this scenario.
+    /// The no-evidence window (v1882 r12, the owner ruling "fix it now"): no replica answers within the evidence wait, so BOTH
+    /// writers apply their own slot per the named limit before any fence refusal arrives. X then reaches A while A's own W is
+    /// pending: A answers a typed retriable `writePending` refusal, NOT "superseded", so X's quorum can no longer count a copy
+    /// that A's rollback of W undoes. Invariant: an acknowledged X is on at least W = 2 replicas. (This was an enabled tripwire
+    /// asserting the one-replica result until the pending refusal closed the window.)
     @Test
-    void residual_noEvidenceWindow_anAckedXCanStillBeLeftBelowItsQuorum_untilThatLimitIsClosed() throws Exception {
+    void noEvidenceWindow_anAckedXIsNeverLeftBelowItsQuorum() throws Exception {
         var cluster = new Cluster();
 
         cluster.holding = true;
@@ -92,9 +91,9 @@ class DHTDeposedWriterSameEpochTest {
         var atOrAboveX = ALL.stream().filter(id -> cluster.version(id) >= xVersion).toList();
 
         assertThat(wOutcome.isFailure()).as("arming: W sank").isTrue();
-        assertThat(xOutcome.isSuccess() ? atOrAboveX.size() : -1)
-            .as("TRIPWIRE: today an acked X is left on one replica; if this reddens the window is closed - see the javadoc: " + xOutcome + " " + atOrAboveX)
-            .isEqualTo(1);
+        assertThat(xOutcome.isSuccess() ? atOrAboveX.size() : Integer.MAX_VALUE)
+            .as("an acknowledged X, or a write that superseded it, is on at least W = 2 replicas: x=" + xOutcome + " on " + atOrAboveX)
+            .isGreaterThanOrEqualTo(2);
     }
 
     private static final class Gate implements OwnerEpochGate {

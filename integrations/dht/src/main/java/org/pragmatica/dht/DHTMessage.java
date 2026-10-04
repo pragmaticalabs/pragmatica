@@ -107,13 +107,29 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// left. The writer retries under the newer change once it has applied it. `fenceUnknown` marks the other refusal of
     /// that fence: this replica does not know the committed change yet (restarted, before its state restore and catch-up),
     /// so it can judge no stamp — a plain retriable refusal that says nothing about the WRITER (v1882 round 5).
+    ///
+    /// `writePending` (#1777 v1882 r12) marks a refusal because THIS replica holds its own write to the same key that is applied
+    /// locally and not yet resolved: answering "superseded" to another writer would let that writer's quorum count a copy this
+    /// replica may roll back. A retriable refusal, and NOT evidence about the writer.
     record PutResponse(String requestId,
                        NodeId sender,
                        boolean success,
                        boolean superseded,
                        boolean fenced,
                        boolean replicationStale,
-                       boolean fenceUnknown) implements DHTMessage {}
+                       boolean fenceUnknown,
+                       boolean writePending) implements DHTMessage {
+        /// A response that is not a pending-write refusal.
+        public PutResponse(String requestId,
+                           NodeId sender,
+                           boolean success,
+                           boolean superseded,
+                           boolean fenced,
+                           boolean replicationStale,
+                           boolean fenceUnknown) {
+            this(requestId, sender, success, superseded, fenced, replicationStale, fenceUnknown, false);
+        }
+    }
 
     /// Request to remove a value: the replica stores a TOMBSTONE stamped like a put (#1777 track 3), so the remove
     /// supersedes every older copy of the value wherever anti-entropy, migration or a hand-off carries it, and is

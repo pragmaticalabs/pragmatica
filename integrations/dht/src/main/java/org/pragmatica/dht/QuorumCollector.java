@@ -60,6 +60,7 @@ public final class QuorumCollector<T> {
     /// gate has nothing more to wait for. The writer's own slot is NOT counted, because it is applied only after the gate.
     private final AtomicInteger remoteReplies = new AtomicInteger(0);
     private volatile int remoteSlots = Integer.MAX_VALUE;
+    private volatile boolean failed;
 
     private QuorumCollector(int quorum,
                             int total,
@@ -211,7 +212,8 @@ public final class QuorumCollector<T> {
         var failures = failureCount.incrementAndGet();
 
         if (total - failures < quorum) {
-            promise.fail(quorumFailure());
+            failed = true;
+        promise.fail(quorumFailure());
         }
 
         settleIfAllReplied(successCount.get(), failures);
@@ -220,12 +222,23 @@ public final class QuorumCollector<T> {
     /// A quorum lost to owner-epoch fences is indeterminate, not a definite failure (#1818, the owner's fence
     /// ruling): a replica whose high-water lagged may have applied the write. That takes precedence over a
     /// catching-up refusal (#1777), which only says some replica could not yet answer authoritatively.
+    /// Whether the operation is already decided — acknowledged or failed.
+    public boolean resolved() {
+        return promise.isResolved();
+    }
+
+    /// Whether the operation was already decided as a FAILURE, so a late local apply must be skipped.
+    public boolean failed() {
+        return failed;
+    }
+
     /// End the operation NOW with the typed failure the evidence calls for (v1882 r11 F17): a stale refusal or an owner-epoch
     /// fence refusal is a verdict, not a vote — the quorum arithmetic must not be left to wait for a silent replica and end in
     /// a generic timeout that hides the cause. A fence refusal is [DHTError.WriteIndeterminate] and takes precedence over a
     /// stale refusal, exactly as [#quorumFailure] orders them.
     @Contract
     public void abortOnEvidence() {
+        failed = true;
         promise.fail(quorumFailure());
     }
 

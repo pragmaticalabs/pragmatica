@@ -145,6 +145,20 @@ public sealed interface DHTError extends Cause {
         return new ReplicaFenceUnknown(replica);
     }
 
+    /// One replica's refusal of a write because that replica holds its own write to the same key, applied locally and not yet
+    /// resolved (v1882 round 12): answering "superseded" would let this writer's quorum count a copy that replica may roll back.
+    /// Retriable, and says nothing about the WRITER.
+    static DHTError replicaWritePending(NodeId replica) {
+        return new ReplicaWritePending(replica);
+    }
+
+    record ReplicaWritePending(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " refused the write: its own write to the same key is still pending";
+        }
+    }
+
     record ReplicaFenceUnknown(NodeId replica) implements DHTError, Cause.Transient {
         @Override
         public String message() {

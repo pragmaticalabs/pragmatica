@@ -19,6 +19,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -237,10 +238,17 @@ public final class DistributedDHTClient implements DHTClient {
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
+        var pending = new AtomicBoolean(false);
         var localPut = targets.contains(node.nodeId())
                        ? Option.some(applyLocalAfterEvidence(collector,
                                                              hasRemote,
-                                                             () -> handleLocalPut(key, value, stamp, collector)))
+                                                             () -> markPending(key,
+                                                                               collector,
+                                                                               pending,
+                                                                               () -> handleLocalPut(key,
+                                                                                                    value,
+                                                                                                    stamp,
+                                                                                                    collector))))
                        : Option.<Promise<StorageEngine.Displaced>> none();
 
         collector.allReplied().onSuccess(_ -> noteLateStale(collector, stamp));
@@ -255,7 +263,32 @@ public final class DistributedDHTClient implements DHTClient {
                                                                                                   collector)),
                                                   Promise::success))
                       .onFailure(cause -> noteIfStale(cause, stamp))
-                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector));
+                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
+                      .onResultRun(() -> endPending(key, pending));
+    }
+
+    /// The writer's own slot is about to be applied: until the operation resolves, another writer's request on this key is
+    /// refused `writePending` instead of being answered "superseded" (v1882 r12).
+    private Promise<StorageEngine.Displaced> markPending(byte[] key,
+                                                         QuorumCollector<?> collector,
+                                                         AtomicBoolean pending,
+                                                         Supplier<Promise<StorageEngine.Displaced>> write) {
+        // an operation already acknowledged without its own slot has nothing to protect: the copy is written unmarked, so a
+        // pending mark can never start after the resolution that would clear it
+        if (!collector.resolved()) {
+            node.beginLocalWrite(key, config.get().operationTimeout().nanos());
+            pending.set(true);
+        }
+
+        return write.get();
+    }
+
+    /// The operation resolved on EVERY path — acknowledged, failed, timed out or aborted — so its pending mark ends.
+    @Contract
+    private void endPending(byte[] key, AtomicBoolean pending) {
+        if (pending.compareAndSet(true, false)) {
+            node.endLocalWrite(key);
+        }
     }
 
     /// A write whose quorum is met is acknowledged only if no replica has refused it as stale (#1777 v1882 r6 F10): a
@@ -300,13 +333,21 @@ public final class DistributedDHTClient implements DHTClient {
                         .timeout(timeSpan(bound).millis())
                         .fold(_ -> collector.replicationStaleCount() > 0 || collector.fencedCount() > 0
                                    ? skipLocalSlot(collector)
-                                   : write.get());
+                                   : applyUnlessDecided(collector, write));
     }
 
     private int remoteCount(List<NodeId> targets) {
         return (int) targets.stream()
                             .filter(target -> !target.equals(node.nodeId()))
                             .count();
+    }
+
+    /// An operation already decided as a FAILURE applies nothing: a failed write must not be written locally (v1882 r12).
+    private static Promise<StorageEngine.Displaced> applyUnlessDecided(QuorumCollector<?> collector,
+                                                                       Supplier<Promise<StorageEngine.Displaced>> write) {
+        return collector.failed()
+               ? DHTError.OPERATION_TIMEOUT.promise()
+               : write.get();
     }
 
     /// The slot is not applied, and the operation ends AT ONCE with the typed failure the evidence calls for (a stale refusal,
@@ -597,6 +638,10 @@ public final class DistributedDHTClient implements DHTClient {
 
         if (response.fenceUnknown()) {
             return DHTError.replicaFenceUnknown(response.sender());
+        }
+
+        if (response.writePending()) {
+            return DHTError.replicaWritePending(response.sender());
         }
 
         return response.replicationStale()
