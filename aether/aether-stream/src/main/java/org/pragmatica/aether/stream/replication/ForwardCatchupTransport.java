@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.replication;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -97,7 +98,7 @@ public final class ForwardCatchupTransport implements CatchupTransport {
         }
 
         if (events.isEmpty() && result.truncated()) {
-            return CatchupError.EVENT_EXCEEDS_READ_CAP.promise();
+            return new OwnerPeerReads.EventExceedsReadCap(cursor).promise();
         }
 
         accumulated.addAll(events);
@@ -112,8 +113,7 @@ public final class ForwardCatchupTransport implements CatchupTransport {
     }
 
     private enum CatchupError implements Cause {
-        NON_CONTIGUOUS_PAGE("Catch-up page does not start at the requested cursor — gap detected"),
-        EVENT_EXCEEDS_READ_CAP("Catch-up page was cut at the source's read cap before its first event — the event at the cursor is larger than maxReadResponseBytes");
+        NON_CONTIGUOUS_PAGE("Catch-up page does not start at the requested cursor — gap detected");
         private final String message;
         CatchupError(String message) {
             this.message = message;

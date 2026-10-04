@@ -201,7 +201,7 @@ public sealed interface OwnerPeerReads {
 
         if (events.isEmpty()) {
             return answer.truncated()
-                   ? PageError.EVENT_EXCEEDS_READ_CAP.promise()
+                   ? new EventExceedsReadCap(cursor).<Long> promise()
                    : Promise.success(cursor - 1);
         }
 
@@ -238,6 +238,7 @@ public sealed interface OwnerPeerReads {
                                                                        target,
                                                                        streamName,
                                                                        partition,
+                                                                       cursor,
                                                                        to,
                                                                        page,
                                                                        gathered,
@@ -270,12 +271,13 @@ public sealed interface OwnerPeerReads {
                                                                            NodeId target,
                                                                            String streamName,
                                                                            int partition,
+                                                                           long cursor,
                                                                            long to,
                                                                            int page,
                                                                            List<OffHeapRingBuffer.RawEvent> gathered,
                                                                            StreamForwardClient.ReadForwardResult answer) {
         if (answer.events().isEmpty() && answer.truncated()) {
-            return PageError.EVENT_EXCEEDS_READ_CAP.promise();
+            return new EventExceedsReadCap(cursor).promise();
         }
 
         var pageEvents = answer.events()
@@ -319,17 +321,16 @@ public sealed interface OwnerPeerReads {
                : Option.none();
     }
 
-    /// #1431: a page the peer cut at its byte cap before its first event — the event at the cursor alone exceeds
-    /// `maxReadResponseBytes` — can never advance, and reading it as the peer's end would understate the peer.
-    enum PageError implements Cause {
-        EVENT_EXCEEDS_READ_CAP("Peer page was cut at the peer's read cap before its first event — the event at the cursor is larger than maxReadResponseBytes");
-        private final String message;
-        PageError(String message) {
-            this.message = message;
-        }
+    /// #1431: a page the peer cut at its byte cap before its first event — the event at `offset` alone exceeds the
+    /// peer's `maxReadResponseBytes` — can never advance, and reading it as the peer's end would understate the peer.
+    /// A peer whose handler admits the first event of every page never produces one, so this is a BACKSTOP (a peer
+    /// on an older handler). The peer ANSWERED: callers must never read this as an unreachable peer. The event's
+    /// size is not known here — the cut page carries no event.
+    record EventExceedsReadCap(long offset) implements Cause {
         @Override
         public String message() {
-            return message;
+            return ("Peer page was cut at the peer's read cap before its first event: the event at offset %d is larger "
+                   + "than the peer's maxReadResponseBytes").formatted(offset);
         }
     }
 

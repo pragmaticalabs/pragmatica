@@ -64,7 +64,11 @@ public enum OperatorWarningCode {
     /// A configured core member died on this node's membership view without this node ever observing it
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
-    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING);
+    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
+    /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
+    /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
+    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
