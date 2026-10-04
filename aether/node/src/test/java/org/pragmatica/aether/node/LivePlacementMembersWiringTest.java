@@ -111,6 +111,17 @@ class LivePlacementMembersWiringTest {
                         .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),AetherNode::raiseOwnerPromotionBlock");
     }
 
+    /// #1730 phase 2 (B5-B7): the gate's relaxation reads the candidate's sealed floor and forgets a left-out peer's registry row; a
+    /// replica that has not been compared with the committed owner of the current epoch acknowledges nothing.
+    @Test
+    void epochVerification_isWiredIntoTheGateAndTheReceiveHandler() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);");
+        assertThat(code).contains("ownerActivation.peerRows((stream,partition,peer)->streamReplicaRegistry.updateWatermark(stream,partition,peer,-1L,ReplicationState.SYNCING));");
+        assertThat(code).contains("streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);");
+    }
+
     @Test
     void clusterEventsGateAndPlacementRole_readTheController() {
         var code = assemblyCode();

@@ -25,3 +25,17 @@
   the flag is raised, once, only when the repair is refused. A replica below the owner now compares its last 1,024 held
   records with the owner's too (it used to pull from its head + 1 and be promoted over a divergent middle), and a re-verify
   of a CAUGHT_UP replica whose row is above a new owner's head is capped at that head (#1890, second path).
+- **A copy that has not been compared with the committed owner serves and acknowledges nothing from the epoch's start.** A
+  demoted owner still holding its old tail, or a replica whose committed epoch advanced while it was away, answered a
+  consumer correctly diverged to the new epoch's start with its OLD records at those offsets, and a replica whose row equalled
+  the new owner's head was re-acked for records it held in another version (#1890, the equal-length case). Now such a copy
+  answers the retriable `ReplicaNotVerified` for offsets at or above the start, sends no acknowledgement and asks for the
+  compare, which the backfill redrive runs at once (the no-compare shortcut holds only within a verified epoch); the owner's
+  gate also forgets the registry row of a peer it leaves out as divergent. Until a copy is verified, and while the cluster does
+  not record where an epoch began, every offset of a non-empty copy counts as at or above the start.
+- **The gate relaxes for a divergent peer only above the candidate's durable sealed floor** (and only for a candidate that the
+  committed ISR names); a divergence at or below the floor keeps the activation refused.
+- **One truncation report.** At `confirmation_factor` 1 the warning `stream-divergent-tail-truncated` is raised once per
+  truncation, when the repair completes, with the final range, the epoch of the discarded records and `ackedAtOwner=true`, not
+  once per window step.
+
