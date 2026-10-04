@@ -81,6 +81,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
@@ -2329,21 +2330,33 @@ public final class StreamPartitionManager implements AutoCloseable {
                               StandardOpenOption.WRITE,
                               StandardOpenOption.SYNC);
             Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            syncDirectory(file.getParent());
 
-            return Result.unitResult();
+            return syncDirectory(file.getParent()).fold(cause -> witnessFailed(streamName,
+                                                                               partition,
+                                                                               wal,
+                                                                               cause.message()),
+                                                        _ -> Result.unitResult());
         } catch (IOException | RuntimeException e) {
-            log.warn("Could not record the truncation witness beside {}: {}", wal.path(), e.getMessage());
-
-            return new StreamError.RepairWitnessFailed(streamName,
-                                                       partition,
-                                                       String.valueOf(e.getMessage())).result();
+            return witnessFailed(streamName,
+                                 partition,
+                                 wal,
+                                 String.valueOf(e.getMessage()));
         }
     }
 
-    private static void syncDirectory(Path directory) throws IOException {
+    private Result<Unit> witnessFailed(String streamName, int partition, AppendLog wal, String reason) {
+        log.warn("Could not record the truncation witness beside {}: {}", wal.path(), reason);
+
+        return new StreamError.RepairWitnessFailed(streamName, partition, reason).result();
+    }
+
+    private static Result<Unit> syncDirectory(Path directory) {
         try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
             channel.force(true);
+
+            return Result.unitResult();
+        } catch (IOException | RuntimeException e) {
+            return Causes.cause("directory fsync failed: " + e.getMessage()).result();
         }
     }
 
