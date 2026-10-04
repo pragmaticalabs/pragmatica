@@ -380,7 +380,9 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     /// on it, so it is never rebuilt from a message.
     private static Cause readFailureCause(ReadForwardResponse response) {
         return response.epochDiverged()
-               ? new StreamError.EpochDiverged(response.ownerEpoch(), response.divergenceResumeAt(), response.divergenceBoundaryKnown())
+               ? new StreamError.EpochDiverged(response.ownerEpoch(),
+                                               response.divergenceResumeAt(),
+                                               response.divergenceBoundaryKnown())
                : new StreamForwardError.ReadForwardFailed(response.errorMessage());
     }
 

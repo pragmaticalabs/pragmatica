@@ -1140,7 +1140,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var resume = Math.min(from, diverged.resumeAt());
 
         state.rewindTo(resume, diverged.ownerEpoch());
-
         if (resume < from) {
             announceRewind(key, from, resume, diverged);
         }

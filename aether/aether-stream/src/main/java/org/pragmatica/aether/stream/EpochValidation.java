@@ -68,7 +68,9 @@ public final class EpochValidation {
 
     private static Result<Epoch> judged(Epoch ownerEpoch, List<EpochStart> starts, Epoch consumerEpoch, long cursor) {
         if (consumerEpoch.compareTo(starts.getFirst().epoch()) < 0) {
-            return beyondTheKeptHistory(ownerEpoch, starts.getFirst().startOffset(), cursor);
+            return beyondTheKeptHistory(ownerEpoch,
+                                        starts.getFirst().startOffset(),
+                                        cursor);
         }
 
         return firstFollowing(starts, consumerEpoch).filter(next -> cursor > next.startOffset())

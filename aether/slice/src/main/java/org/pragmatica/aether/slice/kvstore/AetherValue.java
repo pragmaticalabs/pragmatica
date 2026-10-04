@@ -2467,7 +2467,10 @@ public sealed interface AetherValue {
             var kept = new ArrayList<>(starts.subList(dropped, starts.size()));
             var oldest = kept.getFirst();
 
-            kept.set(0, new EpochStart(oldest.epoch(), Math.min(oldest.startOffset(), starts.getFirst().startOffset())));
+            kept.set(0,
+                     new EpochStart(oldest.epoch(),
+                                    Math.min(oldest.startOffset(),
+                                             starts.getFirst().startOffset())));
 
             return List.copyOf(kept);
         }
