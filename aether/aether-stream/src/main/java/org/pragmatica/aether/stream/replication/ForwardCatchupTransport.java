@@ -29,8 +29,11 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// forward read response is capped (`maxReadResponseBytes` on the owner side, `maxEvents` here). The
 /// adapter therefore loops: it issues `readRemoteCatchup(from = cursor, maxEvents = batchSize)`, appends the
 /// returned events, advances the cursor past the last returned offset, and repeats while the source
-/// keeps returning a full page (`size == batchSize`) — i.e. there may be more. A short page (or an
-/// empty page) means the source has no more events and the loop terminates. All accumulated events
+/// keeps returning a full page (`size == batchSize`) — i.e. there may be more — or a page it cut at its byte
+/// cap (`truncated`, #1431). Only a short page the source did NOT cut (or an empty page) means the source has no
+/// more events and terminates the loop; treating a byte-capped page as the head would promote the replica
+/// CAUGHT_UP below the owner's head. A cut page carrying no event at all — a single event larger than the cap —
+/// can never make progress, so it fails the catch-up instead of re-reading the same cursor. All accumulated events
 /// are packed into one {@link CatchupResponse}, offset-preserving (`toOffset` = last event offset, or
 /// `fromOffset - 1` when nothing came back).
 ///
@@ -93,9 +96,13 @@ public final class ForwardCatchupTransport implements CatchupTransport {
             return CatchupError.NON_CONTIGUOUS_PAGE.promise();
         }
 
+        if (events.isEmpty() && result.truncated()) {
+            return CatchupError.EVENT_EXCEEDS_READ_CAP.promise();
+        }
+
         accumulated.addAll(events);
         onPage.run();
-        if (events.size() >= batchSize) {
+        if (events.size() >= batchSize || result.truncated()) {
             var nextCursor = events.getLast().offset() + 1;
 
             return page(target, request, nextCursor, accumulated, onPage);
@@ -105,7 +112,8 @@ public final class ForwardCatchupTransport implements CatchupTransport {
     }
 
     private enum CatchupError implements Cause {
-        NON_CONTIGUOUS_PAGE("Catch-up page does not start at the requested cursor — gap detected");
+        NON_CONTIGUOUS_PAGE("Catch-up page does not start at the requested cursor — gap detected"),
+        EVENT_EXCEEDS_READ_CAP("Catch-up page was cut at the source's read cap before its first event — the event at the cursor is larger than maxReadResponseBytes");
         private final String message;
         CatchupError(String message) {
             this.message = message;
