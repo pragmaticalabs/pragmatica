@@ -147,6 +147,61 @@ class OptionBindingSupportGateTest {
                           + " Add or remove the named component here after checking its X.");
     }
 
+    /// #822 — the binder reads a public static final `DEFAULT_<COMPONENT>` constant by NAME as the per-field default
+    /// of a record component. A constant whose name matches no component (a typo, a rename) is silently never read,
+    /// and the field it was meant to default is required again with nothing to say so. Every such constant on every
+    /// record the binder is handed must name a real component of exactly that type.
+    @Test
+    void everyPerFieldDefaultConstantOnABinderRecord_namesARealComponentOfTheSameType() {
+        var visited = new HashSet<Class<?>>();
+
+        binderRoots().forEach(root -> walk(root, visited, new TreeSet<>(), new TreeSet<>()));
+
+        var broken = new TreeSet<String>();
+
+        for (var record : visited) {
+            for (var field : record.getFields()) {
+                if (isPerFieldDefaultConstant(field)) {
+                    checkAgainstComponents(record, field, broken);
+                }
+            }
+        }
+
+        assertEquals(Set.of(),
+                     broken,
+                     "#822: these DEFAULT_<COMPONENT> constants name no component of the same type, so the binder never "
+                    + "reads them; fix the name or the type");
+    }
+
+    private static boolean isPerFieldDefaultConstant(java.lang.reflect.Field field) {
+        var modifiers = field.getModifiers();
+
+        return field.getName().startsWith("DEFAULT_")
+               && java.lang.reflect.Modifier.isStatic(modifiers)
+               && java.lang.reflect.Modifier.isFinal(modifiers);
+    }
+
+    private static void checkAgainstComponents(Class<?> record, java.lang.reflect.Field field, Set<String> broken) {
+        var matching = java.util.Arrays.stream(record.getRecordComponents())
+                                       .filter(component -> ("DEFAULT_" + snakeUpper(component.getName())).equals(field.getName()))
+                                       .findFirst();
+        var where = record.getSimpleName() + "." + field.getName() + " : " + field.getType().getSimpleName();
+
+        if (matching.isEmpty()) {
+            broken.add(where + " (no component)");
+        } else if (!wrapper(matching.get().getType()).isAssignableFrom(wrapper(field.getType()))) {
+            broken.add(where + " (component is " + matching.get().getType().getSimpleName() + ")");
+        }
+    }
+
+    private static String snakeUpper(String camelCase) {
+        return camelCase.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toUpperCase();
+    }
+
+    private static Class<?> wrapper(Class<?> type) {
+        return java.lang.invoke.MethodType.methodType(type).wrap().returnType();
+    }
+
     private static List<Class<?>> binderRoots() {
         var roots = new ArrayList<Class<?>>();
 
