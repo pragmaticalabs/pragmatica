@@ -34,6 +34,24 @@ public sealed interface SliceInvokerError extends Cause {
         }
     }
 
+    /// #1723: a REMOTE call that asked the callee for its completion got no response within the invocation timeout. The
+    /// outcome is UNKNOWN, not a failure: the callee may not have received the request, may be running it still, or
+    /// may have completed it with the response lost. Callers that record outcomes (the scheduler) must not count it as
+    /// either an execution or a failure.
+    record CompletionUnknown(Artifact artifact, MethodName method, Cause timeout) implements SliceInvokerError {
+        public static CompletionUnknown completionUnknown(Artifact artifact, MethodName method, Cause timeout) {
+            return new CompletionUnknown(artifact, method, timeout);
+        }
+
+        @Override
+        public String message() {
+            return "Outcome unknown for " + artifact
+                 + ":" + method
+                 + ": no response within the invocation timeout (" + timeout.message()
+                 + ")";
+        }
+    }
+
     record NoEndpointsError(Artifact artifact, MethodName method) implements SliceInvokerError, Cause.Transient {
         public static NoEndpointsError noEndpointsError(Artifact artifact, MethodName method) {
             return new NoEndpointsError(artifact, method);

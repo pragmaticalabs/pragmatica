@@ -665,21 +665,63 @@ public sealed interface AetherValue {
         }
     }
 
+    /// The recorded state of a scheduled task (one row per task; per node for an ALL-mode task).
+    ///
+    /// `lastOutcome` is the outcome of the most recent fire: [#OUTCOME_SUCCESS] (the callee completed it),
+    /// [#OUTCOME_FAILURE] (a failure response, or the callee's node departed), [#OUTCOME_UNKNOWN] (a REMOTE fire
+    /// whose response did not arrive within the invocation timeout: the callee may have run it, completed it or not;
+    /// nothing here can say which), or empty (no fire recorded since the field exists). An UNKNOWN outcome is neither
+    /// an execution nor a failure: it does not count in `totalExecutions` and does not move `consecutiveFailures`
+    /// (the failure streak is neither reset nor extended); `unknownOutcomes` counts them (#1723).
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,
                                    int totalExecutions,
                                    String lastFailureMessage,
                                    long updatedAt,
-                                   int skippedOverlaps) implements AetherValue {
+                                   int skippedOverlaps,
+                                   String lastOutcome,
+                                   int unknownOutcomes) implements AetherValue {
+        public static final String OUTCOME_SUCCESS = "SUCCESS";
+        public static final String OUTCOME_FAILURE = "FAILURE";
+        public static final String OUTCOME_UNKNOWN = "UNKNOWN";
+
+        /// A row with no recorded outcome (the shape every row had before outcomes were recorded).
+        public ScheduledTaskStateValue(long lastExecutionAt,
+                                       long nextFireAt,
+                                       int consecutiveFailures,
+                                       int totalExecutions,
+                                       String lastFailureMessage,
+                                       long updatedAt,
+                                       int skippedOverlaps) {
+            this(lastExecutionAt,
+                 nextFireAt,
+                 consecutiveFailures,
+                 totalExecutions,
+                 lastFailureMessage,
+                 updatedAt,
+                 skippedOverlaps,
+                 "",
+                 0);
+        }
+
         public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions, int skippedOverlaps) {
+            return successState(nextFireAt, totalExecutions, skippedOverlaps, 0);
+        }
+
+        public static ScheduledTaskStateValue successState(long nextFireAt,
+                                                           int totalExecutions,
+                                                           int skippedOverlaps,
+                                                           int unknownOutcomes) {
             return new ScheduledTaskStateValue(System.currentTimeMillis(),
                                                nextFireAt,
                                                0,
                                                totalExecutions,
                                                "",
                                                System.currentTimeMillis(),
-                                               skippedOverlaps);
+                                               skippedOverlaps,
+                                               OUTCOME_SUCCESS,
+                                               unknownOutcomes);
         }
 
         public static ScheduledTaskStateValue failureState(long nextFireAt,
@@ -687,13 +729,44 @@ public sealed interface AetherValue {
                                                            int totalExecutions,
                                                            int skippedOverlaps,
                                                            String failureMessage) {
+            return failureState(nextFireAt, consecutiveFailures, totalExecutions, skippedOverlaps, failureMessage, 0);
+        }
+
+        public static ScheduledTaskStateValue failureState(long nextFireAt,
+                                                           int consecutiveFailures,
+                                                           int totalExecutions,
+                                                           int skippedOverlaps,
+                                                           String failureMessage,
+                                                           int unknownOutcomes) {
             return new ScheduledTaskStateValue(System.currentTimeMillis(),
                                                nextFireAt,
                                                consecutiveFailures,
                                                totalExecutions,
                                                failureMessage,
                                                System.currentTimeMillis(),
-                                               skippedOverlaps);
+                                               skippedOverlaps,
+                                               OUTCOME_FAILURE,
+                                               unknownOutcomes);
+        }
+
+        /// A REMOTE fire whose outcome is unknown (no response within the invocation timeout). Everything else carries over
+        /// from `prior` unchanged: not an execution, not a failure, so `totalExecutions` and `consecutiveFailures` stay as
+        /// they were; only the outcome, the unknown count and the timestamps move. `lastFailureMessage` is left alone:
+        /// it still describes the last real failure.
+        public static ScheduledTaskStateValue unknownOutcomeState(Option<ScheduledTaskStateValue> prior,
+                                                                  long nextFireAt) {
+            var now = System.currentTimeMillis();
+
+            return prior.map(p -> new ScheduledTaskStateValue(p.lastExecutionAt(),
+                                                              nextFireAt,
+                                                              p.consecutiveFailures(),
+                                                              p.totalExecutions(),
+                                                              p.lastFailureMessage(),
+                                                              now,
+                                                              p.skippedOverlaps(),
+                                                              OUTCOME_UNKNOWN,
+                                                              p.unknownOutcomes() + 1))
+                        .or(new ScheduledTaskStateValue(0, nextFireAt, 0, 0, "", now, 0, OUTCOME_UNKNOWN, 1));
         }
 
         /// Records a skipped fixed-rate fire (previous invocation still in flight). Preserves every
@@ -707,7 +780,9 @@ public sealed interface AetherValue {
                                                               p.totalExecutions(),
                                                               p.lastFailureMessage(),
                                                               skippedAt,
-                                                              p.skippedOverlaps() + 1))
+                                                              p.skippedOverlaps() + 1,
+                                                              p.lastOutcome(),
+                                                              p.unknownOutcomes()))
                         .or(new ScheduledTaskStateValue(0, 0, 0, 0, "", skippedAt, 1));
         }
     }

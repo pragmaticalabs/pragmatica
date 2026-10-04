@@ -4598,6 +4598,8 @@ List all registered scheduled tasks with active timer count and execution state.
       "nextFireAt": 1710345900000,
       "consecutiveFailures": 0,
       "totalExecutions": 42,
+      "lastOutcome": "SUCCESS",
+      "unknownOutcomes": 0,
       "skippedOverlaps": 0
     }
   ],
@@ -4684,9 +4686,13 @@ Get detailed execution state for a specific scheduled task.
   "totalExecutions": 42,
   "skippedOverlaps": 0,
   "lastFailureMessage": "",
-  "updatedAt": 1710345600000
+  "updatedAt": 1710345600000,
+  "lastOutcome": "SUCCESS",
+  "unknownOutcomes": 0
 }
 ```
+
+`lastOutcome` is the outcome of the most recent fire: `SUCCESS` (the callee completed it), `FAILURE` (a failure response, or the callee's node departed), `UNKNOWN` (a REMOTE fire, from a leader that does not host the slice, whose response did not arrive within `[timeouts.invocation] timeout`: the callee may have run it, completed it or not, and nothing can say which), or empty (no fire recorded yet). An `UNKNOWN` fire is neither an execution nor a failure: it is not counted in `totalExecutions`, it neither extends nor resets `consecutiveFailures`, and `lastFailureMessage` keeps describing the last real failure. `unknownOutcomes` counts them. The log line for entering `UNKNOWN` is written once per transition, not per fire (#1723). A task hosted on the firing node is awaited without a timeout and never records `UNKNOWN`.
 
 Same ALL-mode aggregation as the tasks-list summary above: for an `execution_mode = "all"` task every field is combined across each node's own row rather than read from a single shared entry. `lastFailureMessage`/`updatedAt` are not summable across nodes, so they are taken together from whichever per-node row has the higher `updatedAt`
 [mechanism: `ScheduledTaskRoutes.buildStateResponse` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#SingleTaskState` — component-level against a real `KVStore`, not a live multi-node run].

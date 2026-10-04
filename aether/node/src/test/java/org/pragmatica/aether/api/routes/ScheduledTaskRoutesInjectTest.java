@@ -95,6 +95,59 @@ class ScheduledTaskRoutesInjectTest {
                                                        devMode);
     }
 
+    private ScheduledTaskRoutes routesWith(RecordingInvoker withInvoker) {
+        return ScheduledTaskRoutes.scheduledTaskRoutes(registry,
+                                                       stubManager(),
+                                                       () -> node.asManageableNode(),
+                                                       withInvoker.asSliceInvoker(),
+                                                       stateRegistry,
+                                                       () -> true);
+    }
+
+    /// #1723: /inject is judged by the callee's COMPLETION, not by the request being enqueued. The invoker models a remote
+    /// callee faithfully: the fire-and-forget `invoke` resolves at once while the completion fails. The route must answer a
+    /// failure and record no success, and a completion that never arrived (outcome unknown) must be recorded as such, not as
+    /// a failure and not as an execution.
+    @Nested
+    class CompletionOutcome {
+        @Test
+        void inject_calleeFailsAfterTheRequestWasAccepted_isAFailure_andRecordsNoSuccess() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.lang.utils.Causes.cause("callee failed");
+            var result = invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure(), () -> "a fire whose callee failed must not read as executed: " + result);
+            assertTrue(node.commands.stream()
+                                    .flatMap(List::stream)
+                                    .noneMatch(command -> String.valueOf(command).contains("totalExecutions=1")),
+                       () -> "no success state may be written: " + node.commands);
+        }
+
+        @Test
+        void inject_unknownOutcome_isRecordedAsUnknown_notAsAFailureAndNotAsAnExecution() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.aether.invoke.SliceInvokerError.CompletionUnknown.completionUnknown(Artifact.artifact(ARTIFACT).unwrap(), MethodName.methodName(METHOD).unwrap(), org.pragmatica.lang.utils.Causes.cause("timed out"));
+            var result = invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure(), "the caller is told the fire did not complete");
+            var written = node.commands.stream()
+                                       .flatMap(List::stream)
+                                       .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                       .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                       .toList();
+
+            assertEquals(1, written.size(), "one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_UNKNOWN, written.getFirst().lastOutcome());
+            assertEquals(0, written.getFirst().consecutiveFailures(), "unknown is not a failure");
+            assertEquals(0, written.getFirst().totalExecutions(), "unknown is not an execution");
+            assertEquals(1, written.getFirst().unknownOutcomes());
+        }
+    }
+
     @Nested
     class DevModeGate {
 
@@ -505,8 +558,15 @@ class ScheduledTaskRoutesInjectTest {
                 SliceInvoker.class.getClassLoader(),
                 new Class[]{SliceInvoker.class},
                 (_, method, args) -> {
-                    // #1723: /inject must judge the fire by the callee's COMPLETION, so only the completion-aware call is
-                    // modelled; the fire-and-forget `invoke` is deliberately not implemented here and fails the test.
+                    // #1723: models a REMOTE callee faithfully. The fire-and-forget `invoke` resolves at once (the request
+                    // was handed to the transport) whatever the callee does; only the completion-aware call reports the
+                    // callee's outcome (`failure`). A route that judged the fire by `invoke` would read every fire as a success.
+                    if ("invoke".equals(method.getName()) && args != null && args.length == 3) {
+                        var slice = (Artifact) args[0];
+                        var methodName = (MethodName) args[1];
+                        invocations.add(new Invocation(slice.asString(), methodName.name()));
+                        return Promise.success(Unit.unit());
+                    }
                     if ("invokeAwaitingCompletion".equals(method.getName()) && args != null && args.length == 3) {
                         var slice = (Artifact) args[0];
                         var methodName = (MethodName) args[1];

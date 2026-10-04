@@ -88,14 +88,38 @@ class SliceInvokerAwaitCompletionTest {
                   .onFailure(cause -> assertThat(cause.message()).contains("callee blew up"));
     }
 
-    /// A lost message (a transport that silently discards on a peer reset, as seen in #1677) produces no response at
-    /// all: the fire must fail on the invocation timeout rather than read as executed.
+    /// A lost message (a transport that silently discards on a peer reset, as seen in #1677) produces no response at all.
+    /// The fire must not read as executed, and must not read as FAILED either: with no response the outcome is UNKNOWN
+    /// (the callee may have run it), a distinct typed cause the scheduler records as such.
     @Test
     @Timeout(30)
-    void remoteFire_failsWhenTheMessageIsLost() {
+    void remoteFire_withNoResponseInTime_isAnUnknownOutcome_notAFailureAndNotASuccess() {
         invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit())
                .await()
-               .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a fire whose request was lost must not read as executed"));
+               .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a fire whose request was lost must not read as executed"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(SliceInvokerError.CompletionUnknown.class));
+    }
+
+    /// A callee that answered with a failure is a failure, and a callee whose node departed is a failure too: only a
+    /// missing response is unknown.
+    @Test
+    @Timeout(30)
+    void remoteFire_calleeFailureAndDepartedNode_areFailures_notUnknown() {
+        var failed = invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit());
+
+        awaitSent();
+        invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, network.sent.get().correlationId(), "r", false, "boom".getBytes(StandardCharsets.UTF_8)));
+        failed.await().onFailure(cause -> assertThat(cause).isNotInstanceOf(SliceInvokerError.CompletionUnknown.class));
+
+        network.sent.set(null);
+        var departed = invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit());
+
+        awaitSent();
+        invoker.onNodeDeparture(HOST);
+        departed.await()
+                .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a departed callee node is a failure"))
+                .onFailure(cause -> assertThat(cause).isNotInstanceOf(SliceInvokerError.CompletionUnknown.class)
+                                                     .satisfies(c -> assertThat(c.message()).contains("departed")));
     }
 
     /// Control: the plain fire-and-forget `invoke` (durable-topic publish and the like) is unchanged and still resolves

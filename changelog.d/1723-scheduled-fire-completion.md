@@ -6,9 +6,12 @@
   `/api/v1/scheduled-tasks/inject` now use the new `SliceInvoker.invokeAwaitingCompletion`: the request asks for a response and the
   fire settles with it, so a callee failure, a lost message (no response within the invocation timeout) and a departed node
   are failures.
-- **Consequence to know:** the invocation timeout now also bounds a remote SINGLE-mode task's run time; a task that runs longer
-  than the timeout records a failure (the callee keeps running). A task whose callee is hosted on the firing node was always
-  awaited and is unchanged. The `trigger` route still says only "triggered", which is accurate, and durable-topic publish keeps
-  fire-and-forget `invoke`.
+- **A timeout means the outcome is UNKNOWN, not a failure.** A remote fire whose response does not arrive within
+  `[timeouts.invocation] timeout` is recorded as outcome `UNKNOWN` (new `lastOutcome` and `unknownOutcomes` in the task state, the
+  state API and therefore the CLI output): not an execution, not a failure, `consecutiveFailures` untouched, logged once per
+  transition. A failure response and a departed callee node are failures; a callee hosted on the firing node was always awaited
+  without a timeout and is unchanged. The `trigger` route still says only "triggered" and durable-topic publish keeps
+  fire-and-forget `invoke`. Pre-GA state-shape change: `ScheduledTaskStateValue` gains two fields (wire baseline re-recorded).
+  Overlap of a single-mode task with its next tick after a timeout is pre-existing (#1930).
   [mechanism: `SliceInvokerAwaitCompletionTest` (not complete on enqueue; success only on a success response; callee failure and a lost
-  message fail), `ScheduledTaskManagerTest.fixedRate_calleeThatFailsAfterTheRequestWasAccepted_isAFailureNotAnExecution`.]
+  message fail), `ScheduledTaskManagerTest` (callee failure after accept; unknown outcome recorded, not a failure or an execution, logged once; unknown leaves the streak alone), `ScheduledTaskRoutesInjectTest$CompletionOutcome`.]

@@ -500,10 +500,21 @@ public interface ScheduledTaskManager {
                               .onSuccess(_ -> writeSuccessState(ctx,
                                                                 task,
                                                                 nextFireAtSupplier.getAsLong()))
-                              .onFailure(cause -> handleTaskFailure(ctx,
-                                                                    task,
-                                                                    cause.message(),
-                                                                    nextFireAtSupplier.getAsLong()));
+                              .onFailure(cause -> recordFailedFire(ctx,
+                                                                   task,
+                                                                   cause,
+                                                                   nextFireAtSupplier.getAsLong()));
+        }
+
+        /// A fire that ended without a success. A timeout of a REMOTE fire ([SliceInvokerError.CompletionUnknown]) says
+        /// nothing about the callee: the outcome is UNKNOWN, recorded as such and counted neither as an execution nor as a
+        /// failure. Every other failure (a failure response, a departed node, a request that could not be sent) is one.
+        private static void recordFailedFire(Context ctx, ScheduledTask task, Cause cause, long nextFireAt) {
+            if (cause instanceof SliceInvokerError.CompletionUnknown) {
+                writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt);
+            } else {
+                handleTaskFailure(ctx, task, cause.message(), nextFireAt);
+            }
         }
 
         private static void handleTaskFailure(Context ctx, ScheduledTask task, String message, long nextFireAt) {
@@ -519,8 +530,10 @@ public interface ScheduledTaskManager {
             var prior = ctx.stateReader.apply(key);
             var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
             var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-            var value = ScheduledTaskStateValue.successState(nextFireAt, priorTotal + 1, priorSkipped);
+            var priorUnknown = prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
+            var value = ScheduledTaskStateValue.successState(nextFireAt, priorTotal + 1, priorSkipped, priorUnknown);
 
+            logOutcomeTransitionOut(task, prior);
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
         }
 
@@ -530,13 +543,46 @@ public interface ScheduledTaskManager {
             var priorFailures = prior.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
             var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
             var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
+            var priorUnknown = prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
             var value = ScheduledTaskStateValue.failureState(nextFireAt,
                                                              priorFailures + 1,
                                                              priorTotal,
                                                              priorSkipped,
-                                                             message);
+                                                             message,
+                                                             priorUnknown);
 
+            logOutcomeTransitionOut(task, prior);
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+        }
+
+        /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
+        /// keeps timing out is counted in `unknownOutcomes`, and the log line says so; the line for leaving the state is
+        /// [#logOutcomeTransitionOut].
+        private static void writeUnknownOutcomeState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+            var key = stateKeyFor(ctx, task);
+            var prior = ctx.stateReader.apply(key);
+            var alreadyUnknown = prior.map(state -> ScheduledTaskStateValue.OUTCOME_UNKNOWN.equals(state.lastOutcome()))
+                                      .or(false);
+
+            if (!alreadyUnknown) {
+                log.warn("Scheduled task {}.{} outcome UNKNOWN: {} (not counted as an execution or a failure; further unknown"
+                        + " outcomes are counted in the task state, not logged, until a fire completes)",
+                         task.configSection(),
+                         task.methodName().name(),
+                         message);
+            }
+
+            ctx.stateWriter.accept(new KVCommand.Put<>(key,
+                                                       ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt)));
+        }
+
+        /// A fire that completed (success or failure) after the task had been UNKNOWN: the outcome is known again.
+        private static void logOutcomeTransitionOut(ScheduledTask task, Option<ScheduledTaskStateValue> prior) {
+            if (prior.map(state -> ScheduledTaskStateValue.OUTCOME_UNKNOWN.equals(state.lastOutcome())).or(false)) {
+                log.info("Scheduled task {}.{} outcome known again: a fire completed",
+                         task.configSection(),
+                         task.methodName().name());
+            }
         }
 
         /// #273: drop this node's ALL-mode timers (SINGLE-mode timers, leader-owned, stay). The count is

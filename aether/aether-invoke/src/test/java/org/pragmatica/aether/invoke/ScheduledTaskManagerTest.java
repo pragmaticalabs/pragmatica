@@ -572,6 +572,64 @@ class ScheduledTaskManagerTest {
             assertThat(state.lastFailureMessage()).isEqualTo("callee failed after the request was accepted");
         }
 
+        /// #1723 (CTO ruling): a remote fire that times out has an UNKNOWN outcome, recorded as such: not an execution,
+        /// not a failure (the failure streak is neither extended nor reset), counted in `unknownOutcomes`, and logged once
+        /// per transition into the state, not per fire. A later completed fire leaves the state and is logged once.
+        @Test
+        void fixedRate_remoteFireWithNoResponse_recordsUnknown_notAFailureNotAnExecution_andLogsOnce() throws Exception {
+            var warnings = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var detach = LogCapture.warningsOf(Class.forName("org.pragmatica.aether.invoke.ScheduledTaskManager$TaskOps"), warnings);
+
+            try {
+                Cause unknown = SliceInvokerError.CompletionUnknown.completionUnknown(artifact, method, () -> "no response in 20000ms");
+
+                stubInvoker.setCompletionFailure(Option.some(unknown));
+                putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+                establishQuorum();
+                var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+                awaitTrue(() -> stateFor(key).map(v -> v.unknownOutcomes() >= 3)
+                                        .or(false),
+                          15000);
+                manager.stop();
+                var state = stateFor(key).unwrap();
+
+                assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
+                assertThat(state.totalExecutions()).as("unknown is not an execution").isZero();
+                assertThat(state.consecutiveFailures()).as("unknown is not a failure").isZero();
+                assertThat(state.lastFailureMessage()).as("no failure was recorded").isEmpty();
+                assertThat(warnings.stream().filter(message -> message.contains("outcome UNKNOWN")))
+                    .as("logged once per transition into UNKNOWN, not per fire (%d fires)", state.unknownOutcomes())
+                    .hasSize(1);
+            } finally {
+                detach.run();
+            }
+        }
+
+        @Test
+        void fixedRate_unknownOutcome_leavesTheFailureStreakAlone() {
+            Cause boom = () -> "boom";
+
+            stubInvoker.setCompletionFailure(Option.some(boom));
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1)
+                                    .or(false),
+                      4000);
+            stubInvoker.setCompletionFailure(Option.some(SliceInvokerError.CompletionUnknown.completionUnknown(artifact, method, () -> "no response")));
+            awaitTrue(() -> stateFor(key).map(v -> v.unknownOutcomes() >= 1)
+                                    .or(false),
+                      4000);
+            manager.stop();
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
+            assertThat(state.consecutiveFailures()).as("an unknown outcome neither extends nor resets the streak").isGreaterThanOrEqualTo(1);
+            assertThat(state.lastFailureMessage()).as("it still describes the last real failure").isEqualTo("boom");
+        }
+
         @Test
         void fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution() {
             var gate = Promise.<Unit> promise();

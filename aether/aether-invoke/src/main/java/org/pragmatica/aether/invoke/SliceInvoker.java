@@ -38,6 +38,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
@@ -390,7 +391,12 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                                 payload,
                                                                                                                 COMPLETION_ONLY,
                                                                                                                 deadline))
-                                         .mapToUnit();
+                                         .mapToUnit()
+                                         .mapError(cause -> cause instanceof CoreError.Timeout
+                                                            ? SliceInvokerError.CompletionUnknown.completionUnknown(slice,
+                                                                                                                    method,
+                                                                                                                    cause)
+                                                            : cause);
     }
 
     /// Stands in for the sender bridge of a call whose response payload is never read: the response only has to ARRIVE.
