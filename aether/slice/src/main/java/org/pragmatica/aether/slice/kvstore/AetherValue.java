@@ -2403,7 +2403,10 @@ public sealed interface AetherValue {
                                          boolean failoverRefused,
                                          List<NodeId> fenced) implements AetherValue, EpochBearing<Epoch> {
         /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
-        /// bounded here: the oldest entry is forgotten first, which can at worst let one stale member fight once more.
+        /// bounded here: the oldest entry is forgotten first. A forgotten member is no longer fenced, so if it is still
+        /// registered with the owner as caught up and invisible to the leader, the owner re-expands it and the leader
+        /// fences it again. That fight is unreachable while the core has [#FENCED_MAX] or fewer members (the registry
+        /// holds at most the replication factor, which never exceeds the core size) and perpetual beyond it.
         public static final int FENCED_MAX = 16;
 
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
