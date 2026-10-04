@@ -12,6 +12,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+
 
 /// Witnesses that a specific cursor record was ACCEPTED by this node's applier.
 ///
@@ -47,15 +49,13 @@ public interface CommitWitness {
         public Watch watch(StreamCursorCheckpointKey key, StreamCursorCheckpointValue record) {
             var watch = new RecordWatch(key, record);
 
-            watches.compute(key, (_, existing) -> withWatch(existing, watch));
+            watches.compute(key, (_, existing) -> withWatch(Option.option(existing), watch));
 
             return watch;
         }
 
-        private static Set<RecordWatch> withWatch(Set<RecordWatch> existing, RecordWatch watch) {
-            var set = existing == null
-                      ? ConcurrentHashMap.<RecordWatch>newKeySet()
-                      : existing;
+        private static Set<RecordWatch> withWatch(Option<Set<RecordWatch>> existing, RecordWatch watch) {
+            var set = existing.or(ConcurrentHashMap::newKeySet);
 
             set.add(watch);
 
@@ -66,8 +66,7 @@ public interface CommitWitness {
         @Override
         public void onPut(ValuePut<?, ?> put) {
             if (put.cause().key() instanceof StreamCursorCheckpointKey key && put.cause().value() instanceof StreamCursorCheckpointValue value) {
-                watches.getOrDefault(key, Set.of())
-                       .forEach(watch -> watch.observe(value));
+                watches.getOrDefault(key, Set.of()).forEach(watch -> watch.observe(value));
             }
         }
 
@@ -95,13 +94,14 @@ public interface CommitWitness {
             @Contract
             @Override
             public void close() {
-                watches.computeIfPresent(key, (_, set) -> {
-                    set.remove(this);
+                watches.computeIfPresent(key,
+                                         (_, set) -> {
+                                             set.remove(this);
 
-                    return set.isEmpty()
-                           ? null
-                           : set;
-                });
+                                             return set.isEmpty()
+                                                    ? null
+                                                    : set;
+                                         });
             }
         }
     }

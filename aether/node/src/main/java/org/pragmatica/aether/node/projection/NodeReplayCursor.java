@@ -246,12 +246,12 @@ public record NodeReplayCursor(String topicStream,
                                                                                                                        entry.getKey()),
                                                                                                          entry.getValue()))
                           .toList();
-
         var watches = watch(group, records);
 
         return commandWriter.apply(puts)
                             .flatMap(_ -> verifyCommitted(group, records, watches, token))
-                            .onResultRun(() -> watches.values().forEach(CommitWitness.Watch::close))
+                            .onResultRun(() -> watches.values()
+                                                      .forEach(CommitWitness.Watch::close))
                             .onSuccess(_ -> log.info("Rewound group {} on {} to {} under epoch {}",
                                                      group,
                                                      topicStream,
@@ -263,7 +263,8 @@ public record NodeReplayCursor(String topicStream,
     private Map<Integer, CommitWitness.Watch> watch(String group, Map<Integer, StreamCursorCheckpointValue> records) {
         var watches = new HashMap<Integer, CommitWitness.Watch>();
 
-        records.forEach((partition, record) -> watches.put(partition, witness.watch(checkpointKey(group, partition), record)));
+        records.forEach((partition, record) -> watches.put(partition,
+                                                           witness.watch(checkpointKey(group, partition), record)));
 
         return watches;
     }
