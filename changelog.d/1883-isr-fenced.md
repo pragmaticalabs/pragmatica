@@ -4,10 +4,25 @@
     membership view. With a replica one side listed and the other did not, each commit undid the other's, and every
     commit fired a reconcile on every node (10 ISR commits in 5 rounds in the v1877 probe).
   - **Fix:** the leader records the members it removes for liveness in the same commit as the shrink, as the
-    ownership record's new `fenced` set (bounded, newest 16 kept), and unfences a member when it lists it live again.
+    ownership record's new `fenced` set (bounded, newest 16 kept: the bound ends the fight while the core has at most 16 members, and a perpetual fight is possible beyond that), and unfences a member when it lists it live again.
     The owner never expands a fenced member. A reconcile of a settled record commits nothing.
   - **Wire:** `StreamPartitionOwnershipValue` gains `fenced` (pre-GA, no mixed-version support).
 - **New cluster events.** `STREAM_ISR_BELOW_MINIMUM` (WARNING) when a partition's committed ISR falls below its
   `confirmation_factor` and every acknowledged publish is refused, and `STREAM_ISR_RESTORED` (INFO) when it reaches the
   factor again. Derived on every node from the committed ownership change and published once by the cluster-events
   owner; never per ISR commit.
+- **Event identity (also the phase 1 failover events).** `STREAM_ISR_BELOW_MINIMUM`, `STREAM_ISR_RESTORED`,
+  `STREAM_FAILOVER_REFUSED` and `STREAM_FAILOVER_RESOLVED` carry a deterministic `details.eventId` derived from the committed
+  ownership record (partition, epoch, term, ISR version, refusal count), so two nodes that both pass the events-owner gate during a
+  membership change publish one event as far as every reader that de-duplicates by `eventId` is concerned. The ownership
+  record gains `failoverRefusalSeq`, incremented on each transition into refused within an ownership term (a move restarts it; the raised term keeps ids distinct), so a recurring refusal is a new event.
+- **A confirmation-factor change announces too.** Raising `confirmation_factor` above the committed ISR size stalls every ack
+  with no ISR commit; it now raises `STREAM_ISR_BELOW_MINIMUM` once (and `STREAM_ISR_RESTORED` when the factor moves back),
+  derived from the factor the node enforces before and after the committed config. A lowering a running stream does not adopt
+  announces nothing.
+- **`STREAM_CONFIG_CHANGE_NOT_APPLIED` (WARNING).** A committed config for a running stream that does not take effect over what
+  the node enforces (a lowering of the confirmation or replication factor, since durability only increases online, or a different
+  partition count, which is never re-shaped onto existing rings) now raises this event once per committed config, with the actual
+  cause as the reason, instead of being silently ignored. Documented in
+  `bootstrap-config.md` and `guarantees.md`.
+- **Wire:** `StreamPartitionOwnershipValue` also gains `failoverRefusalSeq`; SystemTags 1750 `StreamConfigChangeNotApplied`.

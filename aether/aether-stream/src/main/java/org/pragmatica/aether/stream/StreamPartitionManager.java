@@ -1489,10 +1489,61 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// kept). Equal or weaker configs keep the existing entry (the `computeIfAbsent` idempotence this
     /// replaces).
     private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing) {
-        return config.partitions() == existing.config()
-                                              .partitions() && strongerDurability(config, existing.config())
+        return adopts(config, existing.config())
                ? adoptConfig(config, existing)
                : existing;
+    }
+
+    /// The one rule that decides whether a committed config of the SAME life replaces the local one: same partition
+    /// count and strictly stronger durability. [#confirmationFactorAfter] reads it too, so what is announced about a
+    /// factor change cannot differ from what [#confirmationFactorFor] then enforces.
+    private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
+        return incoming.partitions() == existing.partitions() && strongerDurability(incoming, existing);
+    }
+
+    /// The config this node ENFORCES for `streamName`, if it holds the stream.
+    public Option<StreamConfig> enforcedConfig(String streamName) {
+        return option(streams.get(streamName)).map(entry -> entry.config());
+    }
+
+    /// Why a committed config of the SAME life does not take effect over the one this node enforces, or none when it
+    /// takes effect or asks for nothing durable to change. The operator asked for something the system will not do:
+    /// a different partition count cannot be re-shaped onto the existing rings and WALs (whatever else the config
+    /// changes), and, with the same partition count, a config that is not strictly stronger than the enforced one is
+    /// not adopted (durability only increases online). The same rule as [#adopts] decides, so what is announced cannot
+    /// differ from what [#confirmationFactorFor] then enforces.
+    public static Option<String> notAppliedReason(StreamConfig incoming, StreamConfig enforced) {
+        if (incoming.incarnation() != enforced.incarnation()) {
+            return Option.none();
+        }
+
+        if (incoming.partitions() != enforced.partitions()) {
+            return Option.some("partition count of an existing stream cannot change (requested " + incoming.partitions()
+                              + ", enforced " + enforced.partitions()
+                              + ")");
+        }
+
+        return incoming.replication()
+                       .equals(enforced.replication()) || strongerDurability(incoming, enforced)
+               ? Option.none()
+               : Option.some("durability only increases online (requested replication/confirmation factor " + incoming.replicationFactor()
+                            + "/" + incoming.confirmationFactor()
+                            + ", enforced " + enforced.replicationFactor()
+                            + "/" + enforced.confirmationFactor()
+                            + ")");
+    }
+
+    /// The confirmation factor [#confirmationFactorFor] will report for `incoming.name()` once the committed
+    /// `incoming` has been applied here ([#onStreamConfigPut]); call it BEFORE that handler runs. A config that is not
+    /// adopted (weaker, or another partition count) and a different life (a recreate, not a factor change) leave the
+    /// factor as it is, so a plain lowering announces nothing: acks keep being refused at the old factor. `0` for a
+    /// stream this node does not hold yet.
+    public int confirmationFactorAfter(StreamConfig incoming) {
+        return option(streams.get(incoming.name())).map(entry -> entry.config())
+                     .map(existing -> existing.incarnation() == incoming.incarnation() && adopts(incoming, existing)
+                                      ? incoming.confirmationFactor()
+                                      : existing.confirmationFactor())
+                     .or(0);
     }
 
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {

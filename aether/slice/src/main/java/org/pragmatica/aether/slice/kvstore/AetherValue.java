@@ -2414,13 +2414,16 @@ public sealed interface AetherValue {
                                          long isrVersion,
                                          boolean failoverRefused,
                                          List<NodeId> fenced,
+                                         long failoverRefusalSeq,
                                          List<EpochStart> epochStarts) implements AetherValue, EpochBearing<Epoch> {
-        /// Most epoch starts one record keeps (#1730 phase 2). Offsets at or below the sealed floor are immutable, so only
-        /// epochs that began above it can invalidate a consumer's cursor; the record keeps the newest, and a consumer older
-        /// than the oldest kept is told to resume from the head instead of being checked against a boundary that is gone.
+        /// Most epoch starts one record keeps (#1730 phase 2). Beyond it the oldest are folded into the oldest one kept, never
+        /// dropped (see `capped`), so the oldest kept start is a lower bound on every offset a later epoch re-assigned.
         public static final int EPOCH_STARTS_MAX = 16;
         /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
-        /// bounded here: the oldest entry is forgotten first, which can at worst let one stale member fight once more.
+        /// bounded here: the oldest entry is forgotten first. A forgotten member is no longer fenced, so if it is still
+        /// registered with the owner as caught up and invisible to the leader, the owner re-expands it and the leader
+        /// fences it again. That fight is unreachable while the core has [#FENCED_MAX] or fewer members (the registry
+        /// holds at most the replication factor, which never exceeds the core size) and perpetual beyond it.
         public static final int FENCED_MAX = 16;
 
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
@@ -2430,6 +2433,28 @@ public sealed interface AetherValue {
         @Override
         public Epoch fenceEpoch() {
             return ownerEpoch;
+        }
+
+        /// A record with no refusal yet counted (`failoverRefusalSeq` 0) and the given epoch starts.
+        public StreamPartitionOwnershipValue(NodeId owner,
+                                             Epoch ownerEpoch,
+                                             long ownershipTerm,
+                                             HlcTimestamp transferredAt,
+                                             List<NodeId> isr,
+                                             long isrVersion,
+                                             boolean failoverRefused,
+                                             List<NodeId> fenced,
+                                             List<EpochStart> epochStarts) {
+            this(owner,
+                 ownerEpoch,
+                 ownershipTerm,
+                 transferredAt,
+                 isr,
+                 isrVersion,
+                 failoverRefused,
+                 fenced,
+                 0L,
+                 epochStarts);
         }
 
         public StreamPartitionOwnershipValue {
@@ -2491,6 +2516,7 @@ public sealed interface AetherValue {
                                                      0L,
                                                      false,
                                                      List.of(),
+                                                     0L,
                                                      List.of());
         }
 
@@ -2508,6 +2534,7 @@ public sealed interface AetherValue {
                                                      isrVersion,
                                                      false,
                                                      List.of(),
+                                                     0L,
                                                      List.of());
         }
 
@@ -2527,6 +2554,7 @@ public sealed interface AetherValue {
                                                      isrVersion,
                                                      false,
                                                      fenced,
+                                                     0L,
                                                      List.of());
         }
 
@@ -2548,6 +2576,7 @@ public sealed interface AetherValue {
                                                      isrVersion,
                                                      false,
                                                      fenced,
+                                                     0L,
                                                      epochStarts);
         }
 
@@ -2561,6 +2590,7 @@ public sealed interface AetherValue {
                                                      isrVersion + 1,
                                                      failoverRefused,
                                                      fenced,
+                                                     failoverRefusalSeq,
                                                      epochStarts);
         }
 
@@ -2576,10 +2606,14 @@ public sealed interface AetherValue {
                                                      isrVersion + 1,
                                                      failoverRefused,
                                                      fenced,
+                                                     failoverRefusalSeq,
                                                      epochStarts);
         }
 
-        /// The same ownership and ISR with the failover verdict `refused`.
+        /// The same ownership and ISR with the failover verdict `refused`. Each transition INTO refused counts one more
+        /// in `failoverRefusalSeq` WITHIN AN OWNERSHIP TERM (a move mints a fresh record, so the count restarts at 0 and the
+        /// raised term keeps ids distinct), committed with the flag, so every genuine refusal of a partition is a distinct event
+        /// (a refusal that resolves by the owner returning and recurs changes nothing else in the record).
         public StreamPartitionOwnershipValue withFailoverRefused(boolean refused) {
             return new StreamPartitionOwnershipValue(owner,
                                                      ownerEpoch,
@@ -2589,6 +2623,9 @@ public sealed interface AetherValue {
                                                      isrVersion,
                                                      refused,
                                                      fenced,
+                                                     refused && !failoverRefused
+                                                     ? failoverRefusalSeq + 1
+                                                     : failoverRefusalSeq,
                                                      epochStarts);
         }
 
@@ -2623,6 +2660,7 @@ public sealed interface AetherValue {
                                                      isrVersion + 1,
                                                      failoverRefused,
                                                      fenced,
+                                                     0L,
                                                      append(epochStarts, new EpochStart(epoch, startOffset)));
         }
 
@@ -2635,6 +2673,7 @@ public sealed interface AetherValue {
                                                      isrVersion + 1,
                                                      failoverRefused,
                                                      fenced,
+                                                     failoverRefusalSeq,
                                                      starts);
         }
 

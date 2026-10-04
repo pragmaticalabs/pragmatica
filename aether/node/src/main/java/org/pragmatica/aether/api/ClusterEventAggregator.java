@@ -29,6 +29,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
+import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -1451,7 +1452,8 @@ public final class ClusterEventAggregator {
                                                              event.owner(),
                                                              event.isr(),
                                                              event.live(),
-                                                             event.reason())));
+                                                             event.reason(),
+                                                             event.eventId())));
     }
 
     @Contract
@@ -1466,7 +1468,8 @@ public final class ClusterEventAggregator {
                                                               event.owner(),
                                                               event.isr(),
                                                               event.live(),
-                                                              event.reason())));
+                                                              event.reason(),
+                                                              event.eventId())));
     }
 
     @Contract
@@ -1482,7 +1485,8 @@ public final class ClusterEventAggregator {
                                                         event.owner(),
                                                         event.isr(),
                                                         event.fenced(),
-                                                        event.confirmationFactor())));
+                                                        event.confirmationFactor(),
+                                                        event.eventId())));
     }
 
     @Contract
@@ -1497,7 +1501,31 @@ public final class ClusterEventAggregator {
                                                     event.owner(),
                                                     event.isr(),
                                                     event.fenced(),
-                                                    event.confirmationFactor())));
+                                                    event.confirmationFactor(),
+                                                    event.eventId())));
+    }
+
+    /// Taste: WARNING. The operator asked for a lower factor and the system will not do it; nothing is lost and
+    /// nothing stalls by this event itself.
+    @Contract
+    public void onStreamConfigChangeNotApplied(OperationalEvent.StreamConfigChangeNotApplied event) {
+        emit(new StreamConfigChangeNotApplied(hlcClock.now(),
+                                              Severity.WARNING,
+                                              "Stream " + event.stream()
+                                             + " keeps confirmation factor " + event.effectiveConfirmationFactor()
+                                             + ": the committed change to " + event.requestedConfirmationFactor()
+                                             + " is not applied (" + event.reason()
+                                             + ")",
+                                              Map.of(ClusterEventIdentity.EVENT_ID,
+                                                     event.eventId(),
+                                                     "stream",
+                                                     event.stream(),
+                                                     "requestedConfirmationFactor",
+                                                     String.valueOf(event.requestedConfirmationFactor()),
+                                                     "effectiveConfirmationFactor",
+                                                     String.valueOf(event.effectiveConfirmationFactor()),
+                                                     "reason",
+                                                     event.reason())));
     }
 
     @Contract
@@ -1529,8 +1557,11 @@ public final class ClusterEventAggregator {
                                                         String owner,
                                                         List<String> isr,
                                                         List<String> fenced,
-                                                        int confirmationFactor) {
-        return Map.of("stream",
+                                                        int confirmationFactor,
+                                                        String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
                       stream,
                       "partition",
                       String.valueOf(partition),
@@ -1549,8 +1580,11 @@ public final class ClusterEventAggregator {
                                                              String owner,
                                                              List<String> isr,
                                                              List<String> live,
-                                                             String reason) {
-        return Map.of("stream",
+                                                             String reason,
+                                                             String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
                       stream,
                       "partition",
                       String.valueOf(partition),

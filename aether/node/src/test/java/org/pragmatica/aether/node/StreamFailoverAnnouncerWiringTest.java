@@ -19,6 +19,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// are registered. The announcer's behaviour is pinned by `StreamFailoverAnnouncementTest` and the owner gate by
 /// `ClusterEventAggregatorTest`; this pins the production wiring that connects them, which neither can reach.
 class StreamFailoverAnnouncerWiringTest {
+    /// [unverified: wiring order pinned by text only] The announcer-before-manager order and the route registrations are
+    /// source-text matches on `AetherNode`; the behaviour of the derivation is pinned by `StreamIsrAnnouncerTest` and the
+    /// manager's prediction by `StreamLifeAuthorityTest`, neither of which can reach the assembly.
     @Test
     void everyNodeFeedsCommittedOwnershipPutsToTheAnnouncer_andTheEventsReachTheAggregator() {
         var code = assemblyCode();
@@ -29,7 +32,10 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,eventAggregator::onStreamFailoverResolved)");
         // #1883: the in-sync-set announcer is fed by the same committed Puts, takes the factor from the stream's committed
         // config, and its events reach the aggregator.
-        assertThat(code).contains("StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,delegateRouter::route);");
+        assertThat(code).contains("StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,streamPartitionManager::confirmationFactorAfter,streamPartitionManager::enforcedConfig,");
+        // A committed config Put that moves the factor is announced too, and it is announced BEFORE the manager installs
+        // that config: the factor it enforces before the Put is the baseline.
+        assertThat(code).contains(".onPut(AetherKey.StreamConfigKey.class,streamIsrAnnouncer::onConfigPut).onPut(AetherKey.StreamConfigKey.class,streamPartitionManager::onStreamConfigPut)");
         assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamIsrAnnouncer::onOwnershipPut)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,eventAggregator::onStreamIsrBelowMinimum)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,eventAggregator::onStreamIsrRestored)");
@@ -37,6 +43,7 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains("StreamLineageAnnouncer.streamLineageAnnouncer(delegateRouter::route);");
         assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamLineageAnnouncer::onOwnershipPut)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,eventAggregator::onStreamLineageRestarted)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
     }
 
     private static String assemblyCode() {

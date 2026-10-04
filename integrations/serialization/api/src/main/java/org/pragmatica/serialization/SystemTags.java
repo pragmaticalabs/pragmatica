@@ -585,6 +585,8 @@ public interface SystemTags {
         // stream partition epoch start (#1730 phase 2)
         pin(table, 1748, "org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart");
         pin(table, 1749, "org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted");
+        // a committed stream config lowering that is not applied online (#1883)
+        pin(table, 1750, "org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)

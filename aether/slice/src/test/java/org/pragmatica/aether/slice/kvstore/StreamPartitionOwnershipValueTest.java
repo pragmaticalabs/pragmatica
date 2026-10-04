@@ -43,7 +43,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullEpoch_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO, null, 0L, false, null, null);
+        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO, null, 0L, false, null, 0L, null);
 
         assertThat(v.ownerEpoch()).isEqualTo(Epoch.ZERO);
     }
@@ -52,7 +52,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullTransferredAt_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, null);
+        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, 0L, null);
 
         assertThat(v.transferredAt()).isEqualTo(HlcTimestamp.ZERO);
     }
@@ -63,8 +63,8 @@ class StreamPartitionOwnershipValueTest {
     void construct_missingIsr_normalizesToOwnerAlone() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, null).isr()).containsExactly(owner);
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, java.util.List.of(), 0L, false, null, null).isr()).containsExactly(owner);
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, 0L, null).isr()).containsExactly(owner);
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, java.util.List.of(), 0L, false, null, 0L, null).isr()).containsExactly(owner);
     }
 
     /// #1730: an ISR change keeps the ownership and advances only the ISR version.
@@ -87,7 +87,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_missingFenced_normalizesToEmpty() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, null).fenced()).isEmpty();
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, 0L, null).fenced()).isEmpty();
         assertThat(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.ZERO, 1L, HlcTimestamp.ZERO).fenced()).isEmpty();
     }
 
@@ -226,5 +226,21 @@ class StreamPartitionOwnershipValueTest {
 
         assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts).epochStarts())
             .isEqualTo(starts);
+    }
+
+    /// Within an ownership term the refusal count grows on each transition INTO refused, only; it is what makes a recurring refusal a new event.
+    @Test
+    void failoverRefusalSeq_countsTransitionsIntoRefused_only() {
+        var owner = new NodeId("owner");
+        var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.ZERO, 1L, HlcTimestamp.ZERO);
+        var refused = v.withFailoverRefused(true);
+
+        assertThat(v.failoverRefusalSeq()).isZero();
+        assertThat(refused.failoverRefusalSeq()).isEqualTo(1L);
+        assertThat(refused.withFailoverRefused(true).failoverRefusalSeq()).as("already refused: not a new transition").isEqualTo(1L);
+        assertThat(refused.withFailoverRefused(false).failoverRefusalSeq()).as("resolving keeps the count").isEqualTo(1L);
+        assertThat(refused.withFailoverRefused(false).withFailoverRefused(true).failoverRefusalSeq()).isEqualTo(2L);
+        assertThat(refused.withIsr(java.util.List.of(owner)).failoverRefusalSeq()).as("an ISR change carries it").isEqualTo(1L);
+        assertThat(refused.withIsrAndFenced(java.util.List.of(owner), java.util.List.of()).failoverRefusalSeq()).isEqualTo(1L);
     }
 }
