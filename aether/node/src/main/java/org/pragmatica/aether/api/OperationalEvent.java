@@ -85,4 +85,42 @@ public sealed interface OperationalEvent extends Message.Local {
             return new StreamFailoverResolved(stream, partition, owner, isr, live, reason, System.currentTimeMillis());
         }
     }
+
+    /// #1883: a stream partition's committed in-sync set fell below its confirmation factor, so every acknowledged
+    /// publish is refused (`NOT_ENOUGH_REPLICAS`) until a replica rejoins ([ClusterEvent.StreamIsrBelowMinimum]).
+    /// `fenced` is the committed set of members the leader keeps out for liveness.
+    record StreamIsrBelowMinimum(String stream,
+                                 int partition,
+                                 String owner,
+                                 List<String> isr,
+                                 List<String> fenced,
+                                 int confirmationFactor,
+                                 long timestamp) implements OperationalEvent {
+        public static StreamIsrBelowMinimum streamIsrBelowMinimum(String stream,
+                                                                  int partition,
+                                                                  String owner,
+                                                                  List<String> isr,
+                                                                  List<String> fenced,
+                                                                  int confirmationFactor) {
+            return new StreamIsrBelowMinimum(stream, partition, owner, isr, fenced, confirmationFactor, System.currentTimeMillis());
+        }
+    }
+
+    /// #1883: the in-sync set of a partition reached its confirmation factor again ([ClusterEvent.StreamIsrRestored]).
+    record StreamIsrRestored(String stream,
+                             int partition,
+                             String owner,
+                             List<String> isr,
+                             List<String> fenced,
+                             int confirmationFactor,
+                             long timestamp) implements OperationalEvent {
+        public static StreamIsrRestored streamIsrRestored(String stream,
+                                                          int partition,
+                                                          String owner,
+                                                          List<String> isr,
+                                                          List<String> fenced,
+                                                          int confirmationFactor) {
+            return new StreamIsrRestored(stream, partition, owner, isr, fenced, confirmationFactor, System.currentTimeMillis());
+        }
+    }
 }

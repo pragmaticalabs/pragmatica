@@ -267,6 +267,41 @@ class ClusterEventAggregatorTest {
         assertThat(events.get(1).details()).containsEntry("owner", "node-b");
     }
 
+    /// #1883: the in-sync-set events reach the cluster-events stream as typed events, WARNING for the breach and INFO for
+    /// the restoration, carrying the stream, partition, owner, ISR, fenced set and factor.
+    @Test
+    void streamIsrBelowMinimumAndRestored_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders",
+                                                                                                            2,
+                                                                                                            "node-a",
+                                                                                                            java.util.List.of("node-a"),
+                                                                                                            java.util.List.of("node-b"),
+                                                                                                            2));
+        h.aggregator().onStreamIsrRestored(OperationalEvent.StreamIsrRestored.streamIsrRestored("orders",
+                                                                                                2,
+                                                                                                "node-a",
+                                                                                                java.util.List.of("node-a", "node-b"),
+                                                                                                java.util.List.of(),
+                                                                                                2));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.StreamIsrBelowMinimum.class);
+        assertThat(events.get(0).type()).isEqualTo("STREAM_ISR_BELOW_MINIMUM");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("stream", "orders")
+                                           .containsEntry("partition", "2")
+                                           .containsEntry("owner", "node-a")
+                                           .containsEntry("isr", "node-a")
+                                           .containsEntry("fenced", "node-b")
+                                           .containsEntry("confirmationFactor", "2");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamIsrRestored.class);
+        assertThat(events.get(1).type()).isEqualTo("STREAM_ISR_RESTORED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+    }
+
     /// #1730 owner ruling, the cluster-wide path: EVERY node derives the failover event from the same committed
     /// ownership Put, and only the cluster-events partition owner publishes. The LEADER (which committed the refusal)
     /// is NOT that owner here, and the event still reaches the stream exactly once — on the owner.

@@ -5429,9 +5429,15 @@ public interface AetherNode extends ManageableNode {
         var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
                                                                                       delegateRouter::route);
 
+        // #1883: the same derivation for the in-sync set falling below / returning to the confirmation factor.
+        var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
+                                                                       delegateRouter::route);
+
         allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                               .onPut(AetherKey.StreamPartitionOwnershipKey.class,
                                                      streamFailoverAnnouncer::onOwnershipPut)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamIsrAnnouncer::onOwnershipPut)
                                               .build()
                                               .asRouteEntries());
         // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
@@ -8832,6 +8838,10 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onStreamFailoverRefused));
         entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,
                                               eventAggregator::onStreamFailoverResolved));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,
+                                              eventAggregator::onStreamIsrBelowMinimum));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,
+                                              eventAggregator::onStreamIsrRestored));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));

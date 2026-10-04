@@ -26,6 +26,8 @@ import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -1464,6 +1466,57 @@ public final class ClusterEventAggregator {
                                                               event.isr(),
                                                               event.live(),
                                                               event.reason())));
+    }
+
+    @Contract
+    public void onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum event) {
+        emit(new StreamIsrBelowMinimum(hlcClock.now(),
+                                       Severity.WARNING,
+                                       "Stream " + event.stream()
+                                      + "[" + event.partition()
+                                      + "] refuses acknowledged publishes: in-sync replicas " + event.isr()
+                                      + " are fewer than the confirmation factor " + event.confirmationFactor(),
+                                       streamIsrDetails(event.stream(),
+                                                        event.partition(),
+                                                        event.owner(),
+                                                        event.isr(),
+                                                        event.fenced(),
+                                                        event.confirmationFactor())));
+    }
+
+    @Contract
+    public void onStreamIsrRestored(OperationalEvent.StreamIsrRestored event) {
+        emit(new StreamIsrRestored(hlcClock.now(),
+                                   Severity.INFO,
+                                   "Stream " + event.stream()
+                                  + "[" + event.partition()
+                                  + "] accepts acknowledged publishes again: in-sync replicas " + event.isr(),
+                                   streamIsrDetails(event.stream(),
+                                                    event.partition(),
+                                                    event.owner(),
+                                                    event.isr(),
+                                                    event.fenced(),
+                                                    event.confirmationFactor())));
+    }
+
+    private static Map<String, String> streamIsrDetails(String stream,
+                                                        int partition,
+                                                        String owner,
+                                                        List<String> isr,
+                                                        List<String> fenced,
+                                                        int confirmationFactor) {
+        return Map.of("stream",
+                      stream,
+                      "partition",
+                      String.valueOf(partition),
+                      "owner",
+                      owner,
+                      "isr",
+                      String.join(",", isr),
+                      "fenced",
+                      String.join(",", fenced),
+                      "confirmationFactor",
+                      String.valueOf(confirmationFactor));
     }
 
     private static Map<String, String> streamFailoverDetails(String stream,
