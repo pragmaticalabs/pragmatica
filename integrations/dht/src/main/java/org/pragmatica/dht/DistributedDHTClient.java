@@ -282,14 +282,15 @@ public final class DistributedDHTClient implements DHTClient {
     /// or the wait runs out — the write is applied and acknowledged on its own slot and sets no stale record; a replica on
     /// the newer change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it; #1683-class]
     private Promise<StorageEngine.Displaced> applyLocalAfterEvidence(QuorumCollector<?> collector,
-                                                                      boolean hasRemote,
-                                                                      Supplier<Promise<StorageEngine.Displaced>> write) {
+                                                                     boolean hasRemote,
+                                                                     Supplier<Promise<StorageEngine.Displaced>> write) {
         if (!hasRemote) {
             return write.get();
         }
 
         var timeout = config.get().operationTimeout().millis();
-        var bound = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()), 1L);
+        var bound = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()),
+                             1L);
 
         return collector.remoteEvidence()
                         .timeout(timeSpan(bound).millis())
