@@ -29,16 +29,11 @@ import org.pragmatica.lang.utils.Causes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// #1678 (v1670 P6): the policy that authorizes a request is the policy of the route that SERVES it. Sibling routes
-/// of one slice share a base path (`GET /orders/{id}` and `GET /orders/{id}/admin` are both `/orders/`), and the
-/// prefix pick alone returned whichever sibling was listed FIRST -- on every node, the host included: listed first,
-/// the PUBLIC sibling authorized requests the admin handler served. Both declaration orders, through the REAL
-/// publisher and the REAL slice router.
 /// v1873 probe for #1916 (#755): the HOST's local resolution (`HttpRoutePublisher.resolveServed`) selects over
 /// `HttpRouteDefinition` shapes, which carry no spacer slots, so it still matches by membership while each slice's own router
 /// is positional. Two slices share `/users/` with the spacer at different slots; the request must be served by the one whose
 /// declared position matches.
-class SpacerPositionHostResolutionProbeTest {
+class SpacerPositionHostResolutionTest {
     private static final NodeId SELF = NodeId.nodeId("self-spacer").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:unused:1.0.0").unwrap();
     private static final Artifact ID_THEN_EDIT = Artifact.artifact("org.example:aaa-id-then-edit:1.0.0").unwrap();
@@ -72,25 +67,10 @@ class SpacerPositionHostResolutionProbeTest {
                                 .body());
     }
 
-    /// TRIPWIRE: the host's local resolution (`resolveServed`, over `HttpRouteDefinition`, which carries no slots) still picks a
-    /// slice by spacer MEMBERSHIP, so with two slices under one base the request reaches the wrong slice, whose positional router
-    /// answers 404. Reddens when the definitions carry positions: delete it and enable the real assertion below.
+    /// Two slices under one base, the spacer at different slots: each request reaches the slice that declared that position.
+    /// Before the definitions carried slots, `/users/edit/42` was resolved to the id-then-edit slice and answered 404.
     @Test
-    void currently_twoSlicesSplitBySpacerPosition_hostResolutionPicksByMembership_tripwire() {
-        var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
-
-        publishInto(publisher, ID_THEN_EDIT, new SpacerPositionSliceRoutes.IdThenEditSlice());
-        publishInto(publisher, EDIT_THEN_ID, new SpacerPositionSliceRoutes.EditThenIdSlice());
-
-        assertThat(servedBody(publisher, "/users/42/edit")).as("CONTROL").contains("id-then-edit-42");
-        assertThat(servedBody(publisher, "/users/edit/42"))
-            .as("host resolution now positional: delete this tripwire and enable the real assertion")
-            .contains("\"status\":404");
-    }
-
-    @org.junit.jupiter.api.Disabled("#755 follow-up: HttpRouteDefinition carries no spacer slots; enable when the tripwire above reddens")
-    @Test
-    void editThenId_isServedByTheSliceThatDeclaredThatPosition() {
+    void twoSlicesSplitBySpacerPosition_hostResolutionServesTheSliceThatDeclaredThatPosition() {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 
         publishInto(publisher, ID_THEN_EDIT, new SpacerPositionSliceRoutes.IdThenEditSlice());
@@ -104,7 +84,7 @@ class SpacerPositionHostResolutionProbeTest {
     private static final Artifact ADMIN_ORDERS = Artifact.artifact("org.example:orders-admin:1.0.0").unwrap();
 
     private static void publishInto(HttpRoutePublisher publisher, Artifact artifact, Object slice) {
-        publisher.publishRoutes(artifact, SpacerPositionHostResolutionProbeTest.class.getClassLoader(), slice, stubInvokerFacade())
+        publisher.publishRoutes(artifact, SpacerPositionHostResolutionTest.class.getClassLoader(), slice, stubInvokerFacade())
                  .await(timeSpan(30).seconds())
                  .onFailure(cause -> Assertions.fail("route publication must succeed: " + cause.message()));
     }
@@ -123,7 +103,7 @@ class SpacerPositionHostResolutionProbeTest {
     private static HttpRoutePublisher publish(Object slice) {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 
-        publisher.publishRoutes(ARTIFACT, SpacerPositionHostResolutionProbeTest.class.getClassLoader(), slice, stubInvokerFacade())
+        publisher.publishRoutes(ARTIFACT, SpacerPositionHostResolutionTest.class.getClassLoader(), slice, stubInvokerFacade())
                  .await(timeSpan(30).seconds())
                  .onFailure(cause -> Assertions.fail("route publication must succeed: " + cause.message()));
 
