@@ -297,6 +297,23 @@ public final class OwnerActivation {
     /// The candidate's durable sealed floor, late-bound ([#sealedFloor]); none sealed until wired.
     private volatile LastSealedOffsetSource sealedFloor = LastSealedOffsetSource.none();
 
+    /// The earliest offset a peer still holds in its RING, or none when that is not known. Late-bound ([#peerRingTail]).
+    @FunctionalInterface
+    public interface PeerRingTail {
+        Promise<Option<Long>> of(NodeId peer, String stream, int partition);
+    }
+
+    private volatile PeerRingTail peerRingTail = (_, _, _) -> Promise.success(Option.none());
+
+    /// Late-bind where a peer's ring begins. The gate's relaxation for a divergent peer applies only to a divergence at an offset
+    /// the peer still holds in its ring: below it the peer's copy was handed to the tier (sealed), where its own repair refuses to
+    /// cut. The compare reads the peer's range through its tier too, so a difference found there is NOT a relaxation case. Unknown
+    /// (the default) fails safe: no relaxation. Set once at wiring.
+    @Contract
+    public void peerRingTail(PeerRingTail tail) {
+        this.peerRingTail = tail;
+    }
+
     /// Forgets what this node's registry says a peer confirmed. Late-bound ([#peerRows]); the default forgets nothing.
     @FunctionalInterface
     public interface PeerRowReset {
@@ -658,7 +675,17 @@ public final class OwnerActivation {
                                        from,
                                        to))
                       .map(OwnerActivation::firstDifference)
+                      .flatMap(difference -> difference.fold(() -> Promise.success(Option.<Long> none()),
+                                                             offset -> inPeersRing(stream, partition, peer, offset)))
                       .recover(_ -> Option.none());
+    }
+
+    /// `offset` when the peer holds it in its RING (it is at or above the peer's ring tail); none when it lies below it (sealed
+    /// data) or the tail is not known.
+    private Promise<Option<Long>> inPeersRing(String stream, int partition, PeerWatermark peer, long offset) {
+        return peerRingTail.of(peer.node(), stream, partition)
+                           .map(tail -> tail.filter(ringTail -> offset >= ringTail)
+                                            .map(_ -> offset));
     }
 
     /// The lowest offset present in both ranges whose records differ.

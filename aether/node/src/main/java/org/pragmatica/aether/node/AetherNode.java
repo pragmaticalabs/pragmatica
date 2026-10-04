@@ -184,6 +184,7 @@ import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OwnerActivation;
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.projection.PartitionBounds;
@@ -5526,6 +5527,15 @@ public interface AetherNode extends ManageableNode {
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
+        ownerActivation.peerRingTail((node, stream, partition) -> node.equals(config.self())
+                                                                  ? Promise.success(streamPartitionManager.visibleBounds(stream, partition)
+                                                                                                          .filter(bounds -> bounds.earliestRetained() >= 0L)
+                                                                                                          .map(VisibleBounds::earliestRetained))
+                                                                  : streamForwardClient.boundsRemote(node, stream, partition)
+                                                                                       .map(bounds -> Option.some(bounds)
+                                                                                                           .filter(known -> known.earliestRetained() >= 0L)
+                                                                                                           .map(VisibleBounds::earliestRetained))
+                                                                                       .recover(_ -> Option.<Long> none()));
         ownerActivation.peerRows((stream, partition, peer) -> streamReplicaRegistry.updateWatermark(stream,
                                                                                                     partition,
                                                                                                     peer,

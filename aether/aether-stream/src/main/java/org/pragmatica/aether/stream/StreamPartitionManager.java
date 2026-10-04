@@ -12,6 +12,9 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Semaphore;
@@ -262,6 +265,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
     /// What the repair in progress of a partition has discarded so far; reported once when it settles ([#settleRepair]).
     private final ConcurrentHashMap<PartitionRef, TailCut> pendingCuts = new ConcurrentHashMap<>();
+    /// Reports of repairs a previous process left unsettled that were found before the operator-warning sink was wired; made
+    /// when it is.
+    private final java.util.concurrent.CopyOnWriteArrayList<Runnable> deferredReports = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private volatile boolean operatorWarningsBound = false;
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
@@ -978,6 +985,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void operatorWarnings(OperatorWarningSink sink) {
         this.operatorWarnings = sink;
+        operatorWarningsBound = true;
+        deferredReports.forEach(Runnable::run);
+        deferredReports.clear();
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1974,10 +1984,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void restoreVisible(StreamConfig config, StreamEntry entry) {
-        entry.materialized()
-             .forEach((partition, materialized) -> restoreVisible(config,
-                                                                  partition,
-                                                                  materialized.ring()));
+        entry.materialized().forEach((partition, materialized) -> {
+            restoreVisible(config, partition, materialized.ring());
+            reportInterruptedRepair(config.name(), partition, materialized.wal());
+        });
     }
 
     /// visible = min(durable, the highest offset `confirmationFactor - 1` distinct peers have acknowledged).
@@ -2232,7 +2242,72 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void reportCut(String streamName, int partition, TailCut cut) {
         if (cut.removed() > 0) {
-            pendingCuts.merge(new PartitionRef(streamName, partition), cut, TailCut::then);
+            var combined = pendingCuts.merge(new PartitionRef(streamName, partition), cut, TailCut::then);
+
+            walFor(streamName, partition).onPresent(wal -> persistPendingCut(wal, combined));
+        }
+    }
+
+    /// The cut is durable at once, so what it discarded is recorded durably too until the repair settles: a copy that restarts in
+    /// between (the cut is in its WAL, the data is gone, and nothing is left to cut again) would otherwise never tell the
+    /// operator what it lost. The record is one small file beside the WAL, removed when the report is made.
+    @Contract
+    private void persistPendingCut(AppendLog wal, TailCut cut) {
+        var epoch = cut.epoch().map(e -> e.incarnation() + " " + e.rabiaTerm() + " " + e.localCounter()).or("-");
+
+        try {
+            Files.writeString(pendingCutFile(wal),
+                              cut.keptThrough() + " " + cut.removed() + " " + cut.firstRemoved() + " " + cut.lastRemoved() + " " + epoch,
+                              StandardOpenOption.CREATE,
+                              StandardOpenOption.TRUNCATE_EXISTING,
+                              StandardOpenOption.WRITE,
+                              StandardOpenOption.SYNC);
+        } catch (IOException | RuntimeException e) {
+            log.warn("Could not record the pending truncation report beside {}: {}", wal.path(), e.getMessage());
+        }
+    }
+
+    private static Path pendingCutFile(AppendLog wal) {
+        return wal.path().resolveSibling(wal.path().getFileName() + ".pending-cut");
+    }
+
+    /// A partition reopened with a pending truncation record: the repair that made the cut never settled (the process died first).
+    /// What it discarded is reported now, once, and the record removed.
+    @Contract
+    private void reportInterruptedRepair(String streamName, int partition, Option<AppendLog> wal) {
+        wal.onPresent(appendLog -> readPendingCut(pendingCutFile(appendLog)).onPresent(cut -> {
+            Runnable report = () -> {
+                reportCut(streamName, partition, cut, confirmationFactorFor(streamName));
+                deletePendingCut(pendingCutFile(appendLog));
+            };
+
+            if (operatorWarningsBound) {
+                report.run();
+            } else {
+                deferredReports.add(report);
+            }
+        }));
+    }
+
+    private static Option<TailCut> readPendingCut(Path file) {
+        try {
+            var parts = Files.readString(file).trim().split(" ");
+            var epoch = parts.length >= 7
+                        ? Option.some(Epoch.epoch(Long.parseLong(parts[4]), Long.parseLong(parts[5]), Long.parseLong(parts[6])))
+                        : Option.<Epoch> none();
+
+            return Option.some(new TailCut(Long.parseLong(parts[0]), Long.parseLong(parts[1]), Long.parseLong(parts[2]), Long.parseLong(parts[3]), epoch));
+        } catch (IOException | RuntimeException e) {
+            return Option.none();
+        }
+    }
+
+    @Contract
+    private static void deletePendingCut(Path file) {
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException e) {
+            log.warn("Could not remove the pending truncation record {}: {}", file, e.getMessage());
         }
     }
 
@@ -2243,10 +2318,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// by the old owner alone and it is only logged.
     @Contract
     private void settleRepair(String streamName, int partition) {
-        option(pendingCuts.remove(new PartitionRef(streamName, partition))).onPresent(cut -> reportCut(streamName,
-                                                                                                       partition,
-                                                                                                       cut,
-                                                                                                       confirmationFactorFor(streamName)));
+        option(pendingCuts.remove(new PartitionRef(streamName, partition))).onPresent(cut -> {
+            reportCut(streamName, partition, cut, confirmationFactorFor(streamName));
+            walFor(streamName, partition).onPresent(wal -> deletePendingCut(pendingCutFile(wal)));
+        });
     }
 
     private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor) {
@@ -4368,6 +4443,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
                                                                  candidate.ring()))
+                          .onSuccess(candidate -> reportInterruptedRepair(config.name(), partition, candidate.wal()))
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
     }
 

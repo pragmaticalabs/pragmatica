@@ -60,6 +60,12 @@ class OwnerActivationTest {
     /// The first offset at which a node in [#divergent] differs; records below it are the shared lineage.
     private final AtomicLong divergentFrom = new AtomicLong(0L);
     private final OwnerActivation activation = gate(PromotionTestRanges.NEVER_ALARM);
+    /// Where a peer's RING begins (the gate relaxes only for a divergence at or above it); none = not known.
+    private final java.util.concurrent.atomic.AtomicReference<Option<Long>> peerTail = new java.util.concurrent.atomic.AtomicReference<>(Option.some(0L));
+
+    {
+        activation.peerRingTail((_, _, _) -> Promise.success(peerTail.get()));
+    }
 
     /// Every node holds the same lineage over any range the gate compares (`rec-<offset>`), except the nodes in
     /// [#divergent], whose records differ (`div-<offset>`). Divergence on real rings is pinned in
@@ -222,6 +228,46 @@ class OwnerActivationTest {
 
         assertThat(activate()).as("a candidate outside the committed ISR does not relax the gate").isFalse();
         assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    /// B6 (v1890 probe F): the compare reads the peer's range through its tier, so a difference can be found in data the peer has
+    /// SEALED, where its own repair refuses to cut. That is not a relaxation case: the relaxation applies only to a divergence at
+    /// an offset the peer still holds in its ring, and a peer whose ring tail is unknown is not relaxed for (fail safe).
+    @Test
+    void activate_isrElectedCandidate_peerDivergentOnlyBelowItsRingTail_stillRefuses() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+        peerTail.set(Option.some(11L));
+
+        assertThat(activate()).as("first divergence 10 is below the peer's ring tail 11: sealed data").isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    @Test
+    void activate_isrElectedCandidate_peerRingTailUnknown_isNotRelaxedFor() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        peerTail.set(Option.none());
+
+        assertThat(activate()).as("unknown ring tail fails safe").isFalse();
+    }
+
+    /// Control: the divergence at or above the peer's ring tail is relaxed.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentAtItsRingTail_isRelaxed() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+        peerTail.set(Option.some(10L));
+
+        assertThat(activate()).isTrue();
     }
 
     /// B6 (the design's Q6): the gate relaxes ONLY for a divergence ABOVE the candidate's durable sealed floor. A peer that
