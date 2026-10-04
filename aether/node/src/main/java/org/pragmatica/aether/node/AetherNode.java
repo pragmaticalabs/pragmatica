@@ -2441,6 +2441,8 @@ public interface AetherNode extends ManageableNode {
                 spokesmanPingLoop.stop();
                 Option.option(governorAnnouncerHolder.get()).onPresent(GovernorAnnouncer::stop);
                 streamRetentionEnforcer.close();
+                // The webhook forwarder owns a JDK HttpClient (a selector thread) when webhooks are enabled.
+                alertManager.closeForwarder();
                 observabilityBaseline.sampler().onPresent(AdaptiveSampler::stop);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
                 // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
