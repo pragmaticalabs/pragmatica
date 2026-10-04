@@ -238,7 +238,17 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
     private Promise<MavenResponse> handleGetMetadata(ParsedPath.MetadataPath mp) {
         return renderMetadata(mp).map(rendered -> rendered.fold(() -> MavenResponse.notFound("No versions found"),
-                                                                xml -> MavenResponse.ok(xml, "application/xml")));
+                                                                xml -> MavenResponse.ok(xml, "application/xml")))
+                             .recover(cause -> metadataFailureResponse(mp, cause));
+    }
+
+    /// The render reads the stored metadata of EVERY listed version (for `<lastUpdated>`), so one transient
+    /// read failure must not turn into a 500 for the whole listing and its checksums: it answers 503 so the
+    /// client retries, exactly like a failed artifact read.
+    private static MavenResponse metadataFailureResponse(ParsedPath.MetadataPath mp, Cause cause) {
+        return failureResponse("GET",
+                               mp.groupId().id() + ":" + mp.artifactId().id() + " maven-metadata.xml",
+                               cause);
     }
 
     /// The exact bytes `GET .../maven-metadata.xml` returns, or empty when nothing is deployed. Every
@@ -300,7 +310,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
     private Promise<MavenResponse> handleGetMetadataChecksum(ParsedPath.MetadataPath mp, String algorithm) {
         return renderMetadata(mp).map(rendered -> rendered.fold(() -> MavenResponse.notFound("No versions found"),
-                                                                xml -> checksumResponse(xml, algorithm)));
+                                                                xml -> checksumResponse(xml, algorithm)))
+                             .recover(cause -> metadataFailureResponse(mp, cause));
     }
 
     private MavenResponse checksumResponse(byte[] content, String algorithm) {

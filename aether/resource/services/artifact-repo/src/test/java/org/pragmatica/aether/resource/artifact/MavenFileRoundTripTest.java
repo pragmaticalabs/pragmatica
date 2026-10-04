@@ -132,7 +132,12 @@ class MavenFileRoundTripTest {
         put(BASE + ".jar", JAR);
         put(BASE + ".jar.sha1", "ignored".getBytes(StandardCharsets.UTF_8));
         put(BASE + ".pom", POM);
-        assertThat(put(METADATA, "<metadata/>".getBytes(StandardCharsets.UTF_8)).statusCode()).isLessThan(300);
+        var metadataPut = put(METADATA, "<metadata/>".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(metadataPut.statusCode()).isLessThan(300);
+        assertThat(body(metadataPut)).as("the metadata PUT says the bytes were not stored")
+                                     .contains("\"status\":\"derived\"")
+                                     .contains("not stored");
 
         for (var suffix : CHECKSUM_ALGORITHMS.keySet()) {
             var uploaded = put(METADATA + suffix, "client-side-digest".getBytes(StandardCharsets.UTF_8));

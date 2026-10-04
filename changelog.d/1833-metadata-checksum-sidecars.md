@@ -11,3 +11,6 @@
   added. A failed read of that metadata fails the request rather than omitting the field.
 - Unchanged: `.sha256`/`.sha512`/`.asc` of artifact FILES are stored write-once files (#1778), and an artifact's
   `.md5`/`.sha1` upload remains a contentless 201 (the GET computes them).
+- A transient failure reading ANY listed version's stored metadata answers `503` (retry) for the metadata GET and its
+  checksums, never `500`; absent per-version metadata is not an error, and the field is simply omitted if no
+  version has any.
