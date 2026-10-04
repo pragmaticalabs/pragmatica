@@ -142,6 +142,20 @@ class ReplicaDivergentTailRepairTest {
         assertThat(texts(0, 20)).as("a restart recovers the cut log, not the divergent tail").containsExactly("c0", "c1", "c2", "owner-3", "owner-4");
     }
 
+    /// The owner is never repaired by cutting: it is the lineage, and nothing in this node's view outranks it. A
+    /// quarantined partition on the node that is the owner stays quarantined and keeps its records.
+    @Test
+    void quarantinedOwner_isNotCut_itStaysQuarantinedWithItsRecords() {
+        seedReplica(10, 10);
+        manager.appendRecovered(STREAM, PARTITION, 5, "someone-else".getBytes(UTF_8), 1005L).onSuccess(_ -> fail("a different record at a held offset must be refused"));
+        assertThat(manager.quarantinedAt(STREAM, PARTITION).or(-1L)).isEqualTo(5L);
+
+        backfillAs(OWNER, owner(5, 5, new AtomicLong()));
+
+        assertThat(manager.quarantinedAt(STREAM, PARTITION).or(-1L)).as("still quarantined").isEqualTo(5L);
+        assertThat(texts(0, 20)).hasSize(10);
+    }
+
     /// Control: a replica exactly at the owner's head with the owner's records is CAUGHT_UP at that offset, no repair.
     @Test
     void control_replicaAtTheOwnersHead_agreeing_isCaughtUpWithoutARepair() {
@@ -172,7 +186,11 @@ class ReplicaDivergentTailRepairTest {
     }
 
     private void backfill(CatchupTransport owner) {
-        registry.registerReplica(STREAM, PARTITION, REPLICA);
+        backfillAs(REPLICA, owner);
+    }
+
+    private void backfillAs(NodeId self, CatchupTransport owner) {
+        registry.registerReplica(STREAM, PARTITION, self);
         SelfWatermark local = (stream, partition) -> manager.partitionInfo(stream, partition)
                                                             .map(StreamPartitionManager.PartitionInfo::headOffset)
                                                             .or(-1L);
@@ -185,7 +203,7 @@ class ReplicaDivergentTailRepairTest {
                                              toOwner,
                                              probe,
                                              local,
-                                             REPLICA,
+                                             self,
                                              TimeSpan.timeSpan(10).seconds(),
                                              () -> MEMBERS,
                                              committed,
