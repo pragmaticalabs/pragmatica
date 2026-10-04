@@ -79,13 +79,21 @@ public sealed interface StreamError extends Cause {
     /// restart or failover began epoch `ownerEpoch` at `resumeAt` and assigned the offsets above it again. The consumer
     /// re-reads from `resumeAt` and adopts `ownerEpoch`; reading on from its cursor would skip the new records.
     ///
-    /// `boundaryKnown` says whether `resumeAt` is the exact start of the epoch that followed the consumer's own (the record
-    /// still holds it), or a conservative bound because the record no longer holds the starts between the consumer's epoch
-    /// and its oldest kept one: then `resumeAt` is at or below every offset that may have been re-assigned, so the consumer may
-    /// redeliver but never skips, and whether anything it processed was really lost is not known.
-    record EpochDiverged(Epoch ownerEpoch, long resumeAt, boolean boundaryKnown) implements StreamError {
+    /// `provenLossFrom` is where the record PROVES a loss to begin, or [#NO_PROVEN_LOSS]: the first start exactly known to be of
+    /// an epoch after the consumer's, below its cursor. `resumeAt` is only a lower bound of every offset an epoch after the
+    /// consumer's may have re-assigned (the consumer re-reads from it: it may redeliver, it never skips), and may be below
+    /// `provenLossFrom` when the record folded the starts in between. Records in `[provenLossFrom, cursor)` are proven gone.
+    record EpochDiverged(Epoch ownerEpoch, long resumeAt, long provenLossFrom) implements StreamError {
+        /// No loss is proven: the record cannot tell a loss from a re-read.
+        public static final long NO_PROVEN_LOSS = - 1L;
+
+        /// A divergence at an exact boundary: the loss is proven from `resumeAt`.
         public EpochDiverged(Epoch ownerEpoch, long resumeAt) {
-            this(ownerEpoch, resumeAt, true);
+            this(ownerEpoch, resumeAt, resumeAt);
+        }
+
+        public boolean lossProven() {
+            return provenLossFrom >= 0L;
         }
 
         @Override

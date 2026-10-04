@@ -382,7 +382,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         return response.epochDiverged()
                ? new StreamError.EpochDiverged(response.ownerEpoch(),
                                                response.divergenceResumeAt(),
-                                               response.divergenceBoundaryKnown())
+                                               response.divergenceLossFrom())
                : new StreamForwardError.ReadForwardFailed(response.errorMessage());
     }
 

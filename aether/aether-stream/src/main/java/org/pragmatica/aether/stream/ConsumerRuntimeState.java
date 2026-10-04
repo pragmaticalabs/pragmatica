@@ -1147,21 +1147,21 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return Promise.success(true);
     }
 
-    /// Only a re-seek that moves the cursor is announced, and only as a loss witness when the owner named the exact start of
-    /// the epoch that followed this consumer's own. When the record no longer held that boundary (the consumer was older than
-    /// its oldest kept start) the owner gave a bound at or below every offset that may have been re-assigned: the group may
-    /// re-read records that were never lost, so it is logged, not raised to the operator.
+    /// Only a re-seek that moves the cursor is announced, and only as a loss witness when the committed record PROVES a loss
+    /// (`provenLossFrom`: an exactly known start of a later epoch below the cursor). Otherwise the owner gave a bound at or below
+    /// every offset that may have been re-assigned (the record folded the starts that would decide it): the group may re-read
+    /// records that were never lost, so it is logged, not raised to the operator.
     @Contract
     private void announceRewind(ConsumerKey key, long from, long resume, StreamError.EpochDiverged diverged) {
-        if (diverged.boundaryKnown()) {
+        if (diverged.lossProven()) {
             warnRewound(key, from, diverged);
 
             return;
         }
 
         LOG.log(System.Logger.Level.INFO,
-                "Consumer group {0} on {1}[{2}] was at offset {3}, older than the partition's recorded epoch history; "
-               + "it re-reads from {4} under epoch {5} (records may be redelivered; whether any were lost is not known)",
+                "Consumer group {0} on {1}[{2}] was at offset {3}; the partition's recorded epoch history cannot place its epoch "
+               + "exactly; it re-reads from {4} under epoch {5} (records may be redelivered; no loss is proven)",
                 key.groupId(),
                 key.streamName(),
                 key.partition(),
@@ -1179,7 +1179,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                               + ":" + key.streamName()
                               + "[" + key.partition()
                               + "]@" + diverged.ownerEpoch(),
-                               "Consumer group {} on {}[{}] was at offset {} when the partition's owner began epoch {} at offset {}; "
+                               "Consumer group {} on {}[{}] was at offset {} when the partition's lineage was replaced: epoch {} began at offset {}; "
                               + "it re-reads from {}. Records this group processed at offsets [{}, {}) belong to the replaced lineage "
                               + "and are no longer in the log; the records now at those offsets are delivered",
                                key.groupId(),
@@ -1187,9 +1187,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                key.partition(),
                                from,
                                diverged.ownerEpoch(),
+                               diverged.provenLossFrom(),
                                diverged.resumeAt(),
-                               diverged.resumeAt(),
-                               diverged.resumeAt(),
+                               diverged.provenLossFrom(),
                                from);
     }
 

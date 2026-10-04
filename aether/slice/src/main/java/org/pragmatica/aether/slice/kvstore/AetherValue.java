@@ -2457,7 +2457,8 @@ public sealed interface AetherValue {
         /// The newest [#EPOCH_STARTS_MAX] starts. The starts it drops are folded, not forgotten: the oldest kept start takes the
         /// LOWEST offset of the dropped ones, so it stays a lower bound of every offset that a later epoch may have re-assigned
         /// for a consumer older than it (`EpochValidation` resumes such a consumer at it: it may redeliver, it never skips).
-        /// Starts increase in offset, so the lowest dropped one is the oldest.
+        /// Starts increase in offset, so the lowest dropped one is the oldest. What the folded entry still asserts EXACTLY is
+        /// that the OLDEST DROPPED epoch (`foldedFrom`) began at its offset; its own epoch did not (see [EpochStart#exactFor]).
         private static List<EpochStart> capped(List<EpochStart> starts) {
             if (starts.size() <= EPOCH_STARTS_MAX) {
                 return List.copyOf(starts);
@@ -2467,10 +2468,15 @@ public sealed interface AetherValue {
             var kept = new ArrayList<>(starts.subList(dropped, starts.size()));
             var oldest = kept.getFirst();
 
+            var lowest = starts.getFirst();
+
             kept.set(0,
                      new EpochStart(oldest.epoch(),
-                                    Math.min(oldest.startOffset(),
-                                             starts.getFirst().startOffset())));
+                                    Math.min(oldest.startOffset(), lowest.startOffset()),
+                                    lowest.foldedFrom()
+                                          .equals(Epoch.ZERO)
+                                    ? lowest.epoch()
+                                    : lowest.foldedFrom()));
 
             return List.copyOf(kept);
         }
@@ -2653,8 +2659,29 @@ public sealed interface AetherValue {
     /// One owner epoch of a stream partition and the offset its owner began writing at (#1730 phase 2, Kafka's leader
     /// epoch start offset). `StreamPartitionOwnershipValue#epochStarts` lists the newest ones, oldest first: a consumer that
     /// read under an older epoch is valid only while its cursor does not pass the start of the epoch that followed.
+    ///
+    /// `foldedFrom` is [Epoch#ZERO] for a start that is exactly what it says. The record's cap folds the oldest starts into the
+    /// oldest one it keeps: that entry then carries the kept epoch and the LOWEST dropped offset, and `foldedFrom` names the
+    /// oldest dropped epoch, the one that really began at that offset (a re-fold keeps the older). So a folded entry proves
+    /// "`foldedFrom` began at `startOffset`" and nothing about its own epoch.
     @Codec
-    record EpochStart(Epoch epoch, long startOffset) {}
+    record EpochStart(Epoch epoch, long startOffset, Epoch foldedFrom) {
+        public EpochStart {
+            foldedFrom = foldedFrom == null
+                         ? Epoch.ZERO
+                         : foldedFrom;
+        }
+
+        public EpochStart(Epoch epoch, long startOffset) {
+            this(epoch, startOffset, Epoch.ZERO);
+        }
+
+        /// Whether this start is the exact start of an epoch later than `consumerEpoch`: an unfolded start is, a folded one only
+        /// for a consumer older than the epoch it folded from.
+        public boolean exactFor(Epoch consumerEpoch) {
+            return foldedFrom.equals(Epoch.ZERO) || consumerEpoch.compareTo(foldedFrom) < 0;
+        }
+    }
 
     @Codec
     enum SpokesmanStatus {

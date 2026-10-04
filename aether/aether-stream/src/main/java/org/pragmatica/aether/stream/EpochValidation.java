@@ -67,29 +67,37 @@ public final class EpochValidation {
     }
 
     private static Result<Epoch> judged(Epoch ownerEpoch, List<EpochStart> starts, Epoch consumerEpoch, long cursor) {
-        if (consumerEpoch.compareTo(starts.getFirst().epoch()) < 0) {
-            return beyondTheKeptHistory(ownerEpoch,
-                                        starts.getFirst().startOffset(),
-                                        cursor);
-        }
-
-        return firstFollowing(starts, consumerEpoch).filter(next -> cursor > next.startOffset())
-                             .<Result<Epoch>> map(next -> new StreamError.EpochDiverged(ownerEpoch,
-                                                                                        next.startOffset()).result())
-                             .or(() -> Result.success(ownerEpoch));
+        return resumeBound(starts, consumerEpoch).filter(bound -> cursor > bound)
+                                                 .<Result<Epoch>> map(bound -> new StreamError.EpochDiverged(ownerEpoch,
+                                                                                                             bound,
+                                                                                                             provenLossFrom(starts,
+                                                                                                                            consumerEpoch,
+                                                                                                                            cursor)).result())
+                                                 .or(() -> Result.success(ownerEpoch));
     }
 
-    /// A consumer older than the oldest kept start cannot be placed against the boundaries that followed its epoch. The oldest
-    /// kept start's offset is the lowest offset any start after the consumer's epoch can have: the record drops the oldest
-    /// starts by folding their lowest offset into the oldest one it keeps (`StreamPartitionOwnershipValue#restarted`), and a
-    /// start that supersedes the earlier ones (a rebuilt ring, a re-created stream beginning at 0) leaves its own. So:
-    ///   - a cursor at or below it points only at offsets no later epoch can have re-assigned: admitted;
-    ///   - a cursor above it resumes AT it, at or below every offset that may have been re-assigned since the consumer's epoch,
-    ///     so it may redeliver and never skips, and is told the boundary is not exact (nothing proves a record was lost).
-    private static Result<Epoch> beyondTheKeptHistory(Epoch ownerEpoch, long lowestReassignable, long cursor) {
-        return cursor <= lowestReassignable
-               ? Result.success(ownerEpoch)
-               : new StreamError.EpochDiverged(ownerEpoch, lowestReassignable, false).result();
+    /// The offset at or below every offset an epoch after the consumer's may have re-assigned: the start that followed the
+    /// consumer's epoch, or, for a consumer older than every kept start, the oldest kept start, whose offset the record keeps as
+    /// the lowest of those it folded (`StreamPartitionOwnershipValue#capped`). A cursor at or below it is admitted; above it the
+    /// consumer re-reads from it, so it may redeliver and never skips.
+    private static Option<Long> resumeBound(List<EpochStart> starts, Epoch consumerEpoch) {
+        return consumerEpoch.compareTo(starts.getFirst().epoch()) < 0
+               ? Option.some(starts.getFirst().startOffset())
+               : firstFollowing(starts, consumerEpoch).map(EpochStart::startOffset);
+    }
+
+    /// Where the loss is PROVEN to begin, or -1: the first start that is exactly known to be of an epoch after the consumer's
+    /// and lies below its cursor. The new owner began assigning there, so the offsets the consumer read from it on are not in the
+    /// new lineage. Judged on the start that supersedes the consumer's epoch, not on the oldest one: a folded oldest start proves
+    /// nothing for a consumer that began after the epoch it folded from, while a later exact start still does. Offsets increase
+    /// along the list, so the first match is the lowest.
+    private static long provenLossFrom(List<EpochStart> starts, Epoch consumerEpoch, long cursor) {
+        return starts.stream()
+                     .filter(start -> start.epoch()
+                                           .compareTo(consumerEpoch) > 0 && start.exactFor(consumerEpoch) && start.startOffset() < cursor)
+                     .findFirst()
+                     .map(EpochStart::startOffset)
+                     .orElse(StreamError.EpochDiverged.NO_PROVEN_LOSS);
     }
 
     private static Option<EpochStart> firstFollowing(List<EpochStart> starts, Epoch consumerEpoch) {

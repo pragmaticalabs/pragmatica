@@ -229,7 +229,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                List<ProvenanceEntry> history,
                                Epoch ownerEpoch,
                                long divergenceResumeAt,
-                               boolean divergenceBoundaryKnown) implements StreamForwardMessage {
+                               long divergenceLossFrom) implements StreamForwardMessage {
         public ReadForwardResponse {
             events = List.copyOf(events);
             history = List.copyOf(history);
@@ -256,7 +256,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            List.of(),
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
-                                           true);
+                                           NO_DIVERGENCE);
         }
 
         public static ReadForwardResponse truncatedResponse(NodeId sender,
@@ -280,7 +280,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            List.of(),
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
-                                           true);
+                                           NO_DIVERGENCE);
         }
 
         public static ReadForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
@@ -295,7 +295,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            List.of(),
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
-                                           true);
+                                           NO_DIVERGENCE);
         }
 
         /// This answer carrying the serving node's owner-epoch history (#1596): a replica catch-up read's.
@@ -311,7 +311,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            sourceHistory,
                                            ownerEpoch,
                                            divergenceResumeAt,
-                                           divergenceBoundaryKnown);
+                                           divergenceLossFrom);
         }
 
         /// This answer stamped with the owner epoch the serving node answered under (#1730 phase 2 / #1873): the epoch a
@@ -328,7 +328,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            history,
                                            epoch,
                                            divergenceResumeAt,
-                                           divergenceBoundaryKnown);
+                                           divergenceLossFrom);
         }
 
         /// A consumer read refused because its cursor belongs to a replaced lineage (#1730 phase 2 / #1873): the serving
@@ -338,7 +338,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                                                 String correlationId,
                                                                 Epoch ownerEpoch,
                                                                 long resumeAt,
-                                                                boolean boundaryKnown,
+                                                                long lossFrom,
                                                                 String message) {
             return new ReadForwardResponse(sender,
                                            correlationId,
@@ -351,7 +351,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            List.of(),
                                            ownerEpoch,
                                            resumeAt,
-                                           boundaryKnown);
+                                           lossFrom);
         }
 
         /// Whether this is the typed divergence answer.

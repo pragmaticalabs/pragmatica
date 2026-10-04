@@ -189,9 +189,31 @@ class StreamPartitionOwnershipValueTest {
 
         assertThat(v.epochStarts()).hasSize(StreamPartitionOwnershipValue.EPOCH_STARTS_MAX);
         assertThat(v.epochStarts().getFirst()).as("the oldest kept epoch, at the lowest dropped offset")
-                                              .isEqualTo(new AetherValue.EpochStart(starts.get(3).epoch(), 0L));
+                                              .isEqualTo(new AetherValue.EpochStart(starts.get(3).epoch(), 0L, starts.get(0).epoch()));
         assertThat(v.epochStarts().subList(1, v.epochStarts().size())).as("the rest is untouched")
                                                                       .isEqualTo(starts.subList(4, starts.size()));
+    }
+
+    /// A re-fold keeps the OLDEST dropped epoch: the folded entry that is itself dropped by a later cap hands its `foldedFrom` on,
+    /// so what the entry asserts exactly (that epoch began at that offset) never moves to a newer epoch.
+    @Test
+    void refold_keepsTheOldestDroppedEpoch() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+        var starts = new java.util.ArrayList<>(java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.EPOCH_STARTS_MAX + 2)
+                                                                           .mapToObj(i -> new AetherValue.EpochStart(Epoch.epoch(1L, 2L, i), i * 10L))
+                                                                           .toList());
+        var once = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
+
+        starts = new java.util.ArrayList<>(once.epochStarts());
+        starts.add(new AetherValue.EpochStart(Epoch.epoch(1L, 2L, 99L), 999L));
+        starts.add(new AetherValue.EpochStart(Epoch.epoch(1L, 2L, 100L), 1_000L));
+
+        var twice = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
+
+        assertThat(twice.epochStarts()).hasSize(StreamPartitionOwnershipValue.EPOCH_STARTS_MAX);
+        assertThat(twice.epochStarts().getFirst().foldedFrom()).as("still the oldest dropped epoch of the FIRST fold").isEqualTo(Epoch.epoch(1L, 2L, 0L));
+        assertThat(twice.epochStarts().getFirst().startOffset()).isZero();
+        assertThat(twice.epochStarts().stream().skip(1)).as("only the oldest entry is ever folded").allMatch(start -> start.foldedFrom().equals(Epoch.ZERO));
     }
 
     /// Under the cap nothing is folded.

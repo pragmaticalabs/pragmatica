@@ -28,7 +28,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 
 /// #1873, the operator event of a consumer rewind (owner rule: every operator-facing condition emits an event). The event is
 /// the LOSS WITNESS, so it is raised only when the owner named the exact start of the epoch that followed the consumer's own
-/// (`boundaryKnown`): then `[resumeAt, cursor)` were processed in a lineage that no longer holds them. When the boundary is
+/// (`provenLossFrom`): then `[provenLossFrom, cursor)` were processed in a lineage that no longer holds them. When the boundary is
 /// not exact (the consumer is older than the recorded history) nothing proves a loss and no WARNING is raised.
 class ConsumerRewoundEventTest {
     private static final String STREAM = "orders";
@@ -54,7 +54,7 @@ class ConsumerRewoundEventTest {
 
     @Test
     void exactBoundary_raisesOneConsumerRewoundWarning_namingTheGroupTheEpochAndTheOffsets() throws InterruptedException {
-        run(new StreamError.EpochDiverged(E2, 1L, true));
+        run(new StreamError.EpochDiverged(E2, 1L, 1L));
 
         assertThat(delivered).as("control: the consumer re-read the new lineage").contains("1:new-1");
         assertThat(warnings).hasSize(1);
@@ -70,10 +70,38 @@ class ConsumerRewoundEventTest {
     /// nothing is raised, because nothing proves that any record it processed was lost.
     @Test
     void inexactBoundary_rewinds_butRaisesNoWarning() throws InterruptedException {
-        run(new StreamError.EpochDiverged(E2, 1L, false));
+        run(new StreamError.EpochDiverged(E2, 1L, StreamError.EpochDiverged.NO_PROVEN_LOSS));
 
         assertThat(delivered).as("the consumer still re-read from the bound").contains("1:new-1");
         assertThat(warnings).isEmpty();
+    }
+
+    /// The resume bound and the proven loss are independent: a folded history resumes at a conservative lower bound (0) while a
+    /// later exact start proves the loss from 1. The consumer re-reads from the bound, and the WARN names only the proven range.
+    @Test
+    void provenLossAboveTheResumeBound_isNamedExactly_whileTheConsumerReReadsFromTheBound() throws InterruptedException {
+        runtime = runtime(owner((from, epoch) -> {
+            if (epoch.equals(Epoch.ZERO) && from == 0L) {
+                return Promise.success(new StreamPartitionManager.EpochRead(List.of(event(0, "old-0"), event(1, "old-1")), E1));
+            }
+
+            if (epoch.equals(E1) && from >= 2L) {
+                return new StreamError.EpochDiverged(E2, 0L, 1L).promise();
+            }
+
+            if (epoch.equals(E2) && from == 0L) {
+                return Promise.success(new StreamPartitionManager.EpochRead(List.of(event(0, "new-0"), event(1, "new-1")), E2));
+            }
+
+            return Promise.success(new StreamPartitionManager.EpochRead(List.of(), epoch));
+        }));
+        subscribe();
+        keepWaking(() -> delivered.contains("1:new-1"));
+        Thread.sleep(200);
+
+        assertThat(delivered).as("re-read from the conservative bound").contains("0:new-0", "1:new-1");
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst().message()).as("the WARN names the proven range only").contains("[1, 2)").contains("re-reads from 0");
     }
 
     /// The ordinary path emits nothing.
@@ -104,7 +132,7 @@ class ConsumerRewoundEventTest {
             }
 
             if (epoch.equals(E1) && from == 2L && diverged.compareAndSet(false, true)) {
-                return new StreamError.EpochDiverged(E2, 9L, false).promise();
+                return new StreamError.EpochDiverged(E2, 9L, StreamError.EpochDiverged.NO_PROVEN_LOSS).promise();
             }
 
             if (from == 2L) {

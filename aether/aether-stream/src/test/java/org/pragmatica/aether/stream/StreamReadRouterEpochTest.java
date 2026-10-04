@@ -90,7 +90,7 @@ class StreamReadRouterEpochTest {
         read.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class, diverged -> {
             assertThat(diverged.ownerEpoch()).isEqualTo(E2);
             assertThat(diverged.resumeAt()).isEqualTo(3L);
-            assertThat(diverged.boundaryKnown()).as("the record holds the start that followed E1").isTrue();
+            assertThat(diverged.provenLossFrom()).as("the record holds the start that followed E1: proven from it").isEqualTo(3L);
         }));
     }
 
@@ -98,14 +98,14 @@ class StreamReadRouterEpochTest {
     /// consumer's E1 predates the history), so the owner answers a conservative bound, and the assignee must learn that.
     @Test
     void forwardedConsumer_olderThanTheKeptHistory_getsAnInexactBoundary() {
-        ownerRecord.set(record(List.of(new EpochStart(E2, 3L))));
+        ownerRecord.set(record(List.of(new EpochStart(E2, 3L, E1))));
 
         var read = assigneeRouter.readValidated(STREAM, PARTITION, 5L, 10, E1).await();
 
         assertThat(read.isFailure()).isTrue();
         read.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class, diverged -> {
             assertThat(diverged.resumeAt()).isEqualTo(3L);
-            assertThat(diverged.boundaryKnown()).as("the owner could not name the boundary and said so").isFalse();
+            assertThat(diverged.lossProven()).as("the folded history proves no loss for E1 and the owner said so").isFalse();
         }));
     }
 
