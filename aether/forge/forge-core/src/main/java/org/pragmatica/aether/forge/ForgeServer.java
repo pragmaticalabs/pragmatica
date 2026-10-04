@@ -87,7 +87,7 @@ public final class ForgeServer {
     private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                    false));
 
-    private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();
+    private final HttpOperations http;
     /// The credential Forge presents on its OWN control-plane calls (currently the startup blueprint
     /// deploy). Empty when no keys are configured, which is the default and leaves every request
     /// unauthenticated exactly as before.
@@ -103,8 +103,15 @@ public final class ForgeServer {
     private volatile String lastEventTimestamp = "";
 
     private ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig) {
+        this(startupConfig, forgeConfig, JdkHttpOperations.jdkHttpOperations());
+    }
+
+    /// Package-visible so the startup deploy's CALL SITE is pinnable (#1218): a test drives
+    /// [#deployBlueprintFromArtifact] against an injected transport, which a helper test cannot do.
+    ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig, HttpOperations http) {
         this.startupConfig = startupConfig;
         this.forgeConfig = forgeConfig;
+        this.http = http;
     }
 
     private static final String VERSION = "Aether Forge " + resolveVersion();
@@ -649,7 +656,7 @@ public final class ForgeServer {
         }
     }
 
-    private void deployBlueprintFromArtifact(String artifactCoords) {
+    void deployBlueprintFromArtifact(String artifactCoords) {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
