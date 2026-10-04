@@ -17,4 +17,11 @@ public interface RouteShape {
     default List<String> spacers() {
         return List.of();
     }
+
+    /// The position of each [#spacers()] entry among the route's trailing segments (0-based, counting real
+    /// parameters), parallel to `spacers()`. EMPTY means "not carried": a shape that does not know its positions
+    /// (a replicated route entry, #1678) is matched by set membership alone, as before (#755).
+    default List<Integer> spacerSlots() {
+        return List.of();
+    }
 }

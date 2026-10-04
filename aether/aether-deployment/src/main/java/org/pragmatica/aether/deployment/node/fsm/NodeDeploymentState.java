@@ -78,6 +78,7 @@ import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -174,6 +175,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// and this one.
         private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
                                                                                                                                 "invocation registration");
+
+        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_REACTIVATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
+                                                                                                                               "reactivation after quorum restore");
+
+        /// #1660: an untyped cause on purpose — classified under `Unrecognised.RETRY` it can only ever be
+        /// non-fatal, see [#handleReactivationFailure].
+        private static final Fn1<Cause, String> REACTIVATION_FAILED = Causes.forOneValue("Reactivation after quorum restore failed: %s");
 
         @Override
         public void onEntry() {
@@ -1626,12 +1634,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         /// Resolve the stream a `[streams.X]` consumer subscribes to.
         ///
-        /// Binds [StreamConfig] through the generic record binder and takes ONLY its `name`, which that binder
-        /// derives from the section suffix (`[streams.orders]` → `orders`) — the same alias the stream
-        /// resource factories' own section binder (#1549, `StreamConfigParser.parseStreamConfig`) assigns, so a
-        /// consumer resolves to exactly the stream its publisher writes to. No other field of this binding is
-        /// read: since #1549 the record binder is NOT what provisions the stream, and its other fields would
-        /// carry `StreamConfig.DEFAULT` values for the documented dashed keys.
+        /// Takes the stream name from the section suffix (`[streams.orders]` → `orders`) — the same alias the
+        /// stream resource factories' own section binder (#1549, `StreamConfigParser.parseStreamConfig`)
+        /// assigns, so a consumer resolves to exactly the stream its publisher writes to. Nothing else of the
+        /// section is read (since #1549 the record binder is NOT what provisions the stream); it no longer binds
+        /// [StreamConfig] at all (#822, see below).
         ///
         /// This previously bound a dedicated `StreamNameConfig(String streamName)`, which required a
         /// `stream-name` key that no `resources.toml` carries (the stream's name comes from the config
@@ -1646,14 +1653,34 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// [BlueprintStreamAddresses#engineKeyFor] against the same bindings map, so the property this
         /// method was written to hold — a consumer resolves to exactly the stream its publisher writes
         /// to — survives the change rather than being re-established by coincidence.
+        /// The consumer needs only the stream's NAME, which is the section's last segment: `StreamConfigParser`
+        /// accepts no `name` key, so the name never came from the section's contents. It used to bind the whole
+        /// `StreamConfig` through the generic record binder just to read `name` back, which refuses a documented
+        /// section (`retention = "time"` is a scalar where `StreamConfig.retention` is a record) and had no business
+        /// interpreting the stream's other keys; that is the parser's job (#822). The section must still exist: a
+        /// consumer on a section nobody declared is not registered.
         private Result<String> resolveStreamName(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                     .flatMap(svc -> svc.config(configSection, StreamConfig.class))
-                                     .map(StreamConfig::name)
+                                     .flatMap(svc -> requireSection(svc, configSection))
+                                     .flatMap(_ -> streamNameOf(configSection))
                                      .flatMap(alias -> BlueprintStreamAddresses.engineKeyFor(ctx.kvStore(),
                                                                                              artifact,
                                                                                              alias));
+        }
+
+        private static Result<ConfigService> requireSection(ConfigService svc, String configSection) {
+            return svc.hasSection(configSection)
+                   ? Result.success(svc)
+                   : ConfigError.sectionNotFound(configSection).result();
+        }
+
+        private static Result<String> streamNameOf(String configSection) {
+            var lastDot = configSection.lastIndexOf('.');
+
+            return lastDot < 0 || lastDot == configSection.length() - 1
+                   ? Causes.cause("Stream section '" + configSection + "' has no stream name segment").result()
+                   : Result.success(configSection.substring(lastDot + 1));
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {
@@ -2083,6 +2110,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       cause.message());
         }
 
+        /// #1452: deliberately writes NO transition. It runs on `QuorumDisappeared`, when
+        /// `RabiaEngine.validateSubmission` rejects every `apply` with `QuorumPaused` / `NodeInactive`, so
+        /// a write here could not commit. The committed ACTIVE therefore means "ACTIVE at this node's last
+        /// committed write" for the length of the outage, and the suspension is bounded by the quorum
+        /// return: [#reactivateSuspendedSlices] either restores the bridge, making the claim true again,
+        /// or reaches [#handleReactivationFailure], which writes FAILED.
         public List<SuspendedSlice> suspendSlices() {
             log.warn("Suspending {} slices due to quorum loss (keeping loaded in memory)", deployments.size());
             var suspended = new ArrayList<SuspendedSlice>();
@@ -2137,8 +2170,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var loadedSlice = findLoadedSlice(sliceKey.artifact());
 
             if (loadedSlice.isEmpty()) {
-                log.warn("Suspended slice {} no longer in SliceStore, skipping reactivation", sliceKey.artifact());
-                deployments.remove(sliceKey);
+                handleReactivationFailure(sliceKey,
+                                          SLICE_NOT_FOUND_FOR_REACTIVATION.apply(sliceKey.artifact().asString()));
 
                 return;
             }
@@ -2153,13 +2186,34 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                       .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
         }
 
+        /// #1660 / #1452: a failed reactivation leaves this node NOT hosting a slice the cluster KV still
+        /// lists ACTIVE here — the suspension wrote nothing (it cannot, see [#suspendSlices]), so the
+        /// committed `NodeArtifactKey` is the last ACTIVE this node wrote. Unregistering locally and
+        /// forgetting the deployment, as this did before, left that claim standing: no reconcile saw a
+        /// missing instance, nothing redeployed, and every reader of committed placement kept routing to
+        /// a node with no bridge.
+        ///
+        /// Quorum is back (reactivation runs from `Active.onEntry`), so the true state is WRITTEN: FAILED,
+        /// never fatal. The leader's `handleSliceFailure` then issues the unload and its transient-retry
+        /// path re-drives the instance, and the committed FAILED put is what `ClusterEventAggregator`
+        /// surfaces as a WARNING `DeploymentFailed` event — one per committed transition. Never fatal,
+        /// whatever the cause's type: a slice that was ACTIVE before the quorum flap says nothing about
+        /// whether the artifact can deploy, and a fatal flag would let the leader condemn the artifact.
+        ///
+        /// The deployment stays in the map until the leader's unload removes it. If quorum goes again
+        /// before the FAILED write commits, the next [#suspendSlices] still finds it ACTIVE and the next
+        /// quorum return re-drives the reactivation, rather than the node silently forgetting the slice.
         @Contract
         private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
-            log.error("Failed to reactivate slice {}: {}", sliceKey.artifact(), cause.message());
+            log.error("Failed to reactivate slice {}: {} — recording FAILED so the cluster redeploys it",
+                      sliceKey.artifact(),
+                      cause.message());
             unregisterSliceFromInvocation(sliceKey);
+            transitionToFailed(sliceKey,
+                               REACTIVATION_FAILED.apply(cause.message()),
+                               Unrecognised.RETRY);
             unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishScheduledTasks)
                                        .flatMap(this::unpublishHttpRoutes);
-            deployments.remove(sliceKey);
         }
 
         @Contract
