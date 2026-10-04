@@ -19,6 +19,8 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.update.AbTestDeploymentError;
+import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
@@ -87,6 +89,32 @@ class ManagementPostClientErrorStatusTest {
         var body = new SliceRoutes.ScaleRequest(null, null, null);
 
         assertThat(statusOf(routes.routes(), ManagementRoute.SLICE_SCALE, body)).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /// Sequential validation reports one field; it must be the one actually missing, not a disjunction of both.
+    @Test
+    void sliceScale_namesInstances_whenOnlyInstancesIsMissing() {
+        var routes = SliceRoutes.sliceRoutes(() -> node(true));
+        var body = new SliceRoutes.ScaleRequest("org.example:app:1.0.0", null, null);
+
+        assertThat(causeOf(routes.routes(), ManagementRoute.SLICE_SCALE, List.of(), body).message())
+            .isEqualTo("Missing 'instances' field");
+    }
+
+    @Test
+    void blueprintDeploy_answers400_whenArtifactIsMissing() {
+        var routes = SliceRoutes.sliceRoutes(() -> node(true));
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.BLUEPRINT_DEPLOY, new SliceRoutes.BlueprintDeployRequest(null)))
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void blueprintPublish_answers400_whenArtifactIsMissing() {
+        var routes = SliceRoutes.sliceRoutes(() -> node(true));
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT, new SliceRoutes.BlueprintDeployRequest(null)))
+            .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     @Test
@@ -187,6 +215,32 @@ class ManagementPostClientErrorStatusTest {
         assertThat(statusOf(routes.routes(), ManagementRoute.AB_TEST_CREATE, body)).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    /// The route's own leader check passing is not the end of the A/B refusals: the manager answers with
+    /// `AbTestDeploymentError`, which reached the wire untyped, as 500, for a caller's mistake or a leadership window.
+    @Test
+    void abTestConclude_answers404_whenTestIsUnknown() {
+        var manager = mock(AbTestManager.class);
+
+        when(manager.concludeTest(any(), any())).thenReturn(AbTestDeploymentError.TestNotFound.testNotFound("t-1").promise());
+
+        var routes = AbTestRoutes.abTestRoutes(() -> leaderWith(manager));
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.AB_TEST_CONCLUDE, List.of("t-1"), new AbTestRoutes.AbTestConcludeRequest("a")))
+            .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void abTestCreate_answers409_whenManagerIsNotYetActiveOnTheLeader() {
+        var manager = mock(AbTestManager.class);
+
+        when(manager.createTest(any(), any(), any())).thenReturn(AbTestDeploymentError.NotLeader.INSTANCE.promise());
+
+        var routes = AbTestRoutes.abTestRoutes(() -> leaderWith(manager));
+        var body = new AbTestRoutes.AbTestCreateRequest("org.example:app", Map.of("a", "1.0.0"), null, null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.AB_TEST_CREATE, body)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
     private static HttpStatus statusOf(java.util.stream.Stream<Route<?>> routes, ManagementRoute which, Object body) {
         return statusOf(routes, which, List.of(), body);
     }
@@ -195,6 +249,17 @@ class ManagementPostClientErrorStatusTest {
                                        ManagementRoute which,
                                        List<String> pathParams,
                                        Object body) {
+        var recorder = new RecordingResponseWriter();
+
+        ProblemResponses.writeProblem(recorder, causeOf(routes, which, pathParams, body), INSTANCE, REQUEST_ID);
+
+        return recorder.status();
+    }
+
+    private static Cause causeOf(java.util.stream.Stream<Route<?>> routes,
+                                 ManagementRoute which,
+                                 List<String> pathParams,
+                                 Object body) {
         var route = routes.filter(candidate -> candidate.name().equals(which.name())).findFirst().orElseThrow();
         var holder = new AtomicReference<Cause>();
 
@@ -204,11 +269,7 @@ class ManagementPostClientErrorStatusTest {
              .onSuccess(value -> org.junit.jupiter.api.Assertions.fail("Route " + which.name() + " must fail, got: " + value))
              .onFailure(holder::set);
 
-        var recorder = new RecordingResponseWriter();
-
-        ProblemResponses.writeProblem(recorder, holder.get(), INSTANCE, REQUEST_ID);
-
-        return recorder.status();
+        return holder.get();
     }
 
     /// Only what the leader check reads; any other call means the handler got past validation.
@@ -222,6 +283,15 @@ class ManagementPostClientErrorStatusTest {
                                                            default -> throw new UnsupportedOperationException(
                                                                "Reached past request validation: " + method.getName());
                                                        });
+    }
+
+    private static ManageableNode leaderWith(AbTestManager manager) {
+        var node = mock(ManageableNode.class);
+
+        when(node.isLeader()).thenReturn(true);
+        when(node.abTestManager()).thenReturn(manager);
+
+        return node;
     }
 
     @SuppressWarnings("unchecked")
