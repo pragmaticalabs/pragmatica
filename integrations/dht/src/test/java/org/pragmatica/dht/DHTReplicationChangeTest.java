@@ -438,10 +438,11 @@ class DHTReplicationChangeTest {
         assertThat(cluster.nodes.get(writer).staleRefusal()).as("the genuine record survives").isNotEqualTo(Option.none());
     }
 
-    /// v1882 r7 F10, order (a): the local slot answers FIRST (W_old = 1 met by the writer's own copy), the remote
-    /// refusals arrive after. The put must not be acknowledged, and the local copy it wrote is rolled back.
+    /// v1882 r7 F10, order (a), as restated in r10: the writer is a replica and the remote replies are still in flight. Its
+    /// own slot is NOT applied while it waits for evidence (nothing to undo later), the put is not acknowledged, and when the
+    /// remotes refuse it as stale it fails without ever having touched the writer's slot.
     @Test
-    void v1882r7_orderA_localSuccessThenRemoteStale_failsAndRollsBackTheLocalCopy() {
+    void v1882r10_orderA_stalePutWaitsForEvidence_failsStale_andNeverAppliesTheLocalSlot() {
         var cluster = new Cluster(5, shortTimeout(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
@@ -454,15 +455,15 @@ class DHTReplicationChangeTest {
         var put = cluster.client(writer).put(KEY, VALUE);
         cluster.holdPuts = false;
 
-        assertThat(cluster.holds(writer)).as("arming: the local slot accepted, meeting W_old = 1").isTrue();
-        assertThat(put.isResolved()).as("the local slot alone does not acknowledge the put").isFalse();
+        assertThat(cluster.holds(writer)).as("the writer's own slot is not applied before the evidence gate releases").isFalse();
+        assertThat(put.isResolved()).as("the put is not acknowledged before there is evidence").isFalse();
 
         others.forEach(cluster::deliverHeldTo);
         var outcome = put.await();
         boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
 
         assertThat(stale).as("refused as stale, not acknowledged: " + outcome).isTrue();
-        assertThat(cluster.holds(writer)).as("the writer's own accepted copy was rolled back").isFalse();
+        assertThat(cluster.holds(writer)).as("the writer's own slot was never written").isFalse();
         var deadline = System.nanoTime() + 2_000_000_000L;
 
         // the record is written by a callback that may run just after the caller's wait returns
@@ -473,10 +474,10 @@ class DHTReplicationChangeTest {
         assertThat(cluster.nodes.get(writer).staleRefusal()).as("the writer is recorded stale").isNotEqualTo(Option.none());
     }
 
-    /// v1882 r7 F10, order (b): the remote refusal arrives FIRST, the local slot answers after. The quorum arithmetic is
-    /// met by the late local copy, but a replica already said this writer is behind: the put fails.
+    /// v1882 r7 F10, order (b), as restated in r10: the remote refusals arrive FIRST (before the writer's own slot would be
+    /// applied). The put fails stale and the writer's slot is never written, so there is no later "local success" to count.
     @Test
-    void v1882r7_orderB_remoteStaleThenLocalSuccess_fails() {
+    void v1882r10_orderB_remoteStaleFirst_failsStale_andNeverAppliesTheLocalSlot() {
         var cluster = new Cluster(5, shortTimeout(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
@@ -485,15 +486,11 @@ class DHTReplicationChangeTest {
         others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
         cluster.settleOnly(CHANGE, 3, others);
 
-        cluster.holdLocalPuts = true;
-        var put = cluster.client(writer).put(KEY, VALUE);
-        assertThat(cluster.heldLocalPuts).as("arming: the local slot has not answered").hasSize(1);
-        cluster.releaseLocalPuts();
-        var outcome = put.await();
+        var outcome = cluster.client(writer).put(KEY, VALUE).await();
         boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
 
         assertThat(stale).as("refused as stale: " + outcome).isTrue();
-        assertThat(cluster.holds(writer)).as("the local copy was rolled back").isFalse();
+        assertThat(cluster.holds(writer)).as("the writer's own slot was never written").isFalse();
     }
 
     /// v1882 r7 F10, order (b), remote form: two replicas refuse as stale and only THEN a replica that had not applied the
@@ -643,10 +640,10 @@ class DHTReplicationChangeTest {
         assertThat(settledRecord(cluster, writer)).isEqualTo(Option.none());
     }
 
-    /// v1882 r9b: the writer's slot holds the ONLY copy of a value and a put that overwrites it is refused as stale. The
-    /// rollback must restore the overwritten entry exactly — value and version — not leave a hole.
+    /// v1882 r9b/r10: the writer's slot holds the ONLY copy of a value and a put that would overwrite it is refused as stale.
+    /// The slot is not touched at all: the value stays, byte- and version-identical (no apply, so no undo).
     @Test
-    void v1882r9b_stalePutRollback_restoresTheOverwrittenLocalCopy_exactly() {
+    void v1882r10_stalePut_neverTouchesTheWritersOnlyLocalCopy() {
         var cluster = new Cluster(5, shortTimeout(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
@@ -662,32 +659,50 @@ class DHTReplicationChangeTest {
 
         assertThat(before).as("arming: the writer holds the value").startsWith("v@");
         assertThat(stale).as("arming: the put was refused as stale: " + outcome).isTrue();
-        assertThat(entryOf(cluster, writer)).as("the overwritten value is back, byte- and version-identical").isEqualTo(before);
+        assertThat(entryOf(cluster, writer)).as("the writer's copy is byte- and version-identical").isEqualTo(before);
     }
 
-    /// v1882 r9b: an OLDER write lands on the writer's slot just before the writer's own write reaches the storage. The
-    /// writer's write displaces it, and the rollback of that write must put THAT entry back — the one the write actually
-    /// displaced, read in the same atomic step — not an entry captured earlier. Deterministic: the racing write is injected
-    /// by the storage wrapper immediately before the write.
+    /// v1882 probe S, kept as a pin (F15): a SUPERSEDED ack rolled back. A current writer's put X (CF2, W=2) is stamped BEFORE
+    /// the stale writer-replica's put W but reaches that replica AFTER W's local accept, so the replica answers "superseded"
+    /// — a success that counts toward X's quorum. W is then refused as stale and rolled back to the prior (absent) entry.
+    /// How many replicas hold X once X is acknowledged?
     @Test
-    void v1882r9b_aWriteLandingBeforeOurWrite_isRestoredByTheRollback_notLost() {
+    void v1882r10_probeS_staleWriterReplica_neverLeavesAnAckedXBelowItsQuorum() {
         var cluster = new Cluster(5, shortTimeout(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
-        var writer = replicas.getFirst();
-        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+        var stale = replicas.getFirst();
+        var r1 = replicas.get(1);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(stale)).toList();
+        var current = cluster.nonReplicaOf(replicas);
 
         others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
         cluster.settleOnly(CHANGE, 3, others);
-        cluster.beforeLocalWrite = () -> cluster.nodes.get(writer)
-                                                   .storage()
-                                                   .putVersioned(KEY, "racer".getBytes(StandardCharsets.UTF_8), 1L, 0L, 0L, 0L)
-                                                   .await();
 
-        var outcome = cluster.client(writer).put(KEY, VALUE).await();
-        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+        cluster.holdPuts = true;
+        var x = cluster.client(current).put(KEY, "X".getBytes(StandardCharsets.UTF_8));
+        var w = cluster.client(stale).put(KEY, "W".getBytes(StandardCharsets.UTF_8));
+        cluster.holdPuts = false;
+        var arming = entryOf(cluster, stale);
 
-        assertThat(stale).as("arming: the put was refused as stale: " + outcome).isTrue();
-        assertThat(entryOf(cluster, writer)).as("the racing write is back, not lost").isEqualTo("racer@1/0.0.0");
+        cluster.deliverHeldTo(stale);
+        cluster.deliverHeldTo(r1);
+        var xOutcome = x.await();
+        var wOutcome = w.await();
+        var holdersOfX = replicas.stream().filter(id -> entryOf(cluster, id).startsWith("X@")).toList();
+
+        System.out.println("V1882-S arming(stale slot)=" + arming + " x=" + xOutcome + " w=" + wOutcome
+                           + " entries=" + replicas.stream().map(id -> id.id() + "=" + entryOf(cluster, id)).toList()
+                           + " holdersOfX=" + holdersOfX + " W_new=" + cluster.config(r1).writeQuorum());
+        var xVersion = Long.parseLong(entryOf(cluster, holdersOfX.getFirst()).replaceAll("^X@([0-9]+)/.*$", "$1"));
+        var atOrAboveX = replicas.stream()
+                                 .filter(id -> !entryOf(cluster, id).equals("absent"))
+                                 .filter(id -> Long.parseLong(entryOf(cluster, id).replaceAll("^[^@]*@([0-9]+)/.*$", "$1")) >= xVersion)
+                                 .toList();
+
+        System.out.println("V1882-S atOrAboveX=" + atOrAboveX);
+        assertThat(xOutcome.isSuccess()).as("arming: X was acknowledged").isTrue();
+        assertThat(atOrAboveX.size()).as("an acknowledged X, or a write that superseded it, is on at least W = 2 replicas")
+                                     .isGreaterThanOrEqualTo(2);
     }
 
     /// v1882 r9b liveness pin: the writer is a replica, CF = 1, and every remote is silent. The put is acknowledged within
@@ -736,10 +751,10 @@ class DHTReplicationChangeTest {
                        .orElse("absent");
     }
 
-    /// v1882 r9b probe T (#1885): the writer's slot holds the ONLY copy of a value and the writer's REMOVE is refused as
-    /// stale. Rolling back its local tombstone must restore that entry exactly — value and version — not leave the key absent.
+    /// v1882 r9b probe T (#1885), as restated in r10: the writer's slot holds the ONLY copy of a value and the writer's REMOVE
+    /// is refused as stale. Its local tombstone is never written, so the key is not left absent and there is nothing to undo.
     @Test
-    void v1882r9b_staleRemoveRollback_restoresTheSoleLocalCopy_exactly() {
+    void v1882r10_staleRemove_neverTouchesTheWritersOnlyLocalCopy() {
         var cluster = new Cluster(5, shortTimeout(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
@@ -755,56 +770,48 @@ class DHTReplicationChangeTest {
 
         assertThat(before).as("arming: the writer holds a live value").startsWith("v@");
         assertThat(stale).as("arming: the remove was refused as stale: " + outcome).isTrue();
-        assertThat(entryOf(cluster, writer)).as("the entry is byte- and version-identical after the rollback").isEqualTo(before);
+        assertThat(entryOf(cluster, writer)).as("the entry is byte- and version-identical").isEqualTo(before);
     }
 
-    /// v1882 r9b control (#1885): a NEWER write that lands on the writer's slot while its remove is in flight survives the
-    /// rollback — the compare-and-set on our own tombstone fails.
+    /// v1882 probe S, REMOVE twin (F15, #1885): a current writer's remove X is stamped BEFORE a stale writer-replica's remove W
+    /// but reaches that replica AFTER W's would-be local tombstone. The replica must not answer X with a "superseded" success
+    /// that is later undone: an acknowledged X, or a write that superseded it, is on at least W = 2 replicas.
     @Test
-    void v1882r9b_concurrentNewerPut_survivesTheRemoveRollback() {
+    void v1882r10_probeS_remove_staleWriterReplica_neverLeavesAnAckedXBelowItsQuorum() {
         var cluster = new Cluster(5, shortTimeout(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
-        var writer = replicas.getFirst();
-        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+        var stale = replicas.getFirst();
+        var r1 = replicas.get(1);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(stale)).toList();
+        var current = cluster.nonReplicaOf(replicas);
 
-        cluster.putReachingOnly(writer, writer);
+        cluster.putReachingOnly(stale, stale);
         others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
         cluster.settleOnly(CHANGE, 3, others);
 
         cluster.holdRemoves = true;
-        var remove = cluster.client(writer).remove(KEY);
+        var x = cluster.client(current).remove(KEY);
+        var w = cluster.client(stale).remove(KEY);
         cluster.holdRemoves = false;
-        cluster.nodes.get(writer)
-                     .storage()
-                     .putVersioned(KEY, "newer".getBytes(StandardCharsets.UTF_8), Long.MAX_VALUE, 0L, 0L, 0L)
-                     .await();
-        others.forEach(cluster::deliverHeldRemovesTo);
-        remove.await();
+        var xVersion = cluster.heldRemoves.stream()
+                                          .filter(entry -> entry.getValue().sender().equals(current))
+                                          .findFirst()
+                                          .orElseThrow()
+                                          .getValue()
+                                          .version();
 
-        assertThat(entryOf(cluster, writer)).as("the newer put is untouched").startsWith("newer@");
-    }
+        cluster.deliverHeldRemovesTo(stale);
+        cluster.deliverHeldRemovesTo(r1);
+        var xOutcome = x.await();
+        w.await();
+        var atOrAboveX = replicas.stream()
+                                 .filter(id -> !entryOf(cluster, id).equals("absent"))
+                                 .filter(id -> Long.parseLong(entryOf(cluster, id).replaceAll("^[^@]*@([0-9]+)/.*$", "$1")) >= xVersion)
+                                 .toList();
 
-    /// v1882 r9b (#1885): an OLDER write lands on the writer's slot just before its remove's tombstone reaches the storage;
-    /// the rollback of the refused remove must put THAT entry back, the one the tombstone actually displaced.
-    @Test
-    void v1882r9b_aWriteLandingBeforeOurTombstone_isRestoredByTheRollback_notLost() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
-        var replicas = cluster.replicasOf(KEY, 3);
-        var writer = replicas.getFirst();
-        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
-
-        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
-        cluster.settleOnly(CHANGE, 3, others);
-        cluster.beforeLocalWrite = () -> cluster.nodes.get(writer)
-                                                   .storage()
-                                                   .putVersioned(KEY, "racer".getBytes(StandardCharsets.UTF_8), 1L, 0L, 0L, 0L)
-                                                   .await();
-
-        var outcome = cluster.client(writer).remove(KEY).await();
-        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
-
-        assertThat(stale).as("arming: the remove was refused as stale: " + outcome).isTrue();
-        assertThat(entryOf(cluster, writer)).as("the racing write is back, not lost").isEqualTo("racer@1/0.0.0");
+        assertThat(xOutcome.isSuccess()).as("arming: X was acknowledged: " + xOutcome).isTrue();
+        assertThat(atOrAboveX.size()).as("an acknowledged X, or a write that superseded it, is on at least W = 2 replicas: " + atOrAboveX)
+                                     .isGreaterThanOrEqualTo(2);
     }
 
     /// v1882 r9b liveness pin (#1885): the writer is a replica, CF = 1, every remote silent: the remove is acknowledged within
@@ -1132,13 +1139,8 @@ class DHTReplicationChangeTest {
         volatile Set<NodeId> dropPutsTo = Set.of();
         volatile boolean holdPuts;
         final List<Map.Entry<NodeId, DHTMessage.PutRequest>> held = new java.util.ArrayList<>();
-        /// While set, a node's OWN storage put stays pending until [#releaseLocalPuts] (the local slot answering late).
         volatile boolean holdRemoves;
         final List<Map.Entry<NodeId, DHTMessage.RemoveRequest>> heldRemoves = new java.util.ArrayList<>();
-        volatile boolean holdLocalPuts;
-        /// Run once, just before the next local versioned write reaches the storage (a deterministic interleaving).
-        volatile Runnable beforeLocalWrite;
-        final List<Runnable> heldLocalPuts = new java.util.ArrayList<>();
 
         Cluster(int size, DHTConfig config) {
             var ids = IntStream.range(0, size).mapToObj(i -> new NodeId("node-" + i)).toList();
@@ -1156,62 +1158,12 @@ class DHTReplicationChangeTest {
                 var ring = ConsistentHashRing.<NodeId>consistentHashRing();
 
                 ids.forEach(ring::addNode);
-                nodes.put(id, dhtNode(id, holdingLocalPuts(memoryStorageEngine()), ring, config));
+                nodes.put(id, dhtNode(id, memoryStorageEngine(), ring, config));
             });
             ids.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), this::route, _ -> false)));
             ids.forEach(id -> clients.put(id,
                                           distributedDHTClient(nodes.get(id), this::route, OwnerEpochSource.zero())
                                               .withResolveFallbackObserver(observer)));
-        }
-
-        @SuppressWarnings("unchecked")
-        private org.pragmatica.dht.storage.StorageEngine holdingLocalPuts(org.pragmatica.dht.storage.StorageEngine real) {
-            return (org.pragmatica.dht.storage.StorageEngine) java.lang.reflect.Proxy.newProxyInstance(
-                org.pragmatica.dht.storage.StorageEngine.class.getClassLoader(),
-                new Class<?>[]{org.pragmatica.dht.storage.StorageEngine.class},
-                (proxy, method, args) -> {
-                    try {
-                        if (isVersionedWrite(method, args) && beforeLocalWrite != null) {
-                            var race = beforeLocalWrite;
-
-                            beforeLocalWrite = null;
-                            race.run();
-                        }
-
-                        if (holdLocalPuts && isVersionedWrite(method, args)) {
-                            var pending = org.pragmatica.lang.Promise.<Boolean> promise();
-
-                            heldLocalPuts.add(() -> {
-                                try {
-                                    ((org.pragmatica.lang.Promise<Boolean>) invoke(real, method, args)).onResult(pending::resolve);
-                                } catch (Exception e) {
-                                    throw new IllegalStateException(e);
-                                }
-                            });
-
-                            return pending;
-                        }
-
-                        return invoke(real, method, args);
-                    } catch (java.lang.reflect.InvocationTargetException e) {
-                        throw e.getCause();
-                    }
-                });
-        }
-
-        private static boolean isVersionedWrite(java.lang.reflect.Method method, Object[] args) {
-            return method.getName().startsWith("putVersioned") && args.length == 6
-                   || method.getName().startsWith("removeVersioned") && args.length == 5;
-        }
-
-        private static Object invoke(Object target, java.lang.reflect.Method method, Object[] args) throws Exception {
-            return method.invoke(target, args);
-        }
-
-        void releaseLocalPuts() {
-            holdLocalPuts = false;
-            heldLocalPuts.forEach(Runnable::run);
-            heldLocalPuts.clear();
         }
 
         NodeId anyId() {
