@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
@@ -33,6 +34,11 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -69,10 +75,21 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [design intent — unverified: not derived from a measured DLQ-append latency.]
     static final TimeSpan DEAD_LETTER_APPEND_TIMEOUT = timeSpan(30).seconds();
     private static final Cause NULL_PROMISE = Causes.cause("Foreign call returned null instead of a promise");
-    private static final Cause CALL_OVERFLOWED = Causes.cause("Call overflowed its stack");
-    private static final Cause PASS_OVERFLOWED = Causes.cause("Delivery pass overflowed its stack");
 
-    private static final Cause PASS_FATAL = Causes.cause("Delivery pass threw a VirtualMachineError; loop released, error rethrown");
+    /// #1934: the operator-facing lines of a consumer's escaped passes (the first escape of a run with its frames, the
+    /// warning and its end) go through slf4j, the logger [OperatorWarnings] writes to.
+    private static final Logger ESCAPE_LOG = LoggerFactory.getLogger(ConsumerRuntimeState.class);
+    /// #1934: the wait before the pass after the first escaped pass of a run: the old poll-backoff cap, so a single
+    /// throw is retried no later than before. Each further escape doubles it up to [#ESCAPE_BACKOFF_CAP_MS].
+    static final long ESCAPE_BACKOFF_FIRST_MS = 50L;
+    /// #1934: the longest wait between escaped passes. A pass that throws on every attempt then costs one attempt per
+    /// cap instead of about 17 a second. [design intent — unverified: 10 s is a guess, not derived from a measured
+    /// recovery time; it bounds how late a consumer resumes after a transient throw clears.]
+    static final long ESCAPE_BACKOFF_CAP_MS = 10_000L;
+    /// #1934: consecutive escaped passes after which `stream-consumer-drain-failing` is raised; about 1.5 s of
+    /// continuous throwing at the backoff above. [design intent — unverified: 5 is a guess; an escape is a defect,
+    /// not a routine condition, so a short run is already worth an operator's attention.]
+    static final int ESCAPES_BEFORE_WARNING = 5;
 
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
     /// commits apart, and a detach flush cancels the consumer before it is issued.
@@ -98,6 +115,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// nobody supplied, which resumes unchecked as before.
     private final Option<PartitionBounds> bounds;
     private final TimeSpan deadLetterAppendTimeout;
+    /// #1934: where a consumer's run of escaped passes, and its end, is reported.
+    private final OperatorWarningSink operatorWarnings;
+    /// #1934: the clock the escape backoff is measured on (milliseconds), and where the pass after the backoff is
+    /// scheduled. Seams so the backoff's growth is pinned without waiting for it.
+    private final LongSupplier clockMs;
+    private final DelayedTask escapeScheduler;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
@@ -170,6 +193,29 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          PartitionReader reader,
                          Option<PartitionBounds> bounds,
                          TimeSpan deadLetterAppendTimeout) {
+        this(partitionManager,
+             dlHandler,
+             cursorStore,
+             transactionalCommit,
+             reader,
+             bounds,
+             deadLetterAppendTimeout,
+             OperatorWarningSink.logOnly(),
+             System::currentTimeMillis,
+             SharedScheduler::schedule);
+    }
+
+    /// #1934: the production constructor's sink, and the clock and scheduler seams of the escape backoff.
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader,
+                         Option<PartitionBounds> bounds,
+                         TimeSpan deadLetterAppendTimeout,
+                         OperatorWarningSink operatorWarnings,
+                         LongSupplier clockMs,
+                         DelayedTask escapeScheduler) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
@@ -177,6 +223,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         this.reader = reader;
         this.bounds = bounds;
         this.deadLetterAppendTimeout = deadLetterAppendTimeout;
+        this.operatorWarnings = operatorWarnings;
+        this.clockMs = clockMs;
+        this.escapeScheduler = escapeScheduler;
         this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::periodicConsumerCheck,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
@@ -1004,9 +1053,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// caller may be the ring's notifying thread, where an inline handler can re-enter the publish path
     /// (a handler that publishes to another partition — the #1258 deadlock) or stall every later
     /// notification for the partition, or a subscriber, which must not run slice code synchronously.
+    ///
+    /// #1934: while a run of escaped passes is backing off, a trigger only marks the loop dirty; the pass after the
+    /// backoff is started by [#resumeAfterEscapeBackoff]. Without that, a push-mode consumer whose pass throws on every
+    /// attempt ran one pass per append.
     @Contract
     private void requestDrain(ConsumerKey key, ConsumerState state) {
         state.markDirty();
+        if (state.inEscapeBackoff(clockMs.getAsLong())) {
+            return;
+        }
         if (state.tryStartDrain()) {
             continueDrain(key, state);
         }
@@ -1032,7 +1088,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [#pollCycle] escapes [#guardedCycle] before any pass promise exists, and `running` would stay set until restart
     /// — every later trigger only marking the loop dirty. Same convention as `OffHeapRingBuffer.notifyGuarded`: a
     /// [StackOverflowError] is the pass's own runaway recursion, recovered once the stack unwinds, so it is a failed
-    /// pass like any other throw ([#passEscaped], then [#afterFailedPass]); every other `VirtualMachineError` means
+    /// pass like any other throw ([PassEscape], then [#afterFailedPass]); every other `VirtualMachineError` means
     /// the JVM itself is failing, so the loop is released the way a failed pass releases it and the error propagates.
     /// The consumer is not stopped either way: its next trigger runs a pass. Only the SYNCHRONOUS escape is caught
     /// here, never one from the pass's continuation, which may already have released or re-scheduled the loop.
@@ -1041,11 +1097,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         try {
             return guardedCycle(key, state);
         } catch (StackOverflowError overflow) {
-            passEscaped(key, state, PASS_OVERFLOWED);
-
-            return PASS_OVERFLOWED.promise();
+            return PassEscape.passEscape(overflow).promise();
         } catch (VirtualMachineError fatal) {
-            afterFailedPass(key, state, PASS_FATAL);
+            afterFailedPass(key, state, PassEscape.passEscape(fatal));
 
             throw fatal;
         }
@@ -1053,24 +1107,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// The pass's escape boundary: anything thrown synchronously out of [#pollCycle] — a reader that
     /// throws instead of returning a failed promise, say — becomes a failed pass instead of escaping the
-    /// scheduler task with `running` still set.
+    /// scheduler task with `running` still set. #1934: the throw is kept with its frames ([PassEscape]) and reported by
+    /// [#afterEscapedPass].
     private Promise<Boolean> guardedCycle(ConsumerKey key, ConsumerState state) {
-        return Result.lift(() -> pollCycle(key, state))
-                     .onFailure(cause -> passEscaped(key, state, cause))
+        return Result.lift(PassEscape::passEscape,
+                           () -> pollCycle(key, state))
                      .async()
                      .flatMap(cycle -> cycle);
-    }
-
-    /// A throw is a defect in the reader or runtime, not a routine read failure, hence WARNING; it also
-    /// backs off like a failed read, so a reader that keeps throwing cannot spin the poll loop.
-    private static void passEscaped(ConsumerKey key, ConsumerState state, Cause cause) {
-        state.adjustPollInterval(false);
-        LOG.log(System.Logger.Level.WARNING,
-                "Delivery pass for {0}[{1}] group {2} threw; released and retried: {3}",
-                key.streamName(),
-                key.partition(),
-                key.groupId(),
-                cause.message());
     }
 
     @Contract
@@ -1099,12 +1142,126 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// append. It is re-requested after the poll backoff instead; poll mode's own tick already does that.
     @Contract
     private void afterFailedPass(ConsumerKey key, ConsumerState state, Cause cause) {
+        if (cause instanceof PassEscape escape) {
+            afterEscapedPass(key, state, escape);
+
+            return;
+        }
         logPollFailure(key, cause);
         releaseDrain(key, state);
         if (state.pushBuffer().isPresent() && !state.isCancelled() && !closed.get()) {
             SharedScheduler.schedule(() -> requestDrain(key, state),
                                      TimeSpan.timeSpan(state.currentPollMs.get()).millis());
         }
+    }
+
+    /// #1934: a pass that THREW (a defect, unlike a failed read) backs off exponentially from [#ESCAPE_BACKOFF_FIRST_MS]
+    /// to [#ESCAPE_BACKOFF_CAP_MS], and the loop stays parked until the backoff ends, whatever triggers arrive. A run is
+    /// reported once on each transition: its first escape is WARNed with the thrown frames, the
+    /// [#ESCAPES_BEFORE_WARNING]th raises `stream-consumer-drain-failing`, and the escapes in between and after are
+    /// DEBUG. The run ends at the next successful read ([#endEscapeRun]).
+    @Contract
+    private void afterEscapedPass(ConsumerKey key, ConsumerState state, PassEscape escape) {
+        var escapes = state.recordEscape(clockMs.getAsLong());
+        var delayMs = escapeBackoffMs(escapes);
+
+        state.escapeBackoffUntil(clockMs.getAsLong() + delayMs);
+        state.adjustPollInterval(false);
+        reportEscape(key, state, escape, escapes, delayMs);
+        state.finishDrain();
+        if (!state.isCancelled() && !closed.get()) {
+            escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state),
+                                     TimeSpan.timeSpan(delayMs).millis());
+        }
+    }
+
+    /// The backoff after the `escapes`th consecutive escaped pass.
+    static long escapeBackoffMs(int escapes) {
+        return Math.min(ESCAPE_BACKOFF_FIRST_MS << Math.min(escapes - 1, 20), ESCAPE_BACKOFF_CAP_MS);
+    }
+
+    /// Ends the backoff explicitly rather than by the clock, so a scheduler that wakes a millisecond early cannot leave
+    /// a push-mode consumer parked with no further trigger.
+    @Contract
+    private void resumeAfterEscapeBackoff(ConsumerKey key, ConsumerState state) {
+        state.escapeBackoffUntil(0L);
+        requestDrain(key, state);
+    }
+
+    @Contract
+    private void reportEscape(ConsumerKey key, ConsumerState state, PassEscape escape, int escapes, long delayMs) {
+        if (escapes == 1) {
+            ESCAPE_LOG.warn("Delivery pass for {}[{}] group {} threw {}; retrying with backoff from {} ms up to {} ms. Top frames: {}",
+                            key.streamName(),
+                            key.partition(),
+                            key.groupId(),
+                            escape.thrown(),
+                            delayMs,
+                            ESCAPE_BACKOFF_CAP_MS,
+                            escape.framesText());
+        } else if (escapes == ESCAPES_BEFORE_WARNING) {
+            state.markEscapeRunReported();
+            OperatorWarnings.raise(ESCAPE_LOG,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                                   consumerSubject(key),
+                                   "Consumer group {} on {}[{}] delivers nothing: its last {} delivery passes threw {} over {} ms; it "
+                                  + "retries every {} ms at most. Top frames: {}",
+                                   key.groupId(),
+                                   key.streamName(),
+                                   key.partition(),
+                                   escapes,
+                                   escape.thrown(),
+                                   clockMs.getAsLong() - state.escapeRunStartMs(),
+                                   ESCAPE_BACKOFF_CAP_MS,
+                                   escape.framesText());
+        } else {
+            ESCAPE_LOG.debug("Delivery pass for {}[{}] group {} threw again ({} in a row), next pass in {} ms: {}",
+                             key.streamName(),
+                             key.partition(),
+                             key.groupId(),
+                             escapes,
+                             delayMs,
+                             escape.thrown());
+        }
+    }
+
+    /// #1934: a successful read ends a run of escaped passes. The operator hears it is over only if they were told it
+    /// started.
+    @Contract
+    private void endEscapeRun(ConsumerKey key, ConsumerState state) {
+        var escapes = state.escapeRunLength();
+
+        if (escapes == 0) {
+            return;
+        }
+
+        var lastedMs = clockMs.getAsLong() - state.escapeRunStartMs();
+        var reported = state.endEscapeRun();
+
+        if (reported) {
+            OperatorWarnings.raise(ESCAPE_LOG,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                                   consumerSubject(key),
+                                   "Consumer group {} on {}[{}] delivers again: a pass read the partition after {} consecutive "
+                                  + "passes threw over {} ms.",
+                                   key.groupId(),
+                                   key.streamName(),
+                                   key.partition(),
+                                   escapes,
+                                   lastedMs);
+        } else {
+            ESCAPE_LOG.info("Delivery pass for {}[{}] group {} succeeded after {} that threw",
+                            key.streamName(),
+                            key.partition(),
+                            key.groupId(),
+                            escapes);
+        }
+    }
+
+    private static String consumerSubject(ConsumerKey key) {
+        return key.streamName() + "[" + key.partition() + "]/" + key.groupId();
     }
 
     @Contract
@@ -1154,6 +1311,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private Promise<Boolean> pollSucceeded(ConsumerKey key,
                                            ConsumerState state,
                                            List<OffHeapRingBuffer.RawEvent> events) {
+        endEscapeRun(key, state);
         state.adjustPollInterval(!events.isEmpty());
 
         return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH)
@@ -1246,7 +1404,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          .async()
                          .flatMap(promise -> promise);
         } catch (StackOverflowError overflow) {
-            return CALL_OVERFLOWED.promise();
+            return PassEscape.overflowedCall(overflow)
+                             .promise();
         }
     }
 
@@ -1506,6 +1665,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 cause.message());
     }
 
+    /// #1934: schedules the pass after an escape backoff; [SharedScheduler#schedule] in production.
+    @FunctionalInterface
+    interface DelayedTask {
+        @Contract
+        void schedule(Runnable task, TimeSpan delay);
+    }
+
     record ConsumerKey(String streamName, int partition, String groupId) {
         static ConsumerKey consumerKey(String streamName, int partition, String groupId) {
             return new ConsumerKey(streamName, partition, groupId);
@@ -1550,6 +1716,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         /// [#resumeAt], consumed once by [ConsumerRuntimeState#commitRewoundCatchUp].
         private final AtomicBoolean rewoundCatchUp = new AtomicBoolean(false);
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
+        /// #1934: the current run of escaped passes — its length, when it started, until when the loop is parked, and
+        /// whether `stream-consumer-drain-failing` was raised for it.
+        private final AtomicInteger escapeRun = new AtomicInteger(0);
+        private final AtomicLong escapeRunStartMs = new AtomicLong(0L);
+        private final AtomicLong escapeBackoffUntilMs = new AtomicLong(0L);
+        private final AtomicBoolean escapeRunReported = new AtomicBoolean(false);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
         /// #654: detail of the most recent cursor commit failure for this consumer, cleared on the
@@ -1681,6 +1853,46 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         int incrementRetryCount() {
             return retryCount.incrementAndGet();
+        }
+
+        int recordEscape(long nowMs) {
+            var escapes = escapeRun.incrementAndGet();
+
+            if (escapes == 1) {
+                escapeRunStartMs.set(nowMs);
+            }
+
+            return escapes;
+        }
+
+        int escapeRunLength() {
+            return escapeRun.get();
+        }
+
+        long escapeRunStartMs() {
+            return escapeRunStartMs.get();
+        }
+
+        @Contract
+        void escapeBackoffUntil(long untilMs) {
+            escapeBackoffUntilMs.set(untilMs);
+        }
+
+        boolean inEscapeBackoff(long nowMs) {
+            return nowMs < escapeBackoffUntilMs.get();
+        }
+
+        @Contract
+        void markEscapeRunReported() {
+            escapeRunReported.set(true);
+        }
+
+        /// Ends the run; whether `stream-consumer-drain-failing` had been raised for it.
+        boolean endEscapeRun() {
+            escapeRun.set(0);
+            escapeBackoffUntilMs.set(0L);
+
+            return escapeRunReported.getAndSet(false);
         }
 
         @Contract

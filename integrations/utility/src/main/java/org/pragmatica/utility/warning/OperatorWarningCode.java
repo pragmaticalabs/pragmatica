@@ -45,6 +45,14 @@ public enum OperatorWarningCode {
     /// A blueprint publish was accepted with a deploy-time warning (#1564): a declaration with a stated
     /// replication risk, or a stream declaration the cluster accepted with a caveat.
     DEPLOY_WARNING("deploy-warning", "deployment", WarningLevel.WARNING),
+    /// A stream consumer's delivery pass has thrown on several consecutive attempts (#1934): the reader or the runtime
+    /// throws instead of reading, so the consumer delivers nothing and retries with a growing backoff. The message
+    /// names the consumer group, the partition, what was thrown and its top frames. Subject is
+    /// `stream[partition]/group`.
+    STREAM_CONSUMER_DRAIN_FAILING("stream-consumer-drain-failing", "stream-consumer", WarningLevel.WARNING),
+    /// The end of a `stream-consumer-drain-failing` run: a pass read the partition again. Raised only when that warning
+    /// was; at the lowest level this enum has. Same subject.
+    STREAM_CONSUMER_DRAIN_RESTORED("stream-consumer-drain-restored", "stream-consumer", WarningLevel.WARNING),
     /// The replication policy refused the registration of `system:cluster-events` (#1564 B1). The node keeps
     /// running, but cluster events are not recorded until the cluster config is corrected and re-applied.
     CLUSTER_EVENTS_REGISTRATION_REFUSED("cluster-events-registration-refused",

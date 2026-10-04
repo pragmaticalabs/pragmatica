@@ -15,6 +15,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -237,5 +239,25 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                         reader,
                                         some(bounds),
                                         ConsumerRuntimeState.DEAD_LETTER_APPEND_TIMEOUT);
+    }
+
+    /// The production overload with the node's operator-warning sink (#1934): a consumer whose delivery passes keep
+    /// throwing is reported there (`stream-consumer-drain-failing`, then `stream-consumer-drain-restored`).
+    static StreamConsumerRuntime streamConsumerRuntime(StreamPartitionManager partitionManager,
+                                                       DeadLetterHandler deadLetterHandler,
+                                                       ConsumerCursorStore cursorStore,
+                                                       PartitionReader reader,
+                                                       PartitionBounds bounds,
+                                                       OperatorWarningSink operatorWarnings) {
+        return new ConsumerRuntimeState(partitionManager,
+                                        deadLetterHandler,
+                                        some(cursorStore),
+                                        none(),
+                                        reader,
+                                        some(bounds),
+                                        ConsumerRuntimeState.DEAD_LETTER_APPEND_TIMEOUT,
+                                        operatorWarnings,
+                                        System::currentTimeMillis,
+                                        SharedScheduler::schedule);
     }
 }
