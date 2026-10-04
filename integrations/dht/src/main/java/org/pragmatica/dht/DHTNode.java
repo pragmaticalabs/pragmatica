@@ -90,10 +90,10 @@ public final class DHTNode {
     /// UNKNOWN, and an unknown fence refuses writes rather than accepting any stamp — a write in flight across a settled
     /// change would otherwise land on it at the old quorum.
     private final AtomicBoolean replicationFenceKnown;
-
     /// The first refusal of this node's own writes by the replication-change fence since it last adopted a change (#1777,
     /// owner rule): the fence version its writes carried and when. Empty while its writes are accepted.
     private final ConcurrentHashMap<ByteBuffer, PendingLocalWrite> pendingLocalWrites = new ConcurrentHashMap<>();
+
     private final AtomicReference<Option<StaleRefusal>> staleRefusal = new AtomicReference<>(Option.none());
 
     /// This node's writes refused as stamped below a replica's applied replication change, since `sinceMillis`, while its
@@ -397,7 +397,8 @@ public final class DHTNode {
         pendingLocalWrites.computeIfPresent(ByteBuffer.wrap(key.clone()),
                                             (_, current) -> current.count() <= 1
                                                             ? null
-                                                            : new PendingLocalWrite(current.count() - 1, current.deadlineNanos()));
+                                                            : new PendingLocalWrite(current.count() - 1,
+                                                                                    current.deadlineNanos()));
     }
 
     /// Whether this node has its own write to `key` applied and unresolved (and not past its deadline).
@@ -901,14 +902,12 @@ public final class DHTNode {
 
             return;
         }
-
         // an owner-epoch fence is stronger evidence and still answers fenced; otherwise a write of OUR OWN to this key is in
         // flight, and answering "superseded" to another writer could let it count a copy we may roll back (v1882 r12)
-        if (localWritePending(request.key())
-            && !storage.belowHighWater(request.key(),
-                                       request.epochIncarnation(),
-                                       request.epochTerm(),
-                                       request.epochCounter())) {
+        if (localWritePending(request.key()) && !storage.belowHighWater(request.key(),
+                                                                        request.epochIncarnation(),
+                                                                        request.epochTerm(),
+                                                                        request.epochCounter())) {
             responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                               nodeId,
                                                               false,

@@ -213,7 +213,7 @@ public final class QuorumCollector<T> {
 
         if (total - failures < quorum) {
             failed = true;
-        promise.fail(quorumFailure());
+            promise.fail(quorumFailure());
         }
 
         settleIfAllReplied(successCount.get(), failures);
