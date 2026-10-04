@@ -72,10 +72,11 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.REPLICA_FSYNC_F
 ///
 /// The refusal still fires `onGap`. In production that runs the backfill orchestrator, which refuses every
 /// self-promotion of a quarantined partition and demotes a CAUGHT_UP one to SYNCING ({@link PartitionBackfill}).
-/// That is how a replica that was already CAUGHT_UP stops being one. No catch-up can repair the entry: a
-/// backfill pulls only from the local head + 1, and the ring has no overwrite. The quarantine is logged at
-/// ERROR once, by the partition manager, and lasts until the manager is gone. Repair is #1514; persistence and
-/// owner-election exclusion are #1513.
+/// That is how a replica that was already CAUGHT_UP stops being one. The same orchestrator then REPAIRS the copy when
+/// its owner is known and it is not the owner (#1730 phase 2, KIP-101): the tail is cut back to offset `N - 1`
+/// (WAL, epoch history and ring, in the ring's ordered section) and refetched from the owner, which lifts the
+/// quarantine. A copy that cannot be repaired stays quarantined until the manager is gone. The quarantine is logged
+/// at ERROR once, by the partition manager. Persistence and owner-election exclusion are #1513.
 ///
 /// ## Sender validation (#1230)
 /// Before anything else, a batch whose sender cannot be the committed owner of the partition at the batch's

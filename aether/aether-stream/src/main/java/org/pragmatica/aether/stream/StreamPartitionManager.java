@@ -2733,10 +2733,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                 quarantinedPartitionsSinceBoot.incrementAndGet();
                 log.error("Replica partition {}[{}] QUARANTINED: offset {} holds an event that differs from the one its sender "
                          + "offered. Nothing at or past it is acked, and this node never promotes the partition CAUGHT_UP. "
-                         + "Clearing it needs a truncate-and-refetch repair that does not exist yet (#1514)",
+                         + "A replica whose owner is known repairs itself by cutting its tail back to offset {} and refetching "
+                         + "(#1730 phase 2); the owner's own copy stays quarantined",
                           ref.streamName(),
                           ref.partition(),
-                          offset);
+                          offset,
+                          offset - 1);
 
                 return;
             }

@@ -65,18 +65,24 @@ import org.slf4j.LoggerFactory;
 /// with no recovery but removing the member (#1563: a black-holed peer that re-handshakes; the production form
 /// would be a wedged JVM whose network stack still completes handshakes).**
 ///
-/// **Overlap verification (#1555 item 7, the KIP-101 interim).** No ring or WAL record carries an owner epoch,
-/// so a returning ex-owner's never-acked tail (the same offsets, written under an older ownership) is
-/// indistinguishable by HEAD from the acked history that replaced it. Before any peer is used as catch-up source,
-/// and for every other responder, the last [#OVERLAP_WINDOW] offsets both hold are compared record by record
-/// (offset, timestamp, payload — the #1505 notion of "the same event"); the catch-up source is also compared
-/// PAIRWISE with every responder above the candidate's head, because the local log covers only offsets up to the candidate's own head
-/// and a candidate lagging two lineages agrees with both. Any disagreement REFUSES activation,
-/// whichever side is higher: without an epoch nothing here can tell which of the two lineages was acknowledged,
-/// so neither is served and neither is pulled. The refusal is reported once through the [BlockAlarm] and on
-/// [#blockOf] (the partition status read); the partition then waits for an operator to pick the source
-/// (#1569's pick-source surface, AD14). The detect-and-flag follow-up over a durable per-log epoch history is
-/// #1596; the cluster never auto-truncates.
+/// **Overlap verification (#1555 item 7, #1730 phase 2).** The ownership epoch is recorded in every WAL frame's
+/// attribution (`StreamPartitionManager.attributedWrite`), but this gate compares RECORDS: a returning ex-owner's
+/// never-acked tail (the same offsets, written under an older ownership) is indistinguishable by HEAD from the acked
+/// history that replaced it. Before any peer is used as catch-up source, and for every other responder, the last
+/// [#OVERLAP_WINDOW] offsets both hold are compared record by record (offset, timestamp, payload — the #1505 notion of
+/// "the same event"); the catch-up source is also compared PAIRWISE with every responder above the candidate's head,
+/// because the local log covers only offsets up to the candidate's own head and a candidate lagging two lineages agrees
+/// with both.
+///
+/// **A candidate elected from the committed ISR** (a record with `isrVersion > 0` whose ISR names this node) holds
+/// every acknowledged record, because an acknowledgement waited for every member of the ISR in force. A peer that
+/// disagrees with it within the overlap therefore holds a tail nobody acknowledged: it is LEFT OUT of the catch-up
+/// (never the source, never compared again) and cuts its own tail back when it backfills from this node (Kafka's
+/// KIP-101 truncation). Any other disagreement REFUSES activation, whichever side is higher: for a candidate with no
+/// committed ISR to be elected from (a record minted before #1730), and for two peers that disagree with each other
+/// above the candidate's head, nothing here can tell which of the two lineages was acknowledged, so neither is served
+/// and neither is pulled. The refusal is reported once through the [BlockAlarm] and on [#blockOf] (the partition
+/// status read); the partition then waits for an operator to pick the source (#1569's pick-source surface, AD14).
 ///
 /// **The window is a named constant, not a derived bound.** Nothing caps how far an owner may append beyond its
 /// last acknowledged offset: the pre-append floor (`ReplicationManager.ensureReplicaFloor`) requires in-sync peers
