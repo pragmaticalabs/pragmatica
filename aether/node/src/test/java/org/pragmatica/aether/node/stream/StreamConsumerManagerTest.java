@@ -1928,11 +1928,12 @@ class StreamConsumerManagerTest {
         }
     }
 
-    /// v1890 probes for #1923 (#752): `abandonAll` (the quorum-loss path) does not take `passLock`, so it can run while a
-    /// pass is between `attach`'s `active.putIfAbsent` and the runtime subscribe (here: held inside the local-slice lookup,
-    /// which sits exactly there).
+    /// #752, adopted from v1890's probes for #1923: `abandonAll` (the quorum-loss path) must not run while a pass is
+    /// between `attach`'s `active.putIfAbsent` and the runtime subscribe (here: held inside the local-slice lookup, which
+    /// sits exactly there). Red under "abandonAll does not take passLock": a false divergence warning, and an orphan
+    /// subscription the manager no longer tracks.
     @Nested
-    class V1890AbandonDuringAttach {
+    class AbandonDuringAttach {
         private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
 
         private Thread passBlockedMidAttach(StreamConsumerManager manager, CountDownLatch entered, CountDownLatch release) {
@@ -1954,10 +1955,24 @@ class StreamConsumerManagerTest {
             return pass;
         }
 
+        /// The quorum-loss abandon is issued on its own thread while the pass is held mid-attach, then the pass is
+        /// released. With `abandonAll` under `passLock` it waits for the pass and abandons what the pass attached;
+        /// without the lock it runs inside the held attach. Issued from the test thread it would wait for a pass that
+        /// only the test thread can release.
+        private void abandonWhileThePassIsHeld(StreamConsumerManager manager, CountDownLatch release) throws InterruptedException {
+            var abandon = new Thread(manager::abandonAll);
+
+            abandon.start();
+            abandon.join(200);
+            release.countDown();
+            abandon.join(5000);
+            assertThat(abandon.isAlive()).as("the abandon completed").isFalse();
+        }
+
         /// No false alert: an abandon that meets an attach still in progress found no "lost" subscription; the runtime
-        /// simply had not been asked yet. Expected RED: it raises stream-consumer-state-diverged.
+        /// simply had not been asked yet.
         @Test
-        void probe1923_abandonDuringAnInFlightAttach_raisesNoDivergenceWarning() throws InterruptedException {
+        void abandonAll_duringAnInFlightAttach_raisesNoDivergenceWarning() throws InterruptedException {
             declareStringConsumer();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
@@ -1970,20 +1985,18 @@ class StreamConsumerManagerTest {
             var pass = passBlockedMidAttach(manager, entered, release);
 
             assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
-            manager.abandonAll();
-            release.countDown();
+            abandonWhileThePassIsHeld(manager, release);
             pass.join(5000);
             Thread.sleep(200);
 
             assertThat(warnings).as("divergence warnings raised by an abandon racing an in-flight attach").isEmpty();
         }
 
-        /// Pre-existing companion (not introduced by #1923, whose description claims both sides agree after a detach or
-        /// abandon): after the quorum-loss abandon, nothing is subscribed. Expected RED: the in-flight attach subscribes
-        /// after the abandon, leaving a runtime subscription the manager no longer holds, which forgetVanished (manager ->
-        /// runtime direction only) never sees.
+        /// Pre-existing companion: after the quorum-loss abandon, nothing is subscribed. Without the lock the in-flight
+        /// attach subscribes after the abandon, leaving a runtime subscription the manager no longer holds, which
+        /// forgetVanished (manager -> runtime direction only) never sees.
         @Test
-        void probe1923_abandonDuringAnInFlightAttach_leavesNoOrphanSubscription() throws InterruptedException {
+        void abandonAll_duringAnInFlightAttach_leavesNoOrphanSubscription() throws InterruptedException {
             declareStringConsumer();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
@@ -1993,8 +2006,7 @@ class StreamConsumerManagerTest {
             var pass = passBlockedMidAttach(manager, entered, release);
 
             assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
-            manager.abandonAll();
-            release.countDown();
+            abandonWhileThePassIsHeld(manager, release);
             pass.join(5000);
 
             assertThat(runtime.subscribedPartitions()).as("subscriptions after the quorum-loss abandon").isEmpty();
@@ -2003,7 +2015,7 @@ class StreamConsumerManagerTest {
 
         /// Control: abandonAll on a settled attachment (no pass in flight) raises nothing and leaves nothing.
         @Test
-        void probe1923_control_abandonAfterASettledAttach_isQuiet() throws InterruptedException {
+        void abandonAll_afterASettledAttach_isQuiet() throws InterruptedException {
             declareStringConsumer();
             deploySliceLocally();
             ownership.ownedBySelf(0);

@@ -1285,14 +1285,20 @@ public interface StreamConsumerManager {
             log.info("Declarative stream consumer manager stopped");
         }
 
+        /// #752 (v1890): under `passLock`, like [#stop]. Without it the abandon could meet a pass between `attach`'s
+        /// `putIfAbsent` and the runtime subscribe: the abandon found no subscription and raised a FALSE divergence
+        /// warning, and the attach then subscribed behind it, leaving a runtime subscription nothing tracked. Cost: the
+        /// quorum-loss stop waits for at most one pass already in flight.
         @Contract
         @Override
         public void abandonAll() {
-            var keys = active.keySet().stream().toList();
+            synchronized (passLock) {
+                var keys = active.keySet().stream().toList();
 
-            keys.forEach(this::abandon);
-            log.warn("Quorum lost — abandoned {} declarative stream consumer subscription(s) without a final flush (#1271)",
-                     keys.size());
+                keys.forEach(this::abandon);
+                log.warn("Quorum lost — abandoned {} declarative stream consumer subscription(s) without a final flush (#1271)",
+                         keys.size());
+            }
         }
 
         private void abandon(SubscriptionKey key) {
