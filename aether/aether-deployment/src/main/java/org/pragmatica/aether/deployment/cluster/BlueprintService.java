@@ -435,8 +435,7 @@ class BlueprintServiceInstance implements BlueprintService {
     /// record. Random rather than derived from committed state: two publishes of one id must never share
     /// an attempt, and nothing committed is available to derive one from before the publish batch lands.
     private static String newAttemptId() {
-        return UUID.randomUUID()
-                   .toString();
+        return UUID.randomUUID().toString();
     }
 
     /// The confirmation step [VersionFenced] prescribes, and the reason the publish path is safe
@@ -469,8 +468,8 @@ class BlueprintServiceInstance implements BlueprintService {
 
         if (attempt >= MAX_OUTCOME_START_ATTEMPTS) {
             log.warn("Blueprint {} is published; its apply-start record was fenced out after {} attempts by"
-                     + " terminal writes for a previous apply. That terminal belongs to an earlier attempt, so"
-                     + " this apply is still treated as in progress and records its own outcome when it settles.",
+                    + " terminal writes for a previous apply. That terminal belongs to an earlier attempt, so"
+                    + " this apply is still treated as in progress and records its own outcome when it settles.",
                      expanded.id().asString(),
                      attempt);
 
@@ -483,7 +482,8 @@ class BlueprintServiceInstance implements BlueprintService {
                   attempt);
 
         return cluster.apply(List.<KVCommand<AetherKey>> of(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
-                                                                      startedOutcome(expanded.id(), attemptId))))
+                                                                      startedOutcome(expanded.id(),
+                                                                                     attemptId))))
                       .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, attempt + 1));
     }
 

@@ -1892,7 +1892,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                .filter(this::applyNotYetTerminal)
                                .filter(this::everyDeclaredSliceActive)
                                .forEach(blueprintId -> committedAttemptOf(blueprintId).onPresent(attemptId -> recordSucceededOutcome(blueprintId,
-                                                                                                                                   attemptId)));
+                                                                                                                                     attemptId)));
         }
 
         /// Completeness of the APPLY, read from durable state: every artifact the blueprint declares
@@ -2328,7 +2328,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// still answers false — attribution only ever re-reads a PRESENT terminal.
         private boolean applyNotYetTerminal(BlueprintId blueprintId) {
             return committedOutcome(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId)).filter(outcome -> outcome.status() == DeploymentOutcomeStatus.IN_PROGRESS || !describesCommittedAttempt(blueprintId,
-                                                                                                                                                                      outcome))
+                                                                                                                                                                                                    outcome))
                                    .isPresent();
         }
 
@@ -3291,8 +3291,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                     Runnable onAbandoned,
                                     int attempt) {
             var blueprintKey = AppBlueprintKey.appBlueprintKey(inflight.id());
-            var rolledBack = ctx.kvStore()
-                                .get(blueprintKey);
+            var rolledBack = ctx.kvStore().get(blueprintKey);
             var batch = commands.get();
 
             committedLeader().fold(() -> submitUnfencedRollback(inflight, batch, onLanded, onAbandoned),
@@ -3311,7 +3310,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                             Runnable onLanded,
                                             Runnable onAbandoned) {
             log.warn("ALL_OR_NOTHING: no committed leader record to fence the rollback of blueprint {} with — applying it"
-                     + " unfenced, so a publish of the same id racing it can be undone by it",
+                    + " unfenced, so a publish of the same id racing it can be undone by it",
                      inflight.id().asString());
             ctx.cluster()
                .apply(batch)
@@ -3330,13 +3329,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                           Runnable onAbandoned,
                                           int attempt) {
             var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AppBlueprintKey.appBlueprintKey(inflight.id()),
-                                                                                    java.util.UUID.randomUUID()
-                                                                                                  .toString(),
-                                                                                    leader,
-                                                                                    List.of(),
-                                                                                    batch.stream()
-                                                                                         .map(this::readMutation)
-                                                                                         .toList());
+                                                                                      java.util.UUID.randomUUID()
+                                                                                                    .toString(),
+                                                                                      leader,
+                                                                                      List.of(),
+                                                                                      batch.stream()
+                                                                                           .map(this::readMutation)
+                                                                                           .toList());
             var submitted = List.<KVCommand<AetherKey>> of(transaction);
 
             ctx.cluster()
@@ -3363,11 +3362,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            if (!ctx.kvStore()
-                    .get(AppBlueprintKey.appBlueprintKey(inflight.id()))
-                    .equals(rolledBack)) {
+            if (!ctx.kvStore().get(AppBlueprintKey.appBlueprintKey(inflight.id())).equals(rolledBack)) {
                 log.info("ALL_OR_NOTHING: rollback of blueprint {} was superseded — its blueprint changed before the"
-                         + " rollback applied (a newer publish of the same id), so the newer apply is left in place",
+                        + " rollback applied (a newer publish of the same id), so the newer apply is left in place",
                          inflight.id().asString());
                 onAbandoned.run();
 
@@ -3376,7 +3373,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
                 log.error("ALL_OR_NOTHING: rollback of blueprint {} was refused {} times by concurrent changes to the"
-                          + " state it rolls back, and was NOT applied — the apply stays outstanding",
+                         + " state it rolls back, and was NOT applied — the apply stays outstanding",
                           inflight.id().asString(),
                           attempt + 1);
                 onAbandoned.run();
@@ -3408,8 +3405,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         @SuppressWarnings("unchecked")
         private KVCommand.Mutation<AetherKey, AetherValue> readMutation(KVCommand<AetherKey> command) {
-            var expected = ctx.kvStore()
-                              .get(command.key());
+            var expected = ctx.kvStore().get(command.key());
 
             return switch (command) {
                 case KVCommand.Put<AetherKey, ?> put -> new KVCommand.Mutation<>(put.key(),
@@ -3434,7 +3430,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                           String cause) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
             var slices = failingSlices.stream().map(Artifact::asString).toList();
-            var value = DeploymentOutcomeValue.failed(slices, cause, ctx.nowMs(), nextOutcomeVersion(key), inflight.attemptId());
+            var value = DeploymentOutcomeValue.failed(slices,
+                                                      cause,
+                                                      ctx.nowMs(),
+                                                      nextOutcomeVersion(key),
+                                                      inflight.attemptId());
 
             return new KVCommand.Put<>(key, value);
         }
@@ -3498,8 +3498,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                            ExpandedBlueprint previous,
                                                            Set<Artifact> abandoned,
                                                            String cause) {
-            var sameId = previous.id()
-                                 .equals(inflight.id());
+            var sameId = previous.id().equals(inflight.id());
             var restoredAttempt = sameId
                                   ? inflight.attemptId()
                                   : committedAttemptOf(previous.id()).or(AppBlueprintValue.NO_ATTEMPT);
@@ -3523,8 +3522,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// `Remove(AppBlueprintKey)` of the rolled-back id deallocates them through
         /// `handleAppBlueprintRemoval`; with the same id there is no such Remove, so they are named here.
         private Set<Artifact> addedByRolledBackAttempt(InFlightBlueprint inflight, ExpandedBlueprint previous) {
-            if (!previous.id()
-                         .equals(inflight.id())) {
+            if (!previous.id().equals(inflight.id())) {
                 return Set.of();
             }
 
