@@ -185,7 +185,7 @@ public sealed interface QuicClusterServer {
 
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
-    private static final long HELLO_TIMEOUT_MS = 15_000;
+    private static final long DEFAULT_HELLO_TIMEOUT_MS = 15_000;
     /// Grace before the acceptor closes a refused misdirected connection: the dialer must read our Hello first.
     private static final long MISDIRECTED_CLOSE_DELAY_MS = 5_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0;  // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
@@ -217,6 +217,15 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// production, which is why the race is only reachable deterministically from here. No-op unless
     /// a test installs a hook.
     private volatile Runnable beforePublish = () -> {};
+
+    /// The bound on a stream's preamble/Hello. A field only so a test can shorten it; production leaves the default.
+    private volatile long helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS;
+
+    /// Test seam: shorten the Hello bound (applies to connections accepted after the call).
+    @Contract
+    void helloTimeoutForTest(long millis) {
+        helloTimeoutMs = millis;
+    }
 
     QuicClusterServerInstance(NodeId selfId,
                               NodeAddress selfAddress,
@@ -471,7 +480,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void scheduleHelloTimeout(ChannelHandlerContext ctx) {
-            ctx.executor().schedule(() -> onHelloTimeout(ctx), HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            ctx.executor().schedule(() -> onHelloTimeout(ctx), helloTimeoutMs, TimeUnit.MILLISECONDS);
         }
 
         private void onHelloTimeout(ChannelHandlerContext ctx) {
