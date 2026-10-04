@@ -43,7 +43,9 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
     private static JooqConnector connector(DatabaseConnectorConfig config) {
         var builder = new NettyConnectibleBuilder();
 
-        builder.hostname(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC)).port(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC)).database(config.effectiveDatabase(DatabaseConnectorConfig.Transport.ASYNC));
+        builder.hostname(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC))
+               .port(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC))
+               .database(config.effectiveDatabase(DatabaseConnectorConfig.Transport.ASYNC));
         config.effectiveUsername(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::username);
         config.effectivePassword(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::password);
         builder.maxConnections(config.poolConfig().maxConnections());

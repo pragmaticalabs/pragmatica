@@ -44,6 +44,12 @@ public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnect
     }
 
     private static HikariDataSource hikariDataSource(DatabaseConnectorConfig config) {
+        return new HikariDataSource(hikariConfig(config));
+    }
+
+    /// Package-visible so what the pool is built with (URL, credentials) is checkable without connecting (#784): the
+    /// JDBC pool reads ITS OWN transport's values.
+    static HikariConfig hikariConfig(DatabaseConnectorConfig config) {
         var hikariConfig = new HikariConfig();
 
         hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
@@ -55,6 +61,6 @@ public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnect
         hikariConfig.setMinimumIdle(config.poolConfig().minConnections());
         hikariConfig.setMaximumPoolSize(config.poolConfig().maxConnections());
 
-        return new HikariDataSource(hikariConfig);
+        return hikariConfig;
     }
 }

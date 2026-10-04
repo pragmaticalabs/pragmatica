@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.PgSqlConnector;
 import org.pragmatica.aether.resource.db.RowMapper;
@@ -96,6 +97,11 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
         @Override
         public DatabaseConnectorConfig config() {
             return delegate.config();
+        }
+
+        @Override
+        public DatabaseType databaseType() {
+            return delegate.databaseType();
         }
 
         @Override
