@@ -53,6 +53,9 @@ class StreamLineageAnnouncerTest {
         var failedOver = new StreamPartitionOwnershipValue(B, E1.withCounter(2L), 2L, HlcTimestamp.ZERO, List.of(B), before.isrVersion() + 1, false, List.of(), before.epochStarts());
 
         assertThat(StreamLineageAnnouncer.transition(KEY, Option.some(before), failedOver).isEmpty()).isTrue();
+        assertThat(StreamLineageAnnouncer.transition(KEY, Option.some(before), failedOver.withEpochStart(2L)).isEmpty())
+            .as("even when the new owner's start is recorded with the move, an owner change is the failover event's business")
+            .isTrue();
     }
 
     @Test
