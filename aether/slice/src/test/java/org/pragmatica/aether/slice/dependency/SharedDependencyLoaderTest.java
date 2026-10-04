@@ -21,6 +21,8 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.aether.slice.repository.maven.RemoteRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -258,6 +260,72 @@ class SharedDependencyLoaderTest {
                                                                 repository,
                                                                 jarUrl("org.example:" + requester + ":1.0.0"),
                                                                 requester);
+    }
+
+    /// #1436 — a `[shared]` locate that FAILS to answer is not a library the runtime ships. Each of these used to
+    /// be folded to "not found" and registered runtime-provided: the slice load succeeded with no jar loaded
+    /// anywhere and failed later with `NoClassDefFoundError`, and the retry the `Intermittent` typing exists for
+    /// never happened. The cause must surface as itself and nothing may be registered.
+    @Test
+    void sharedLocateThatCouldNotAnswer_surfacesTheCause_andRegistersNothing() {
+        var unanswered = List.<Cause> of(new SliceLoadingFailure.Intermittent.NetworkError("connect", NOT_FOUND),
+                                         new RemoteRepository.RemoteRepositoryError.DownloadFailed("https://repo/lib.jar",
+                                                                                                  new IllegalStateException("HTTP 503")),
+                                         new CoreError.Timeout("dht read"),
+                                         new SliceLoadingFailure.Intermittent.ArtifactUnavailable("org.example:lib:1.0.0",
+                                                                                                  List.of("repository #0 unavailable: timeout")));
+
+        for (var cause : unanswered) {
+            Repository failing = _ -> cause.promise();
+            var outcome = processShared(failing);
+
+            assertThat(outcome.isFailure()).as("%s must fail the load, not register runtime-provided", cause).isTrue();
+            outcome.onFailure(surfaced -> assertThat(surfaced).as("the cause surfaces as itself").isSameAs(cause));
+            assertThat(sharedLoader.loadedBy("org.example", "lib").isPresent()).as("%s: nothing registered", cause)
+                                                                              .isFalse();
+        }
+    }
+
+    /// The same defect through a different door: a coordinate that does not parse is a defect in the slice's
+    /// dependency file, not an absent library.
+    @Test
+    void sharedDependencyWithUnparseableCoordinates_isNotRuntimeProvided() {
+        var bad = new ArtifactDependency("Not A Group", "lib", dependency("org.example:lib:1.0.0").versionPattern());
+
+        SharedDependencyLoader.processSharedDependencies(List.of(bad),
+                                                         sharedLoader,
+                                                         _ -> NOT_FOUND.promise(),
+                                                         jarUrl("org.example:slice-a:1.0.0"),
+                                                         "slice-a")
+                              .await()
+                              .onSuccessRun(() -> Assertions.fail("an unparseable coordinate must fail the load"));
+        assertThat(sharedLoader.loadedBy("Not A Group", "lib").isPresent()).isFalse();
+    }
+
+    /// The control: a single repository's own "absent" answer IS the genuine not-found, so it still registers
+    /// runtime-provided exactly as before.
+    @Test
+    void sharedLocateAnsweredAbsent_stillRegistersRuntimeProvided() {
+        Repository absent = _ -> new Repository.Absent() {
+            @Override
+            public String message() {
+                return "absent";
+            }
+        }.promise();
+
+        processShared(absent).onFailureRun(Assertions::fail);
+
+        assertThat(sharedLoader.loadedBy("org.example", "lib").unwrap()).isEqualTo("slice-a");
+    }
+
+    private Result<Unit> processShared(Repository repository) {
+        return SharedDependencyLoader.processSharedDependencies(List.of(dependency("org.example:lib:1.0.0")),
+                                                                sharedLoader,
+                                                                repository,
+                                                                jarUrl("org.example:slice-a:1.0.0"),
+                                                                "slice-a")
+                                     .await()
+                                     .map(_ -> Unit.unit());
     }
 
     private static ArtifactDependency dependency(String line) {

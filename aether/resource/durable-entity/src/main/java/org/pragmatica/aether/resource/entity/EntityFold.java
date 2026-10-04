@@ -598,23 +598,15 @@ final class EntityFold {
             return new EntityLogError.FoldInProgress(keyspace, partition).promise();
         }
 
-        return catchUpBatch(partition, data, from, head);
+        return chaseBatches(partition, from, head, (at, records) -> catchUpStep(partition, data, at, records));
     }
 
-    private Promise<Unit> catchUpBatch(int partition, FoldedPartition data, long from, long head) {
-        return substrate.read(keyspace, partition, from, REPLAY_BATCH)
-                        .flatMap(records -> applyCatchUpBatch(partition, data, from, head, records));
-    }
-
-    /// An empty read below the head is a replication gap still in flight, not corruption — transient,
-    /// unlike the rebuild replay's refusal, because a replica's ring fills as replication lands.
-    private Promise<Unit> applyCatchUpBatch(int partition,
-                                            FoldedPartition data,
-                                            long from,
-                                            long head,
-                                            List<byte[]> records) {
+    /// One catch-up batch, answering the next offset to read. An empty read below the head is a replication gap still
+    /// in flight, not corruption — transient, unlike the rebuild replay's refusal, because a replica's ring fills as
+    /// replication lands.
+    private Result<Long> catchUpStep(int partition, FoldedPartition data, long from, List<byte[]> records) {
         if (records.isEmpty()) {
-            return new EntityLogError.FoldInProgress(keyspace, partition).promise();
+            return new EntityLogError.FoldInProgress(keyspace, partition).result();
         }
 
         var offset = from;
@@ -624,15 +616,13 @@ final class EntityFold {
             var applied = EntityLogRecord.decode(raw).flatMap(record -> applyCaughtUp(data, record, applyAt));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
-                return new EntityLogError.FoldFailed(keyspace, partition, cause).promise();
+                return new EntityLogError.FoldFailed(keyspace, partition, cause).result();
             }
 
             offset++;
         }
 
-        return offset > head
-               ? Promise.unitPromise()
-               : catchUpBatch(partition, data, offset, head);
+        return success(offset);
     }
 
     /// Apply-or-account: state is written ONLY for an offset the append path has not already applied.
@@ -833,7 +823,7 @@ final class EntityFold {
             return new EntityLogError.FoldFailed(keyspace, partition, gapCause(from, earliestRetained)).promise();
         }
 
-        return replayBatch(partition, building, from, head);
+        return chaseBatches(partition, from, head, (at, records) -> replayStep(partition, building, at, head, records));
     }
 
     private static Cause gapCause(long from, long earliestRetained) {
@@ -843,18 +833,15 @@ final class EntityFold {
                                                  + " partition cannot be rebuilt without losing committed writes");
     }
 
-    private Promise<Unit> replayBatch(int partition, FoldedPartition building, long from, long head) {
-        return substrate.read(keyspace, partition, from, REPLAY_BATCH)
-                        .flatMap(records -> applyBatch(partition, building, from, head, records));
-    }
-
-    private Promise<Unit> applyBatch(int partition,
-                                     FoldedPartition building,
-                                     long from,
-                                     long head,
-                                     List<byte[]> records) {
+    /// One replay batch: applies `records` (read from `from`) in order and answers the next offset to read. An empty
+    /// read below the head means the log stopped being readable mid-replay and refuses ([#truncatedCause]).
+    private Result<Long> replayStep(int partition,
+                                    FoldedPartition building,
+                                    long from,
+                                    long head,
+                                    List<byte[]> records) {
         if (records.isEmpty()) {
-            return truncatedCause(partition, from, head);
+            return truncatedCause(partition, from, head).result();
         }
 
         var offset = from;
@@ -864,15 +851,101 @@ final class EntityFold {
             var applied = EntityLogRecord.decode(raw).flatMap(record -> applyReplayed(building, record, applyAt));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
-                return new EntityLogError.FoldFailed(keyspace, partition, cause).promise();
+                return new EntityLogError.FoldFailed(keyspace, partition, cause).result();
             }
 
             offset++;
         }
 
-        return offset > head
-               ? Promise.unitPromise()
-               : replayBatch(partition, building, offset, head);
+        return success(offset);
+    }
+
+    /// How one read batch advances a chase: applies the records read from `from`, answers the next offset to read,
+    /// or the cause that ends the chase.
+    @FunctionalInterface
+    private interface BatchStep {
+        Result<Long> apply(long from, List<byte[]> records);
+    }
+
+    /// Reads `[from, head]` in batches of [#REPLAY_BATCH] and applies each through `step`, as a LOOP rather than a
+    /// batch-to-batch continuation (#1395, sibling of #1392). A read that is already settled when it returns (a
+    /// memory-tier substrate answers synchronously) used to run its continuation inline, so a chase over k batches
+    /// nested k frame groups on the calling thread, about 7 frames per batch: bounded in practice only because
+    /// batches are large, while the bound is really the batch count, which grows with history length and shrinks
+    /// with batch size. Here a settled read is consumed in place and the loop moves on; only a read still pending
+    /// suspends the loop, which resumes on the thread that settles it. Stack depth no longer depends on the batch
+    /// count — the same property `SegmentReader.readSegments` got in #1392 and the sealer's drain in #1234.
+    /// Callers guarantee `from <= head`.
+    private Promise<Unit> chaseBatches(int partition, long from, long head, BatchStep step) {
+        var output = Promise.<Unit> promise();
+
+        chase(partition, from, head, step, output);
+
+        return output;
+    }
+
+    @Contract
+    private void chase(int partition, long from, long head, BatchStep step, Promise<Unit> output) {
+        var offset = from;
+
+        while (offset <= head) {
+            var at = offset;
+            var read = containedRead(partition, at);
+
+            if (!read.isResolved()) {
+                read.onResult(result -> resumeChase(result, partition, at, head, step, output));
+
+                return;
+            }
+
+            switch (applyBatch(settledResult(read), at, step)) {
+                case Result.Failure<Long>(var cause) -> {
+                    output.fail(cause);
+
+                    return;
+                }
+                case Result.Success<Long>(var next) -> offset = next;
+            }
+        }
+
+        output.succeed(unit());
+    }
+
+    /// Continues the chase after a read that settled off-thread; a failed read or step ends it.
+    @Contract
+    private void resumeChase(Result<List<byte[]>> result,
+                             int partition,
+                             long at,
+                             long head,
+                             BatchStep step,
+                             Promise<Unit> output) {
+        switch (applyBatch(result, at, step)) {
+            case Result.Failure<Long>(var cause) -> output.fail(cause);
+            case Result.Success<Long>(var next) -> chase(partition, next, head, step, output);
+        }
+    }
+
+    /// A step that THROWS is a failed step, so the chase ends exactly once on both the inline and the resumed path;
+    /// on the resumed path a throw would otherwise be lost in `onResult`'s catch and leave the chase never settled.
+    private static Result<Long> applyBatch(Result<List<byte[]>> read, long at, BatchStep step) {
+        return read.flatMap(records -> Result.lift(() -> step.apply(at, records)).flatMap(next -> next));
+    }
+
+    /// A substrate that THROWS instead of returning a promise is a failed read, for the same reason.
+    private Promise<List<byte[]>> containedRead(int partition, long from) {
+        return Result.lift(() -> substrate.read(keyspace, partition, from, REPLAY_BATCH)).fold(Cause::promise,
+                                                                                               read -> read);
+    }
+
+    /// The result of a promise the caller has checked is resolved: `Promise.onResult` runs its consumer inline on a
+    /// settled promise, so the holder is filled before this returns. Not `await()`: that is the blocking join, and
+    /// this loop never blocks.
+    private static <T> Result<T> settledResult(Promise<T> resolved) {
+        var holder = new AtomicReference<Result<T>>();
+
+        resolved.onResult(holder::set);
+
+        return holder.get();
     }
 
     /// Replay applies records strictly in offset order, so the watermark moves with them directly — the
@@ -887,10 +960,10 @@ final class EntityFold {
     /// being readable mid-replay — retention moving underneath us, or a partition released to another
     /// node. Refusing is the only safe answer: the alternative is a partition that serves state missing
     /// everything from here on.
-    private Promise<Unit> truncatedCause(int partition, long from, long head) {
+    private Cause truncatedCause(int partition, long from, long head) {
         return new EntityLogError.FoldFailed(keyspace,
                                              partition,
                                              new EntityLogError.MalformedRecord("log ended at offset " + from
-                                                                               + " while replaying toward head " + head)).promise();
+                                                                               + " while replaying toward head " + head));
     }
 }
