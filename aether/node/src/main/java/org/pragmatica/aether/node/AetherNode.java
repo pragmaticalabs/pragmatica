@@ -43,6 +43,7 @@ import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.config.ConfigService;
@@ -6362,7 +6363,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                            target -> requestDrainThroughFsm(drainCommandRegistry,
                                                                                                                                             membershipFsmRef,
                                                                                                                                             target),
-                                                                                                           drainCommandRegistry::drainTargets);
+                                                                                                           drainCommandRegistry::drainTargets,
+                                                                                                           // #1720: operator drain and shutdown honour the slice minAvailable floor,
+                                                                                                           // as the automatic drain does (same KV-backed guard, same counting rules).
+                                                                                                           NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                                                                                                                     operatorWarningSink));
 
                                                   managementServerRef.set(Option.some(managementServer));
                                                   // #278: expose the node's real MeterRegistry to slice-facing resource

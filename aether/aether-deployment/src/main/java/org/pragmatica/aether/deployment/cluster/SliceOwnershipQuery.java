@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster;
 
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -106,6 +107,14 @@ public sealed interface SliceOwnershipQuery {
         return (candidate, remainingNodes) -> firstRefusal(kvStore, candidate, remainingNodes);
     }
 
+    /// The same availability test as [#minAvailableDrainGuard], answering EVERY hosted slice that draining
+    /// `candidate` would drop below its `minAvailable`, sorted by artifact, not just the first (#1720). The operator
+    /// drain and shutdown routes need all of them: the refusal names each slice, and a forced breach warns about
+    /// each. Empty when every hosted slice keeps its floor. Same inputs, same counting rules.
+    static BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> minAvailableDrainViolations(KVStore<AetherKey, AetherValue> kvStore) {
+        return (candidate, remainingNodes) -> refusalStream(kvStore, candidate, remainingNodes).toList();
+    }
+
     /// Why the guard refused to drain `owner`: `artifact` would be left with `remainingActive` ACTIVE
     /// instances on the remaining nodes, below its `minAvailable`. Carried into the reconciler's
     /// deferral WARN so an operator can see which owner and slice held the surplus back.
@@ -118,16 +127,21 @@ public sealed interface SliceOwnershipQuery {
     private static Option<DrainRefusal> firstRefusal(KVStore<AetherKey, AetherValue> kvStore,
                                                      NodeId candidate,
                                                      Set<NodeId> remainingNodes) {
-        var placements = livePlacements(kvStore);
-        var refusals = hostedArtifacts(placements, candidate).stream()
-                                      .sorted(Comparator.comparing(Artifact::asString))
-                                      .flatMap(artifact -> refusalFor(kvStore,
-                                                                      placements,
-                                                                      candidate,
-                                                                      artifact,
-                                                                      remainingNodes).stream());
+        return Option.from(refusalStream(kvStore, candidate, remainingNodes).findFirst());
+    }
 
-        return Option.from(refusals.findFirst());
+    private static java.util.stream.Stream<DrainRefusal> refusalStream(KVStore<AetherKey, AetherValue> kvStore,
+                                                                       NodeId candidate,
+                                                                       Set<NodeId> remainingNodes) {
+        var placements = livePlacements(kvStore);
+
+        return hostedArtifacts(placements, candidate).stream()
+                                                     .sorted(Comparator.comparing(Artifact::asString))
+                                                     .flatMap(artifact -> refusalFor(kvStore,
+                                                                                     placements,
+                                                                                     candidate,
+                                                                                     artifact,
+                                                                                     remainingNodes).stream());
     }
 
     /// The distinct artifacts `node` holds a LIVE placement of.

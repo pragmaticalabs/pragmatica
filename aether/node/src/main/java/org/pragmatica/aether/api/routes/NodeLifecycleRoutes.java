@@ -5,10 +5,12 @@
 package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -16,6 +18,8 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -26,6 +30,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -34,11 +39,19 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
 public final class NodeLifecycleRoutes implements RouteSource {
+    private static final Logger LOG = LoggerFactory.getLogger(NodeLifecycleRoutes.class);
+
     /// 404 (not 500) when the target node has no reported lifecycle state. A plain `Causes.cause`
     /// is not `HttpStatusAware`, so the management error funnel (`ProblemResponses.resolveStatus`)
     /// defaults it to 500; wrapping in `HttpError.httpError(NOT_FOUND, ...)` makes the status
@@ -70,10 +83,48 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// via the single-arg factory for legacy callers / test fixtures. The registry is leader-owned
     /// and drains are leader-routed, so this read reflects the authoritative pending set.
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+    /// #1720: the slice `minAvailable` floor guard for operator drain and shutdown, absent for legacy callers and
+    /// fixtures that wire no slice ownership (they keep the budget-only admission they always had).
+    private final Option<SliceFloor> sliceFloor;
+
+    /// The slice-floor guard the operator drain/shutdown routes consult (#1720), and the sink through which a
+    /// FORCED breach is reported. `violations` is [SliceOwnershipQuery#minAvailableDrainViolations]: applied to
+    /// `(target, remainingNodes)` it answers every hosted slice the drain would leave below its `minAvailable`.
+    public record SliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations, OperatorWarningSink warnings) {
+        public static SliceFloor sliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations,
+                                            OperatorWarningSink warnings) {
+            return new SliceFloor(violations, warnings);
+        }
+    }
+
+    /// 409: the operator drain/shutdown would leave a hosted slice below its `minAvailable` ACTIVE instances
+    /// (#1720). Names every slice and its counts; `force` overrides it and is then reported as an operator
+    /// warning rather than done silently.
+    public record SliceFloorBreached(String nodeId, String operation, List<DrainRefusal> breaches) implements HttpStatusAware {
+        @Override
+        public String message() {
+            return "Cannot " + operation + " node " + nodeId + ": it would leave "
+                   + describe(breaches) + ". Re-run with force=true to override, which takes the slice below its floor.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    static String describe(List<DrainRefusal> breaches) {
+        return breaches.stream()
+                       .map(breach -> breach.artifact().asString() + " with " + breach.remainingActive()
+                                      + " ACTIVE instance(s), below its minAvailable " + breach.minAvailable())
+                       .collect(java.util.stream.Collectors.joining("; "));
+    }
 
     private NodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
                                 Consumer<NodeId> drainCommandSink,
-                                Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                                Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                Option<SliceFloor> sliceFloor) {
+        this.sliceFloor = sliceFloor;
         this.nodeSupplier = nodeSupplier;
         this.drainCommandSink = drainCommandSink == null
                                 ? _ -> {}
@@ -86,7 +137,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new NodeLifecycleRoutes(nodeSupplier,
                                        _ -> {},
-                                       Set::of);
+                                       Set::of,
+                                       Option.none());
     }
 
     /// Membership v2 (B5b) — production factory wiring the leader's DRAIN command sink + the
@@ -95,7 +147,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           Consumer<NodeId> drainCommandSink,
                                                           Supplier<Set<NodeId>> pendingDrainsSupplier) {
-        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier);
+        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, Option.none());
+    }
+
+    /// #1720 — production factory: as above, plus the slice `minAvailable` floor guard.
+    public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
+                                                          Consumer<NodeId> drainCommandSink,
+                                                          Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                                          SliceFloor sliceFloor) {
+        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, Option.some(sliceFloor));
     }
 
     record LifecycleEntry(String nodeId, String state, long updatedAt) {}
@@ -113,7 +173,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// disruption-budget guard) without standing up the HTTP routing layer. Production callers go
     /// through the `routes()` stream.
     Promise<TransitionResult> drainNodeForTest(String nodeIdStr) {
-        return drainNode(nodeIdStr);
+        return drainNode(nodeIdStr, false);
+    }
+
+    Promise<TransitionResult> drainNodeForTest(String nodeIdStr, boolean force) {
+        return drainNode(nodeIdStr, force);
+    }
+
+    /// Package-private: the synchronous admission, for the concurrent-admission test (#1720).
+    Result<TransitionResult> admitForTest(NodeId node, boolean drain, boolean force) {
+        return admitOperatorDrain(node, drain, force);
     }
 
     @Override
@@ -128,11 +197,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_DRAIN)
                                          .withPath(aString())
-                                         .to(this::drainNode)
+                                         .withQuery(QueryParameter.aBoolean("force"))
+                                         .to((nodeId, force) -> drainNode(nodeId, force.or(false)))
                                          .asJson(),
                          ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_SHUTDOWN)
                                          .withPath(aString())
-                                         .to(this::shutdownNode)
+                                         .withQuery(QueryParameter.aBoolean("force"))
+                                         .to((nodeId, force) -> shutdownNode(nodeId, force.or(false)))
                                          .asJson(),
                          ManagementRoutes.<PromoteNodeResponse> route(ManagementRoute.NODE_PROMOTE)
                                          .withPath(aString())
@@ -259,20 +330,68 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// `drainNodes` set and
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
-    private Promise<TransitionResult> drainNode(String nodeIdStr) {
+    private Promise<TransitionResult> drainNode(String nodeIdStr, boolean force) {
         return NodeId.nodeId(nodeIdStr)
-                     .flatMap(node -> admitOperatorDrain(node, true))
+                     .flatMap(node -> admitOperatorDrain(node, true, force))
                      .async();
     }
 
     /// One routes instance is installed per management server. Check and reserve synchronously:
     /// no Promise callback may interleave another operator admission before the sink updates its set.
-    private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady) {
+    ///
+    /// #1720 — the slice `minAvailable` floor is checked in this same critical section, so it is serialised
+    /// against concurrent operator drains by the SAME monitor (this method's `synchronized`, on the one routes
+    /// instance) and reads the pending set the sink has just updated: `drainCommandSink.accept` runs inside
+    /// `enqueueOperatorDrain`, under the lock, before the next admission can evaluate. Two requests therefore never
+    /// pass against one "pending drains" snapshot. Pinned by `NodeLifecycleRoutesSliceFloorTest`'s concurrent
+    /// admission test.
+    private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
         return checkDisruptionBudgetForTarget(node.id(),
                                               node).flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+                                             .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
                                              .map(budget -> enqueueOperatorDrain(node,
                                                                                  budget.message(),
                                                                                  requireReady));
+    }
+
+    /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
+    /// ACTIVE instances, with `remaining = counted members - pending drains - target` (the automatic drain's rule,
+    /// [SliceOwnershipQuery#minAvailableDrainGuard]; workers are members here, slices run on them). `force`
+    /// overrides, and a forced breach raises an operator warning naming every slice, so it is never silent.
+    private Result<org.pragmatica.lang.Unit> checkSliceFloor(NodeId node, boolean drain, boolean force) {
+        return sliceFloor.fold(() -> Result.success(org.pragmatica.lang.Unit.unit()),
+                               floor -> applySliceFloor(floor, node, drain, force));
+    }
+
+    private Result<org.pragmatica.lang.Unit> applySliceFloor(SliceFloor floor, NodeId node, boolean drain, boolean force) {
+        var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
+
+        remaining.removeAll(pendingDrainsSupplier.get());
+        remaining.remove(node);
+        var breaches = floor.violations().apply(node, remaining);
+
+        if (breaches.isEmpty()) {
+            return Result.success(org.pragmatica.lang.Unit.unit());
+        }
+
+        var operation = drain
+                        ? "drain"
+                        : "shutdown";
+
+        if (!force) {
+            return new SliceFloorBreached(node.id(), operation, breaches).result();
+        }
+
+        OperatorWarnings.raise(LOG,
+                               floor.warnings(),
+                               OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
+                               node.id(),
+                               "Forced {} of node {} breaches the slice floor: {}",
+                               operation,
+                               node.id(),
+                               describe(breaches));
+
+        return Result.success(org.pragmatica.lang.Unit.unit());
     }
 
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
@@ -401,14 +520,18 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// Membership v2 (B5b) — operator shutdown. Routed through the same DRAIN command channel as
     /// `drain` (the target self-drains then halts via its `DrainProcedure`); the CTM grace-terminate
     /// backstop reaps the container. No `LifecycleWriter` write happens here.
-    private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
+    private Promise<TransitionResult> shutdownNode(String nodeIdStr, boolean force) {
         return NodeId.nodeId(nodeIdStr)
-                     .flatMap(node -> admitOperatorDrain(node, false))
+                     .flatMap(node -> admitOperatorDrain(node, false, force))
                      .async();
     }
 
     Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {
-        return shutdownNode(nodeIdStr);
+        return shutdownNode(nodeIdStr, false);
+    }
+
+    Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr, boolean force) {
+        return shutdownNode(nodeIdStr, force);
     }
 
     private TransitionResult shutdownInitiatedResult(String nodeIdStr, String guardNote) {

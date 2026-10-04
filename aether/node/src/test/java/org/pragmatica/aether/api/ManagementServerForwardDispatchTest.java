@@ -165,7 +165,9 @@ class ManagementServerForwardDispatchTest {
                                         Option.some(new StubSerializer()),
                                         Option.some(new StubDeserializer()),
                                         _ -> {},
-                                        Set::of);
+                                        Set::of,
+                org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
+                                                                                         org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }
 
     private record StubHttpRequest(String path) implements HttpRequest {

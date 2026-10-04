@@ -172,7 +172,8 @@ public interface ManagementServer {
                                              Option<Serializer> serializer,
                                              Option<Deserializer> deserializer,
                                              Consumer<NodeId> drainCommandSink,
-                                             Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                                             Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                             NodeLifecycleRoutes.SliceFloor sliceFloor) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         entityCheckpointDriver,
@@ -197,7 +198,8 @@ public interface ManagementServer {
                                         serializer,
                                         deserializer,
                                         drainCommandSink,
-                                        pendingDrainsSupplier);
+                                        pendingDrainsSupplier,
+                                        sliceFloor);
     }
 }
 
@@ -240,6 +242,7 @@ class ManagementServerImpl implements ManagementServer {
 
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+    private final NodeLifecycleRoutes.SliceFloor sliceFloor;
 
     private final AtomicReference<Option<HttpForwarder>> mgmtForwarderRef = new AtomicReference<>(Option.empty());
 
@@ -289,7 +292,9 @@ class ManagementServerImpl implements ManagementServer {
                          Option<org.pragmatica.serialization.Serializer> serializer,
                          Option<org.pragmatica.serialization.Deserializer> deserializer,
                          Consumer<NodeId> drainCommandSink,
-                         Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                         Supplier<Set<NodeId>> pendingDrainsSupplier,
+                         NodeLifecycleRoutes.SliceFloor sliceFloor) {
+        this.sliceFloor = sliceFloor;
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
@@ -342,7 +347,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
-        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier));
+        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, sliceFloor));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,

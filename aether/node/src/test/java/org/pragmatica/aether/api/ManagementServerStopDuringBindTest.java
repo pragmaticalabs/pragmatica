@@ -129,7 +129,9 @@ class ManagementServerStopDuringBindTest {
                                                  Option.none(),
                                                  Option.none(),
                                                  _ -> {},
-                                                 Set::of);
+                                                 Set::of,
+                                                 org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
+                                                                                                                         org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }
 
     /// Closing a channel can trail the stop promise by a few milliseconds, so poll — bounded. A zero budget
