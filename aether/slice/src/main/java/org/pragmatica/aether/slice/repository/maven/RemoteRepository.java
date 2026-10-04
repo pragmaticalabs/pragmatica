@@ -85,7 +85,7 @@ public interface RemoteRepository extends Repository {
         var jarUrl = baseUrl + artifactPath;
         var sha256Url = jarUrl + ".sha256";
         var sha1Url = jarUrl + ".sha1";
-
+        // One client per download, so it is released when that download settles (#1097).
         return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifyChecksumAndCache(httpOps,
                                                                                                                            sha256Url,
                                                                                                                            sha1Url,
@@ -94,7 +94,8 @@ public interface RemoteRepository extends Repository {
                                                                                                                            artifact,
                                                                                                                            targetPath,
                                                                                                                            httpTimeout))
-                          .flatMap(path -> toLocation(artifact, path));
+                          .flatMap(path -> toLocation(artifact, path))
+                          .onResult(_ -> httpOps.close());
     }
 
     private static Promise<byte[]> downloadJar(HttpOperations httpOps,

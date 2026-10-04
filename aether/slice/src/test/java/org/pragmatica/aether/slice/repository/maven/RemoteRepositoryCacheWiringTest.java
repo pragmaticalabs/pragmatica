@@ -127,6 +127,33 @@ class RemoteRepositoryCacheWiringTest {
         assertThat(Files.readAllBytes(cachedJar())).as("M1: the operator's jar is untouched").isEqualTo(local);
     }
 
+    /// #1097 — each download builds its own JDK `HttpClient`, whose selector thread outlived the download.
+    /// Counted by thread across two downloads (the jar is deleted between them), so a revert leaves two behind.
+    @Test
+    void download_releasesItsHttpClient_soNoSelectorThreadSurvives() throws IOException, InterruptedException {
+        var baseline = selectorThreads();
+
+        assertThat(repository().locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
+        Files.deleteIfExists(cachedJar());
+        assertThat(repository().locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
+
+        var deadline = System.nanoTime() + 10_000_000_000L;
+
+        while (selectorThreads() > baseline && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertThat(selectorThreads()).as("selector threads after downloads; baseline %d", baseline).isLessThanOrEqualTo(baseline);
+    }
+
+    private static long selectorThreads() {
+        return Thread.getAllStackTraces()
+                     .keySet()
+                     .stream()
+                     .filter(t -> t.getName().startsWith("HttpClient-") && t.getName().endsWith("-SelectorManager"))
+                     .filter(Thread::isAlive)
+                     .count();
+    }
+
     /// CONTROL — an intact cached jar is a cache hit: no second download.
     @Test
     void intactCachedJar_isACacheHit() {

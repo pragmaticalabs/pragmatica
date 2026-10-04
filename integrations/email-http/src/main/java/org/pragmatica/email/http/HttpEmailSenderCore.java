@@ -10,13 +10,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
 /// Core implementation of HttpEmailSender using ServiceLoader-discovered vendor mappings.
-final class HttpEmailSenderCore implements HttpEmailSender {
+final class HttpEmailSenderCore implements HttpEmailSender, AsyncCloseable {
     private static final Logger log = LoggerFactory.getLogger(HttpEmailSenderCore.class);
     private static final Map<String, VendorMapping> MAPPINGS = new ConcurrentHashMap<>();
 
@@ -37,7 +39,8 @@ final class HttpEmailSenderCore implements HttpEmailSender {
     static HttpEmailSender create(HttpEmailConfig config, HttpOperations operations) {
         return Option.option(MAPPINGS.get(config.providerHint()))
                      .map(mapping -> (HttpEmailSender) new HttpEmailSenderCore(config, operations, mapping))
-                     .or(vendorNotFoundSender(config.providerHint()));
+                     .or(() -> new VendorNotFoundSender(config.providerHint(),
+                                                        operations));
     }
 
     @Override
@@ -76,7 +79,29 @@ final class HttpEmailSenderCore implements HttpEmailSender {
         return new HttpEmailError.RequestFailed(result.statusCode(), result.body()).promise();
     }
 
-    private static HttpEmailSender vendorNotFoundSender(String vendorId) {
-        return message -> new HttpEmailError.VendorNotFound(vendorId).promise();
+    /// Closes the operations it was handed when they own releasable state (#1097).
+    @Override
+    public Promise<Unit> close() {
+        return closeOperations(operations);
+    }
+
+    private static Promise<Unit> closeOperations(HttpOperations operations) {
+        return operations instanceof AsyncCloseable closeable
+               ? closeable.close()
+               : Promise.unitPromise();
+    }
+
+    /// The factory built the operations for this sender, so one that can never send must still
+    /// release them.
+    private record VendorNotFoundSender(String vendorId, HttpOperations operations) implements HttpEmailSender, AsyncCloseable {
+        @Override
+        public Promise<String> send(EmailMessage message) {
+            return new HttpEmailError.VendorNotFound(vendorId).promise();
+        }
+
+        @Override
+        public Promise<Unit> close() {
+            return closeOperations(operations);
+        }
     }
 }
