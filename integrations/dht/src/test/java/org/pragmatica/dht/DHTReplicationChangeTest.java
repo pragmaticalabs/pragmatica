@@ -615,7 +615,8 @@ class DHTReplicationChangeTest {
     /// evidence either way, so the put is acknowledged per the named limit and NO stale record is set.
     @Test
     void v1882r9_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        // a 20 s operation timeout makes the evidence bound 2 s, clearly distinguishable from "immediate" (v1882 F16 probe L)
+        var cluster = new Cluster(5, DHTConfig.dhtConfig(3, 1, 3, org.pragmatica.lang.io.TimeSpan.timeSpan(20).seconds()).unwrap());
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -633,10 +634,14 @@ class DHTReplicationChangeTest {
         assertThat(put.isResolved()).as("arming: one non-stale reply is not the end of the evidence").isFalse();
 
         cluster.deliverHeldTo(replicas.get(2));
-        // well inside the 500 ms operation timeout: a put whose remotes ALL replied is not held to the timeout
-        var outcome = put.await(org.pragmatica.lang.io.TimeSpan.timeSpan(150).millis());
+        // far inside the 2 s evidence bound: a put whose REMOTES all replied is not held to the bound, and the writer's own slot
+        // (applied only after the gate) is not among the replies the gate waits for
+        var started = System.nanoTime();
+        var outcome = put.await(org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds());
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
 
         assertThat(outcome.isSuccess()).as("acknowledged per the limit once every remote replied: " + outcome).isTrue();
+        assertThat(elapsedMillis).as("well under the 2 s evidence bound").isLessThan(500L);
         assertThat(settledRecord(cluster, writer)).isEqualTo(Option.none());
     }
 
@@ -735,6 +740,31 @@ class DHTReplicationChangeTest {
         }
 
         return cluster.nodes.get(writer).staleRefusal();
+    }
+
+    /// v1882 probe U (F17): a roster-excluded writer that is a replica (W_old = 1); one remote replica refuses as stale, the
+    /// other is DOWN (silent). The stale refusal is a verdict: the put ends AT ONCE with the typed ReplicationChangeStale and
+    /// the writer is recorded stale (the DHT_WRITER_STALE source) — not a generic Timeout after the full operation timeout.
+    @Test
+    void v1882r11_probeU_staleRefusalPlusASilentReplica_endsAtOnce_typed_andRecordsTheWriterStale() {
+        var cluster = new Cluster(5, DHTConfig.dhtConfig(3, 1, 3, org.pragmatica.lang.io.TimeSpan.timeSpan(20).seconds()).unwrap());
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.dropPutsTo = java.util.Set.of(replicas.get(2));
+
+        var started = System.nanoTime();
+        var outcome = cluster.client(writer).put(KEY, VALUE).await(org.pragmatica.lang.io.TimeSpan.timeSpan(25).seconds());
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale, typed: " + outcome).isTrue();
+        assertThat(elapsedMillis).as("a stale refusal is a verdict; the put does not wait out the evidence bound").isLessThan(1_000L);
+        assertThat(settledRecord(cluster, writer)).as("the genuinely stale writer is recorded").isNotEqualTo(Option.none());
+        assertThat(cluster.holds(writer)).as("never applied locally").isFalse();
     }
 
     private static String entryOf(Cluster cluster, NodeId id) {
