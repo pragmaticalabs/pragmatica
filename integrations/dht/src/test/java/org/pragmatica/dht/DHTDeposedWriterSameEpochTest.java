@@ -62,6 +62,41 @@ class DHTDeposedWriterSameEpochTest {
             .isGreaterThanOrEqualTo(2);
     }
 
+    /// RESIDUAL, named and pinned as an ENABLED TRIPWIRE (v1882 r11): the same shape, but no replica answers within the
+    /// evidence wait, so BOTH writers apply their own slot per the named no-evidence limit [limit: #1683-class] before any fence
+    /// refusal arrives. X then reaches A after A applied W and is answered "superseded", and W's late fence refusals sink W
+    /// (WriteIndeterminate) and A rolls it back: X, acknowledged on R plus A's superseded copy, is left on ONE replica. The
+    /// gate cannot close this window — it applies on silence by design. When a mechanism closes it, this test reddens: delete
+    /// it and enable the invariant assertion in the test above for this scenario.
+    @Test
+    void residual_noEvidenceWindow_anAckedXCanStillBeLeftBelowItsQuorum_untilThatLimitIsClosed() throws Exception {
+        var cluster = new Cluster();
+
+        cluster.holding = true;
+        var x = cluster.clients.get(R).put(KEY, "X".getBytes(StandardCharsets.UTF_8));
+        Thread.sleep(5);
+        var w = cluster.clients.get(A).put(KEY, "W".getBytes(StandardCharsets.UTF_8));
+        cluster.holding = false;
+        Thread.sleep(600);
+
+        assertThat(cluster.entry(A)).as("arming: A applied W on silence").startsWith("W@");
+        assertThat(cluster.entry(R)).as("arming: R applied X on silence").startsWith("X@");
+
+        cluster.gates.get(R).advance(KEY, NEW_EPOCH[0], NEW_EPOCH[1], NEW_EPOCH[2]);
+        cluster.deliverHeldToRequestsFrom(R, A);
+        cluster.deliverHeldTo(N);
+        cluster.deliverHeldTo(R);
+        var xOutcome = x.await();
+        var wOutcome = w.await();
+        var xVersion = cluster.version(R);
+        var atOrAboveX = ALL.stream().filter(id -> cluster.version(id) >= xVersion).toList();
+
+        assertThat(wOutcome.isFailure()).as("arming: W sank").isTrue();
+        assertThat(xOutcome.isSuccess() ? atOrAboveX.size() : -1)
+            .as("TRIPWIRE: today an acked X is left on one replica; if this reddens the window is closed - see the javadoc: " + xOutcome + " " + atOrAboveX)
+            .isEqualTo(1);
+    }
+
     private static final class Gate implements OwnerEpochGate {
         private final AtomicReference<long[]> highWater;
 
@@ -132,6 +167,17 @@ class DHTDeposedWriterSameEpochTest {
             return nodes.get(id).storage().entries().await().or(List.of()).stream()
                         .filter(entry -> Arrays.equals(entry.key(), KEY))
                         .mapToLong(DHTMessage.KeyValue::version).findFirst().orElse(Long.MIN_VALUE);
+        }
+
+        /// Deliver to `target` only the held requests that `sender` made.
+        void deliverHeldToRequestsFrom(NodeId sender, NodeId target) {
+            var due = held.stream()
+                           .filter(entry -> entry.getKey().equals(target) && entry.getValue() instanceof DHTMessage.PutRequest request
+                                            && request.sender().equals(sender))
+                           .toList();
+
+            held.removeAll(due);
+            due.forEach(entry -> route(target, entry.getValue()));
         }
 
         void deliverHeldTo(NodeId target) {
