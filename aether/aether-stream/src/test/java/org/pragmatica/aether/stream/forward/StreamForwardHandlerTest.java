@@ -234,6 +234,67 @@ class StreamForwardHandlerTest {
     }
 
     // SPEC: §11.2 ReadForward handler tests
+    /// #1873: a consumer read carries the owner epoch it last read under; the serving owner checks the cursor against its
+    /// committed epoch starts and answers the events with the epoch they were served under, or a typed divergence.
+    @Nested
+    class EpochValidatedReadTests {
+        private final org.pragmatica.aether.slice.generation.Epoch e1 = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 1L, 1L);
+        private final org.pragmatica.aether.slice.generation.Epoch e2 = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 1L, 2L);
+
+        @org.junit.jupiter.api.BeforeEach
+        void ownerAtEpochTwoBeganAtOffsetThree() {
+            partitionManager.createStream(streamConfig(STREAM));
+            for (var i = 0; i < 5; i++) {
+                partitionManager.publishLocal(STREAM, PARTITION, ("r" + i).getBytes(), 100L + i);
+            }
+            partitionManager.ownershipRecords((_, _) -> Option.some(new org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue(GOVERNOR,
+                                                                                                                                                     e2,
+                                                                                                                                                     2L,
+                                                                                                                                                     org.pragmatica.hlc.HlcTimestamp.ZERO,
+                                                                                                                                                     List.of(GOVERNOR),
+                                                                                                                                                     3L,
+                                                                                                                                                     false,
+                                                                                                                                                     List.of(),
+                                                                                                                                                     List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(e1, 0L),
+                                                                                                                                                             new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(e2, 3L)))));
+        }
+
+        @Test
+        void aCursorPastTheNewEpochsStart_isAnsweredWithTheTypedDivergence() {
+            handler.onReadForward(StreamForwardMessage.ReadForward.validatedReadForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 5L, 10, e1));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isFalse();
+            assertThat(response.epochDiverged()).isTrue();
+            assertThat(response.divergenceResumeAt()).isEqualTo(3L);
+            assertThat(response.ownerEpoch()).isEqualTo(e2);
+            assertThat(response.events()).isEmpty();
+        }
+
+        @Test
+        void aCursorBelowTheNewEpochsStart_isServed_stampedWithTheOwnersEpoch() {
+            handler.onReadForward(StreamForwardMessage.ReadForward.validatedReadForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 2L, 10, e1));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.ownerEpoch()).isEqualTo(e2);
+            assertThat(response.events()).extracting(RawEventDto::offset).containsExactly(2L, 3L, 4L);
+        }
+
+        /// A catch-up read of the replication class is never validated: a replica backfilling needs the records of the
+        /// lineage it holds, whatever epoch the owner is at.
+        @Test
+        void aCatchUpRead_isNotValidated() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 5L, 10, false, true));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.epochDiverged()).isFalse();
+        }
+    }
+
     @Nested
     class ReadForwardTests {
         private static final long FROM_OFFSET = 0L;

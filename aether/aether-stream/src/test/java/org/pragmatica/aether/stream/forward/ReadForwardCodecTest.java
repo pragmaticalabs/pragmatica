@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import java.util.List;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -89,6 +90,31 @@ class ReadForwardCodecTest {
                                                                          List.of(),
                                                                          VisibleBounds.visibleBounds(0L, -1L))).bounds()).as("an empty ring (tail 0, nothing visible) is a real answer, not absence")
                   .isEqualTo(Option.some(VisibleBounds.visibleBounds(0L, -1L)));
+    }
+
+    /// #1873 added the owner epoch a consumer read carries; the codec is positional, so each pin is whole-record equality and
+    /// the epoch is a value that cannot be mistaken for the zero default.
+    @Test
+    void validatedReadForward_roundTrips_withTheConsumersEpoch() {
+        var original = ReadForward.validatedReadForward(SENDER, "corr-8", "orders", 3, 42L, 100, Epoch.epoch(7L, 8L, 9L));
+
+        assertThat(roundTrip(original)).isEqualTo(original);
+        assertThat(roundTrip(original).consumerEpoch()).isEqualTo(Epoch.epoch(7L, 8L, 9L));
+        assertThat(roundTrip(readForward(SENDER, "corr-8", "orders", 3, 42L, 100)).consumerEpoch()).as("a plain read claims no epoch").isEqualTo(Epoch.ZERO);
+    }
+
+    @Test
+    void readForwardResponse_roundTrips_theOwnerEpochAndTheTypedDivergence() {
+        var served = ReadForwardResponse.successResponse(SENDER, "corr-9", List.of()).withOwnerEpoch(Epoch.epoch(7L, 8L, 9L));
+        var diverged = ReadForwardResponse.epochDivergedResponse(SENDER, "corr-10", Epoch.epoch(7L, 8L, 10L), 3L, "replaced");
+
+        assertThat(roundTripResponse(served)).isEqualTo(served);
+        assertThat(roundTripResponse(served).ownerEpoch()).isEqualTo(Epoch.epoch(7L, 8L, 9L));
+        assertThat(roundTripResponse(served).epochDiverged()).isFalse();
+        assertThat(roundTripResponse(diverged)).isEqualTo(diverged);
+        assertThat(roundTripResponse(diverged).epochDiverged()).isTrue();
+        assertThat(roundTripResponse(diverged).divergenceResumeAt()).isEqualTo(3L);
+        assertThat(roundTripResponse(diverged).success()).isFalse();
     }
 
     private static ReadForwardResponse roundTripResponse(ReadForwardResponse original) {
