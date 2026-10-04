@@ -4,8 +4,10 @@
   four checksums of the metadata are now served, computed from the exact bytes `GET maven-metadata.xml`
   returns; uploaded metadata and metadata checksums are accepted but answered `200 {"status":"derived", ...}`
   stating they were not stored (the repository derives them from its version index).
-- **`maven-metadata.xml` no longer carries `<lastUpdated>`.** It is optional in the format, and a wall-clock
-  value made every render differ, so a checksum fetched after the metadata could never match it. The metadata
-  is now a pure function of the version set.
+- **`maven-metadata.xml` keeps `<lastUpdated>`, now derived instead of read from the clock.** It was the wall
+  clock, so two renders a second apart differed and a checksum fetched after the metadata could never match it.
+  It is now the newest deploy time among the listed versions, from the metadata the store persists when a
+  version's primary file is written (write-once), so the bytes and their checksums are stable until a version is
+  added. A failed read of that metadata fails the request rather than omitting the field.
 - Unchanged: `.sha256`/`.sha512`/`.asc` of artifact FILES are stored write-once files (#1778), and an artifact's
   `.md5`/`.sha1` upload remains a contentless 201 (the GET computes them).

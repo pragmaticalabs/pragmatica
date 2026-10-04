@@ -5,7 +5,11 @@
 package org.pragmatica.aether.resource.artifact;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -138,6 +142,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     private static final String DERIVED_METADATA_JSON = "{\"status\":\"derived\",\"detail\":\"maven-metadata.xml and its checksums are computed by the repository; the uploaded bytes were not stored\"}";
 
     private static final String METADATA_FILE = "maven-metadata.xml";
+    private static final DateTimeFormatter LAST_UPDATED_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     /// Names the missing capability, why it is missing, where it is tracked, and every
     /// listing-adjacent surface that DOES work today, so an operator who hits it learns both what to
@@ -242,11 +247,41 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     private Promise<Option<byte[]>> renderMetadata(ParsedPath.MetadataPath mp) {
         return store.versions(mp.groupId(),
                               mp.artifactId())
-                    .map(versions -> versions.isEmpty()
-                                     ? Option.<byte[]> none()
-                                     : Option.some(generateMavenMetadata(mp.groupId(),
-                                                                         mp.artifactId(),
-                                                                         versions).getBytes(StandardCharsets.UTF_8)));
+                    .flatMap(versions -> versions.isEmpty()
+                                         ? Promise.success(Option.<byte[]> none())
+                                         : lastDeployedAt(mp, versions).map(deployedAt -> Option.some(generateMavenMetadata(mp.groupId(),
+                                                                                                                            mp.artifactId(),
+                                                                                                                            versions,
+                                                                                                                            deployedAt).getBytes(StandardCharsets.UTF_8))));
+    }
+
+    /// The newest deploy time among the listed versions, read from the metadata the store persisted when each
+    /// version's primary file was written (write-once, #1778), so it only changes when a version is added. A
+    /// read that FAILS fails the render: omitting the field on a transient error would make the bytes, and so
+    /// their checksums, depend on the failure. A version with no stored metadata contributes nothing.
+    private Promise<Long> lastDeployedAt(ParsedPath.MetadataPath mp, List<Version> versions) {
+        var reads = versions.stream()
+                            .map(version -> store.metadata(new Artifact(mp.groupId(),
+                                                                        mp.artifactId(),
+                                                                        version))
+                                                 .map(stored -> stored.map(ArtifactStore.ArtifactMetadata::deployedAt)
+                                                                      .or(0L)))
+                            .toList();
+
+        return Promise.allOf(reads).flatMap(MavenProtocolHandlerImpl::newestOrFirstFailure);
+    }
+
+    private static Promise<Long> newestOrFirstFailure(List<Result<Long>> results) {
+        return results.stream()
+                      .flatMap(result -> result.fold(Stream::of,
+                                                     _ -> Stream.<Cause> empty()))
+                      .findFirst()
+                      .<Promise<Long>> map(Cause::promise)
+                      .orElseGet(() -> Promise.success(results.stream()
+                                                              .mapToLong(result -> result.fold(_ -> 0L,
+                                                                                               deployedAt -> deployedAt))
+                                                              .max()
+                                                              .orElse(0L)));
     }
 
     private Promise<MavenResponse> handleGetChecksum(ParsedPath.ChecksumPath cp) {
@@ -568,11 +603,14 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
     /// `<latest>` is the highest version by [VersionOrder], `<release>` the highest non-SNAPSHOT
     /// one (falling back to `<latest>` when every version is a snapshot); `<versions>` lists them
-    /// ascending. There is deliberately no `<lastUpdated>`: it is optional in the format, and a wall-clock
-    /// value made every render differ, so a checksum fetched after the metadata (#1833) could never match it.
-    /// The output is a pure function of the version set. The versions list is stored in deploy order, so "last deployed" used to be
+    /// ascending. `<lastUpdated>` is the newest deploy time of the listed versions, from stored state and not
+    /// the wall clock: a clock value made every render differ, so a checksum fetched after the metadata (#1833)
+    /// could never match it. The output is a pure function of the stored versions. The versions list is stored in deploy order, so "last deployed" used to be
     /// reported as latest (#281).
-    private String generateMavenMetadata(GroupId groupId, ArtifactId artifactId, List<Version> unordered) {
+    private String generateMavenMetadata(GroupId groupId,
+                                         ArtifactId artifactId,
+                                         List<Version> unordered,
+                                         long lastDeployedAtMillis) {
         var versions = unordered.stream().sorted(VersionOrder.INSTANCE).toList();
         var latest = versions.getLast();
         var release = versions.stream().filter(v -> !VersionOrder.isSnapshot(v)).reduce((a, b) -> b).orElse(latest);
@@ -591,6 +629,12 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         }
 
         sb.append("    </versions>\n");
+        if (lastDeployedAtMillis > 0) {
+            sb.append("    <lastUpdated>")
+              .append(LAST_UPDATED_FORMAT.format(Instant.ofEpochMilli(lastDeployedAtMillis).atOffset(ZoneOffset.UTC)))
+              .append("</lastUpdated>\n");
+        }
+
         sb.append("  </versioning>\n");
         sb.append("</metadata>\n");
 
