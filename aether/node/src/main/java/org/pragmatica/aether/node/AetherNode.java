@@ -5649,6 +5649,8 @@ public interface AetherNode extends ManageableNode {
                                                                                               .swim()
                                                                                               .suspectTimeout()));
 
+        // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does
+        streamPartitionBackfill.blockAlarm(block -> raiseOwnerPromotionBlock(operatorWarningSink, block));
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
         streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)

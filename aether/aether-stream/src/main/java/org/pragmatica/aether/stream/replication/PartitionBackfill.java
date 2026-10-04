@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Cause;
@@ -143,7 +144,9 @@ public final class PartitionBackfill {
 
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
-    private volatile org.pragmatica.aether.stream.OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+    private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+    /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
+    private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
 
     /// Per-partition `confirmedOffset` at which a CAUGHT_UP non-owner replica was last re-verified against
     /// the HRW owner (#333 write-idle residual). It quiesces {@link #redriveCandidates}: a stale CAUGHT_UP
@@ -211,6 +214,7 @@ public final class PartitionBackfill {
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
+        this.reportedOversized = new ConcurrentHashMap<>();
         this.current = () -> true;
     }
 
@@ -236,6 +240,8 @@ public final class PartitionBackfill {
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
         this.ownerResolver = shared.ownerResolver;
+        this.blockAlarm = shared.blockAlarm;
+        this.reportedOversized = shared.reportedOversized;
         this.current = current;
     }
 
@@ -1296,7 +1302,7 @@ public final class PartitionBackfill {
     /// Where a promoted owner's catch-up refused for a peer's oversized event is reported (#1937, like the activation gate's
     /// own alarm). Late-bound, because the operator-warning sink is built after the backfill.
     @Contract
-    public void blockAlarm(org.pragmatica.aether.stream.OwnerActivation.BlockAlarm alarm) {
+    public void blockAlarm(OwnerActivation.BlockAlarm alarm) {
         this.blockAlarm = alarm;
     }
 
@@ -1506,20 +1512,30 @@ public final class PartitionBackfill {
                                             localWatermark);
         }
 
-        var oversized = results.stream()
-                               .flatMap(result -> failureOf(result).filter(OwnerPeerReads.EventExceedsReadCap.class::isInstance)
-                                                           .stream())
-                               .findFirst();
+        var oversizedAt = oversizedIndex(results);
 
-        if (oversized.isPresent()) {
-            return oversizedPeer(streamName, partition, oversized.get());
+        if (oversizedAt >= 0) {
+            return oversizedPeer(streamName, partition, peers.get(oversizedAt), failureOf(results.get(oversizedAt)).or((Cause) null));
         }
+
+        reportedOversized.remove(partitionKey(streamName, partition));
 
         if (results.stream().anyMatch(Result::isFailure)) {
             return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
         }
 
         return ownerSelfPromote(streamName, partition);
+    }
+
+    /// The index of the first peer that answered with a page cut before its first event, or -1 (index-aligned with `peers`).
+    private static int oversizedIndex(List<Result<Long>> results) {
+        for (var i = 0; i < results.size(); i++) {
+            if (failureOf(results.get(i)).filter(OwnerPeerReads.EventExceedsReadCap.class::isInstance).isPresent()) {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private static Option<Cause> failureOf(Result<Long> result) {
@@ -1529,11 +1545,24 @@ public final class PartitionBackfill {
     /// #1431: a peer ANSWERED with a page cut before its first event, so its tail is unknown but it is not
     /// unreachable: the bounded [#escapeOwnerCatchup] (which would promote at the LOCAL watermark below it) does not
     /// apply. Self stays behind and the redrive retries until an operator raises that peer's read cap.
-    private Promise<Long> oversizedPeer(String streamName, int partition, Cause cause) {
-        log.warn("Backfill {}[{}]: promoted-owner catch-up refused — {}; staying non-authoritative, never escaping at the local watermark",
-                 streamName,
-                 partition,
-                 cause.message());
+    ///
+    /// #1937: reported like the activation gate's own refusal — a [OwnerActivation.ActivationBlock.PeerEventExceedsReadCap]
+    /// raised to the block alarm ONCE per transition (a redrive of the same condition is silent; the condition ending and
+    /// coming back raises again), not a WARN on every redrive.
+    private Promise<Long> oversizedPeer(String streamName, int partition, NodeId peer, Cause cause) {
+        var offset = cause instanceof OwnerPeerReads.EventExceedsReadCap(var at)
+                     ? at
+                     : -1L;
+        var block = new OwnerActivation.ActivationBlock.PeerEventExceedsReadCap(streamName, partition, peer, offset);
+        var previous = reportedOversized.put(partitionKey(streamName, partition), block);
+
+        if (!block.equals(previous)) {
+            log.warn("Backfill {}[{}]: promoted-owner catch-up refused — {}; staying non-authoritative, never escaping at the local watermark",
+                     streamName,
+                     partition,
+                     block.message());
+            blockAlarm.raise(block);
+        }
 
         return cause.promise();
     }

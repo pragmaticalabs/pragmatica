@@ -308,6 +308,9 @@ public final class OwnerActivation {
     private final Set<PartitionKey> redriving = ConcurrentHashMap.newKeySet();
     /// The block currently reported for each partition; the alarm fires when it first appears or changes.
     private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
+    /// The "members did not answer" block, in its OWN slot (#1937): it is a condition independent of every other block, so a
+    /// peer refused for an oversized event ([#blocks]) neither masks it nor is re-raised by it.
+    private final Map<PartitionKey, ActivationBlock> unreachableBlocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
 
@@ -461,7 +464,9 @@ public final class OwnerActivation {
 
     /// The block reported for `(stream, partition)`, if its promotion currently waits for an operator.
     public Option<ActivationBlock> blockOf(String stream, int partition) {
-        return Option.option(blocks.get(PartitionKey.partitionKey(stream, partition)));
+        var key = PartitionKey.partitionKey(stream, partition);
+
+        return Option.option(blocks.get(key)).orElse(() -> Option.option(unreachableBlocks.get(key)));
     }
 
     private Promise<Unit> runGate(String stream, int partition, PartitionKey key) {
@@ -521,6 +526,7 @@ public final class OwnerActivation {
 
     private Unit clearBlock(PartitionKey key) {
         blocks.remove(key);
+        unreachableBlocks.remove(key);
         unreachableSince.remove(key);
 
         return Unit.unit();
@@ -558,7 +564,12 @@ public final class OwnerActivation {
         return oversizedAt(peers, results).fold(() -> answered.size() < peers.size()
                                                       ? holdersUnreachable(stream, partition, peers, answered)
                                                       : catchUpFromHighest(stream, partition, answered),
-                                                oversized -> refuseOversized(stream, partition, oversized));
+                                                oversized -> refuseOversizedKeepingUnreachable(stream,
+                                                                                               partition,
+                                                                                               peers,
+                                                                                               results,
+                                                                                               answered,
+                                                                                               oversized));
     }
 
     private record OversizedPeer(NodeId peer, long offset) {}
@@ -581,6 +592,36 @@ public final class OwnerActivation {
         return Option.none();
     }
 
+    /// #1937: a peer refused for an oversized event is one condition; a DIFFERENT peer that did not answer is another, with its
+    /// own timer and its own block. The refusal must not return before the unreachable condition is evaluated, or the second
+    /// goes unreported for as long as the first stands. Every peer that neither answered nor was the oversized one is
+    /// unreachable.
+    private Promise<Unit> refuseOversizedKeepingUnreachable(String stream,
+                                                            int partition,
+                                                            List<NodeId> peers,
+                                                            List<Result<PeerWatermark>> results,
+                                                            List<PeerWatermark> answered,
+                                                            OversizedPeer oversized) {
+        var key = PartitionKey.partitionKey(stream, partition);
+        var silent = new java.util.ArrayList<NodeId>();
+
+        for (var i = 0; i < peers.size(); i++) {
+            var failed = results.get(i).fold(cause -> !(cause instanceof OwnerPeerReads.EventExceedsReadCap), _ -> false);
+
+            if (failed) {
+                silent.add(peers.get(i));
+            }
+        }
+
+        if (silent.isEmpty()) {
+            clearUnreachable(key);
+        } else {
+            trackUnreachable(key, stream, partition, silent, answered);
+        }
+
+        return refuseOversized(stream, partition, oversized);
+    }
+
     /// #1431: its own refusal, reported at once (once per distinct block) — never counted as an unreachable member.
     private Promise<Unit> refuseOversized(String stream, int partition, OversizedPeer oversized) {
         var block = new ActivationBlock.PeerEventExceedsReadCap(stream, partition, oversized.peer(), oversized.offset());
@@ -596,23 +637,36 @@ public final class OwnerActivation {
                                              int partition,
                                              List<NodeId> peers,
                                              List<PeerWatermark> answered) {
-        var key = PartitionKey.partitionKey(stream, partition);
+        var responders = answered.stream().map(PeerWatermark::node).toList();
+
+        trackUnreachable(PartitionKey.partitionKey(stream, partition),
+                         stream,
+                         partition,
+                         peers.stream().filter(peer -> !responders.contains(peer)).toList(),
+                         answered);
+
+        return ActivationError.HOLDER_UNREACHABLE.promise();
+    }
+
+    /// The unreachable condition's timer and block, kept apart from every other block (#1937): once the members in `silent`
+    /// have failed continuously for longer than `unreachableAlarmAfter`, the block is reported — once per distinct block.
+    private void trackUnreachable(PartitionKey key,
+                                  String stream,
+                                  int partition,
+                                  List<NodeId> silent,
+                                  List<PeerWatermark> answered) {
         var since = unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
 
         if (System.nanoTime() - since > unreachableAlarmAfter.nanos()) {
-            var responders = answered.stream().map(PeerWatermark::node).toList();
+            var block = new ActivationBlock.HoldersUnreachable(stream,
+                                                               partition,
+                                                               silent,
+                                                               answered.stream().map(PeerWatermark::node).toList(),
+                                                               unreachableAlarmAfter);
+            var previous = Option.option(unreachableBlocks.put(key, block));
 
-            report(key,
-                   new ActivationBlock.HoldersUnreachable(stream,
-                                                          partition,
-                                                          peers.stream()
-                                                               .filter(peer -> !responders.contains(peer))
-                                                               .toList(),
-                                                          responders,
-                                                          unreachableAlarmAfter));
+            previous.filter(block::equals).fold(() -> alarm.raise(block), _ -> Unit.unit());
         }
-
-        return ActivationError.HOLDER_UNREACHABLE.promise();
     }
 
     private Promise<Unit> catchUpFromHighest(String stream, int partition, List<PeerWatermark> answered) {
@@ -634,9 +688,7 @@ public final class OwnerActivation {
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
     private Unit clearUnreachable(PartitionKey key) {
         unreachableSince.remove(key);
-        Option.option(blocks.get(key))
-              .filter(ActivationBlock.HoldersUnreachable.class::isInstance)
-              .onPresent(block -> blocks.remove(key, block));
+        unreachableBlocks.remove(key);
 
         return Unit.unit();
     }

@@ -71,6 +71,13 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).contains("block->raiseOwnerPromotionBlock(operatorWarningSink,block),");
     }
 
+    /// #1937: the promoted owner's BACKFILL reports a peer's oversized event through the same sink, once per transition. Red
+    /// without the wiring: the backfill's alarm stays the no-op default and the refusal is only a log line.
+    @Test
+    void assembly_givesTheSinkToTheBackfillBlockAlarm() {
+        assertThat(assemblyCode()).contains("streamPartitionBackfill.blockAlarm(block->raiseOwnerPromotionBlock(operatorWarningSink,block));");
+    }
+
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
     /// because a pin that scans nothing always passes.
     private static String assemblyCode() {
