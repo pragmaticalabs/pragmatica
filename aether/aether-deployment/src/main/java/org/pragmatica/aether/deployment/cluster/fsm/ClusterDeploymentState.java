@@ -3292,6 +3292,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                     int attempt) {
             var blueprintKey = AppBlueprintKey.appBlueprintKey(inflight.id());
             var rolledBack = ctx.kvStore().get(blueprintKey);
+            // The fence below expects the values read HERE, so it protects only against a publish that lands
+            // after this read. The store can already be ahead of this FSM: a newer publish of the same id may
+            // have committed while its notification is still queued behind the failure that triggered this
+            // rollback. Fencing on that newer value would remove the newer attempt's blueprint, so a rollback
+            // proceeds only while the committed blueprint is still the attempt it rolls back.
+            if (!isCommittedAttempt(rolledBack, inflight.attemptId())) {
+                log.info("ALL_OR_NOTHING: rollback of blueprint {} was superseded before it was built — the committed"
+                        + " blueprint is no longer the attempt it rolls back, so the newer apply is left in place",
+                         inflight.id().asString());
+                onAbandoned.run();
+
+                return;
+            }
+
             var batch = commands.get();
 
             committedLeader().fold(() -> submitUnfencedRollback(inflight, batch, onLanded, onAbandoned),
@@ -3393,6 +3407,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       cause.message());
             onAbandoned.run();
             handleBatchFailure(cause, submitted);
+        }
+
+        private static boolean isCommittedAttempt(Option<AetherValue> committed, String attemptId) {
+            return committed.filter(AppBlueprintValue.class::isInstance)
+                            .map(AppBlueprintValue.class::cast)
+                            .filter(value -> value.attemptId()
+                                                  .equals(attemptId))
+                            .isPresent();
         }
 
         /// The rollback's own terminal — FAILED or ROLLED_BACK for the rolled-back attempt — is

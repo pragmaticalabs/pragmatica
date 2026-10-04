@@ -275,6 +275,89 @@ class AttemptBoundOutcomeTest {
         assertThat(outcomeAttempt(leaderStore, expanded.id())).isEqualTo(SECOND_ATTEMPT);
     }
 
+    /// SIBLING 1, second window (v1896): the store is AHEAD of the FSM. The second publish has committed but
+    /// its AppBlueprintPut notification is not yet processed, so the first attempt's rollback is BUILT after the
+    /// second blueprint is already in the store. Fencing on the value read then would delete the second
+    /// attempt's blueprint; the rollback must be built only while the committed blueprint is its own attempt.
+    @Test
+    void storeAheadOfTheFsm_rollbackOfTheFirstAttempt_keepsTheSecondAttemptsBlueprint() {
+        var first = blueprint(3);
+        var second = blueprint(2);
+
+        applyBlueprint(leaderHarness, leaderStore, first, FIRST_ATTEMPT, 1L);
+        seed(leaderStore,
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(second.id()), AppBlueprintValue.appBlueprintValue(second, false, SECOND_ATTEMPT)),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(second.id()), DeploymentOutcomeValue.inProgress(2L, 2L, SECOND_ATTEMPT)));
+        exhaustRetryBudgetOn(leaderHarness, SELF, SLICE);
+
+        assertThat(committedBlueprint(leaderStore, second.id()))
+                .as("the first attempt's rollback must not delete the blueprint the second publish committed")
+                .isEqualTo(Option.some(second));
+        assertThat(outcomeAttempt(leaderStore, second.id())).as("and no terminal for the first attempt overwrote the second's IN_PROGRESS").isEqualTo(SECOND_ATTEMPT);
+    }
+
+    /// The retry-after-a-NON-superseding-refusal branch (v1896), driven realistically: the apply resolves only
+    /// AFTER the batch was applied (as consensus does), and the first rollback transaction is refused because
+    /// a value it fences on — the outcome record — moved, while the blueprint did not.
+    @Test
+    void rollbackRefusedByAMovedOutcome_isRebuiltAndLands() {
+        var store = storeWithLeader();
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        node.beforeFirstTransaction(() -> seed(store,
+                                               new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                   DeploymentOutcomeValue.inProgress(5L, 2L, FIRST_ATTEMPT))));
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(node.transactions()).as("the refused transaction was rebuilt and resubmitted exactly once").isEqualTo(2);
+        assertThat(committedBlueprint(store, expanded.id())).as("the rebuilt rollback landed").isEqualTo(Option.none());
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.FAILED.name());
+        assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
+    }
+
+    private static final class InterferingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private final NodeId self;
+        private final KVStore<AetherKey, AetherValue> kvStore;
+        private Runnable interference = () -> {};
+        private int transactions;
+
+        private InterferingClusterNode(NodeId self, KVStore<AetherKey, AetherValue> kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
+
+        void beforeFirstTransaction(Runnable interference) {
+            this.interference = interference;
+        }
+
+        int transactions() {
+            return transactions;
+        }
+
+        @Override public NodeId self() {return self;}
+
+        @Override public TopologyManager topologyManager() {return stubTopologyManager(self);}
+
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)) {
+                transactions++;
+                var once = interference;
+                interference = () -> {};
+                once.run();
+            }
+            kvStore.process(kvStore.createBatch(batch));
+
+            return Promise.success(Collections.emptyList());
+        }
+    }
+
     /// The store exactly as `BlueprintService.confirmOutcomeStart` exhaustion leaves it: the second
     /// attempt's blueprint committed, and every apply-start write fenced out by the FIRST attempt's
     /// FAILED, which still holds the record.
