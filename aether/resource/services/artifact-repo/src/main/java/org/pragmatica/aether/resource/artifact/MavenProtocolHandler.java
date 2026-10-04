@@ -115,6 +115,10 @@ public interface MavenProtocolHandler {
 
         record MetadataPath(GroupId groupId, ArtifactId artifactId) implements ParsedPath {}
 
+        /// `<group>/<artifact>/<version>/maven-metadata.xml`: what Maven writes for a SNAPSHOT version. The built-in
+        /// store holds no SNAPSHOTs, so this is recognised in order to be refused accurately, never served (#1919).
+        record VersionMetadataPath(String path) implements ParsedPath {}
+
         record ChecksumPath(ParsedPath inner, String algorithm) implements ParsedPath {}
     }
 
@@ -187,6 +191,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         return switch (parsed) {
             case ParsedPath.ArtifactPath ap -> handleGetArtifact(ap);
             case ParsedPath.MetadataPath mp -> handleGetMetadata(mp);
+            case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.notFound(versionMetadataRefusal(vp)));
             case ParsedPath.ChecksumPath cp -> handleGetChecksum(cp);
         };
     }
@@ -248,6 +253,10 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     }
 
     private Promise<MavenResponse> handleGetChecksum(ParsedPath.ChecksumPath cp) {
+        if (cp.inner() instanceof ParsedPath.VersionMetadataPath vp) {
+            return Promise.success(MavenResponse.notFound(versionMetadataRefusal(vp)));
+        }
+
         if (cp.inner() instanceof ParsedPath.ArtifactPath ap) {
             return store.resolve(ap.file())
                         .map(content -> {
@@ -291,6 +300,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             // the content DISCARDED, so a subsequent GET 404'd — silent data loss (the GET path
             // resolves any extension). Sidecars stay contentless 201s (separate ParsedPath cases).
             case ParsedPath.ArtifactPath ap -> handlePutArtifact(ap, content);
+            case ParsedPath.ChecksumPath cp when cp.inner() instanceof ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.badRequest(versionMetadataRefusal(vp)));
+            case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.badRequest(versionMetadataRefusal(vp)));
             case ParsedPath.ChecksumPath _ -> Promise.success(MavenResponse.created());
             case ParsedPath.MetadataPath _ -> Promise.success(MavenResponse.created());
         };
@@ -460,10 +471,34 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         if (parts.length < 3) return Option.none();
 
         if (parts[parts.length - 1].equals("maven-metadata.xml")) {
-            return parseMetadataPath(parts);
+            return parseMetadataPath(parts).orElse(() -> parseVersionMetadataPath(path, parts));
         }
 
         return parseArtifactPath(parts);
+    }
+
+    /// Why a version-level `maven-metadata.xml` is not served or accepted (#1919): Maven writes it only for SNAPSHOT
+    /// versions, which the built-in store does not hold (#1778), so there is nothing to serve and nothing to accept.
+    private static String versionMetadataRefusal(ParsedPath.VersionMetadataPath refused) {
+        return "Version-level maven-metadata.xml is not supported: it exists only for SNAPSHOT versions, which the "
+             + "built-in artifact store does not accept (" + refused.path()
+             + "); use the artifact-level "
+             + "maven-metadata.xml, or publish a release version";
+    }
+
+    /// `<group>/<artifact>/<version>/maven-metadata.xml`: tried only when the artifact-level reading fails, i.e. the
+    /// segment before the file is a version, not an artifact id (a version's dots are not valid in one).
+    private Option<ParsedPath> parseVersionMetadataPath(String path, String[] parts) {
+        if (parts.length < 4) return Option.none();
+
+        var groupPath = String.join(".",
+                                    List.of(parts).subList(0, parts.length - 3));
+
+        return Result.all(GroupId.groupId(groupPath),
+                          ArtifactId.artifactId(parts[parts.length - 3]),
+                          Version.version(parts[parts.length - 2]))
+                     .map((_, _, _) -> Option.<ParsedPath> some(new ParsedPath.VersionMetadataPath(path)))
+                     .or(Option.none());
     }
 
     private Option<ParsedPath> parseMetadataPath(String[] parts) {
