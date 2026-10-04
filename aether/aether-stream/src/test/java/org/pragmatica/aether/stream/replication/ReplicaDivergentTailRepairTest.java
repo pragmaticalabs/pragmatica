@@ -57,6 +57,9 @@ class ReplicaDivergentTailRepairTest {
     @TempDir
     Path walDir;
 
+    /// The committed owner's epoch: later than every epoch the replica's records were written under unless a test says otherwise.
+    private Epoch committedEpoch = Epoch.epoch(1L, 9L, 9L);
+
     private ReplicaRegistry registry;
     private StreamPartitionManager manager;
     private final List<ReplicationMessage> sentToOwner = new CopyOnWriteArrayList<>();
@@ -271,7 +274,7 @@ class ReplicaDivergentTailRepairTest {
                                                             .map(StreamPartitionManager.PartitionInfo::headOffset)
                                                             .or(-1L);
         ReplicaWatermarkProbe probe = (_, _, _) -> Promise.success(ownerHead(owner));
-        CommittedStreamOwnerSource committed = (_, _) -> Option.some(new CommittedOwner(OWNER, Epoch.ZERO));
+        CommittedStreamOwnerSource committed = (_, _) -> Option.some(new CommittedOwner(OWNER, committedEpoch));
         ReplicationTransport toOwner = (_, message) -> sentToOwner.add(message);
         var orchestrator = partitionBackfill(registry,
                                              manager.alignedRecovery(),

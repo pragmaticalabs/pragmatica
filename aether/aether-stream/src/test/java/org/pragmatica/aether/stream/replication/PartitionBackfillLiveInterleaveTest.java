@@ -93,10 +93,11 @@ class PartitionBackfillLiveInterleaveTest {
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
         assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(REPLICA_PREFIX);
 
-        // 1. Backfill starts: fromOffset = local head + 1 = 13; the owner's catch-up response is in flight.
+        // 1. Backfill starts: it requests the overlap window below local head + 1 = 13 (here all of 0..12), compared with the
+        // owner's records; the owner's catch-up response is in flight.
         var run = backfill.backfill(STREAM, PARTITION);
         assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset)
-                                   .containsExactly((long) REPLICA_PREFIX);
+                                   .containsExactly(0L);
 
         // 2. The owner's live batch for offset 13 arrives first and is applied at 13.
         handler.onReplicateEvents(liveBatch(13, 1));
@@ -311,7 +312,7 @@ class PartitionBackfillLiveInterleaveTest {
 
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX + 1));
         var run = backfill.backfill(STREAM, PARTITION);
-        assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset).containsExactly(14L);
+        assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset).containsExactly(0L);
 
         handler.onReplicateEvents(replicateEvents(owner, STREAM, PARTITION, 13, List.of("forged-13".getBytes(UTF_8)), List.of(1013L), Epoch.ZERO));
         catchupInFlight.resolve(Result.success(response(14, List.of(), List.of())));
@@ -412,7 +413,7 @@ class PartitionBackfillLiveInterleaveTest {
             }
 
             @Override
-            public Result<Option<Long>> repair(String stream, int partition) {
+            public Result<Option<Long>> repair(String stream, int partition, RepairAuthority authority) {
                 return Causes.cause("repair refused").result();
             }
         });

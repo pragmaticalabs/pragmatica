@@ -58,7 +58,7 @@ class StreamPartitionManagerDivergentTailTest {
     void repairDivergence_cutsTheWalAndTheRing_liftsTheQuarantine_andAcceptsTheOwnersRecords() {
         quarantineAt(5);
 
-        var cut = manager.repairDivergence(STREAM, PARTITION).unwrap().unwrap();
+        var cut = manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap().unwrap();
 
         assertThat(cut.keptThrough()).isEqualTo(4L);
         assertThat(cut.removed()).isEqualTo(5L);
@@ -75,7 +75,7 @@ class StreamPartitionManagerDivergentTailTest {
     @Test
     void repairDivergence_forgetsTheBarrierWriteAboveTheCut_soNothingBecomesVisibleBeforeItIsDurable() {
         quarantineAt(5);
-        manager.repairDivergence(STREAM, PARTITION).unwrap();
+        manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap();
 
         manager.syncReplicated(STREAM, PARTITION).await();
         manager.appendRecovered(STREAM, PARTITION, 5, "owner-5".getBytes(UTF_8), 1005L, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
@@ -88,9 +88,46 @@ class StreamPartitionManagerDivergentTailTest {
         assertThat(manager.readLocal(STREAM, PARTITION, 5, 10).unwrap()).hasSize(1);
     }
 
+    /// B2 (v1890): the authority is evaluated INSIDE the cut. When it no longer holds (the committed owner changed, or its
+    /// epoch is not later than the records to be removed) nothing is removed, the quarantine stands, and the cause is typed.
+    @Test
+    void repairDivergence_whenTheAuthorityNoLongerHolds_removesNothing_andKeepsTheQuarantine() {
+        quarantineAt(5);
+
+        var refused = manager.repairDivergence(STREAM, PARTITION, _ -> false);
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RepairNotAuthorized.class));
+        assertThat(texts()).as("nothing removed").hasSize(10);
+        assertThat(manager.quarantinedAt(STREAM, PARTITION).isPresent()).as("quarantine stands").isTrue();
+        assertThat(manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap().isPresent()).as("control: with authority the same cut proceeds").isTrue();
+    }
+
+    /// B2 (v1890): never below the sealed floor. Offsets at or below the last sealed offset are durable in segments, so a
+    /// divergence found there is refused: the copy keeps its records and the quarantine.
+    @Test
+    void repairDivergence_belowTheSealedFloor_isRefused() {
+        var floor = new java.util.concurrent.atomic.AtomicLong(-1L);
+        var sealed = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir.resolve("sealed")), (_, _) -> floor.get());
+
+        sealed.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+        for (var i = 0; i < 10; i++) {
+            sealed.appendRecovered(STREAM, PARTITION, i, ("replica-" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
+        }
+        sealed.syncReplicated(STREAM, PARTITION).await();
+        floor.set(7L);
+        sealed.appendRecovered(STREAM, PARTITION, 5, "different".getBytes(UTF_8), 1005L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+
+        var below = sealed.repairDivergence(STREAM, PARTITION, _ -> true);
+
+        assertThat(below.isFailure()).as("divergence at 5 is below the sealed floor 7").isTrue();
+        assertThat(sealed.readAppended(STREAM, PARTITION, 0, 20).unwrap()).hasSize(10);
+        sealed.close();
+    }
+
     @Test
     void repairDivergence_withNothingQuarantined_doesNothing() {
-        assertThat(manager.repairDivergence(STREAM, PARTITION).unwrap().isEmpty()).isTrue();
+        assertThat(manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap().isEmpty()).isTrue();
         assertThat(texts()).hasSize(10);
     }
 
@@ -99,7 +136,7 @@ class StreamPartitionManagerDivergentTailTest {
     @Test
     void repairDivergence_atConfirmationFactor2_raisesNoOperatorWarning() {
         quarantineAt(5);
-        manager.repairDivergence(STREAM, PARTITION).unwrap();
+        manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap();
         quietPeriod();
 
         assertThat(warnings).isEmpty();
@@ -120,7 +157,7 @@ class StreamPartitionManagerDivergentTailTest {
         one.syncReplicated("single", PARTITION).await();
         one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
 
-        one.repairDivergence("single", PARTITION).unwrap();
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
         awaitWarnings(1);
 
         assertThat(warnings).singleElement().satisfies(warning -> {

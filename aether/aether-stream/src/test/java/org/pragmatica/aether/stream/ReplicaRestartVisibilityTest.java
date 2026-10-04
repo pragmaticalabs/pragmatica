@@ -117,7 +117,7 @@ class ReplicaRestartVisibilityTest {
         manager.appendRecovered(STREAM, PARTITION, 3L, "owner-3".getBytes(UTF_8), 3L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
         assertThat(manager.quarantinedAt(STREAM, PARTITION).or(-1L)).as("premise: the different record at 3 quarantines").isEqualTo(3L);
 
-        manager.repairDivergence(STREAM, PARTITION).unwrap();
+        manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap();
         manager.appendRecovered(STREAM, PARTITION, 3L, "owner-3".getBytes(UTF_8), 3L, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
         manager.syncReplicated(STREAM, PARTITION).await();
 

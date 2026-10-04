@@ -660,24 +660,44 @@ public final class PartitionBackfill {
     private Promise<Long> refuseQuarantined(String streamName, int partition) {
         var divergedAt = quarantine.quarantinedAt(streamName, partition).or(0L);
 
+        quarantine.flagUnrepaired(streamName, partition);
         holdSyncingBelow(streamName, partition, divergedAt);
 
         return quarantineRefusal(streamName, partition, divergedAt);
     }
 
-    /// #1730 phase 2 (KIP-101): a quarantined copy is repairable when its sender is the committed owner and this node is
-    /// not: the owner's records for the diverging offsets win, and what this copy holds above the last shared offset was
-    /// never acknowledged (an acknowledgement needs every in-sync member, and the committed owner is one). A copy that
-    /// is itself the owner, or has no owner to compare with, stays quarantined.
+    /// #1730 phase 2 (KIP-101): a quarantined copy is repairable only against the COMMITTED owner, of a LATER epoch than
+    /// the records about to be cut, and only when this node is not that owner and the committed owner is the node this copy
+    /// backfills from: the owner's records for the diverging offsets win, and what this copy holds above the last shared
+    /// offset was never acknowledged (an acknowledgement needs every in-sync member, and the committed owner is one). A sender
+    /// of an older epoch (a deposed owner seen through a stale view), this node as the owner, or no committed owner at all
+    /// leaves the copy quarantined. The manager evaluates the same rule again inside the cut ([#repairAuthority]).
     private boolean repairable(String streamName, int partition) {
-        return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
-                       .isPresent();
+        return committedOwnerIsSender(streamName, partition);
+    }
+
+    private boolean committedOwnerIsSender(String streamName, int partition) {
+        return committedOwnerSource.committedOwner(streamName, partition)
+                                   .filter(committed -> !committed.owner().equals(self))
+                                   .flatMap(committed -> hrwOwner(streamName, partition).filter(committed.owner()::equals))
+                                   .isPresent();
+    }
+
+    /// The rule the manager re-checks under the cut: the committed owner is the sender and not this node, and its epoch is
+    /// strictly after the epoch of the records to be removed (unknown for a copy that keeps no history: the committed owner's
+    /// lineage is the authority there).
+    private QuarantineView.RepairAuthority repairAuthority(String streamName, int partition) {
+        return divergentEpoch -> committedOwnerIsSender(streamName, partition)
+                                 && committedOwnerSource.committedOwner(streamName, partition)
+                                                        .filter(committed -> divergentEpoch.map(epoch -> committed.ownerEpoch().isStrictlyAfter(epoch))
+                                                                                           .or(true))
+                                                        .isPresent();
     }
 
     /// Cut the divergent tail, hold self SYNCING at the last shared offset, and run the backfill again from there. A
     /// refused cut leaves the quarantine as it was.
     private Promise<Long> repairThenRun(String streamName, int partition) {
-        return quarantine.repair(streamName, partition)
+        return quarantine.repair(streamName, partition, repairAuthority(streamName, partition))
                          .fold(cause -> repairRefused(streamName, partition, cause),
                                kept -> kept.fold(() -> runBackfill(streamName, partition, false),
                                                  keptThrough -> resumeAfterRepair(streamName, partition, keptThrough)));

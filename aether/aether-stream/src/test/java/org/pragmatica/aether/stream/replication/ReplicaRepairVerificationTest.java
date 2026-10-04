@@ -42,7 +42,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// Before the repair, a replica that had completed backfill ABOVE the owner's head was marked CAUGHT_UP at its own
 /// higher offset without a single comparison, and the owner then credited that offset as a confirmation for records
 /// the replica never received ([DefaultReplicationManager#peersAtOrAbove] reads the registry).
-class V1890ProbeTest {
+class ReplicaRepairVerificationTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
@@ -56,6 +56,10 @@ class V1890ProbeTest {
 
     @TempDir
     Path walDir;
+
+    /// The committed owner's epoch: later than every epoch the replica's records were written under unless a test says otherwise.
+    private Epoch committedEpoch = Epoch.epoch(1L, 9L, 9L);
+    private NodeId committedOwnerNode = OWNER;
 
     private ReplicaRegistry registry;
     private StreamPartitionManager manager;
@@ -75,11 +79,11 @@ class V1890ProbeTest {
 
     private final List<String> flagRaises = new CopyOnWriteArrayList<>();
 
-    /// PROBE A (v1890): a no-WAL replica BELOW the owner whose middle diverges (c0..c4 shared, replica-5..9 its own,
+    /// Below the owner, divergent middle (v1890 A): a no-WAL replica BELOW the owner whose middle diverges (c0..c4 shared, replica-5..9 its own,
     /// the owner holds owner-5..owner-20) pulls from its head + 1 and is never compared over 5..9. Expected by the
     /// ruling (compare before CAUGHT_UP): it must not end CAUGHT_UP holding replica-5..9 under the owner's head.
     @Test
-    void probeA_noWalReplicaBelowOwner_divergentMiddle_mustNotBeCaughtUpWithItsOwnRecords() {
+    void belowOwner_noWalReplicaBelowOwner_divergentMiddle_mustNotBeCaughtUpWithItsOwnRecords() {
         seedReplica(10, 5);
 
         backfill(owner(21, 5, new AtomicLong()));
@@ -90,9 +94,9 @@ class V1890ProbeTest {
         assertThat(caughtUpOverDivergence).as("CAUGHT_UP at %d with %s at offset 5", descriptor().confirmedOffset(), texts(5, 1)).isFalse();
     }
 
-    /// PROBE A control: same shape, the replica's 5..9 agree with the owner: CAUGHT_UP at the owner's head.
+    /// Control for the above: same shape, the replica's 5..9 agree with the owner: CAUGHT_UP at the owner's head.
     @Test
-    void probeA_control_noWalReplicaBelowOwner_agreeing_isCaughtUp() {
+    void belowOwner_control_noWalReplicaBelowOwner_agreeing_isCaughtUp() {
         seedReplica(5, 5);
 
         backfill(owner(21, 5, new AtomicLong()));
@@ -101,11 +105,11 @@ class V1890ProbeTest {
         assertThat(descriptor().confirmedOffset()).isEqualTo(20L);
     }
 
-    /// PROBE B (v1890): the ordinary CF>=2 repair of a WAL replica (provenance divergence, the author's own
+    /// Ordinary CF>=2 repair raises no durable flag (v1890 B1): the ordinary CF>=2 repair of a WAL replica (provenance divergence, the author's own
     /// walReplica_provenanceDivergence scenario) with a durable partition flag wired. The repair succeeds; the flag the
     /// detection raised (MARKED_DIVERGED, "no owner, no reads until an operator resolves") is never cleared.
     @Test
-    void probeB_walReplicaRepairedAtCf2_leavesNoDurableDivergenceFlagRaised() {
+    void ordinaryRepair_walReplicaRepairedAtCf2_leavesNoDurableDivergenceFlagRaised() {
         useWal();
         manager.partitionFlags(recordingFlags());
         for (var i = 0; i < 10; i++) {
@@ -123,11 +127,11 @@ class V1890ProbeTest {
         assertThat(flagRaises).as("durable flags raised and left standing by an ordinary, self-repaired CF2 failover").isEmpty();
     }
 
-    /// PROBE C (v1890): KIP-101 truncates only to a leader of a LATER epoch. The replica's records 3..9 are attributed
+    /// Authority (v1890 B2): KIP-101 truncates only to a leader of a LATER epoch. The replica's records 3..9 are attributed
     /// to E2; the node it backfills from serves records at 3.. under the OLDER E1 (a deposed owner seen through a stale
     /// committed-owner view, or an HRW fallback). The newer-epoch records must not be cut in favour of the older ones.
     @Test
-    void probeC_senderOfAnOlderEpoch_doesNotCutTheReplicasNewerEpochRecords() {
+    void authority_senderOfAnOlderEpoch_doesNotCutTheReplicasNewerEpochRecords() {
         useWal();
         for (var i = 0; i < 10; i++) {
             var text = i < 3 ? "c" + i : "replica-" + i;
@@ -136,6 +140,7 @@ class V1890ProbeTest {
         }
         manager.syncReplicated(STREAM, PARTITION).await();
         var olderHistory = List.of(ProvenanceEntry.provenanceEntry(E1, 0L));
+        committedEpoch = E1;
 
         backfill(owner(5, 3, new AtomicLong(), olderHistory));
         backfill(owner(5, 3, new AtomicLong(), olderHistory));
@@ -143,14 +148,14 @@ class V1890ProbeTest {
         assertThat(texts(3, 1)).as("E2 record at 3 replaced by an E1 sender's").containsExactly("replica-3");
     }
 
-    /// PROBE D (v1890, #1890 by the re-verify path): the replica is CAUGHT_UP at 9 under owner lineage L1 (0..9). The
+    /// #1890 by the re-verify path (v1890 B3): the replica is CAUGHT_UP at 9 under owner lineage L1 (0..9). The
     /// committed owner changes to one whose head is 6 (it never had 7..9). The periodic re-verify of a CAUGHT_UP row
     /// probes the owner's head (6 <= 9) and takes the no-op arm, which re-acks the replica's OWN row (9) without any
     /// comparison. The owner would then count this replica for its own 7, 8, 9, which the replica does not hold. The
     /// author's harness re-registers the replica (row reset to -1 SYNCING) on every backfill, so it never reaches this
     /// arm; this probe keeps the registry between the two runs.
     @Test
-    void probeD_reverifyNoOp_neverAcksAboveTheNewOwnersHead() {
+    void reverify_reverifyNoOp_neverAcksAboveTheNewOwnersHead() {
         seedReplica(10, 10);
         backfill(owner(10, 10, new AtomicLong()));
         assertThat(descriptor().state()).as("premise: CAUGHT_UP under the first owner").isEqualTo(ReplicationState.CAUGHT_UP);
@@ -162,10 +167,52 @@ class V1890ProbeTest {
         assertThat(acksSent()).as("acks sent to an owner whose head is 6").allMatch(offset -> offset <= 6L);
     }
 
-    /// PROBE D control: the same re-verify against an owner whose head equals the row (9) acks 9, so the probe's
+    /// B1 control: the flag stays for the REFUSED case. The committed owner is of an older epoch than the replica's records, so
+    /// the repair is refused, the quarantine stands and the durable flag is raised, once.
+    @Test
+    void refusedRepair_raisesMarkedDivergedOnce() {
+        useWal();
+        manager.partitionFlags(recordingFlags());
+        for (var i = 0; i < 10; i++) {
+            manager.appendRecovered(STREAM, PARTITION, i, (i < 3 ? "c" + i : "replica-" + i).getBytes(UTF_8), 1000L + i, i < 3 ? E1 : E2).unwrap();
+        }
+        manager.syncReplicated(STREAM, PARTITION).await();
+        committedEpoch = E1;
+        var older = List.of(ProvenanceEntry.provenanceEntry(E1, 0L));
+
+        backfill(owner(5, 3, new AtomicLong(), older));
+        backfill(owner(5, 3, new AtomicLong(), older));
+        backfill(owner(5, 3, new AtomicLong(), older));
+
+        assertThat(flagRaises).hasSize(1);
+        assertThat(flagRaises.getFirst()).startsWith("MARKED_DIVERGED");
+        assertThat(manager.quarantinedAt(STREAM, PARTITION).isPresent()).isTrue();
+    }
+
+    /// B2: a node never repairs itself as the committed owner, and never against a sender that is not the committed owner.
+    @Test
+    void authority_committedOwnerIsThisNode_orNotTheSender_isNotRepaired() {
+        useWal();
+        for (var i = 0; i < 10; i++) {
+            manager.appendRecovered(STREAM, PARTITION, i, (i < 3 ? "c" + i : "replica-" + i).getBytes(UTF_8), 1000L + i, i < 3 ? E1 : E2).unwrap();
+        }
+        manager.syncReplicated(STREAM, PARTITION).await();
+        var history = List.of(ProvenanceEntry.provenanceEntry(E1, 0L), ProvenanceEntry.provenanceEntry(E2, 3L));
+
+        committedOwnerNode = REPLICA;
+        backfill(owner(5, 3, new AtomicLong(), history));
+        backfill(owner(5, 3, new AtomicLong(), history));
+        assertThat(texts(3, 1)).as("this node is the committed owner: its own records are never cut").containsExactly("replica-3");
+
+        committedOwnerNode = NODE_BB.equals(OWNER) ? NODE_CC : NODE_BB;
+        backfill(owner(5, 3, new AtomicLong(), history));
+        assertThat(texts(3, 1)).as("the committed owner is not the node it backfills from").containsExactly("replica-3");
+    }
+
+    /// Control for the above: the same re-verify against an owner whose head equals the row (9) acks 9, so the probe's
     /// assertion is reachable and its arm is the one exercised.
     @Test
-    void probeD_control_reverifyNoOp_acksTheRowWhenTheOwnerHoldsIt() {
+    void reverify_control_reverifyNoOp_acksTheRowWhenTheOwnerHoldsIt() {
         seedReplica(10, 10);
         backfill(owner(10, 10, new AtomicLong()));
         sentToOwner.clear();
@@ -215,7 +262,7 @@ class V1890ProbeTest {
                                                             .map(StreamPartitionManager.PartitionInfo::headOffset)
                                                             .or(-1L);
         ReplicaWatermarkProbe probe = (_, _, _) -> Promise.success(ownerHead(owner));
-        CommittedStreamOwnerSource committed = (_, _) -> Option.some(new CommittedOwner(OWNER, Epoch.ZERO));
+        CommittedStreamOwnerSource committed = (_, _) -> Option.some(new CommittedOwner(committedOwnerNode, committedEpoch));
         ReplicationTransport toOwner = (_, message) -> sentToOwner.add(message);
         var orchestrator = partitionBackfill(registry,
                                              manager.alignedRecovery(),

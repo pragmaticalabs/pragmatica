@@ -396,14 +396,23 @@ class PartitionProvenanceRecordingTest {
             manager.partitionFlags(recordingFlags(raised));
         }
 
+        /// #1730 phase 2: the mismatch quarantines at once but raises nothing, because the backfill may repair it (an ordinary
+        /// failover): the durable flag is raised only when the repair is REFUSED, once per process. The old premise (flag at
+        /// detection) blocked the partition cluster-wide for a divergence the replica then healed by itself.
         @Test
-        void n13Mismatch_raisesMarkedDiverged_once() {
+        void n13Mismatch_raisesNothingAtDetection_andMarkedDivergedOnceWhenTheRepairIsRefused() {
             for (var offset = 0; offset < 5; offset++) {
                 live(offset, E1);
             }
 
             install(5, 8, at(E1, 0), at(E2, 3));
             install(5, 8, at(E1, 0), at(E2, 3));
+
+            assertThat(raised).as("detection alone flags nothing").isEmpty();
+            assertThat(manager.quarantinedAt(STREAM, PARTITION).isPresent()).as("the local fence is up").isTrue();
+
+            manager.quarantineView().flagUnrepaired(STREAM, PARTITION);
+            manager.quarantineView().flagUnrepaired(STREAM, PARTITION);
 
             assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
                               .containsExactly(AetherValue.PartitionRecoveryReasonKind.MARKED_DIVERGED);

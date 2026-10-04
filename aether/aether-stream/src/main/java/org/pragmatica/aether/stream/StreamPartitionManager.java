@@ -242,6 +242,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
     private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
+    /// The offsets at which a PROVENANCE comparison found this copy divergent (N13), while the partition stays quarantined for
+    /// it. The durable flag is raised only if the divergence is not repaired ([#flagUnrepaired]): a repair removes the entry.
+    private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
@@ -2005,30 +2008,38 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ([StreamError.TruncateBelowRetained]): those offsets were evicted and possibly sealed, so the ring cannot
     /// vouch that they are gone.
     @Contract
-    public Result<Option<TailCut>> repairDivergence(String streamName, int partition) {
+    public Result<Option<TailCut>> repairDivergence(String streamName,
+                                                    int partition,
+                                                    QuarantineView.RepairAuthority authority) {
         var ref = new PartitionRef(streamName, partition);
 
         return quarantinedAt(streamName, partition).fold(() -> success(none()),
                                                          divergedAtOffset -> cutDivergentTail(streamName,
                                                                                               partition,
                                                                                               ref,
-                                                                                              divergedAtOffset).map(Option::some));
+                                                                                              divergedAtOffset,
+                                                                                              authority).map(Option::some));
     }
 
     private Result<TailCut> cutDivergentTail(String streamName,
                                              int partition,
                                              PartitionRef ref,
-                                             long divergedAtOffset) {
+                                             long divergedAtOffset,
+                                             QuarantineView.RepairAuthority authority) {
         var keep = divergedAtOffset - 1;
 
-        return requireVouchingHistory(streamName, partition, divergedAtOffset).flatMap(_ -> resolvePartitionBuffer(streamName,
+        return requireVouchingHistory(streamName, partition, divergedAtOffset).flatMap(_ -> requireAboveSealedFloor(streamName,
+                                                                                                                   partition,
+                                                                                                                   keep))
+                                                                              .flatMap(_ -> resolvePartitionBuffer(streamName,
                                                                                                                   partition))
                                                                               .flatMap(ring -> cutRing(streamName,
                                                                                                        partition,
                                                                                                        ref,
                                                                                                        ring,
                                                                                                        divergedAtOffset,
-                                                                                                       keep))
+                                                                                                       keep,
+                                                                                                       authority))
                                      .onSuccess(cut -> reportCut(streamName, partition, cut))
                                      .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
                                                                   streamName,
@@ -2056,20 +2067,42 @@ public final class StreamPartitionManager implements AutoCloseable {
                : Result.unitResult();
     }
 
+    /// Offsets at or below the last sealed offset were durably sealed into segments: what this copy holds there is not a tail
+    /// it may discard, so a divergence at or below the sealed floor is refused (the quarantine and the flag stand).
+    private Result<Unit> requireAboveSealedFloor(String streamName, int partition, long keep) {
+        var floor = lastSealedOffset.lastSealedOffset(streamName, partition);
+
+        return keep < floor
+               ? new StreamError.TruncateBelowRetained(streamName, partition, keep, floor + 1L).<Unit> result()
+               : Result.unitResult();
+    }
+
     private Result<TailCut> cutRing(String streamName,
                                     int partition,
                                     PartitionRef ref,
                                     OffHeapRingBuffer ring,
                                     long divergedAtOffset,
-                                    long keep) {
+                                    long keep,
+                                    QuarantineView.RepairAuthority authority) {
         var head = ring.headOffset();
         var wal = walFor(streamName, partition);
 
         return ring.truncateSuffix(keep,
-                                   () -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
-                                            .or(Result.unitResult()),
+                                   () -> authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
+                                                                                                                       .or(Result.unitResult())),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
                    .map(removed -> new TailCut(keep, removed, keep + 1, head));
+    }
+
+    /// Evaluated inside the cut's ordered section, immediately before the first thing it removes: the committed owner that
+    /// authorises the cut must still be the committed owner of a later epoch than the records about to go.
+    private Result<Unit> authorised(String streamName,
+                                    int partition,
+                                    long divergedAtOffset,
+                                    QuarantineView.RepairAuthority authority) {
+        return authority.holds(divergentEpoch(streamName, partition, divergedAtOffset))
+               ? Result.unitResult()
+               : new StreamError.RepairNotAuthorized(streamName, partition, divergedAtOffset).<Unit> result();
     }
 
     /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
@@ -2079,6 +2112,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void forgetCutState(String streamName, int partition, PartitionRef ref, long divergedAtOffset, long keep) {
         synchronized (quarantineLock) {
             divergedAt.remove(ref, divergedAtOffset);
+            provenanceMismatchAt.remove(ref);
         }
         // What remains is the prefix this copy shares with its sender: verified by construction.
         unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
@@ -2123,6 +2157,30 @@ public final class StreamPartitionManager implements AutoCloseable {
                  cut.lastRemoved());
     }
 
+    /// The divergence found by provenance could not be repaired: it stays quarantined, so the durable flag says so. A divergence
+    /// the repair resolves never gets here, so an ordinary failover raises no flag and blocks nothing.
+    @Contract
+    private void flagUnrepaired(String streamName, int partition) {
+        option(provenanceMismatchAt.get(new PartitionRef(streamName, partition)))
+            .onPresent(offset -> raiseOnce(streamName,
+                                           partition,
+                                           PartitionRecoveryReasonKind.MARKED_DIVERGED,
+                                           "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset
+                                          + " and the divergence could not be repaired"));
+    }
+
+    /// The epoch the records at and above `offset` on this copy were written under, from its owner-epoch history; none for a
+    /// copy that keeps no log (and so no history) or whose history does not reach the offset.
+    private Option<Epoch> divergentEpoch(String streamName, int partition, long offset) {
+        return walFor(streamName, partition).flatMap(_ -> provenanceOf(streamName, partition).option())
+                                            .flatMap(local -> Option.from(local.history()
+                                                                              .stream()
+                                                                              .filter(entry -> entry.startOffset() <= offset)
+                                                                              .reduce((_, later) -> later)))
+                                            .map(entry -> entry.epoch()
+                                                               .rank());
+    }
+
     private final class ManagerQuarantineView implements QuarantineView {
         @Override
         public Option<Long> quarantinedAt(String streamName, int partition) {
@@ -2142,8 +2200,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         @Override
-        public Result<Option<Long>> repair(String streamName, int partition) {
-            return repairDivergence(streamName, partition).map(cut -> cut.map(TailCut::keptThrough));
+        public Result<Option<Long>> repair(String streamName, int partition, RepairAuthority authority) {
+            return repairDivergence(streamName, partition, authority).map(cut -> cut.map(TailCut::keptThrough));
+        }
+
+        @Override
+        public void flagUnrepaired(String streamName, int partition) {
+            StreamPartitionManager.this.flagUnrepaired(streamName, partition);
         }
     }
 
@@ -3178,10 +3241,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> quarantineMismatch(String streamName, int partition, long offset) {
         new PartitionQuarantine(streamName, partition).recordDivergence(offset);
-        raiseOnce(streamName,
-                  partition,
-                  PartitionRecoveryReasonKind.MARKED_DIVERGED,
-                  "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset);
+        provenanceMismatchAt.merge(new PartitionRef(streamName, partition), offset, Math::min);
 
         return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
     }

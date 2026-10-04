@@ -96,6 +96,15 @@ public sealed interface StreamError extends Cause {
 
     /// A suffix truncation asked to cut below the ring's retained range (#1730 phase 2): offsets between `keepThrough`
     /// and `tailOffset` were evicted (and possibly sealed), so the ring cannot say they are gone. Nothing changed.
+    /// A repair was refused because the committed owner no longer authorises it: it is not the owner this copy backfills from,
+    /// it is this node, or its epoch is not later than the epoch of the records about to be cut (#1730 phase 2).
+    record RepairNotAuthorized(String streamName, int partition, long divergedAt) implements StreamError {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] at offset %d is not authorised by the committed owner".formatted(streamName, partition, divergedAt);
+        }
+    }
+
     record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
         @Override
         public String message() {

@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -26,9 +27,22 @@ public interface QuarantineView {
     /// phase 2, KIP-101) and lifting the quarantine: the kept offset, or [Option#none] when nothing was quarantined. A
     /// failure leaves the partition quarantined. The caller must know the sender is the committed owner and that this
     /// node is not the owner. Views without a partition manager behind them repair nothing.
-    default Result<Option<Long>> repair(String streamName, int partition) {
+    default Result<Option<Long>> repair(String streamName, int partition, RepairAuthority authority) {
         return Result.success(Option.none());
     }
+
+    /// Whether this copy may be cut back (#1730 phase 2, KIP-101): evaluated by the manager INSIDE the cut's ordered section,
+    /// with the epoch of the records about to be removed (none for a copy that keeps no history), so a committed owner that
+    /// changed since the caller decided cannot authorise a cut it no longer may.
+    @FunctionalInterface
+    interface RepairAuthority {
+        boolean holds(Option<Epoch> divergentEpoch);
+    }
+
+    /// The divergence this copy could not repair was found by comparing owner-epoch provenance: raise the durable
+    /// `MARKED_DIVERGED` flag for it (once per process). A divergence that a repair resolves raises nothing. Views without a
+    /// partition manager behind them flag nothing.
+    default void flagUnrepaired(String streamName, int partition) {}
 
     /// This copy has been compared with its sender through `offset` (#1730 phase 2): a replica that restarted with a
     /// recovered tail shows nothing of it to readers until it is. Views without a partition manager behind them ignore
