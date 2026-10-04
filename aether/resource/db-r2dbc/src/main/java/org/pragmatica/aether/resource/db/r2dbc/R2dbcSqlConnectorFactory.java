@@ -47,8 +47,8 @@ public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnec
         var options = ConnectionFactoryOptions.parse(config.effectiveR2dbcUrl());
         var optionsBuilder = ConnectionFactoryOptions.builder().from(options);
 
-        config.effectiveUsername().onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
-        config.effectivePassword().onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.R2DBC).onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
+        config.effectivePassword(DatabaseConnectorConfig.Transport.R2DBC).onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
         var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
         var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory)
                                                     .maxSize(config.poolConfig().maxConnections())

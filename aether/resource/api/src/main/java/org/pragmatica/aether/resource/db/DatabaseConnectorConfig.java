@@ -38,7 +38,7 @@ public record DatabaseConnectorConfig(Option<String> name,
     private static final Pattern CREDENTIALS_PATTERN = Pattern.compile("://([^:]+):([^@]+)@");
 
     public String effectiveName() {
-        return name.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl))
+        return name.orElse(() -> firstUrlDatabase(urlsFor(preferredTransport())))
                    .or("default");
     }
 
@@ -194,45 +194,131 @@ public record DatabaseConnectorConfig(Option<String> name,
         return new Builder();
     }
 
+    /// The transports a datasource can connect through, in the documented selection priority (highest first): the
+    /// factories' `priority()` is 20 for async, 10 for r2dbc, and the default 0 for JDBC.
+    public enum Transport {
+        ASYNC,
+        R2DBC,
+        JDBC
+    }
+
+    /// The URL values a connector may draw from, in the order it consults them.
+    private record Urls(Option<String> first, Option<String> second, Option<String> third) {}
+
+    private Option<String> urlOf(Transport transport) {
+        return switch (transport) {
+            case ASYNC -> asyncUrl;
+            case R2DBC -> r2dbcUrl;
+            case JDBC -> jdbcUrl;
+        };
+    }
+
+    /// Each connector derives host, port, database, credentials and type from ITS OWN URL (#784): the transport that
+    /// connects is the best one on that slice's classpath, so a datasource with several URL kinds must not hand a
+    /// connector another transport's values (a JDBC pool given the async URL's credentials, a MySQL pool a PostgreSQL
+    /// dialect). A URL that is present but cannot supply a value, or an absent own URL, falls through to the others
+    /// in the documented priority (async, r2dbc, jdbc), then to the discrete fields, so single-URL configurations
+    /// behave as before.
+    private Urls urlsFor(Transport own) {
+        var ordered = new java.util.ArrayList<>(java.util.List.of(Transport.ASYNC, Transport.R2DBC, Transport.JDBC));
+
+        ordered.remove(own);
+        ordered.addFirst(own);
+
+        return new Urls(urlOf(ordered.get(0)), urlOf(ordered.get(1)), urlOf(ordered.get(2)));
+    }
+
+    /// The transport the documented priority would pick for THIS configuration: async if `async_url` is set, else
+    /// r2dbc if `r2dbc_url` is set, else JDBC. Used only where a datasource-level value is wanted and no connector
+    /// exists yet: the no-argument `effective*()` accessors and the provisioning log line in
+    /// `DatasourceConnectionProvider`. A connector never uses it; it asks for its own transport.
+    public Transport preferredTransport() {
+        return asyncUrl.isPresent()
+               ? Transport.ASYNC
+               : r2dbcUrl.isPresent()
+                 ? Transport.R2DBC
+                 : Transport.JDBC;
+    }
+
     public DatabaseType effectiveType() {
-        return type.orElse(() -> DatabaseType.fromAnyUrl(jdbcUrl, r2dbcUrl, asyncUrl))
+        return effectiveType(preferredTransport());
+    }
+
+    public DatabaseType effectiveType(Transport transport) {
+        return type.orElse(() -> typeFromUrls(transport))
                    .or(DatabaseType.POSTGRESQL);
     }
 
+    private Option<DatabaseType> typeFromUrls(Transport own) {
+        var ordered = new java.util.ArrayList<>(java.util.List.of(Transport.ASYNC, Transport.R2DBC, Transport.JDBC));
+
+        ordered.remove(own);
+        ordered.addFirst(own);
+
+        return urlType(ordered.get(0)).orElse(() -> urlType(ordered.get(1)))
+                      .orElse(() -> urlType(ordered.get(2)));
+    }
+
+    private Option<DatabaseType> urlType(Transport transport) {
+        return urlOf(transport).flatMap(url -> switch (transport) {
+            case ASYNC -> DatabaseType.fromAsyncUrl(url);
+            case R2DBC -> DatabaseType.fromR2dbcUrl(url);
+            case JDBC -> DatabaseType.fromJdbcUrl(url);
+        });
+    }
+
     // #769: a URL (async_url, jdbc_url, r2dbc_url) has the highest priority and replaces
-    // host/port/database — resource-reference.md:337,354. The URL-derived value wins whenever
-    // one of the three URL fields parses to it; discrete fields are the fallback, not the
-    // override. Cross-URL-kind ordering inside firstUrlHost/Port/Database (jdbc, then r2dbc,
-    // then async) is unchanged and out of scope for this fix.
+    // host/port/database — resource-reference.md. The URL-derived value wins whenever one of the URL fields parses
+    // to it; discrete fields are the fallback, not the override. Which URL is consulted first is the connector's own
+    // (#784), see `urlsFor`.
     public String effectiveHost() {
-        return firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl).orElse(() -> host)
+        return effectiveHost(preferredTransport());
+    }
+
+    public String effectiveHost(Transport transport) {
+        return firstUrlHost(urlsFor(transport)).orElse(() -> host)
                            .or("localhost");
     }
 
     public int effectivePort() {
-        var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
+        return effectivePort(preferredTransport());
+    }
+
+    public int effectivePort(Transport transport) {
+        var urlPort = firstUrlPort(urlsFor(transport));
 
         return urlPort > 0
                ? urlPort
                : port.filter(p -> p > 0)
-                     .or(() -> effectiveType().defaultPort());
+                     .or(() -> effectiveType(transport).defaultPort());
     }
 
     public String effectiveDatabase() {
-        return firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl).orElse(() -> database)
+        return effectiveDatabase(preferredTransport());
+    }
+
+    public String effectiveDatabase(Transport transport) {
+        return firstUrlDatabase(urlsFor(transport)).orElse(() -> database)
                                .or("");
     }
 
     public String effectiveJdbcUrl() {
-        return jdbcUrl.or(() -> effectiveType().buildJdbcUrl(effectiveHost(), effectivePort(), effectiveDatabase()));
+        return jdbcUrl.or(() -> effectiveType(Transport.JDBC).buildJdbcUrl(effectiveHost(Transport.JDBC),
+                                                                           effectivePort(Transport.JDBC),
+                                                                           effectiveDatabase(Transport.JDBC)));
     }
 
     public String effectiveR2dbcUrl() {
-        return r2dbcUrl.or(() -> effectiveType().buildR2dbcUrl(effectiveHost(), effectivePort(), effectiveDatabase()));
+        return r2dbcUrl.or(() -> effectiveType(Transport.R2DBC).buildR2dbcUrl(effectiveHost(Transport.R2DBC),
+                                                                              effectivePort(Transport.R2DBC),
+                                                                              effectiveDatabase(Transport.R2DBC)));
     }
 
     public String effectiveAsyncUrl() {
-        return asyncUrl.or(() -> buildAsyncUrl(effectiveHost(), effectivePort(), effectiveDatabase(), effectiveType()));
+        return asyncUrl.or(() -> buildAsyncUrl(effectiveHost(Transport.ASYNC),
+                                               effectivePort(Transport.ASYNC),
+                                               effectiveDatabase(Transport.ASYNC),
+                                               effectiveType(Transport.ASYNC)));
     }
 
     private static String buildAsyncUrl(String host, int port, String database, DatabaseType type) {
@@ -244,11 +330,19 @@ public record DatabaseConnectorConfig(Option<String> name,
     }
 
     public Option<String> effectiveUsername() {
-        return username.orElse(() -> firstUrlUsername(jdbcUrl, r2dbcUrl, asyncUrl));
+        return effectiveUsername(preferredTransport());
+    }
+
+    public Option<String> effectiveUsername(Transport transport) {
+        return username.orElse(() -> firstUrlUsername(urlsFor(transport)));
     }
 
     public Option<String> effectivePassword() {
-        return password.orElse(() -> firstUrlPassword(jdbcUrl, r2dbcUrl, asyncUrl));
+        return effectivePassword(preferredTransport());
+    }
+
+    public Option<String> effectivePassword(Transport transport) {
+        return password.orElse(() -> firstUrlPassword(urlsFor(transport)));
     }
 
     public static Option<String> parseUsernameFromUrl(String url) {
@@ -338,46 +432,53 @@ public record DatabaseConnectorConfig(Option<String> name,
     // encodes. They used to be read jdbc-first, the reverse (#784): a config setting `jdbc_url` to host A and
     // `async_url` to host B selected the async transport and then gave it host A. A URL that is present but cannot
     // supply the value falls through to the next kind in the same order. `DatabaseType.fromAnyUrl` follows it too.
-    private static Option<String> firstUrlHost(Option<String> jdbcUrl,
-                                               Option<String> r2dbcUrl,
-                                               Option<String> asyncUrl) {
-        return asyncUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl)
-                       .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl))
-                       .orElse(() -> jdbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl));
+    private static Option<String> firstUrlHost(Urls urls) {
+        return urls.first()
+                   .flatMap(DatabaseConnectorConfig::parseHostFromUrl)
+                   .orElse(() -> urls.second()
+                                     .flatMap(DatabaseConnectorConfig::parseHostFromUrl))
+                   .orElse(() -> urls.third()
+                                     .flatMap(DatabaseConnectorConfig::parseHostFromUrl));
     }
 
-    private static int firstUrlPort(Option<String> jdbcUrl, Option<String> r2dbcUrl, Option<String> asyncUrl) {
-        return asyncUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
-                       .filter(p -> p > 0)
-                       .orElse(() -> r2dbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
-                                             .filter(p -> p > 0))
-                       .orElse(() -> jdbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
-                                            .filter(p -> p > 0))
-                       .or(0);
+    private static int firstUrlPort(Urls urls) {
+        return urls.first()
+                   .map(DatabaseConnectorConfig::parsePortFromUrl)
+                   .filter(p -> p > 0)
+                   .orElse(() -> urls.second()
+                                     .map(DatabaseConnectorConfig::parsePortFromUrl)
+                                     .filter(p -> p > 0))
+                   .orElse(() -> urls.third()
+                                     .map(DatabaseConnectorConfig::parsePortFromUrl)
+                                     .filter(p -> p > 0))
+                   .or(0);
     }
 
-    private static Option<String> firstUrlDatabase(Option<String> jdbcUrl,
-                                                   Option<String> r2dbcUrl,
-                                                   Option<String> asyncUrl) {
-        return asyncUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl)
-                       .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl))
-                       .orElse(() -> jdbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl));
+    private static Option<String> firstUrlDatabase(Urls urls) {
+        return urls.first()
+                   .flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl)
+                   .orElse(() -> urls.second()
+                                     .flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl))
+                   .orElse(() -> urls.third()
+                                     .flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl));
     }
 
-    private static Option<String> firstUrlUsername(Option<String> jdbcUrl,
-                                                   Option<String> r2dbcUrl,
-                                                   Option<String> asyncUrl) {
-        return asyncUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl)
-                       .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl))
-                       .orElse(() -> jdbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl));
+    private static Option<String> firstUrlUsername(Urls urls) {
+        return urls.first()
+                   .flatMap(DatabaseConnectorConfig::parseUsernameFromUrl)
+                   .orElse(() -> urls.second()
+                                     .flatMap(DatabaseConnectorConfig::parseUsernameFromUrl))
+                   .orElse(() -> urls.third()
+                                     .flatMap(DatabaseConnectorConfig::parseUsernameFromUrl));
     }
 
-    private static Option<String> firstUrlPassword(Option<String> jdbcUrl,
-                                                   Option<String> r2dbcUrl,
-                                                   Option<String> asyncUrl) {
-        return asyncUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl)
-                       .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl))
-                       .orElse(() -> jdbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl));
+    private static Option<String> firstUrlPassword(Urls urls) {
+        return urls.first()
+                   .flatMap(DatabaseConnectorConfig::parsePasswordFromUrl)
+                   .orElse(() -> urls.second()
+                                     .flatMap(DatabaseConnectorConfig::parsePasswordFromUrl))
+                   .orElse(() -> urls.third()
+                                     .flatMap(DatabaseConnectorConfig::parsePasswordFromUrl));
     }
 
     public static final class Builder {

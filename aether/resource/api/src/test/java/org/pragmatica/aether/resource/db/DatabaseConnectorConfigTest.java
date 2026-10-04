@@ -574,89 +574,105 @@ class DatabaseConnectorConfigTest {
         }
     }
 
-    /// #784 — when several URL kinds are set, the effective host, port, database and credentials must come from the
-    /// URL of the transport that will actually connect: async (priority 20), then r2dbc (10), then jdbc (the
-    /// default). They used to be read jdbc-first, so a config with `jdbc_url` -> host A and `async_url` -> host B
-    /// selected the async transport and then handed it host A.
+    /// #784 — a datasource may carry several URL kinds, and the transport that connects is the best one on THAT
+    /// slice's classpath, so each connector derives host, port, database, credentials and type from ITS OWN URL
+    /// (`effective*(Transport)`). There is no global "effective" value for a connector to consume: the first version
+    /// of this fix read the URLs in one fixed priority (async, r2dbc, jdbc), which handed a JDBC pool the async URL's
+    /// credentials and a PostgreSQL dialect while it connected to MySQL. The no-argument `effective*()` accessors are
+    /// the datasource-level view for the provisioning log only, taken from `preferredTransport()`.
     @Nested
     class EffectiveValuesFollowTheSelectedTransport {
         private static final String JDBC = "jdbc:postgresql://jdbc-host:5001/jdbc-db";
         private static final String R2DBC = "r2dbc:postgresql://r2dbc-host:5002/r2dbc-db";
         private static final String ASYNC = "postgresql://async-user:async-pw@async-host:5003/async-db";
+        private static final String MYSQL_JDBC = "jdbc:mysql://jdbc-user:jdbc-pw@mysql-host:3306/orders";
+
+        /// v-cw2's case: MySQL over JDBC plus PostgreSQL over async. Whichever transport connects gets ITS values.
+        @Test
+        void mysqlJdbcPlusPostgresAsync_eachConnectorGetsItsOwnHostCredentialsAndType() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(MYSQL_JDBC)
+                                                         .withAsyncUrl(ASYNC)
+                                                         .build()
+                                                         .unwrap();
+            var jdbc = DatabaseConnectorConfig.Transport.JDBC;
+            var async = DatabaseConnectorConfig.Transport.ASYNC;
+
+            assertThat(config.effectiveHost(jdbc)).isEqualTo("mysql-host");
+            assertThat(config.effectivePort(jdbc)).isEqualTo(3306);
+            assertThat(config.effectiveDatabase(jdbc)).isEqualTo("orders");
+            assertThat(config.effectiveUsername(jdbc).unwrap()).isEqualTo("jdbc-user");
+            assertThat(config.effectivePassword(jdbc).unwrap()).isEqualTo("jdbc-pw");
+            assertThat(config.effectiveType(jdbc)).isEqualTo(DatabaseType.MYSQL);
+            assertThat(config.effectiveHost(async)).isEqualTo("async-host");
+            assertThat(config.effectivePort(async)).isEqualTo(5003);
+            assertThat(config.effectiveDatabase(async)).isEqualTo("async-db");
+            assertThat(config.effectiveUsername(async).unwrap()).isEqualTo("async-user");
+            assertThat(config.effectivePassword(async).unwrap()).isEqualTo("async-pw");
+            assertThat(config.effectiveType(async)).isEqualTo(DatabaseType.POSTGRESQL);
+        }
 
         @Test
-        void jdbcAndAsyncBothSet_theAsyncUrlWins() {
+        void jdbcAndAsyncBothSet_eachTransportReadsItsOwnUrl() {
             var config = databaseConnectorConfigBuilder().withName("db")
                                                          .withJdbcUrl(JDBC)
                                                          .withAsyncUrl(ASYNC)
                                                          .build()
                                                          .unwrap();
 
-            assertThat(config.effectiveHost()).isEqualTo("async-host");
-            assertThat(config.effectivePort()).isEqualTo(5003);
-            assertThat(config.effectiveDatabase()).isEqualTo("async-db");
-            assertThat(config.effectiveUsername().unwrap()).isEqualTo("async-user");
-            assertThat(config.effectivePassword().unwrap()).isEqualTo("async-pw");
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC)).isEqualTo("async-host");
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("jdbc-host");
+            assertThat(config.effectiveDatabase(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("jdbc-db");
         }
 
         @Test
-        void r2dbcAndJdbcBothSet_theR2dbcUrlWins() {
+        void r2dbcAndJdbcBothSet_eachTransportReadsItsOwnUrl() {
             var config = databaseConnectorConfigBuilder().withName("db")
                                                          .withJdbcUrl(JDBC)
                                                          .withR2dbcUrl(R2DBC)
                                                          .build()
                                                          .unwrap();
 
-            assertThat(config.effectiveHost()).isEqualTo("r2dbc-host");
-            assertThat(config.effectivePort()).isEqualTo(5002);
-            assertThat(config.effectiveDatabase()).isEqualTo("r2dbc-db");
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.R2DBC)).isEqualTo("r2dbc-host");
+            assertThat(config.effectivePort(DatabaseConnectorConfig.Transport.R2DBC)).isEqualTo(5002);
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("jdbc-host");
         }
 
+        /// The datasource-level view (the provisioning log) is the documented-priority transport's: async over r2dbc
+        /// over jdbc.
         @Test
-        void allThreeSet_asyncWinsOverR2dbcOverJdbc() {
-            var config = databaseConnectorConfigBuilder().withName("db")
-                                                         .withJdbcUrl(JDBC)
-                                                         .withR2dbcUrl(R2DBC)
-                                                         .withAsyncUrl(ASYNC)
-                                                         .build()
-                                                         .unwrap();
-
-            assertThat(config.effectiveHost()).isEqualTo("async-host");
-        }
-
-        /// The type is inferred in the same order: with a MySQL JDBC URL and a PostgreSQL async URL set, the async
-        /// transport connects, so the PostgreSQL type is the one that applies.
-        @Test
-        void typeIsInferredFromTheSelectedTransportsUrl() {
-            var config = databaseConnectorConfigBuilder().withName("db")
-                                                         .withJdbcUrl("jdbc:mysql://jdbc-host:3306/jdbc-db")
-                                                         .withAsyncUrl(ASYNC)
-                                                         .build()
-                                                         .unwrap();
-
-            assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
-        }
-
-        /// The control: a single URL kind is unaffected, whichever it is.
-        @Test
-        void aSingleUrlKind_isUsedWhicheverItIs() {
+        void thePreferredTransportView_followsTheDocumentedPriority() {
+            var all = databaseConnectorConfigBuilder().withName("db").withJdbcUrl(JDBC).withR2dbcUrl(R2DBC).withAsyncUrl(ASYNC).build().unwrap();
+            var noAsync = databaseConnectorConfigBuilder().withName("db").withJdbcUrl(JDBC).withR2dbcUrl(R2DBC).build().unwrap();
             var jdbcOnly = databaseConnectorConfigBuilder().withName("db").withJdbcUrl(JDBC).build().unwrap();
 
-            assertThat(jdbcOnly.effectiveHost()).isEqualTo("jdbc-host");
-            assertThat(jdbcOnly.effectivePort()).isEqualTo(5001);
+            assertThat(all.preferredTransport()).isEqualTo(DatabaseConnectorConfig.Transport.ASYNC);
+            assertThat(all.effectiveHost()).isEqualTo("async-host");
+            assertThat(noAsync.preferredTransport()).isEqualTo(DatabaseConnectorConfig.Transport.R2DBC);
+            assertThat(jdbcOnly.preferredTransport()).isEqualTo(DatabaseConnectorConfig.Transport.JDBC);
         }
 
-        /// A URL kind that is present but cannot supply the value falls through to the next in the SAME order.
+        /// The control: a single URL kind is unaffected, whichever it is, and a connector whose own URL is absent
+        /// still gets the values of the URL that IS configured (a JDBC-only classpath with just `async_url`).
         @Test
-        void aHigherPriorityUrlWithoutAPort_fallsThroughToTheNextForThePort() {
+        void aSingleUrlKind_isUsedByEveryTransport() {
+            var asyncOnly = databaseConnectorConfigBuilder().withName("db").withAsyncUrl(ASYNC).build().unwrap();
+
+            assertThat(asyncOnly.effectiveHost(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("async-host");
+            assertThat(asyncOnly.effectiveUsername(DatabaseConnectorConfig.Transport.JDBC).unwrap()).isEqualTo("async-user");
+        }
+
+        /// A URL that is present but cannot supply a value falls through to the next kind for that value.
+        @Test
+        void anOwnUrlWithoutAPort_fallsThroughToTheNextKindForThePort() {
             var config = databaseConnectorConfigBuilder().withName("db")
                                                          .withJdbcUrl(JDBC)
                                                          .withAsyncUrl("postgresql://async-host/async-db")
                                                          .build()
                                                          .unwrap();
 
-            assertThat(config.effectiveHost()).isEqualTo("async-host");
-            assertThat(config.effectivePort()).isEqualTo(5001);
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC)).isEqualTo("async-host");
+            assertThat(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC)).isEqualTo(5001);
         }
     }
 }

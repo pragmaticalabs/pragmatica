@@ -47,8 +47,8 @@ public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnect
         var hikariConfig = new HikariConfig();
 
         hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
-        config.effectiveUsername().onPresent(hikariConfig::setUsername);
-        config.effectivePassword().onPresent(hikariConfig::setPassword);
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.JDBC).onPresent(hikariConfig::setUsername);
+        config.effectivePassword(DatabaseConnectorConfig.Transport.JDBC).onPresent(hikariConfig::setPassword);
         hikariConfig.setConnectionTimeout(config.poolConfig().connectionTimeout().toMillis());
         hikariConfig.setIdleTimeout(config.poolConfig().idleTimeout().toMillis());
         hikariConfig.setMaxLifetime(config.poolConfig().maxLifetime().toMillis());
