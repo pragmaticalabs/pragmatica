@@ -17,6 +17,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.ConfigSetResponse;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -129,7 +131,9 @@ public final class ConfigRoutes implements RouteSource {
         nodeSupplier.get().route(OperationalEvent.ConfigChanged.configChanged(key, scope, "remove", "api"));
     }
 
-    private enum ConfigError implements Cause {
+    /// #954: every constant is a request the caller got wrong, so each answers 400 instead of the 500 an untyped
+    /// cause is resolved to.
+    private enum ConfigError implements Cause, HttpStatusAware {
         MISSING_FIELDS("Missing key or value field"),
         KEY_REQUIRED("Config key required");
         private final String message;
@@ -139,6 +143,10 @@ public final class ConfigRoutes implements RouteSource {
         @Override
         public String message() {
             return message;
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
         }
     }
 }

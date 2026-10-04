@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -690,10 +691,57 @@ class ArtifactStoreImpl implements ArtifactStore {
         // CORRECTNESS: boundedFanOut preserves chunk order — blockIds are recorded into
         // metadata in chunk order and reassembled in that order on resolve; reordering
         // corrupts the artifact.
-        return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry).flatMap(blockIds -> storeMetadataAndVersions(file,
-                                                                                                                                    blockIds,
-                                                                                                                                    chunks.size(),
-                                                                                                                                    digest));
+        var credited = new CopyOnWriteArrayList<BlockId>();
+
+        return releaseCreditsOnFailure(boundedFanOut(chunks,
+                                                     MAX_CONCURRENT_CHUNKS,
+                                                     chunk -> storeChunkRecordingCredit(chunk, credited)),
+                                       credited).flatMap(blockIds -> storeMetadataAndVersions(file,
+                                                                                              blockIds,
+                                                                                              chunks.size(),
+                                                                                              digest));
+    }
+
+    /// The credit is recorded in a dependent step, so it is in the list before this chunk's promise settles; an
+    /// `onSuccess` callback is an independent event and could land after the fan-out had already failed.
+    private Promise<BlockId> storeChunkRecordingCredit(byte[] chunk, List<BlockId> credited) {
+        return storagePutWithRetry(chunk).map(id -> {
+            credited.add(id);
+
+            return id;
+        });
+    }
+
+    /// A chunk holds only `StorageInstance#put`'s credit and no name until the metadata is written, so a fan-out
+    /// that fails part-way leaves the chunks that DID land at refCount 1 behind no artifact: uncollectable for
+    /// ever (the same class as #1437). Only THIS deploy's own credits are given back, so a chunk shared with a
+    /// stored artifact returns to the count it had. Scoped to the chunk phase on purpose: once the metadata write
+    /// has been attempted it may have landed (`WriteIndeterminate`), and releasing then would free a live
+    /// artifact's chunks. `boundedFanOut` waits for every put of a batch to settle before failing, so the list is
+    /// complete when the failure arrives. The release is awaited before the failure is reported; a release that
+    /// itself fails is logged and does not mask the original cause.
+    private Promise<List<BlockId>> releaseCreditsOnFailure(Promise<List<BlockId>> fanOut, List<BlockId> credited) {
+        var settled = Promise.<List<BlockId>> promise();
+
+        fanOut.onResult(result -> result.onSuccess(settled::succeed)
+                                        .onFailure(cause -> releaseCredits(credited).onResult(_ -> settled.fail(cause))));
+
+        return settled;
+    }
+
+    private Promise<Unit> releaseCredits(List<BlockId> credited) {
+        return Promise.allOf(credited.stream().map(storage::release).toList()).map(results -> logFailedReleases(credited.size(),
+                                                                                                                results));
+    }
+
+    private static Unit logFailedReleases(int credits, List<Result<Unit>> results) {
+        var failed = results.stream().filter(Result::isFailure).count();
+
+        if (failed > 0) {
+            log.warn("Rollback of a failed deploy could not release {} of {} chunk credit(s)", failed, credits);
+        }
+
+        return Unit.unit();
     }
 
     @Override

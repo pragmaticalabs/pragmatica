@@ -1939,6 +1939,20 @@ public interface AetherNode extends ManageableNode {
 
     /// #1555: a partition whose owner promotion waits for an operator (a divergent peer, or members unreachable
     /// past the alarm window). The gate raises each distinct block once.
+    ///
+    /// #1431: a peer whose event exceeds its read cap is raised as its own CRITICAL operator warning (a log line plus
+    /// a cluster event), naming the partition, the peer and the offset — never as an unreachable member.
+    private static Unit raiseOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
+        return block instanceof OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized
+               ? OperatorWarnings.raise(LOG,
+                                        sink,
+                                        OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                                        oversized.streamName() + "[" + oversized.partition() + "]",
+                                        "{}",
+                                        oversized.message())
+               : raiseOwnerPromotionBlock(block);
+    }
+
     private static Unit raiseOwnerPromotionBlock(OwnerActivation.ActivationBlock block) {
         // TODO(#1574): raise as a CRITICAL OperatorWarning once #1574 merges. Until then the operator-visible
         // surfaces are this WARN and the partition status read (`ownerActivationBlock` on STREAM_REPLICAS).
@@ -5629,7 +5643,8 @@ public interface AetherNode extends ManageableNode {
                                                                                         streamTieredReader,
                                                                                         streamForwardClient::readRemoteCatchup,
                                                                                         STREAM_CATCHUP_BATCH_SIZE),
-                                                              AetherNode::raiseOwnerPromotionBlock,
+                                                              block -> raiseOwnerPromotionBlock(operatorWarningSink,
+                                                                                                block),
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
                                                                                               .suspectTimeout()));
