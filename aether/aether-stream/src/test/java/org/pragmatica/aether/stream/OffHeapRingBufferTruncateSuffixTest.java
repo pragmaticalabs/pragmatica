@@ -108,9 +108,34 @@ class OffHeapRingBufferTruncateSuffixTest {
         }
     }
 
-    /// The reader half: records carry their offset, a generation and a fill the length of which varies with the
+    /// Deterministic pin of the reader half: a truncation and a rewrite land between a read's copy and its seqlock
+    /// check. The read must discard what it copied and answer from the state AFTER the cut, never return the copy
+    /// of the record that no longer exists.
+    @Test
+    void read_overlappingATruncation_isDiscardedAndRetried_notReturnedStale() {
+        try (var ring = offHeapRingBuffer(8, 4096)) {
+            appendDurable(ring, "p", 6);
+            var fired = new AtomicBoolean(false);
+
+            ring.truncationWindowProbe(() -> {
+                if (fired.compareAndSet(false, true)) {
+                    ring.truncateSuffix(2).unwrap();
+                    ring.append(bytes("owner-3"), 33L).unwrap();
+                }
+            });
+
+            var events = ring.readAppended(3, 1).unwrap();
+
+            assertThat(fired).as("the truncation overlapped the read").isTrue();
+            assertThat(texts(events)).as("the stale copy of p3 must not be returned").containsExactly("owner-3");
+        }
+    }
+
+    /// Stress sibling of the pin above: records carry their offset, a generation and a fill the length of which varies with the
     /// generation. A read assembled from the index entry of one lineage and the bytes of another has the wrong
-    /// length or a mixed fill, and is counted torn. Without the seqlock the writer's cut-and-reappend tears reads.
+    /// length or a mixed fill, and is counted torn. The tearing window is nanoseconds wide, so this is a smoke check
+    /// that nothing hangs, throws or tears under real contention; the pin that the seqlock is what prevents it is the
+    /// probe test above.
     @Test
     void read_neverReturnsARecordAssembledFromTwoLineages_whileTheTailIsCutAndRewritten() throws InterruptedException {
         try (var ring = offHeapRingBuffer(64, 64 * 1024)) {

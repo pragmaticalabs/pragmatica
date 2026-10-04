@@ -152,6 +152,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// head and the next append rewrites those slots, so a copy that straddles it can pair one record's index entry
     /// with another's bytes. Written only under `appendLock`.
     private volatile long truncationSeq;
+    /// Test-only seam (#1730): run by [#stableAcrossTruncation] after a read completed and before it checks
+    /// [#truncationSeq], the moment a truncation must be detected. Production never sets it.
+    private Runnable truncationWindowProbe = NO_READ_WINDOW_PROBE;
 
     /// Sentinel for "no notification pending".
     private static final long NO_PENDING_NOTIFICATION = Long.MIN_VALUE;
@@ -837,6 +840,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             if ((before & 1L) == 0L) {
                 var result = read.get();
 
+                truncationWindowProbe.run();
                 VarHandle.acquireFence();
                 if (truncationSeq == before) {
                     return result;
@@ -845,6 +849,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
             Thread.onSpinWait();
         }
+    }
+
+    /// Test seam (#1730): see [#truncationWindowProbe]. Set before any reader thread starts.
+    void truncationWindowProbe(Runnable probe) {
+        truncationWindowProbe = probe;
     }
 
     /// Native half of [#seedHead], behind the [#guardedAccess] boundary: the `closed` check above is a
