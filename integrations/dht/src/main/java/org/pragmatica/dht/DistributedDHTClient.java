@@ -256,7 +256,8 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         var timeout = config.get().operationTimeout().millis();
-        var remaining = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()), 1L);
+        var remaining = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()),
+                                 1L);
 
         return collector.remoteEvidence()
                         .timeout(timeSpan(remaining).millis())
@@ -338,7 +339,9 @@ public final class DistributedDHTClient implements DHTClient {
     /// the same atomic step as the write — replaces our accept while the stored entry is still exactly ours, and a key that
     /// was absent is deleted. Never a bare delete: a writer whose slot held the only copy would lose it. A newer write that
     /// landed in between is left alone.
-    private Promise<Boolean> rollBackLocalAccept(byte[] key, WriteStamp stamp, Promise<StorageEngine.Displaced> localPut) {
+    private Promise<Boolean> rollBackLocalAccept(byte[] key,
+                                                 WriteStamp stamp,
+                                                 Promise<StorageEngine.Displaced> localPut) {
         return localPut.fold(result -> node.storage()
                                            .restoreIfExactly(key,
                                                              stamp.version(),

@@ -136,7 +136,7 @@ public interface StorageEngine {
                                                       long epochTerm,
                                                       long epochCounter) {
         return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter).map(written -> new Displaced(written,
-                                                                                                                      Option.none()));
+                                                                                                                         Option.none()));
     }
 
     /// Roll a writer's own accept back to what the key held BEFORE it: while the stored entry is still exactly the given

@@ -229,7 +229,6 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                           epochCounter,
                                                           written,
                                                           epochGate.epochOrderingEnabled());
-
                          // read and write are ONE step under the map's per-key lock: nothing lands in between
                          displaced.set(existing);
 
