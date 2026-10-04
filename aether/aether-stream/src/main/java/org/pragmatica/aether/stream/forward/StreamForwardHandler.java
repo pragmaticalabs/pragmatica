@@ -450,6 +450,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                                      request.correlationId(),
                                                                      diverged.ownerEpoch(),
                                                                      diverged.resumeAt(),
+                                                                     diverged.boundaryKnown(),
                                                                      diverged.message()));
             log.info("Forwarded read diverged for {}[{}] fromOffset={} correlationId={}: {}",
                      request.streamName(),

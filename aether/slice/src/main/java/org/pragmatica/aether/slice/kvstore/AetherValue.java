@@ -2451,9 +2451,25 @@ public sealed interface AetherValue {
                                    : fenced);
             epochStarts = epochStarts == null
                           ? List.of()
-                          : List.copyOf(epochStarts.size() > EPOCH_STARTS_MAX
-                                        ? epochStarts.subList(epochStarts.size() - EPOCH_STARTS_MAX, epochStarts.size())
-                                        : epochStarts);
+                          : capped(epochStarts);
+        }
+
+        /// The newest [#EPOCH_STARTS_MAX] starts. The starts it drops are folded, not forgotten: the oldest kept start takes the
+        /// LOWEST offset of the dropped ones, so it stays a lower bound of every offset that a later epoch may have re-assigned
+        /// for a consumer older than it (`EpochValidation` resumes such a consumer at it: it may redeliver, it never skips).
+        /// Starts increase in offset, so the lowest dropped one is the oldest.
+        private static List<EpochStart> capped(List<EpochStart> starts) {
+            if (starts.size() <= EPOCH_STARTS_MAX) {
+                return List.copyOf(starts);
+            }
+
+            var dropped = starts.size() - EPOCH_STARTS_MAX;
+            var kept = new ArrayList<>(starts.subList(dropped, starts.size()));
+            var oldest = kept.getFirst();
+
+            kept.set(0, new EpochStart(oldest.epoch(), Math.min(oldest.startOffset(), starts.getFirst().startOffset())));
+
+            return List.copyOf(kept);
         }
 
         /// A record whose ISR is the owner alone: the shape of every record written before #1730, and of a

@@ -27,15 +27,13 @@ import org.pragmatica.lang.Result;
 public final class EpochValidation {
     private EpochValidation() {}
 
-    /// The epoch the consumer adopts when admitted, or the typed reason it may not read. `visibleHead` bounds the
-    /// resume offset of a consumer too old for the recorded history, so the fallback can redeliver but never skip.
+    /// The epoch the consumer adopts when admitted, or the typed reason it may not read.
     public static Result<Epoch> admit(String stream,
                                       int partition,
                                       Epoch ownerEpoch,
                                       List<EpochStart> starts,
                                       Epoch consumerEpoch,
-                                      long cursor,
-                                      long visibleHead) {
+                                      long cursor) {
         if (!startedFor(ownerEpoch, starts)) {
             return new StreamError.OwnerNotActivated(stream, partition).result();
         }
@@ -48,7 +46,7 @@ public final class EpochValidation {
             return new StreamError.StaleEpochRead(stream, partition, consumerEpoch, ownerEpoch).result();
         }
 
-        return judged(ownerEpoch, starts, consumerEpoch, cursor, visibleHead);
+        return judged(ownerEpoch, starts, consumerEpoch, cursor);
     }
 
     /// The record form of [#admit].
@@ -56,9 +54,8 @@ public final class EpochValidation {
                                       int partition,
                                       StreamPartitionOwnershipValue record,
                                       Epoch consumerEpoch,
-                                      long cursor,
-                                      long visibleHead) {
-        return admit(stream, partition, record.ownerEpoch(), record.epochStarts(), consumerEpoch, cursor, visibleHead);
+                                      long cursor) {
+        return admit(stream, partition, record.ownerEpoch(), record.epochStarts(), consumerEpoch, cursor);
     }
 
     /// The owner commits the start of its epoch before it serves, so a record whose newest start is another epoch belongs
@@ -69,13 +66,9 @@ public final class EpochValidation {
                                            .equals(ownerEpoch);
     }
 
-    private static Result<Epoch> judged(Epoch ownerEpoch,
-                                        List<EpochStart> starts,
-                                        Epoch consumerEpoch,
-                                        long cursor,
-                                        long visibleHead) {
-        if (predatesTheKeptHistory(starts, consumerEpoch)) {
-            return new StreamError.EpochDiverged(ownerEpoch, resumeForTooOld(starts, cursor, visibleHead)).result();
+    private static Result<Epoch> judged(Epoch ownerEpoch, List<EpochStart> starts, Epoch consumerEpoch, long cursor) {
+        if (consumerEpoch.compareTo(starts.getFirst().epoch()) < 0) {
+            return beyondTheKeptHistory(ownerEpoch, starts.getFirst().startOffset(), cursor);
         }
 
         return firstFollowing(starts, consumerEpoch).filter(next -> cursor > next.startOffset())
@@ -84,26 +77,17 @@ public final class EpochValidation {
                              .or(() -> Result.success(ownerEpoch));
     }
 
-    /// A consumer older than the oldest kept start cannot be placed against the boundaries that followed its epoch: either the
-    /// record dropped older starts (it holds its maximum), or the oldest kept epoch began at offset 0, so nothing older belongs to
-    /// this life of the partition (a re-created stream continues its ownership record's epochs and supersedes the earlier lives'
-    /// starts with its own, see `StreamPartitionOwnershipValue#restarted`).
-    private static boolean predatesTheKeptHistory(List<EpochStart> starts, Epoch consumerEpoch) {
-        return (startsAtZero(starts) || starts.size() >= StreamPartitionOwnershipValue.EPOCH_STARTS_MAX) && consumerEpoch.compareTo(starts.getFirst()
-                                                                                                                                          .epoch()) < 0;
-    }
-
-    private static boolean startsAtZero(List<EpochStart> starts) {
-        return starts.getFirst()
-                     .startOffset() == 0L;
-    }
-
-    /// Where a consumer too old to be placed resumes: the start of the new life when the oldest kept epoch began at 0, otherwise
-    /// the clamp's answer (it may redeliver, it never skips).
-    private static long resumeForTooOld(List<EpochStart> starts, long cursor, long visibleHead) {
-        return startsAtZero(starts)
-               ? 0L
-               : Math.min(cursor, visibleHead + 1L);
+    /// A consumer older than the oldest kept start cannot be placed against the boundaries that followed its epoch. The oldest
+    /// kept start's offset is the lowest offset any start after the consumer's epoch can have: the record drops the oldest
+    /// starts by folding their lowest offset into the oldest one it keeps (`StreamPartitionOwnershipValue#restarted`), and a
+    /// start that supersedes the earlier ones (a rebuilt ring, a re-created stream beginning at 0) leaves its own. So:
+    ///   - a cursor at or below it points only at offsets no later epoch can have re-assigned: admitted;
+    ///   - a cursor above it resumes AT it, at or below every offset that may have been re-assigned since the consumer's epoch,
+    ///     so it may redeliver and never skips, and is told the boundary is not exact (nothing proves a record was lost).
+    private static Result<Epoch> beyondTheKeptHistory(Epoch ownerEpoch, long lowestReassignable, long cursor) {
+        return cursor <= lowestReassignable
+               ? Result.success(ownerEpoch)
+               : new StreamError.EpochDiverged(ownerEpoch, lowestReassignable, false).result();
     }
 
     private static Option<EpochStart> firstFollowing(List<EpochStart> starts, Epoch consumerEpoch) {

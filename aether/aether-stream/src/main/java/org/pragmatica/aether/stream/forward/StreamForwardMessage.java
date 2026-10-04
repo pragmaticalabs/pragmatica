@@ -228,7 +228,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                long visibleHead,
                                List<ProvenanceEntry> history,
                                Epoch ownerEpoch,
-                               long divergenceResumeAt) implements StreamForwardMessage {
+                               long divergenceResumeAt,
+                               boolean divergenceBoundaryKnown) implements StreamForwardMessage {
         public ReadForwardResponse {
             events = List.copyOf(events);
             history = List.copyOf(history);
@@ -254,7 +255,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            bounds.visibleHead(),
                                            List.of(),
                                            Epoch.ZERO,
-                                           NO_DIVERGENCE);
+                                           NO_DIVERGENCE,
+                                           true);
         }
 
         public static ReadForwardResponse truncatedResponse(NodeId sender,
@@ -277,7 +279,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            bounds.visibleHead(),
                                            List.of(),
                                            Epoch.ZERO,
-                                           NO_DIVERGENCE);
+                                           NO_DIVERGENCE,
+                                           true);
         }
 
         public static ReadForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
@@ -291,7 +294,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            VisibleBounds.NONE,
                                            List.of(),
                                            Epoch.ZERO,
-                                           NO_DIVERGENCE);
+                                           NO_DIVERGENCE,
+                                           true);
         }
 
         /// This answer carrying the serving node's owner-epoch history (#1596): a replica catch-up read's.
@@ -306,7 +310,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            visibleHead,
                                            sourceHistory,
                                            ownerEpoch,
-                                           divergenceResumeAt);
+                                           divergenceResumeAt,
+                                           divergenceBoundaryKnown);
         }
 
         /// This answer stamped with the owner epoch the serving node answered under (#1730 phase 2 / #1873): the epoch a
@@ -322,7 +327,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            visibleHead,
                                            history,
                                            epoch,
-                                           divergenceResumeAt);
+                                           divergenceResumeAt,
+                                           divergenceBoundaryKnown);
         }
 
         /// A consumer read refused because its cursor belongs to a replaced lineage (#1730 phase 2 / #1873): the serving
@@ -332,6 +338,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                                                 String correlationId,
                                                                 Epoch ownerEpoch,
                                                                 long resumeAt,
+                                                                boolean boundaryKnown,
                                                                 String message) {
             return new ReadForwardResponse(sender,
                                            correlationId,
@@ -343,7 +350,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            VisibleBounds.NONE,
                                            List.of(),
                                            ownerEpoch,
-                                           resumeAt);
+                                           resumeAt,
+                                           boundaryKnown);
         }
 
         /// Whether this is the typed divergence answer.

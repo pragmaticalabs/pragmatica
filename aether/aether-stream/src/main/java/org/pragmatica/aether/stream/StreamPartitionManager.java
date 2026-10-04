@@ -873,9 +873,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      partition,
                                                                      record,
                                                                      consumerEpoch,
-                                                                     fromOffset,
-                                                                     visibleBounds(streamName, partition).map(VisibleBounds::visibleHead)
-                                                                                  .or(-1L)));
+                                                                     fromOffset));
     }
 
     /// Late-bind the committed ownership records (#1730 phase 2 / #1873): `AetherNode` wires the node's applied KV state.

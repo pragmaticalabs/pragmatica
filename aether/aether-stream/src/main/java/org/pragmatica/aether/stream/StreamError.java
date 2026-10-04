@@ -78,7 +78,16 @@ public sealed interface StreamError extends Cause {
     /// The consumer's cursor belongs to a lineage the partition no longer has (#1730 phase 2 / #1873, KIP-320): an owner
     /// restart or failover began epoch `ownerEpoch` at `resumeAt` and assigned the offsets above it again. The consumer
     /// re-reads from `resumeAt` and adopts `ownerEpoch`; reading on from its cursor would skip the new records.
-    record EpochDiverged(Epoch ownerEpoch, long resumeAt) implements StreamError {
+    ///
+    /// `boundaryKnown` says whether `resumeAt` is the exact start of the epoch that followed the consumer's own (the record
+    /// still holds it), or a conservative bound because the record no longer holds the starts between the consumer's epoch
+    /// and its oldest kept one: then `resumeAt` is at or below every offset that may have been re-assigned, so the consumer may
+    /// redeliver but never skips, and whether anything it processed was really lost is not known.
+    record EpochDiverged(Epoch ownerEpoch, long resumeAt, boolean boundaryKnown) implements StreamError {
+        public EpochDiverged(Epoch ownerEpoch, long resumeAt) {
+            this(ownerEpoch, resumeAt, true);
+        }
+
         @Override
         public String message() {
             return "Consumer cursor belongs to a replaced lineage: owner epoch %s began at offset %d, resume there".formatted(ownerEpoch,

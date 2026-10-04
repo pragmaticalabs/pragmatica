@@ -1137,11 +1137,38 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// per lineage. The next pass runs at once: the cursor moved, so more may be waiting.
     private Promise<Boolean> rewind(ConsumerKey key, ConsumerState state, StreamError.EpochDiverged diverged) {
         var from = state.cursor();
+        var resume = Math.min(from, diverged.resumeAt());
 
-        state.rewindTo(diverged.resumeAt(), diverged.ownerEpoch());
-        warnRewound(key, from, diverged);
+        state.rewindTo(resume, diverged.ownerEpoch());
+
+        if (resume < from) {
+            announceRewind(key, from, resume, diverged);
+        }
 
         return Promise.success(true);
+    }
+
+    /// Only a re-seek that moves the cursor is announced, and only as a loss witness when the owner named the exact start of
+    /// the epoch that followed this consumer's own. When the record no longer held that boundary (the consumer was older than
+    /// its oldest kept start) the owner gave a bound at or below every offset that may have been re-assigned: the group may
+    /// re-read records that were never lost, so it is logged, not raised to the operator.
+    @Contract
+    private void announceRewind(ConsumerKey key, long from, long resume, StreamError.EpochDiverged diverged) {
+        if (diverged.boundaryKnown()) {
+            warnRewound(key, from, diverged);
+
+            return;
+        }
+
+        LOG.log(System.Logger.Level.INFO,
+                "Consumer group {0} on {1}[{2}] was at offset {3}, older than the partition's recorded epoch history; "
+               + "it re-reads from {4} under epoch {5} (records may be redelivered; whether any were lost is not known)",
+                key.groupId(),
+                key.streamName(),
+                key.partition(),
+                from,
+                resume,
+                diverged.ownerEpoch());
     }
 
     @Contract

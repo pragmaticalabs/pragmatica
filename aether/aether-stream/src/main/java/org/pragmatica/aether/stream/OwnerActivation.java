@@ -156,6 +156,7 @@ public final class OwnerActivation {
         NOT_OWNER("This node is not the owner of the partition after refreshing its committed view"),
         HOLDER_UNREACHABLE("A live placement member did not answer the watermark probe and may hold a higher watermark"),
         CATCH_UP_SHORT("The catch-up did not reach the highest live holder's watermark"),
+        NO_RING("The partition's ring is not materialized here, so there is no offset an epoch could begin at"),
         LINEAGE_NOT_COMMITTED("The owner's epoch start was not committed (the guarded write was refused or did not apply)"),
         IN_PROGRESS("An activation of this partition is already running");
         private final String message;
@@ -428,7 +429,18 @@ public final class OwnerActivation {
                && claimsOwnership(stream, partition, current)
                && Option.option(activated.get(PartitionKey.partitionKey(stream, partition)))
                         .filter(recorded -> sameOwnership(recorded, current))
-                        .isPresent();
+                        .isPresent()
+               && sameRing(stream, partition);
+    }
+
+    /// #1873: the activation belongs to the ring it committed the lineage for. A ring rebuilt under an unchanged record (a
+    /// re-created stream, a lazy re-materialization) has offsets this activation never saw, so it is NOT activated until the gate
+    /// re-runs and bumps the epoch: the record alone cannot tell the two rings apart. A partition whose lineage was never
+    /// committed on this node (a first owner with no record) has nothing to compare.
+    private boolean sameRing(String stream, int partition) {
+        return Option.option(activatedIncarnation.get(PartitionKey.partitionKey(stream, partition)))
+                     .map(activatedOn -> activatedOn == ringIncarnation.of(stream, partition))
+                     .or(true);
     }
 
     static boolean sameOwnership(Option<StreamPartitionOwnershipValue> left,
@@ -548,6 +560,11 @@ public final class OwnerActivation {
                                                      .equals(committed.ownerEpoch()))
                                .isPresent();
         var incarnation = ringIncarnation.of(stream, partition);
+
+        if (lineage != LineageCommit.NONE && incarnation < 0L) {
+            return ActivationError.NO_RING.promise();
+        }
+
         var restarted = started && !Long.valueOf(incarnation).equals(activatedIncarnation.get(key));
 
         if (lineage == LineageCommit.NONE || started && !restarted) {
