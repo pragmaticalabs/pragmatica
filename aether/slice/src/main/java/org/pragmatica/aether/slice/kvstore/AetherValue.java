@@ -2605,8 +2605,15 @@ public sealed interface AetherValue {
                                                      starts);
         }
 
+        /// `next` appended after the starts it does not supersede: an epoch that begins at or below an earlier start re-assigns
+        /// those offsets (a restart that lost its tail, a failover to a shorter copy, a re-created stream beginning at 0), so the
+        /// earlier starts at or above it describe records that no longer exist and are dropped. Verdicts for a consumer older
+        /// than `next` are unchanged (it is judged against the first start that follows its epoch, which is `next` or an earlier
+        /// one that `next` supersedes); only a consumer older than EVERY kept start can tell a new life from an old one.
         private static List<EpochStart> append(List<EpochStart> starts, EpochStart next) {
-            var all = new ArrayList<>(starts);
+            var all = new ArrayList<>(starts.stream()
+                                            .filter(start -> start.startOffset() < next.startOffset())
+                                            .toList());
 
             all.add(next);
 

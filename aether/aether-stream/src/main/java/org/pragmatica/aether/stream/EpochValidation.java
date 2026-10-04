@@ -73,7 +73,7 @@ public final class EpochValidation {
                                         long cursor,
                                         long visibleHead) {
         if (predatesTheKeptHistory(starts, consumerEpoch)) {
-            return new StreamError.EpochDiverged(ownerEpoch, Math.min(cursor, visibleHead + 1L)).result();
+            return new StreamError.EpochDiverged(ownerEpoch, resumeForTooOld(starts, cursor, visibleHead)).result();
         }
 
         return firstFollowing(starts, consumerEpoch).filter(next -> cursor > next.startOffset())
@@ -82,10 +82,25 @@ public final class EpochValidation {
                                                     .or(() -> Result.success(ownerEpoch));
     }
 
-    /// Once the record holds its maximum of starts it may have dropped older ones, so an epoch older than the oldest kept
-    /// cannot be placed against the boundaries that followed it.
+    /// A consumer older than the oldest kept start cannot be placed against the boundaries that followed its epoch: either the
+    /// record dropped older starts (it holds its maximum), or the oldest kept epoch began at offset 0, so nothing older belongs to
+    /// this life of the partition (a re-created stream continues its ownership record's epochs and supersedes the earlier lives'
+    /// starts with its own, see `StreamPartitionOwnershipValue#restarted`).
     private static boolean predatesTheKeptHistory(List<EpochStart> starts, Epoch consumerEpoch) {
-        return starts.size() >= StreamPartitionOwnershipValue.EPOCH_STARTS_MAX && consumerEpoch.compareTo(starts.getFirst().epoch()) < 0;
+        return (startsAtZero(starts) || starts.size() >= StreamPartitionOwnershipValue.EPOCH_STARTS_MAX)
+               && consumerEpoch.compareTo(starts.getFirst().epoch()) < 0;
+    }
+
+    private static boolean startsAtZero(List<EpochStart> starts) {
+        return starts.getFirst().startOffset() == 0L;
+    }
+
+    /// Where a consumer too old to be placed resumes: the start of the new life when the oldest kept epoch began at 0, otherwise
+    /// the clamp's answer (it may redeliver, it never skips).
+    private static long resumeForTooOld(List<EpochStart> starts, long cursor, long visibleHead) {
+        return startsAtZero(starts)
+               ? 0L
+               : Math.min(cursor, visibleHead + 1L);
     }
 
     private static Option<EpochStart> firstFollowing(List<EpochStart> starts, Epoch consumerEpoch) {

@@ -155,8 +155,24 @@ class StreamPartitionOwnershipValueTest {
         assertThat(next.owner()).isEqualTo(owner);
         assertThat(next.ownershipTerm()).isEqualTo(4L);
         assertThat(next.ownerEpoch()).isEqualTo(epoch.withCounter(4L)).isNotEqualTo(epoch);
-        assertThat(next.epochStarts()).containsExactly(new AetherValue.EpochStart(epoch, 7L), new AetherValue.EpochStart(epoch.withCounter(4L), 3L));
+        assertThat(next.epochStarts()).as("the new epoch re-assigns offsets from 3, so the start at 7 is superseded")
+                                      .containsExactly(new AetherValue.EpochStart(epoch.withCounter(4L), 3L));
         assertThat(next.isr()).containsExactly(owner, peer);
+    }
+
+    /// #1873, re-create: a rebuilt ring that begins at or below an earlier start re-assigns those offsets, so the starts at or
+    /// above it are superseded and dropped; the record's starts stay increasing in offset.
+    @Test
+    void restarted_atOrBelowEarlierStarts_dropsTheSupersededOnes() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+        var e1 = Epoch.epoch(1L, 2L, 1L);
+        var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, e1, 1L, HlcTimestamp.ZERO, java.util.List.of(owner), 1L).withEpochStart(0L);
+        var second = v.restarted(3L, HlcTimestamp.ZERO);
+        var third = second.restarted(0L, HlcTimestamp.ZERO);
+
+        assertThat(second.epochStarts()).containsExactly(new AetherValue.EpochStart(e1, 0L), new AetherValue.EpochStart(e1.withCounter(2L), 3L));
+        assertThat(third.epochStarts()).as("a new life begins at offset 0: nothing before it survives")
+                                       .containsExactly(new AetherValue.EpochStart(e1.withCounter(3L), 0L));
     }
 
     /// Bounded, newest kept: a consumer older than what is kept falls back to the conservative resume.

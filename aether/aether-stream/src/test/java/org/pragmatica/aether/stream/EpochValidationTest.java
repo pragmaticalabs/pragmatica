@@ -78,6 +78,23 @@ class EpochValidationTest {
         result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnerNotActivated.class));
     }
 
+    /// #1873, re-create: destroy removes only the stream's config, so the ownership record outlives the stream and a second life
+    /// continues its epochs. The new life's first start is offset 0 and supersedes the earlier lives' starts, so a consumer of an
+    /// EARLIER life (older than the oldest kept start, which began at 0) is refused from the start of the new life, whatever its
+    /// cursor: before, a consumer at E1 with a low cursor was admitted and skipped the new life's first records.
+    @Test
+    void consumerOfAnEarlierLife_isRefusedFromTheStartOfTheNewLife_whateverItsCursor() {
+        var fresh = List.of(start(E3, 0L));
+
+        for (var cursor : new long[]{0L, 2L, 500L}) {
+            var result = EpochValidation.admit(STREAM, 0, E3, fresh, E1, cursor, 9L);
+
+            assertThat(result.isFailure()).as("cursor " + cursor).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class,
+                                                                              diverged -> assertThat(diverged.resumeAt()).isZero()));
+        }
+    }
+
     /// The record keeps only the newest starts. A consumer older than the oldest kept cannot be placed: it resumes from
     /// the head (the clamp's answer: it may redeliver, it never skips).
     @Test
