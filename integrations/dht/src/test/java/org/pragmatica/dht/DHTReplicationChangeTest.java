@@ -607,7 +607,8 @@ class DHTReplicationChangeTest {
         assertThat(put.isResolved()).as("arming: one non-stale reply is not the end of the evidence").isFalse();
 
         cluster.deliverHeldTo(replicas.get(2));
-        var outcome = put.await();
+        // well inside the 500 ms operation timeout: a put whose remotes ALL replied is not held to the timeout
+        var outcome = put.await(org.pragmatica.lang.io.TimeSpan.timeSpan(150).millis());
 
         assertThat(outcome.isSuccess()).as("acknowledged per the limit once every remote replied: " + outcome).isTrue();
         assertThat(cluster.nodes.get(writer).staleRefusal()).isEqualTo(Option.none());
