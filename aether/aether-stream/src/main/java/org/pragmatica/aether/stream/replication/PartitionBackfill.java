@@ -939,8 +939,14 @@ public final class PartitionBackfill {
                                          List<ReplicaDescriptor> replicas,
                                          long selfConfirmed,
                                          long ownerHead) {
-        return ownerHead > selfConfirmed
-               ? backfillFromOwner(streamName, partition, owner, replicas)
+        if (ownerHead > selfConfirmed) {
+            return backfillFromOwner(streamName, partition, owner, replicas);
+        }
+
+        // #1890 (v1890): a row above a non-empty owner's head was confirmed against an earlier lineage; re-acking it
+        // would let this owner count offsets the copy holds from another owner. Compare and cap at the owner's head.
+        return ownerHead >= 0 && ownerHead < selfConfirmed
+               ? verifyAgainstOwnerTail(streamName, partition, owner, ownerHead, replicas)
                : reverifyNoOp(streamName, partition, selfConfirmed, ownerHead);
     }
 
@@ -1001,7 +1007,12 @@ public final class PartitionBackfill {
                                             int partition,
                                             NodeId owner,
                                             List<ReplicaDescriptor> replicas) {
-        var fromOffset = selfWatermark.localWatermark(streamName, partition) + 1;
+        var local = selfWatermark.localWatermark(streamName, partition);
+        // #1730 phase 2 (v1890): a copy below the owner is compared over its last window too, not only pulled from its
+        // head + 1; the apply skips an identical held record and quarantines a different one.
+        var fromOffset = local < 0
+                         ? 0L
+                         : Math.max(0L, local - TAIL_VERIFY_WINDOW + 1);
         var request = catchupRequest(owner, streamName, partition, fromOffset);
 
         log.debug("Backfill {}[{}]: owner source={} from offset {} [authoritative HRW owner]",
@@ -1016,7 +1027,7 @@ public final class PartitionBackfill {
                         .flatMap(response -> applyOwnerResponse(streamName,
                                                                 partition,
                                                                 owner,
-                                                                fromOffset - 1,
+                                                                local,
                                                                 replicas,
                                                                 response));
     }
