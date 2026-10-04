@@ -95,6 +95,18 @@ class EpochValidationTest {
         }
     }
 
+    /// Control for the rule above: a TRIMMED history of one life (the oldest kept start is above offset 0) is not a new life. A
+    /// consumer older than it resumes at `min(cursor, head + 1)` (it may redeliver, it never skips), never at 0.
+    @Test
+    void trimmedHistoryOfTheSameLife_neverResumesFromZero() {
+        var kept = java.util.stream.IntStream.range(0, 16).mapToObj(i -> start(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L)).toList();
+        var result = EpochValidation.admit(STREAM, 0, kept.getLast().epoch(), kept, E1, 250L, 300L);
+
+        result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class,
+                                                                          diverged -> assertThat(diverged.resumeAt()).isEqualTo(250L)));
+        assertThat(result.isFailure()).isTrue();
+    }
+
     /// The record keeps only the newest starts. A consumer older than the oldest kept cannot be placed: it resumes from
     /// the head (the clamp's answer: it may redeliver, it never skips).
     @Test

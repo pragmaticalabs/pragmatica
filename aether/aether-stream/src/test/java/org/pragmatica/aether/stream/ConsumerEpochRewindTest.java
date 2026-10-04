@@ -168,6 +168,32 @@ class ConsumerEpochRewindTest {
         assertThat(reads.getFirst()).as("the first read presents the stored claim").isEqualTo("from=5,epoch=1");
     }
 
+    /// A divergence is answered by a re-read from `resumeAt`, never by the stream's start policy: a group on a `latest` stream
+    /// that is told its lineage was replaced redelivers from the new epoch's start instead of jumping to the head, which would
+    /// skip the new records (the defect class #1873 closes).
+    @Test
+    void divergence_onALatestPolicyStream_rereadsFromResumeAt_andDoesNotJumpToTheHead() throws InterruptedException {
+        manager.createStream(StreamConfig.streamConfig("latest-orders", 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000), "latest"));
+        var owner = scriptedOwner((from, claim) -> {
+            if (claim.equals(E1) && from == 5L) {
+                return new StreamError.EpochDiverged(E2, 3L).promise();
+            }
+
+            return claim.equals(E2) && from == 3L
+                   ? Promise.success(new StreamPartitionManager.EpochRead(List.of(event(3, "new-3"), event(4, "new-4")), E2))
+                   : Promise.success(new StreamPartitionManager.EpochRead(List.of(), claim));
+        });
+
+        runtime = StreamConsumerRuntime.streamConsumerRuntime(manager,
+                                                              DeadLetterHandler.deadLetterHandler(),
+                                                              checkpoints(Cursor.cursor(5L, org.pragmatica.aether.slice.generation.RewindEpoch.NONE, E1), new java.util.concurrent.atomic.AtomicReference<>()),
+                                                              owner);
+        runtime.subscribe("latest-orders", 0, ConsumerConfig.consumerConfig("group-1"), recording(), org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE, FENCE);
+        keepWaking(() -> delivered.size() >= 2);
+
+        assertThat(delivered).startsWith("3:new-3", "4:new-4");
+    }
+
     /// The owner epoch a consumer adopted is what its next checkpoint records, so the claim survives a restart.
     @Test
     void checkpoint_recordsTheOwnerEpochTheConsumerAdopted() throws InterruptedException {
