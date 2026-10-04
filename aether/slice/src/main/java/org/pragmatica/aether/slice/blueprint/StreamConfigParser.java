@@ -569,7 +569,8 @@ public interface StreamConfigParser {
         var maxEventSize = optionalLong(section,
                                         "max-event-size",
                                         StreamValues::size,
-                                        StreamConfig.DEFAULT.maxEventSizeBytes()).flatMap(size -> fitsOneFrame(section, size));
+                                        StreamConfig.DEFAULT.maxEventSizeBytes()).flatMap(size -> fitsOneFrame(section,
+                                                                                                               size));
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);

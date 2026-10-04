@@ -606,7 +606,9 @@ public final class OwnerActivation {
         var silent = new java.util.ArrayList<NodeId>();
 
         for (var i = 0; i < peers.size(); i++) {
-            var failed = results.get(i).fold(cause -> !(cause instanceof OwnerPeerReads.EventExceedsReadCap), _ -> false);
+            var failed = results.get(i)
+                                .fold(cause -> !(cause instanceof OwnerPeerReads.EventExceedsReadCap),
+                                      _ -> false);
 
             if (failed) {
                 silent.add(peers.get(i));

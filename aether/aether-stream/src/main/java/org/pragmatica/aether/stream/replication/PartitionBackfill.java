@@ -141,10 +141,10 @@ public final class PartitionBackfill {
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
     private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs;
-
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
     private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
 
@@ -1515,11 +1515,13 @@ public final class PartitionBackfill {
         var oversizedAt = oversizedIndex(results);
 
         if (oversizedAt >= 0) {
-            return oversizedPeer(streamName, partition, peers.get(oversizedAt), failureOf(results.get(oversizedAt)).or((Cause) null));
+            return oversizedPeer(streamName,
+                                 partition,
+                                 peers.get(oversizedAt),
+                                 failureOf(results.get(oversizedAt)).or((Cause) null));
         }
 
         reportedOversized.remove(partitionKey(streamName, partition));
-
         if (results.stream().anyMatch(Result::isFailure)) {
             return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
         }

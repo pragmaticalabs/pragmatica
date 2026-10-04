@@ -19,7 +19,6 @@ public interface StreamEventLimits {
     /// a `ReplicateEvents` envelope is 324 bytes and a `CatchupResponse` 306 bytes plus 72 per history entry, for a stream
     /// name of 192 characters and a node id of 65.
     long EVENT_ENVELOPE_RESERVE_BYTES = 4096L;
-
     /// The ceiling a declared `max-event-size` may not exceed.
     long MAX_EVENT_SIZE_BYTES = OutboundMessageLimit.MAX_TRANSFER_BYTES - EVENT_ENVELOPE_RESERVE_BYTES;
 }

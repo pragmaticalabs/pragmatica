@@ -5648,7 +5648,6 @@ public interface AetherNode extends ManageableNode {
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
                                                                                               .suspectTimeout()));
-
         // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does
         streamPartitionBackfill.blockAlarm(block -> raiseOwnerPromotionBlock(operatorWarningSink, block));
         streamPartitionManager.ownerServeGate(ownerActivation::admit);

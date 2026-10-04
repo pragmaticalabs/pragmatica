@@ -109,8 +109,11 @@ public sealed interface StreamDeclarationError extends Cause {
     record ValueAboveMaximum(String alias, String key, String value, long maximum) implements StreamDeclarationError {
         @Override
         public String message() {
-            return "Stream resource '" + alias + "' has " + key + " = '" + value + "', above the maximum of " + maximum
-                   + " bytes: one event must fit a single replication or catch-up frame";
+            return "Stream resource '" + alias
+                 + "' has " + key
+                 + " = '" + value
+                 + "', above the maximum of " + maximum
+                 + " bytes: one event must fit a single replication or catch-up frame";
         }
     }
 
