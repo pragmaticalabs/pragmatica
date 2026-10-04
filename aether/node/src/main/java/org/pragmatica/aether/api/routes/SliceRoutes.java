@@ -63,6 +63,7 @@ public final class SliceRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT = new ManagementServerError.MissingField("artifact");
     private static final Cause MISSING_INSTANCES = new ManagementServerError.MissingField("instances");
     private static final Cause BLUEPRINT_NOT_FOUND = new ManagementServerError.NotFound("Blueprint not found");
+
     private static final Cause SLICE_NOT_LOADED = new ManagementServerError.NotFound("Slice not loaded or no per-slice config available");
 
     private static final Cause NOT_IN_BLUEPRINT = new ManagementServerError.Conflict("Slice is not part of any active blueprint. Deploy via blueprint.");
