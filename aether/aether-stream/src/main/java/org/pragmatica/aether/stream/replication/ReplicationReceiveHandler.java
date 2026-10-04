@@ -412,7 +412,7 @@ public final class ReplicationReceiveHandler {
         // the owner's barrier degrades honestly instead of over-counting.
         durability.sync(streamName, partition)
                   .onSuccess(_ -> transport.send(message.governorId(),
-                                                 replicateAck(self, streamName, partition, highestHeld)))
+                                                 replicateAck(self, streamName, partition, highestHeld, message.ownerEpoch())))
                   .onFailure(cause -> reportWithheldAck(streamName, partition, highestHeld, cause));
     }
 

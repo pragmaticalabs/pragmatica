@@ -93,6 +93,11 @@ public interface ReplicationManager extends AutoCloseable {
 
     ReplicaRegistry registry();
     Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks);
+
+    /// Bind where the committed owner epoch is read (#1730 phase 2): a replica's confirmation counts only while it was made under
+    /// the epoch now in force. Set once at wiring; the default manager ignores it.
+    @Contract
+    default void ownerEpochs(org.pragmatica.aether.stream.StreamOwnerEpochSource source) {}
     /// The highest offset at least `minAcks` DISTINCT non-self replicas have acknowledged for
     /// `(stream, partition)` — the non-blocking reading of the same condition [#awaitReplication] waits
     /// for (#1235). `-1` when fewer replicas than `minAcks` have acknowledged anything; [Long#MAX_VALUE]

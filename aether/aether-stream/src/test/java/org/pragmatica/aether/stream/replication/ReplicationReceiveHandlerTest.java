@@ -89,6 +89,21 @@ class ReplicationReceiveHandlerTest {
         assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(12L);
     }
 
+    /// B11: the ack carries the owner epoch of the batch it confirms, so the owner counts it only under that epoch.
+    @Test
+    void ack_carriesTheOwnerEpochOfTheBatch() {
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var epoch = Epoch.epoch(1L, 2L, 3L);
+        var handler = replicationReceiveHandler(SELF,
+                                                (_, _, _, _, _, _) -> Result.success(0L),
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> {});
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(2), timestamps(2), epoch));
+
+        assertThat(acks).singleElement().satisfies(ack -> assertThat(ack.ownerEpoch()).isEqualTo(epoch));
+    }
+
     @Test
     void midBatchApplyFailure_acksOnlyContiguousPrefix_andTriggersBackfillRepair() {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();

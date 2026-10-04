@@ -1256,7 +1256,7 @@ public final class PartitionBackfill {
     private void ackBackfillToOwner(String streamName, int partition, long watermark) {
         hrwOwner(streamName, partition).filter(owner -> !owner.equals(self) && current.getAsBoolean())
                 .onPresent(owner -> replicationTransport.send(owner,
-                                                              replicateAck(self, streamName, partition, watermark)));
+                                                              replicateAck(self, streamName, partition, watermark, quarantine.committedEpoch(streamName, partition))));
     }
 
     /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
