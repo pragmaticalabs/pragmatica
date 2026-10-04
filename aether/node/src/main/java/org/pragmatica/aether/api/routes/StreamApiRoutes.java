@@ -649,10 +649,10 @@ public final class StreamApiRoutes implements RouteSource {
                                                         String version,
                                                         String tailLiteral) {
         return new ManagementServerError.NotImplemented("Tail subscription via SSE/WebSocket is deferred to issue #212. "
-                                                        + "For polling-based tail, use GET /api/streams/" + namespace
-                                                        + "/" + stream
-                                                        + "/" + version
-                                                        + "/events?fromOffset=N&maxEvents=K.").result();
+                                                       + "For polling-based tail, use GET /api/streams/" + namespace
+                                                       + "/" + stream
+                                                       + "/" + version
+                                                       + "/events?fromOffset=N&maxEvents=K.").result();
     }
 
     /// Spec event-stream-namespaces §16: paginated event read for polling-based tail subscription.
