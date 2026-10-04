@@ -23,4 +23,4 @@
 - **`STREAM_CONFIG_CHANGE_NOT_APPLIED` (WARNING).** A committed lowering of a running stream's `confirmation_factor` is not applied
   online (durability only increases); it now raises this event once, instead of being silently ignored. Documented in
   `bootstrap-config.md` and `guarantees.md`.
-- **Wire:** `StreamPartitionOwnershipValue` also gains `failoverRefusalSeq`; SystemTags 1748 `StreamConfigChangeNotApplied`.
+- **Wire:** `StreamPartitionOwnershipValue` also gains `failoverRefusalSeq`; SystemTags 1750 `StreamConfigChangeNotApplied`.

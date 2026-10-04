@@ -420,7 +420,7 @@ TAG  org.pragmatica.aether.api.ClusterEvent$ScaleUp 282
 TAG  org.pragmatica.aether.api.ClusterEvent$SelfDrainInitiated 283
 TAG  org.pragmatica.aether.api.ClusterEvent$Severity 284
 TAG  org.pragmatica.aether.api.ClusterEvent$SliceFailure 285
-TAG  org.pragmatica.aether.api.ClusterEvent$StreamConfigChangeNotApplied 1748
+TAG  org.pragmatica.aether.api.ClusterEvent$StreamConfigChangeNotApplied 1750
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamDeleted 286
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamFailoverRefused 1744
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamFailoverResolved 1745
