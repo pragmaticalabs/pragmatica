@@ -2660,6 +2660,10 @@ public sealed interface AetherValue {
     /// in which case the oldest dropped epoch, the one that really began at `startOffset` (a re-fold keeps the older). So an
     /// entry proves "every epoch from `coversFrom` to `epoch` began at or above `startOffset`, and `coversFrom` began AT it",
     /// and a loss from `startOffset` is proven for a consumer only when `coversFrom` is later than the consumer's epoch.
+    /// A null or [Epoch#ZERO] `coversFrom` means "unfolded" and is read as the entry's own epoch (the two-argument constructor, and a
+    /// value that carries no fold). The substitution is deliberate and is pinned by a round trip through the node codec in
+    /// which a FOLDED entry's `coversFrom` must come back unchanged (`EpochStartCodecTest`), so a codec that dropped the field
+    /// would not hide behind it.
     @Codec
     record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom) {
         public EpochStart {
