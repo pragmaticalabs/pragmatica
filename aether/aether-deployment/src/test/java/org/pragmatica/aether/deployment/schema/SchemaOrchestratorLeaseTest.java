@@ -83,7 +83,7 @@ class SchemaOrchestratorLeaseTest {
     private static final String DATASOURCE = "database.orders";
     private static final String COORDS = "org.example:my-app:1.0.0";
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
-    private static final Cause NOT_IN_REPOSITORY = Causes.cause("Artifact not present in local repository");
+    private static final Cause NOT_IN_REPOSITORY = (org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository";
 
     private static final DatabaseConnectorConfig STUB_CONFIG = new DatabaseConnectorConfig(Option.none(),
                                                                                            Option.some(DatabaseType.POSTGRESQL),

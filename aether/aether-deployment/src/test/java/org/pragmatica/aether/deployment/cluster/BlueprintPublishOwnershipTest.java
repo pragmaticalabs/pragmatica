@@ -108,7 +108,7 @@ class BlueprintPublishOwnershipTest {
     private static final Artifact SLICE = Artifact.artifact("org.example:orders-api:1.0.0").unwrap();
     private static final String SLICE_CLASS = "org.example.orders.OrdersSlice";
     private static final String DATASOURCE = "database";
-    private static final Cause NOT_IN_REPOSITORY = Causes.cause("Artifact not present in local repository");
+    private static final Cause NOT_IN_REPOSITORY = (org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository";
     private static final Cause NOT_IN_STORE = Causes.cause("Artifact not present in artifact store");
 
     private static final String SLICE_STANZA = """

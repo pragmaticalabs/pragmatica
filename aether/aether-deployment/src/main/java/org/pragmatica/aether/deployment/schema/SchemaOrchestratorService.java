@@ -1006,11 +1006,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
-        return repository.locate(artifact, "blueprint")
-                         .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
-                         .orElse(() -> repository.locate(artifact)
-                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
-                         .orElse(() -> artifactStore.resolve(artifact));
+        return Repository.orElseWhenAbsent(Repository.orElseWhenAbsent(repository.locate(artifact, "blueprint")
+                                                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes),
+                                                                       () -> repository.locate(artifact)
+                                                                                       .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)),
+                                           () -> artifactStore.resolve(artifact));
     }
 
     @SuppressWarnings("JBCT-EX-01")

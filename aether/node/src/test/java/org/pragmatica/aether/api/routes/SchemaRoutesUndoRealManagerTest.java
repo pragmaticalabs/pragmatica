@@ -198,7 +198,7 @@ class SchemaRoutesUndoRealManagerTest {
     }
 
     private static Repository noLocalRepository() {
-        return _ -> Causes.cause("Artifact not present in local repository").promise();
+        return _ -> ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
     }
 
     /// `schema/orders/U<n>__*.sql` — the layout `BlueprintArtifactParser` maps to the

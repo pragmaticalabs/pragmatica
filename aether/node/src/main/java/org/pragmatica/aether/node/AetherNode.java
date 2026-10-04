@@ -254,6 +254,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
@@ -9363,12 +9364,9 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(CacheDhtClient.class, new CacheDhtClient(cacheDhtClient));
     }
 
+    /// A real composite (#1927): every configured repository is consulted in order, falling through only when one answered "absent".
     private static Repository compositeRepository(List<Repository> repositories) {
-        if (repositories.isEmpty()) {
-            return artifact -> Causes.cause("No repositories configured").promise();
-        }
-
-        return repositories.getFirst();
+        return CompositeRepository.compositeRepository(repositories);
     }
 
     private static void registerRuntimeExtensions(SpiResourceProvider spi,
