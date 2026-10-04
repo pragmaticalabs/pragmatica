@@ -10,13 +10,15 @@ public interface HttpEmailSender {
     /// Sends an email message and returns the response body (typically a message ID).
     Promise<String> send(EmailMessage message);
 
-    /// Creates an HttpEmailSender with default HTTP operations.
+    /// Creates an HttpEmailSender with default HTTP operations. The sender builds them, so it owns them:
+    /// closing the sender (it is [org.pragmatica.lang.io.AsyncCloseable]) closes them (#1097).
     static HttpEmailSender httpEmailSender(HttpEmailConfig config) {
-        return httpEmailSender(config, JdkHttpOperations.jdkHttpOperations());
+        return HttpEmailSenderCore.create(config, JdkHttpOperations.jdkHttpOperations(), true);
     }
 
-    /// Creates an HttpEmailSender with custom HTTP operations.
+    /// Creates an HttpEmailSender with custom HTTP operations. The caller owns what it passes in: closing
+    /// the sender never closes these operations.
     static HttpEmailSender httpEmailSender(HttpEmailConfig config, HttpOperations operations) {
-        return HttpEmailSenderCore.create(config, operations);
+        return HttpEmailSenderCore.create(config, operations, false);
     }
 }

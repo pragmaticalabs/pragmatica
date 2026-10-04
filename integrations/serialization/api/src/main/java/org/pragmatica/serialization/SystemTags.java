@@ -593,6 +593,18 @@ public interface SystemTags {
         // first-committed content digest per artifact file (#1778)
         pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
         pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // the DHT replication a worker's projection carries (#1777 track 1) — next free after 2118
+        pin(table, 2119, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication");
+        // #1777 R1b: the committed DHT replication change, the members' reports, and the operator events
+        pin(table, 2120, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtReplicationChangeKey");
+        pin(table, 2121, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationChangeValue");
+        pin(table, 2122, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtReplicationReportKey");
+        pin(table, 2123, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationReportValue");
+        pin(table, 2124, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationUnsettled");
+        pin(table, 2125, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationSettled");
+        pin(table, 2126, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationStage");
+        pin(table, 2127, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStale");
+        pin(table, 2128, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStaleResolved");
         // ---- 2119..16383 RESERVED ----
         rejectDuplicateTags(table);
 

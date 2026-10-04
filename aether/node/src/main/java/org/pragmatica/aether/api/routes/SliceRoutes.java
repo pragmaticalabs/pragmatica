@@ -60,10 +60,10 @@ import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
 public final class SliceRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
-
-    private static final Cause MISSING_ARTIFACT_OR_INSTANCES = new ManagementServerError.InvalidRequest("Missing 'artifact' or 'instances' field");
-
+    private static final Cause MISSING_ARTIFACT = new ManagementServerError.MissingField("artifact");
+    private static final Cause MISSING_INSTANCES = new ManagementServerError.MissingField("instances");
     private static final Cause BLUEPRINT_NOT_FOUND = new ManagementServerError.NotFound("Blueprint not found");
+    private static final Cause SLICE_NOT_LOADED = new ManagementServerError.NotFound("Slice not loaded or no per-slice config available");
 
     private static final Cause SLICE_NOT_LOADED = new ManagementServerError.NotFound("Slice not loaded or no per-slice config available");
 
@@ -142,9 +142,9 @@ public final class SliceRoutes implements RouteSource {
         // Sequential, not Result.all: a composite of two refusals is not HttpStatusAware, so the 400 would be lost
         // and a request missing both fields would answer 500 (#954).
         return Option.option(request.artifact())
-                     .toResult(MISSING_ARTIFACT_OR_INSTANCES)
+                     .toResult(MISSING_ARTIFACT)
                      .flatMap(art -> Option.option(request.instances())
-                                           .toResult(MISSING_ARTIFACT_OR_INSTANCES)
+                                           .toResult(MISSING_INSTANCES)
                                            .map(inst -> new ScaleParams(art,
                                                                         inst,
                                                                         Option.option(request.placement()))));
