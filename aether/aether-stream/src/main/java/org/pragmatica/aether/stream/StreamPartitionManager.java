@@ -1862,12 +1862,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// extend it.
     @Contract
     public void markVerified(String streamName, int partition, long offset) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeVerified(streamName, partition, ring, offset));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeVerified(streamName,
+                                                                                       partition,
+                                                                                       ring,
+                                                                                       offset));
     }
 
     private void exposeVerified(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
         ring.advanceVisible(Math.min(offset, ring.durableOffset()));
-
         if (offset >= ring.headOffset()) {
             unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
         }
@@ -2007,27 +2009,30 @@ public final class StreamPartitionManager implements AutoCloseable {
         var ref = new PartitionRef(streamName, partition);
 
         return quarantinedAt(streamName, partition).fold(() -> success(none()),
-                                                          divergedAtOffset -> cutDivergentTail(streamName,
-                                                                                               partition,
-                                                                                               ref,
-                                                                                               divergedAtOffset).map(Option::some));
+                                                         divergedAtOffset -> cutDivergentTail(streamName,
+                                                                                              partition,
+                                                                                              ref,
+                                                                                              divergedAtOffset).map(Option::some));
     }
 
-    private Result<TailCut> cutDivergentTail(String streamName, int partition, PartitionRef ref, long divergedAtOffset) {
+    private Result<TailCut> cutDivergentTail(String streamName,
+                                             int partition,
+                                             PartitionRef ref,
+                                             long divergedAtOffset) {
         var keep = divergedAtOffset - 1;
 
         return resolvePartitionBuffer(streamName, partition).flatMap(ring -> cutRing(streamName,
-                                                                                    partition,
-                                                                                    ref,
-                                                                                    ring,
-                                                                                    divergedAtOffset,
-                                                                                    keep))
-                                                           .onSuccess(cut -> reportCut(streamName, partition, cut))
-                                                           .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
-                                                                                        streamName,
-                                                                                        partition,
-                                                                                        keep,
-                                                                                        cause.message()));
+                                                                                     partition,
+                                                                                     ref,
+                                                                                     ring,
+                                                                                     divergedAtOffset,
+                                                                                     keep))
+                                     .onSuccess(cut -> reportCut(streamName, partition, cut))
+                                     .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
+                                                                  streamName,
+                                                                  partition,
+                                                                  keep,
+                                                                  cause.message()));
     }
 
     private Result<TailCut> cutRing(String streamName,
@@ -2054,10 +2059,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         synchronized (quarantineLock) {
             divergedAt.remove(ref, divergedAtOffset);
         }
-
         // What remains is the prefix this copy shares with its sender: verified by construction.
         unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
-
         lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
                                                 (_, write) -> write.offset() > keep
                                                               ? null
@@ -2645,7 +2648,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private static void replicaDurable(OffHeapRingBuffer ring, long offset, boolean verified) {
         ring.markDurable(offset);
-
         if (verified) {
             ring.advanceVisible(offset);
         }

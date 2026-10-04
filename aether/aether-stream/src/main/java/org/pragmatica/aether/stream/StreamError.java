@@ -88,9 +88,9 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Cannot truncate %s[%d] back to offset %d: the ring retains only offsets from %d".formatted(streamName,
-                                                                                                                partition,
-                                                                                                                keepThrough,
-                                                                                                                tailOffset);
+                                                                                                               partition,
+                                                                                                               keepThrough,
+                                                                                                               tailOffset);
         }
     }
 

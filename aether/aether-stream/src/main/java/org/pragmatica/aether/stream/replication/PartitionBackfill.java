@@ -1907,7 +1907,8 @@ public final class PartitionBackfill {
         return transport.requestCatchup(owner,
                                         catchupRequest(owner, streamName, partition, from),
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> response.payloads().isEmpty()
+                        .flatMap(response -> response.payloads()
+                                                     .isEmpty()
                                              ? handleNoSource(streamName, partition, replicas)
                                              : applyAndPromote(streamName, partition, -1L, response));
     }

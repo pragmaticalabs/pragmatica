@@ -603,13 +603,13 @@ public final class OwnerActivation {
 
         return Promise.allOf(answered.stream()
                                      .map(peer -> divergesFromCandidate(stream, partition, local, peer))
-                                     .toList())
-                      .map(verdicts -> keepAgreeing(stream, partition, answered, verdicts));
+                                     .toList()).map(verdicts -> keepAgreeing(stream, partition, answered, verdicts));
     }
 
     private boolean isrElected(String stream, int partition) {
         return records.committed(stream, partition)
-                      .filter(record -> record.isrVersion() > 0 && record.isr().contains(self))
+                      .filter(record -> record.isrVersion() > 0 && record.isr()
+                                                                         .contains(self))
                       .isPresent();
     }
 
@@ -625,7 +625,11 @@ public final class OwnerActivation {
         var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
 
         return Promise.all(ranges.read(self, stream, partition, from, to),
-                           ranges.read(peer.node(), stream, partition, from, to))
+                           ranges.read(peer.node(),
+                                       stream,
+                                       partition,
+                                       from,
+                                       to))
                       .map((mine, theirs) -> !agree(mine, theirs))
                       .recover(_ -> false);
     }

@@ -146,7 +146,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// sweeps and [#appendOrdered]; reads stay lock-free. A monitor, not a `ReentrantLock` — the JDK 25
     /// baseline does not pin virtual threads on `synchronized` (JEP 491), and [#appendOrdered] re-enters it.
     private final Object appendLock = new Object();
-
     /// Seqlock sequence of suffix truncations (#1730 phase 2): odd while [#truncateSuffix] rewrites the header, even
     /// otherwise. A reader that copied while it changed, or across a completed one, retries: a truncation lowers the
     /// head and the next append rewrites those slots, so a copy that straddles it can pair one record's index entry
@@ -780,7 +779,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// `keepThrough` (they are otherwise monotonic). A listener told earlier that visibility advanced past the cut
     /// simply finds nothing above it on its next read. Readers retry across the cut, see [#truncationSeq].
     public Result<Long> truncateSuffix(long keepThrough) {
-        return truncateSuffix(keepThrough, Result::unitResult, _ -> {});
+        return truncateSuffix(keepThrough,
+                              Result::unitResult,
+                              _ -> {});
     }
 
     /// [#truncateSuffix(long)] with the owner of the ring's durable copy taking part INSIDE the ordered section
@@ -798,7 +799,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
     }
 
-    private Result<Long> truncateSuffixChecked(long keepThrough, Supplier<Result<Unit>> durableCut, LongConsumer afterCut) {
+    private Result<Long> truncateSuffixChecked(long keepThrough,
+                                               Supplier<Result<Unit>> durableCut,
+                                               LongConsumer afterCut) {
         var head = rawHeadOffset();
         var tail = rawTailOffset();
 

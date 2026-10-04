@@ -430,14 +430,14 @@ public final class AppendLog implements AutoCloseable {
     private Result<Unit> cutSuffixLocked(long keepThrough) {
         if (keepThrough < truncatedUpto) {
             return new WalError.TruncateFailed("cut at %d is below the discarded prefix (%d)".formatted(keepThrough,
-                                                                                                    truncatedUpto)).result();
+                                                                                                        truncatedUpto)).result();
         }
 
         return keepThrough >= lastOffset
                ? epochs.truncateAbove(keepThrough)
                : readRegion().map(buf -> keptPrefix(buf, keepThrough))
-                             .flatMap(this::shorten)
-                             .flatMap(_ -> epochs.truncateAbove(keepThrough));
+                           .flatMap(this::shorten)
+                           .flatMap(_ -> epochs.truncateAbove(keepThrough));
     }
 
     /// The byte length of the leading run of records with `offset <= keepThrough`, and the last offset in it.
@@ -446,13 +446,15 @@ public final class AppendLog implements AutoCloseable {
         var open = new boolean[]{true};
         var holder = new ScanResult[]{kept};
 
-        scan(buf, Long.MIN_VALUE, record -> {
-            if (open[0] && record.offset() <= keepThrough) {
-                holder[0] = new ScanResult(buf.position(), record.offset());
-            } else {
-                open[0] = false;
-            }
-        });
+        scan(buf,
+             Long.MIN_VALUE,
+             record -> {
+                 if (open[0] && record.offset() <= keepThrough) {
+                 holder[0] = new ScanResult(buf.position(), record.offset());
+             } else {
+                 open[0] = false;
+             }
+             });
 
         return holder[0];
     }
