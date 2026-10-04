@@ -29,7 +29,7 @@ import org.pragmatica.serialization.Codec;
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.StreamFailoverRefused, ClusterEvent.StreamFailoverResolved, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.StreamFailoverRefused, ClusterEvent.StreamFailoverResolved, ClusterEvent.StreamIsrBelowMinimum, ClusterEvent.StreamIsrRestored, ClusterEvent.StreamConfigChangeNotApplied, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -497,6 +497,38 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         @Override
         public ClusterEvent withDetail(String key, String value) {
             return new StreamFailoverResolved(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1883: a stream partition's committed in-sync set is smaller than its confirmation factor, so acknowledged
+    /// publishes to it are refused until a replica rejoins. Derived on every node from the committed ownership Put;
+    /// published once, by the cluster-events owner. `details`: `stream`, `partition`, `owner`, `isr`, `fenced`,
+    /// `confirmationFactor`.
+    record StreamIsrBelowMinimum(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new StreamIsrBelowMinimum(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1883: the in-sync set reached the confirmation factor again. Same `details` as [StreamIsrBelowMinimum].
+    record StreamIsrRestored(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new StreamIsrRestored(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1883: a committed config lowered a running stream's confirmation factor, which is not applied online
+    /// (durability only increases), so the stream keeps enforcing the higher factor. A point event; no resolved pair.
+    /// `details`: `stream`, `requestedConfirmationFactor`, `effectiveConfirmationFactor`, `reason`.
+    record StreamConfigChangeNotApplied(HlcTimestamp at,
+                                        Severity severity,
+                                        String summary,
+                                        Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new StreamConfigChangeNotApplied(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
         }
     }
 

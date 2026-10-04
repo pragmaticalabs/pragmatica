@@ -57,14 +57,23 @@ public sealed interface OperationalEvent extends Message.Local {
                                  List<String> isr,
                                  List<String> live,
                                  String reason,
+                                 String eventId,
                                  long timestamp) implements OperationalEvent {
         public static StreamFailoverRefused streamFailoverRefused(String stream,
                                                                   int partition,
                                                                   String owner,
                                                                   List<String> isr,
                                                                   List<String> live,
-                                                                  String reason) {
-            return new StreamFailoverRefused(stream, partition, owner, isr, live, reason, System.currentTimeMillis());
+                                                                  String reason,
+                                                                  String eventId) {
+            return new StreamFailoverRefused(stream,
+                                             partition,
+                                             owner,
+                                             isr,
+                                             live,
+                                             reason,
+                                             eventId,
+                                             System.currentTimeMillis());
         }
     }
 
@@ -75,14 +84,102 @@ public sealed interface OperationalEvent extends Message.Local {
                                   List<String> isr,
                                   List<String> live,
                                   String reason,
+                                  String eventId,
                                   long timestamp) implements OperationalEvent {
         public static StreamFailoverResolved streamFailoverResolved(String stream,
                                                                     int partition,
                                                                     String owner,
                                                                     List<String> isr,
                                                                     List<String> live,
-                                                                    String reason) {
-            return new StreamFailoverResolved(stream, partition, owner, isr, live, reason, System.currentTimeMillis());
+                                                                    String reason,
+                                                                    String eventId) {
+            return new StreamFailoverResolved(stream,
+                                              partition,
+                                              owner,
+                                              isr,
+                                              live,
+                                              reason,
+                                              eventId,
+                                              System.currentTimeMillis());
+        }
+    }
+
+    /// #1883: a stream partition's committed in-sync set fell below its confirmation factor, so every acknowledged
+    /// publish is refused (`NOT_ENOUGH_REPLICAS`) until a replica rejoins ([ClusterEvent.StreamIsrBelowMinimum]).
+    /// `fenced` is the committed set of members the leader keeps out for liveness.
+    record StreamIsrBelowMinimum(String stream,
+                                 int partition,
+                                 String owner,
+                                 List<String> isr,
+                                 List<String> fenced,
+                                 int confirmationFactor,
+                                 String eventId,
+                                 long timestamp) implements OperationalEvent {
+        public static StreamIsrBelowMinimum streamIsrBelowMinimum(String stream,
+                                                                  int partition,
+                                                                  String owner,
+                                                                  List<String> isr,
+                                                                  List<String> fenced,
+                                                                  int confirmationFactor,
+                                                                  String eventId) {
+            return new StreamIsrBelowMinimum(stream,
+                                             partition,
+                                             owner,
+                                             isr,
+                                             fenced,
+                                             confirmationFactor,
+                                             eventId,
+                                             System.currentTimeMillis());
+        }
+    }
+
+    /// #1883: the in-sync set of a partition reached its confirmation factor again ([ClusterEvent.StreamIsrRestored]).
+    record StreamIsrRestored(String stream,
+                             int partition,
+                             String owner,
+                             List<String> isr,
+                             List<String> fenced,
+                             int confirmationFactor,
+                             String eventId,
+                             long timestamp) implements OperationalEvent {
+        public static StreamIsrRestored streamIsrRestored(String stream,
+                                                          int partition,
+                                                          String owner,
+                                                          List<String> isr,
+                                                          List<String> fenced,
+                                                          int confirmationFactor,
+                                                          String eventId) {
+            return new StreamIsrRestored(stream,
+                                         partition,
+                                         owner,
+                                         isr,
+                                         fenced,
+                                         confirmationFactor,
+                                         eventId,
+                                         System.currentTimeMillis());
+        }
+    }
+
+    /// #1883: a committed config lowered a running stream's confirmation factor, which is not applied online
+    /// (durability only increases), so the stream keeps enforcing `effectiveConfirmationFactor`
+    /// ([ClusterEvent.StreamConfigChangeNotApplied]). A point event: no resolved pair.
+    record StreamConfigChangeNotApplied(String stream,
+                                        int requestedConfirmationFactor,
+                                        int effectiveConfirmationFactor,
+                                        String reason,
+                                        String eventId,
+                                        long timestamp) implements OperationalEvent {
+        public static StreamConfigChangeNotApplied streamConfigChangeNotApplied(String stream,
+                                                                                int requestedConfirmationFactor,
+                                                                                int effectiveConfirmationFactor,
+                                                                                String reason,
+                                                                                String eventId) {
+            return new StreamConfigChangeNotApplied(stream,
+                                                    requestedConfirmationFactor,
+                                                    effectiveConfirmationFactor,
+                                                    reason,
+                                                    eventId,
+                                                    System.currentTimeMillis());
         }
     }
 }

@@ -26,6 +26,9 @@ import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
+import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -1448,7 +1451,8 @@ public final class ClusterEventAggregator {
                                                              event.owner(),
                                                              event.isr(),
                                                              event.live(),
-                                                             event.reason())));
+                                                             event.reason(),
+                                                             event.eventId())));
     }
 
     @Contract
@@ -1463,7 +1467,87 @@ public final class ClusterEventAggregator {
                                                               event.owner(),
                                                               event.isr(),
                                                               event.live(),
-                                                              event.reason())));
+                                                              event.reason(),
+                                                              event.eventId())));
+    }
+
+    @Contract
+    public void onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum event) {
+        emit(new StreamIsrBelowMinimum(hlcClock.now(),
+                                       Severity.WARNING,
+                                       "Stream " + event.stream()
+                                      + "[" + event.partition()
+                                      + "] refuses acknowledged publishes: in-sync replicas " + event.isr()
+                                      + " are fewer than the confirmation factor " + event.confirmationFactor(),
+                                       streamIsrDetails(event.stream(),
+                                                        event.partition(),
+                                                        event.owner(),
+                                                        event.isr(),
+                                                        event.fenced(),
+                                                        event.confirmationFactor(),
+                                                        event.eventId())));
+    }
+
+    @Contract
+    public void onStreamIsrRestored(OperationalEvent.StreamIsrRestored event) {
+        emit(new StreamIsrRestored(hlcClock.now(),
+                                   Severity.INFO,
+                                   "Stream " + event.stream()
+                                  + "[" + event.partition()
+                                  + "] accepts acknowledged publishes again: in-sync replicas " + event.isr(),
+                                   streamIsrDetails(event.stream(),
+                                                    event.partition(),
+                                                    event.owner(),
+                                                    event.isr(),
+                                                    event.fenced(),
+                                                    event.confirmationFactor(),
+                                                    event.eventId())));
+    }
+
+    /// Taste: WARNING. The operator asked for a lower factor and the system will not do it; nothing is lost and
+    /// nothing stalls by this event itself.
+    @Contract
+    public void onStreamConfigChangeNotApplied(OperationalEvent.StreamConfigChangeNotApplied event) {
+        emit(new StreamConfigChangeNotApplied(hlcClock.now(),
+                                              Severity.WARNING,
+                                              "Stream " + event.stream()
+                                             + " keeps confirmation factor " + event.effectiveConfirmationFactor()
+                                             + ": the committed change to " + event.requestedConfirmationFactor()
+                                             + " is not applied (" + event.reason()
+                                             + ")",
+                                              Map.of(ClusterEventIdentity.EVENT_ID,
+                                                     event.eventId(),
+                                                     "stream",
+                                                     event.stream(),
+                                                     "requestedConfirmationFactor",
+                                                     String.valueOf(event.requestedConfirmationFactor()),
+                                                     "effectiveConfirmationFactor",
+                                                     String.valueOf(event.effectiveConfirmationFactor()),
+                                                     "reason",
+                                                     event.reason())));
+    }
+
+    private static Map<String, String> streamIsrDetails(String stream,
+                                                        int partition,
+                                                        String owner,
+                                                        List<String> isr,
+                                                        List<String> fenced,
+                                                        int confirmationFactor,
+                                                        String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
+                      stream,
+                      "partition",
+                      String.valueOf(partition),
+                      "owner",
+                      owner,
+                      "isr",
+                      String.join(",", isr),
+                      "fenced",
+                      String.join(",", fenced),
+                      "confirmationFactor",
+                      String.valueOf(confirmationFactor));
     }
 
     private static Map<String, String> streamFailoverDetails(String stream,
@@ -1471,8 +1555,11 @@ public final class ClusterEventAggregator {
                                                              String owner,
                                                              List<String> isr,
                                                              List<String> live,
-                                                             String reason) {
-        return Map.of("stream",
+                                                             String reason,
+                                                             String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
                       stream,
                       "partition",
                       String.valueOf(partition),

@@ -243,13 +243,15 @@ class ClusterEventAggregatorTest {
                                                                                                               "node-a",
                                                                                                               java.util.List.of("node-a", "node-b"),
                                                                                                               java.util.List.of("node-c"),
-                                                                                                              "no live ISR"));
+                                                                                                              "no live ISR",
+                                                                                                              "refused-id"));
         h.aggregator().onStreamFailoverResolved(OperationalEvent.StreamFailoverResolved.streamFailoverResolved("orders",
                                                                                                                 2,
                                                                                                                 "node-b",
                                                                                                                 java.util.List.of("node-b"),
                                                                                                                 java.util.List.of("node-b", "node-c"),
-                                                                                                                "elected"));
+                                                                                                                "elected",
+                                                                                                                "resolved-id"));
 
         var events = h.events();
 
@@ -262,9 +264,48 @@ class ClusterEventAggregatorTest {
                                            .containsEntry("owner", "node-a")
                                            .containsEntry("isr", "node-a,node-b")
                                            .containsEntry("live", "node-c")
-                                           .containsEntry("reason", "no live ISR");
+                                           .containsEntry("reason", "no live ISR")
+                                           .containsEntry("eventId", "refused-id");
         assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamFailoverResolved.class);
         assertThat(events.get(1).details()).containsEntry("owner", "node-b");
+    }
+
+    /// #1883: the in-sync-set events reach the cluster-events stream as typed events, WARNING for the breach and INFO for
+    /// the restoration, carrying the stream, partition, owner, ISR, fenced set and factor.
+    @Test
+    void streamIsrBelowMinimumAndRestored_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders",
+                                                                                                            2,
+                                                                                                            "node-a",
+                                                                                                            java.util.List.of("node-a"),
+                                                                                                            java.util.List.of("node-b"),
+                                                                                                            2,
+                                                                                                            "below-id"));
+        h.aggregator().onStreamIsrRestored(OperationalEvent.StreamIsrRestored.streamIsrRestored("orders",
+                                                                                                2,
+                                                                                                "node-a",
+                                                                                                java.util.List.of("node-a", "node-b"),
+                                                                                                java.util.List.of(),
+                                                                                                2,
+                                                                                                "restored-id"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.StreamIsrBelowMinimum.class);
+        assertThat(events.get(0).type()).isEqualTo("STREAM_ISR_BELOW_MINIMUM");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("stream", "orders")
+                                           .containsEntry("partition", "2")
+                                           .containsEntry("owner", "node-a")
+                                           .containsEntry("isr", "node-a")
+                                           .containsEntry("fenced", "node-b")
+                                           .containsEntry("confirmationFactor", "2")
+                                           .containsEntry("eventId", "below-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamIsrRestored.class);
+        assertThat(events.get(1).type()).isEqualTo("STREAM_ISR_RESTORED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
     }
 
     /// #1730 owner ruling, the cluster-wide path: EVERY node derives the failover event from the same committed
@@ -346,6 +387,103 @@ class ClusterEventAggregatorTest {
         return new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut<>(new org.pragmatica.cluster.state.kvstore.KVCommand.Put<>(key,
                                                                                                                                                 before.withFailoverRefused(true)),
                                                                                            org.pragmatica.lang.Option.some(before));
+    }
+
+    /// The ISR events are derived on EVERY node from one committed Put and published once, by the events
+    /// owner only (the leader and a third node publish nothing). Both legs: the breach and the restoration.
+    @Test
+    void streamIsrBelowAndRestored_derivedOnEveryNode_publishedOnceByTheEventsOwner() {
+        var leader = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var eventsOwner = Harness.create(Harness.defaultRetention(), OWNER);
+        var third = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var a = new NodeId("node-a");
+        var b = new NodeId("node-b");
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey("orders", 0);
+        var healthy = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(a, Epoch.ZERO, 1L, HlcTimestamp.ZERO, List.of(a, b), 2L);
+        var below = healthy.withIsrAndFenced(List.of(a), List.of(b));
+        var restored = below.withIsrAndFenced(List.of(a, b), List.of());
+        var breach = new ValuePut<>(new KVCommand.Put<>(key, below), Option.some(healthy));
+        var resolution = new ValuePut<>(new KVCommand.Put<>(key, restored), Option.some(below));
+
+        for (var node : List.of(leader, eventsOwner, third)) {
+            var announcer = org.pragmatica.aether.node.StreamIsrAnnouncer.streamIsrAnnouncer(_ -> 2, _ -> 2, _ -> Option.none(), (_, _) -> Option.none(), event -> {
+                switch (event) {
+                    case OperationalEvent.StreamIsrBelowMinimum e -> node.aggregator().onStreamIsrBelowMinimum(e);
+                    case OperationalEvent.StreamIsrRestored e -> node.aggregator().onStreamIsrRestored(e);
+                    default -> throw new AssertionError("unexpected " + event);
+                }
+            });
+
+            announcer.onOwnershipPut(breach);
+            announcer.onOwnershipPut(resolution);
+        }
+
+        assertThat(leader.events()).as("not the events owner: publishes nothing").isEmpty();
+        assertThat(third.events()).isEmpty();
+        assertThat(eventsOwner.events()).as("exactly one breach and one restoration, on the events owner")
+                                        .extracting(ClusterEvent::type)
+                                        .containsExactly("STREAM_ISR_BELOW_MINIMUM", "STREAM_ISR_RESTORED");
+    }
+
+    @Test
+    void streamConfigChangeNotApplied_reachesTheEventStream_asAWarning_withItsDetails() {
+        var h = Harness.create();
+
+        h.aggregator().onStreamConfigChangeNotApplied(OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied("orders",
+                                                                                                                                 1,
+                                                                                                                                 3,
+                                                                                                                                 "durability only increases online",
+                                                                                                                                 "cfg-id"));
+
+        assertThat(h.events()).singleElement().satisfies(event -> {
+            assertThat(event).isInstanceOf(ClusterEvent.StreamConfigChangeNotApplied.class);
+            assertThat(event.type()).isEqualTo("STREAM_CONFIG_CHANGE_NOT_APPLIED");
+            assertThat(event.severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+            assertThat(event.details()).containsEntry("stream", "orders")
+                                       .containsEntry("requestedConfirmationFactor", "1")
+                                       .containsEntry("effectiveConfirmationFactor", "3")
+                                       .containsEntry("reason", "durability only increases online")
+                                       .containsEntry("eventId", "cfg-id");
+        });
+    }
+
+    /// STREAM_CONFIG_CHANGE_NOT_APPLIED is derived on every node from the committed config Put, so it is
+    /// published by the events owner only: a non-owner (the leader, a third node) publishes nothing.
+    @Test
+    void streamConfigChangeNotApplied_derivedOnEveryNode_publishedOnlyByTheEventsOwner() {
+        var eventsOwner = Harness.create(Harness.defaultRetention(), OWNER);
+        var notOwner = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+
+        for (var node : List.of(eventsOwner, notOwner)) {
+            node.aggregator().onStreamConfigChangeNotApplied(OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied("orders",
+                                                                                                                                      1,
+                                                                                                                                      3,
+                                                                                                                                      "durability only increases online",
+                                                                                                                                      "cfg-id"));
+        }
+
+        assertThat(notOwner.events()).as("not the events owner: publishes nothing").isEmpty();
+        assertThat(eventsOwner.events()).singleElement().isInstanceOf(ClusterEvent.StreamConfigChangeNotApplied.class);
+    }
+
+    /// #1883 F3: during a membership change two nodes can both pass the events-owner gate and each publish the event
+    /// derived from one committed Put. The event carries a deterministic `eventId` that the aggregator keeps, so the read
+    /// collapses the two copies; an event with another id (another transition) stays.
+    @Test
+    void twoCopiesOfOneDerivedEvent_shareTheirPresetEventId_andReadAsOne() {
+        var h = Harness.create();
+        var isr = java.util.List.of("node-a");
+        var fenced = java.util.List.of("node-b");
+
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders", 2, "node-a", isr, fenced, 2, "same-put"));
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders", 2, "node-a", isr, fenced, 2, "same-put"));
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders", 2, "node-a", isr, fenced, 2, "next-put"));
+        h.aggregator().onStreamFailoverRefused(OperationalEvent.StreamFailoverRefused.streamFailoverRefused("orders", 2, "node-a", isr, fenced, "r", "refusal"));
+        h.aggregator().onStreamFailoverRefused(OperationalEvent.StreamFailoverRefused.streamFailoverRefused("orders", 2, "node-a", isr, fenced, "r", "refusal"));
+
+        assertThat(h.events()).extracting(e -> e.details().get("eventId"))
+                              .as("same id read once, different id kept, failover events the same")
+                              .containsExactlyInAnyOrder("same-put", "next-put", "refusal");
     }
 
     // --- owner-gated emit (operational events: config/deploy/scale/blueprint stay owner-gated) -----

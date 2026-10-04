@@ -33,6 +33,9 @@ import org.slf4j.LoggerFactory;
 ///   - **expand** — a registered replica outside the ISR whose confirmed offset reached the high-water mark (the
 ///     lowest offset every ISR member confirmed, or the owner's head when it is alone) joins: it holds every
 ///     acknowledged record.
+///     A member the leader FENCED (the committed `fenced` set: removed because the leader's liveness view does not list
+///     it) never joins, so the leader's shrink and this expansion read ONE liveness input and cannot reverse each
+///     other (#1883).
 ///
 /// **Liveness only.** The proposal is a guarded consensus write ([StreamPartitionOwnershipWriter] `guarded`): it
 /// applies only while the committed record is exactly the one decided on. Acknowledgement reads the COMMITTED ISR,
@@ -203,7 +206,7 @@ public final class IsrMonitor {
                                  NodeId replica,
                                  long offset,
                                  long highWater) {
-        if (!replica.equals(self) && !record.isr().contains(replica) && offset >= highWater) {
+        if (!replica.equals(self) && !record.isr().contains(replica) && !record.fenced().contains(replica) && offset >= highWater) {
             next.add(replica);
         }
     }
