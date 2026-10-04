@@ -38,6 +38,7 @@ class OwnerActivationLineageTest {
     private final AtomicLong incarnation = new AtomicLong(1L);
     private final AtomicReference<Option<org.pragmatica.lang.Cause>> refusal = new AtomicReference<>(Option.none());
     private final List<String> commits = new ArrayList<>();
+    private final java.util.concurrent.atomic.AtomicBoolean silentRefusal = new java.util.concurrent.atomic.AtomicBoolean();
     private final OwnerActivation activation = activation();
 
     private OwnerActivation activation() {
@@ -59,6 +60,10 @@ class OwnerActivationLineageTest {
 
     private Promise<Unit> commit(String stream, int partition, StreamPartitionOwnershipValue current, long start, boolean restarted) {
         commits.add((restarted ? "restart@" : "start@") + start);
+
+        if (silentRefusal.get()) {
+            return Promise.success(Unit.unit());
+        }
 
         return refusal.get().fold(() -> applied(current, start, restarted), cause -> cause.promise());
     }
@@ -141,6 +146,17 @@ class OwnerActivationLineageTest {
         refusal.set(Option.none());
 
         assertThat(activate()).as("re-run against the record as it is now").isTrue();
+    }
+
+    /// The applier answers a refused guarded write with a result, not a failed promise: the commit "succeeds" and the record is
+    /// unchanged. The activation must not take that for a committed start.
+    @Test
+    void aCommitThatSucceedsButChangesNothing_failsTheActivation() {
+        record.set(Option.some(committed(List.of())));
+        silentRefusal.set(true);
+
+        assertThat(activate()).isFalse();
+        assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
     }
 
     /// A first owner (no committed record yet) has nothing to commit: the leader mints the first record and the

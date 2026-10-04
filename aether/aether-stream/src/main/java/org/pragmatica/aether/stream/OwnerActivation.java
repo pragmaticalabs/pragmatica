@@ -157,6 +157,7 @@ public final class OwnerActivation {
         NOT_OWNER("This node is not the owner of the partition after refreshing its committed view"),
         HOLDER_UNREACHABLE("A live placement member did not answer the watermark probe and may hold a higher watermark"),
         CATCH_UP_SHORT("The catch-up did not reach the highest live holder's watermark"),
+        LINEAGE_NOT_COMMITTED("The owner's epoch start was not committed (the guarded write was refused or did not apply)"),
         IN_PROGRESS("An activation of this partition is already running");
         private final String message;
         ActivationError(String message) {
@@ -549,13 +550,26 @@ public final class OwnerActivation {
         var incarnation = ringIncarnation.of(stream, partition);
         var restarted = started && !Long.valueOf(incarnation).equals(activatedIncarnation.get(key));
 
-        if (started && !restarted) {
+        if (lineage == LineageCommit.NONE || started && !restarted) {
             return Promise.success(Option.some(committed));
         }
 
         return lineage.commit(stream, partition, committed, selfWatermark.localWatermark(stream, partition) + 1L, restarted)
                       .flatMap(_ -> ownedRecord(stream, partition))
+                      .flatMap(this::requireCommittedStart)
                       .onSuccess(_ -> activatedIncarnation.put(key, incarnation));
+    }
+
+    /// A guarded write that was refused is not a failed promise (the applier answers it with a result): the record is
+    /// re-read, and an epoch that still has no committed start fails the activation, which re-runs against the record as it
+    /// is now. Without this an owner would activate with no start and answer every consumer read `OwnerNotActivated`.
+    private Promise<Option<StreamPartitionOwnershipValue>> requireCommittedStart(Option<StreamPartitionOwnershipValue> record) {
+        return record.filter(value -> value.lastEpochStart()
+                                           .filter(start -> start.epoch().equals(value.ownerEpoch()))
+                                           .isPresent())
+                     .isPresent() || record.isEmpty()
+               ? Promise.success(record)
+               : ActivationError.LINEAGE_NOT_COMMITTED.promise();
     }
 
     private Unit recordActivation(String stream,
