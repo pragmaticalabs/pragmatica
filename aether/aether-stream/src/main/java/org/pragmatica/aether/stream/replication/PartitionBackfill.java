@@ -670,8 +670,8 @@ public final class PartitionBackfill {
     /// never acknowledged (an acknowledgement needs every in-sync member, and the committed owner is one). A copy that
     /// is itself the owner, or has no owner to compare with, stays quarantined.
     private boolean repairable(String streamName, int partition) {
-        return !isSelfOwner(streamName, partition) && hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
-                                                                                      .isPresent();
+        return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
+                       .isPresent();
     }
 
     /// Cut the divergent tail, hold self SYNCING at the last shared offset, and run the backfill again from there. A

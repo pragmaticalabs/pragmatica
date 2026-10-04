@@ -1964,8 +1964,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (#1730 phase 2, KIP-101): the divergent entry sits at `quarantinedAt`, so every offset below it is kept and
     /// everything from it up is removed from the WAL, then the epoch history, then the ring, inside the ring's ordered
     /// section so no replicated append lands between. The quarantine is lifted in the same section (only if it is still
-    /// the one this repair read, so a divergence recorded meanwhile at a lower offset is kept). Nothing is quarantined:
-    /// `none`. The CALLER decides that the sender is the committed owner of a later epoch and that this node is not
+    /// the one this repair read, so a divergence recorded meanwhile at a lower offset is kept; a quarantine is always at
+    /// an offset the ring holds, so a repair always removes at least that one). Nothing is quarantined: `none`. The CALLER decides that the sender is the committed owner of a later epoch and that this node is not
     /// the owner; this method never does.
     ///
     /// Refused, leaving the partition quarantined, when the cut lies below the ring's retained range
@@ -2012,8 +2012,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    () -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
                                             .or(Result.unitResult()),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
-                   .map(removed -> new TailCut(keep, removed, keep + 1, head))
-                   .onSuccess(_ -> divergedAt.remove(ref, divergedAtOffset));
+                   .map(removed -> new TailCut(keep, removed, keep + 1, head));
     }
 
     /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
