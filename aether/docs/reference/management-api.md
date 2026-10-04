@@ -929,6 +929,14 @@ no live multi-node failure-injection run — #759]`. Recovery: a `BEST_EFFORT` `
 redeploying the failed slice; a lingering restore-time outcome clears the next time that blueprint id
 is redeployed or deleted.
 
+Only an outcome that closes the LIVE blueprint's own publish attempt is reported in this shape. Every
+publish names its attempt, and every terminal outcome names the attempt it closes. A terminal left
+behind by an earlier publish of the same id is therefore not reported against the republished
+blueprint, and the response falls back to the live shape. This can happen when that terminal won the
+race against the republish's own start record. `[mechanism: `BlueprintService.attributedOutcome`,
+pinned by `BlueprintServiceTest$RedeployAfterPriorFailureTests.statusRoute_aTerminalForAnEarlierAttempt_isNotReportedAgainstTheLiveBlueprint`
+— unit-level, no live multi-node run — #972]`.
+
 Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FAILED`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`, `FAILED`, `ROLLED_BACK`.
 
 `failedInstances` counts `SliceState.FAILED` entries still present in the deployment map for that
