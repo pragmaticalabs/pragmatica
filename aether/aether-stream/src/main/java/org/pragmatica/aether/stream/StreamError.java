@@ -112,7 +112,9 @@ public sealed interface StreamError extends Cause {
     record RepairWitnessFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
         @Override
         public String message() {
-            return "Repair of %s[%d] refused: its truncation witness could not be written (%s)".formatted(streamName, partition, reason);
+            return "Repair of %s[%d] refused: its truncation witness could not be written (%s)".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          reason);
         }
     }
 

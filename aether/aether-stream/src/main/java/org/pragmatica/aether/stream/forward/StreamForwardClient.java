@@ -152,8 +152,8 @@ public interface StreamForwardClient {
     /// committed owner still answers it). None when the peer holds no ring or reports none.
     default Promise<Option<Long>> ringTailRemote(NodeId peerId, String streamName, int partition) {
         return readRemoteCatchup(peerId, streamName, partition, Long.MAX_VALUE, 0).map(result -> result.bounds()
-                                                                                                         .filter(known -> known.earliestRetained() >= 0L)
-                                                                                                         .map(VisibleBounds::earliestRetained));
+                                                                                                       .filter(known -> known.earliestRetained() >= 0L)
+                                                                                                       .map(VisibleBounds::earliestRetained));
     }
 
     private static StreamForwardClient noOpClient() {

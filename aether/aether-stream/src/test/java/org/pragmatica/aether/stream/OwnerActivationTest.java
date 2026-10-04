@@ -230,6 +230,28 @@ class OwnerActivationTest {
         assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
     }
 
+    /// A refusal WAITS, it does not block for good: a refused activation is re-driven with backoff (`OwnerActivation#redrive`) while the
+    /// node still claims the partition, and re-evaluates the peers each time. Here the first attempt is refused because the divergent
+    /// peer is in its sealed range (below its ring tail); when the peer's range is then repaired (it no longer differs) the re-drive
+    /// activates with no further demand. A divergence that persists in the sealed range stays refused and reported until an operator
+    /// picks a source (the block alarm).
+    @Test
+    void admit_refusedForASealedRangeDivergence_waits_thenActivatesOnceThePeerIsRepaired() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+        peerTail.set(Option.some(11L));
+
+        assertThat(activation.admit(STREAM, PARTITION).isFailure()).as("refused at first").isTrue();
+        LockSupport.parkNanos(50_000_000L);
+        assertThat(alarms).as("the refusal is reported").isNotEmpty();
+        divergent.remove(PEER_A);
+
+        assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven once the peer no longer diverges, with no further demand").isTrue();
+    }
+
     /// B6 (v1890 probe F): the compare reads the peer's range through its tier, so a difference can be found in data the peer has
     /// SEALED, where its own repair refuses to cut. That is not a relaxation case: the relaxation applies only to a divergence at
     /// an offset the peer still holds in its ring, and a peer whose ring tail is unknown is not relaxed for (fail safe).

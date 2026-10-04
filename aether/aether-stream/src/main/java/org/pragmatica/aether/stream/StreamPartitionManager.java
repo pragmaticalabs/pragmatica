@@ -275,6 +275,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The repair a pending cut belongs to: bumped when a partition's first cut of a repair is made, so a timer scheduled for an
     /// earlier repair, which settled, never reports a newer one.
     private final ConcurrentHashMap<PartitionRef, Long> repairGenerationOf = new ConcurrentHashMap<>();
+
     private final java.util.concurrent.atomic.AtomicLong repairGeneration = new java.util.concurrent.atomic.AtomicLong();
 
     /// Reports of repairs a previous process left unsettled that were found before the operator-warning sink was wired; made
@@ -2225,14 +2226,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                       partition,
                                                                                                                                       wal,
                                                                                                                                       prospective))
-                                                                                                       .onSuccess(_ -> wrote.set(wal.isPresent()))
-                                                                                                       .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
-                                                                                                                        .or(Result.unitResult())),
+                                                   .onSuccess(_ -> wrote.set(wal.isPresent()))
+                                                   .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
+                                                                    .or(Result.unitResult())),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
                    .onFailure(_ -> {
                        if (wrote.get()) {
-                           restoreWitness(streamName, partition, wal);
-                       }
+                       restoreWitness(streamName, partition, wal);
+                   }
                    })
                    .map(removed -> new TailCut(keep, removed, keep + 1, head, epoch));
     }
@@ -2240,12 +2241,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A WAL copy writes the witness of what this cut will discard BEFORE it discards it, in the same ordered section: if the
     /// witness cannot be made durable the cut is refused (typed, retriable; the copy stays quarantined), so a durable cut never
     /// exists without the only record of what it lost. The witness is the cut combined with those of the same repair so far.
-    private Result<Unit> witnessBeforeCut(String streamName, int partition, Option<AppendLog> wal, TailCut prospective) {
+    private Result<Unit> witnessBeforeCut(String streamName,
+                                          int partition,
+                                          Option<AppendLog> wal,
+                                          TailCut prospective) {
         return wal.map(appendLog -> writeWitness(streamName,
                                                  partition,
                                                  appendLog,
                                                  option(pendingCuts.get(new PartitionRef(streamName, partition))).map(earlier -> earlier.then(prospective))
-                                                                                                                 .or(prospective)))
+                                                       .or(prospective)))
                   .or(Result.unitResult());
     }
 
@@ -2254,10 +2258,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void restoreWitness(String streamName, int partition, Option<AppendLog> wal) {
         wal.onPresent(appendLog -> option(pendingCuts.get(new PartitionRef(streamName, partition))).onPresent(earlier -> writeWitness(streamName,
-                                                                                                                                       partition,
-                                                                                                                                       appendLog,
-                                                                                                                                       earlier))
-                                                                                                  .onEmpty(() -> deletePendingCut(pendingCutFile(appendLog))));
+                                                                                                                                      partition,
+                                                                                                                                      appendLog,
+                                                                                                                                      earlier))
+                                         .onEmpty(() -> deletePendingCut(pendingCutFile(appendLog))));
     }
 
     /// Evaluated inside the cut's ordered section, immediately before the first thing it removes: the committed owner that
@@ -2299,7 +2303,6 @@ public final class StreamPartitionManager implements AutoCloseable {
             var first = !pendingCuts.containsKey(ref);
 
             pendingCuts.merge(ref, cut, TailCut::then);
-
             if (first) {
                 scheduleUnsettledReport(streamName, partition, repairGeneration.incrementAndGet(), ref);
             }
@@ -2316,7 +2319,11 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         try {
             Files.writeString(temporary,
-                              cut.keptThrough() + " " + cut.removed() + " " + cut.firstRemoved() + " " + cut.lastRemoved() + " " + epoch,
+                              cut.keptThrough()
+                             + " " + cut.removed()
+                             + " " + cut.firstRemoved()
+                             + " " + cut.lastRemoved()
+                             + " " + epoch,
                               StandardOpenOption.CREATE,
                               StandardOpenOption.TRUNCATE_EXISTING,
                               StandardOpenOption.WRITE,
@@ -2328,7 +2335,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         } catch (IOException | RuntimeException e) {
             log.warn("Could not record the truncation witness beside {}: {}", wal.path(), e.getMessage());
 
-            return new StreamError.RepairWitnessFailed(streamName, partition, String.valueOf(e.getMessage())).result();
+            return new StreamError.RepairWitnessFailed(streamName,
+                                                       partition,
+                                                       String.valueOf(e.getMessage())).result();
         }
     }
 
@@ -2427,7 +2436,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void scheduleUnsettledReport(String streamName, int partition, long generation, PartitionRef ref) {
         repairGenerationOf.put(ref, generation);
-        repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName, partition, generation), bound));
+        repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName,
+                                                                                            partition,
+                                                                                            generation),
+                                                                      bound));
     }
 
     @Contract
@@ -2435,11 +2447,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         var ref = new PartitionRef(streamName, partition);
 
         option(pendingCuts.get(ref)).filter(_ -> Long.valueOf(generation).equals(repairGenerationOf.get(ref)))
-                                    .filter(_ -> !reportedUnsettled.containsKey(ref))
-                                    .onPresent(cut -> {
-                                        reportedUnsettled.put(ref, cut);
-                                        reportCut(streamName, partition, cut, confirmationFactorFor(streamName), false);
-                                    });
+              .filter(_ -> !reportedUnsettled.containsKey(ref))
+              .onPresent(cut -> {
+                             reportedUnsettled.put(ref, cut);
+                             reportCut(streamName,
+                                       partition,
+                                       cut,
+                                       confirmationFactorFor(streamName),
+                                       false);
+                         });
     }
 
     private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor, boolean settled) {

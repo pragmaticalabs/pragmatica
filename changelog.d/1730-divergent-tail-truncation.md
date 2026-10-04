@@ -40,11 +40,16 @@
 - **A replica's confirmation carries the owner epoch it was made under** (`ReplicateAck.ownerEpoch`, wire change); an owner counts
   a peer's row, or a late ack, only while it is its current epoch, so a confirmation from an earlier tenure can no longer resolve a
   later tenure's await (#1890, the stale-row path).
-- **The CF1 loss report survives a restart.** What a cut discarded is recorded beside the WAL until the repair settles, and
-  reported at reopen when the process died first.
+- **The CF1 loss report survives a restart.** What a cut discards is recorded beside the WAL BEFORE the cut (temp file, fsync,
+  atomic rename, directory fsync) until the repair settles, and reported at reopen when the process died first; a cut whose
+  witness cannot be made durable is refused (the replica stays quarantined and the repair is retried), and a witness that
+  cannot be read at reopen is reported as an unknown range, never dropped.
 - **One truncation report.** At `confirmation_factor` 1 the warning `stream-divergent-tail-truncated` is raised once per
   truncation, when the repair completes, with the final range, the epoch of the discarded records and `ackedAtOwner=true`, not
   once per window step.
   A repair that does not settle within twelve backfill redrive ticks (60 s) is reported anyway with `repairSettled=false` and the
   range known so far; if it later settles with a larger range, one more event (a distinct id: partition, epoch, first cut offset,
   settled flag) follows, so at most two per truncation.
+- The gate asks a remote peer where its ring begins over the catch-up read class (no data revealed), not the consumer class, so a
+  peer that has not yet been compared with the owner of the new epoch still answers it and the relaxation is reachable.
+
