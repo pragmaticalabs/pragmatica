@@ -101,6 +101,24 @@ class AetherNodeDhtReplicationTest {
             .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 2, 1, 1, 1, 1, 3, false));
     }
 
+    /// v1882 r6 (M8): a worker's fence is taken from its projection, so applying one makes it accept writes; without the
+    /// confirm in `applyWorkerDhtReplication` a worker would refuse every DHT write as fence-unknown forever.
+    @Test
+    void applyWorkerDhtReplication_confirmsTheWorkersFence() {
+        var node = awaiting();
+
+        assertThat(node.acceptsWrites()).as("control: a worker's fence starts unknown").isFalse();
+
+        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1, 1, 1, 2, 2, true),
+                                             node,
+                                             DHTConfig.DEFAULT,
+                                             DHTConfig.CACHE_DEFAULT,
+                                             new AtomicReference<>(DHTConfig.CACHE_DEFAULT),
+                                             new RecordingSettlement());
+
+        assertThat(node.acceptsWrites()).as("the projection's fence is confirmed").isTrue();
+    }
+
     /// #1777 track 1 (CTO ruling B), worker side: a projection's record resolves a worker's DHT that never restores
     /// consensus state — and a later record re-resolves it live (owner ruling Q1).
     @Test

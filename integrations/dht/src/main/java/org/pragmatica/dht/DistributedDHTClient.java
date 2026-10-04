@@ -38,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Distributed DHT client with quorum-based reads and writes.
@@ -214,14 +215,69 @@ public final class DistributedDHTClient implements DHTClient {
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
 
+        var hasRemote = targets.stream()
+                               .anyMatch(target -> !target.equals(node.nodeId()));
+
+        collector.allReplied()
+                 .onSuccess(_ -> noteLateStale(collector, stamp));
+
         return promise.timeout(config.get().operationTimeout())
+                      .flatMap(_ -> confirmedByReplicas(collector, quorum, hasRemote))
                       .fold(result -> result.fold(cause -> afterFailedPut(key,
                                                                           stamp,
                                                                           localPut,
                                                                           indeterminateIfFenced(cause, quorum, collector)),
                                                   Promise::success))
                       .onFailure(cause -> noteIfStale(cause, stamp))
-                      .onSuccess(_ -> node.clearStaleRefusal());
+                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector));
+    }
+
+    /// A put whose quorum is met is acknowledged only if no replica has refused it as stale (#1777 v1882 r6 F10): a
+    /// [DHTError.ReplicationChangeStale] refusal from ANY target is authoritative evidence that this writer is behind, so
+    /// the put fails and the caller retries under the newer change. When the quorum was met by this node's own slot alone
+    /// (W_old = 1 and the writer is a replica), the local slot — which no fence guards — says nothing about the others, so
+    /// the acknowledgement waits for the first reply of any kind from a remote target.
+    /// [limit: a replica that applied the newer change but stays silent for the rest of the operation timeout cannot refute
+    /// the acknowledgement; #1683-class] A refusal that arrives AFTER the acknowledgement cannot revoke it; it is recorded
+    /// ([#noteLateStale]) and the copies the other replicas accepted are pulled by the writers-switched catch-up.
+    private Promise<Unit> confirmedByReplicas(QuorumCollector<Unit> collector, int quorum, boolean hasRemote) {
+        if (collector.replicationStaleCount() > 0) {
+            return staleFailure(collector, quorum);
+        }
+
+        if (!hasRemote || collector.remoteSuccessCount() > 0) {
+            return Promise.success(unit());
+        }
+
+        var remaining = Math.max(config.get().operationTimeout().millis() - collector.elapsedMillis(), 1L);
+
+        return collector.remoteReplied()
+                        .timeout(timeSpan(remaining).millis())
+                        .fold(_ -> collector.replicationStaleCount() > 0
+                                   ? staleFailure(collector, quorum)
+                                   : Promise.success(unit()));
+    }
+
+    private static Promise<Unit> staleFailure(QuorumCollector<Unit> collector, int quorum) {
+        return DHTError.replicationChangeStale(quorum, collector.successCount(), collector.replicationStaleCount())
+                       .promise();
+    }
+
+    /// A refusal that arrived after the put was acknowledged still says this writer is behind: record it, so the
+    /// stale-writer clock starts (the F9 guard in [DHTNode#noteStaleRefusal] drops it if the writer has adopted since).
+    @Contract
+    private void noteLateStale(QuorumCollector<Unit> collector, WriteStamp stamp) {
+        if (collector.replicationStaleCount() > 0) {
+            node.noteStaleRefusal(stamp.replicationVersion(), System.currentTimeMillis());
+        }
+    }
+
+    /// Any accepted write ends a stale episode — but not one that a replica refused as stale (v1882 r6 F10).
+    @Contract
+    private void clearIfNoReplicaRefusedAsStale(QuorumCollector<Unit> collector) {
+        if (collector.replicationStaleCount() == 0) {
+            node.clearStaleRefusal();
+        }
     }
 
     /// #1777 (owner rule): a put refused because replicas applied a NEWER change starts this node's stale-writer clock. A
@@ -257,7 +313,7 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private Promise<Unit> afterFailedPut(byte[] key, WriteStamp stamp, Option<Promise<Boolean>> localPut, Cause cause) {
-        return cause instanceof DHTError.WriteIndeterminate
+        return cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.ReplicationChangeStale
                ? localPut.map(local -> rollBackLocalAccept(key, stamp, local))
                          .or(Promise.success(false))
                          .fold(_ -> cause.promise())
@@ -276,7 +332,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Contract
     private void logRollback(byte[] key, boolean removed) {
-        log.info("Put of {} lost its quorum to owner-epoch fences; local accept {}",
+        log.info("Put of {} was refused by replica fences; local accept {}",
                  hex(key),
                  removed
                  ? "rolled back"
@@ -794,8 +850,8 @@ public final class DistributedDHTClient implements DHTClient {
                                  stamp.epochIncarnation(),
                                  stamp.epochTerm(),
                                  stamp.epochCounter())
-                   .onSuccess(_ -> collector.onSuccess(unit()))
-                   .onFailure(collector::onFailure);
+                   .onSuccess(_ -> collector.onLocalSuccess(unit()))
+                   .onFailure(collector::onLocalFailure);
     }
 
     private void handleLocalRemove(byte[] key, QuorumCollector<Boolean> collector) {
