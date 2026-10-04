@@ -117,6 +117,54 @@ class DHTDeposedWriterRollbackTest {
         assertThat(cluster.holds(DEPOSED, KEY)).as("never applied locally").isFalse();
     }
 
+    /// v1882 r12: while the deposed owner's own write is applied and unresolved, it answers another writer's request on the key
+    /// with a typed retriable `writePending` refusal, never "superseded"; when its write times out the mark is CLEARED and the key
+    /// answers normally again (no leak: it can never refuse forever).
+    @Test
+    void pendingOwnWrite_refusesAnotherWriterTyped_andIsClearedWhenItTimesOut() throws Exception {
+        var cluster = new Cluster();
+        var other = cluster.member(new NodeId("replica"));
+
+        cluster.silent = java.util.Set.of(new NodeId("new-owner"), new NodeId("replica"));
+        var put = cluster.member(DEPOSED).client().put(KEY, VALUE);
+        Thread.sleep(600);
+
+        assertThat(cluster.member(DEPOSED).node().localWritePending(KEY)).as("arming: applied on silence, unresolved").isTrue();
+        var during = respondTo(cluster.member(DEPOSED).node(), "newer");
+
+        assertThat(during.writePending()).as("a pending own write refuses, typed").isTrue();
+        assertThat(during.superseded()).as("never answered superseded").isFalse();
+
+        put.await(timeSpan(5).seconds());
+        var deadline = System.nanoTime() + 2_000_000_000L;
+
+        // the mark is cleared by a completion callback that may run just after the caller's wait returns
+        while (cluster.member(DEPOSED).node().localWritePending(KEY) && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(cluster.member(DEPOSED).node().localWritePending(KEY)).as("cleared on timeout: no leak").isFalse();
+        assertThat(respondTo(cluster.member(DEPOSED).node(), "again").writePending()).as("answers normally afterwards").isFalse();
+        assertThat(other).isNotNull();
+    }
+
+    private static DHTMessage.PutResponse respondTo(DHTNode node, String id) {
+        var response = new AtomicReference<DHTMessage.PutResponse>();
+
+        node.handlePutRequest(new DHTMessage.PutRequest(id,
+                                                        new NodeId("another-writer"),
+                                                        KEY,
+                                                        "v".getBytes(StandardCharsets.UTF_8),
+                                                        System.nanoTime() * 1_000L,
+                                                        NEW_EPOCH[0],
+                                                        NEW_EPOCH[1],
+                                                        NEW_EPOCH[2],
+                                                        DHTNode.NO_CHANGE),
+                              response::set);
+
+        return response.get();
+    }
+
     /// v1882 r9b/r11: the one rollback that remains. No replica answers within the evidence wait (the requests are held), so
     /// the deposed owner applies its write locally per the named limit, over a value its slot already held; the fence refusals
     /// then arrive late and sink the quorum. The rollback must put THAT prior value back exactly, not delete the key.
