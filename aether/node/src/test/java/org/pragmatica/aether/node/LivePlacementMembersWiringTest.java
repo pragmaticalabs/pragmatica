@@ -121,6 +121,7 @@ class LivePlacementMembersWiringTest {
         assertThat(code).contains("ownerActivation.peerRows((stream,partition,peer)->streamReplicaRegistry.updateWatermark(stream,partition,peer,-1L,ReplicationState.SYNCING));");
         assertThat(code).contains("streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);");
         assertThat(code).contains("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
+        assertThat(code).contains("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
         assertThat(code).contains("ownerActivation.peerRingTail((node,stream,partition)->");
     }
 

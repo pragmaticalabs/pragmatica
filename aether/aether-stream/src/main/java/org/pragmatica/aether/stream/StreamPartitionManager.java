@@ -79,6 +79,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -265,6 +266,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
     /// What the repair in progress of a partition has discarded so far; reported once when it settles ([#settleRepair]).
     private final ConcurrentHashMap<PartitionRef, TailCut> pendingCuts = new ConcurrentHashMap<>();
+    /// The range already reported while its repair was unsettled ([#repairReportBound]); the settled report follows only if the
+    /// range grew.
+    private final ConcurrentHashMap<PartitionRef, TailCut> reportedUnsettled = new ConcurrentHashMap<>();
+    private volatile Option<TimeSpan> repairReportBound = Option.none();
 
     /// Reports of repairs a previous process left unsettled that were found before the operator-warning sink was wired; made
     /// when it is.
@@ -2249,7 +2254,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void reportCut(String streamName, int partition, TailCut cut) {
         if (cut.removed() > 0) {
-            var combined = pendingCuts.merge(new PartitionRef(streamName, partition), cut, TailCut::then);
+            var ref = new PartitionRef(streamName, partition);
+            var first = !pendingCuts.containsKey(ref);
+            var combined = pendingCuts.merge(ref, cut, TailCut::then);
+
+            if (first) {
+                scheduleUnsettledReport(streamName, partition);
+            }
 
             walFor(streamName, partition).onPresent(wal -> persistPendingCut(wal, combined));
         }
@@ -2289,7 +2300,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void reportInterruptedRepair(String streamName, int partition, Option<AppendLog> wal) {
         wal.onPresent(appendLog -> readPendingCut(pendingCutFile(appendLog)).onPresent(cut -> {
             Runnable report = () -> {
-                reportCut(streamName, partition, cut, confirmationFactorFor(streamName));
+                reportCut(streamName, partition, cut, confirmationFactorFor(streamName), false);
                 deletePendingCut(pendingCutFile(appendLog));
             };
 
@@ -2336,27 +2347,64 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// by the old owner alone and it is only logged.
     @Contract
     private void settleRepair(String streamName, int partition) {
-        option(pendingCuts.remove(new PartitionRef(streamName, partition))).onPresent(cut -> {
-            reportCut(streamName, partition, cut, confirmationFactorFor(streamName));
+        var ref = new PartitionRef(streamName, partition);
+
+        option(pendingCuts.remove(ref)).onPresent(cut -> {
+            var earlier = reportedUnsettled.remove(ref);
+
+            if (earlier == null || cut.removed() > earlier.removed()) {
+                reportCut(streamName, partition, cut, confirmationFactorFor(streamName), true);
+            }
+
             walFor(streamName, partition).onPresent(wal -> deletePendingCut(pendingCutFile(wal)));
         });
     }
 
-    private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor) {
+    /// The bound after which a durable cut whose repair has not settled is reported anyway, with the range known so far and
+    /// `repairSettled=false`: the loss is real from the moment the cut is durable, and a repair that stalls (the owner unreachable,
+    /// a window step refused) must not hide it. Late-bound; `AetherNode` derives it from the backfill redrive interval
+    /// (`STREAM_BACKFILL_REDRIVE_INTERVAL`, 5 s) times 12, i.e. twelve redrive ticks, which is room for a stepped-back repair of
+    /// several 1,024-record windows. None (the default for unit managers) reports only on settle or reopen.
+    @Contract
+    public void repairReportBound(TimeSpan bound) {
+        this.repairReportBound = Option.some(bound);
+    }
+
+    @Contract
+    private void scheduleUnsettledReport(String streamName, int partition) {
+        repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName, partition), bound));
+    }
+
+    @Contract
+    private void reportUnsettled(String streamName, int partition) {
+        var ref = new PartitionRef(streamName, partition);
+
+        option(pendingCuts.get(ref)).filter(_ -> !reportedUnsettled.containsKey(ref)).onPresent(cut -> {
+            reportedUnsettled.put(ref, cut);
+            reportCut(streamName, partition, cut, confirmationFactorFor(streamName), false);
+        });
+    }
+
+    private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor, boolean settled) {
         if (confirmationFactor <= 1) {
+            var epoch = cut.epoch().map(Epoch::toString).or("unknown");
+
+            // The subject is the event identity: (partition, epoch, first cut offset, settled flag), so an unsettled report and the
+            // settled one that follows it are two distinct events, at most two per truncation.
             OperatorWarnings.raise(log,
                                    operatorWarnings,
                                    OperatorWarningCode.STREAM_DIVERGENT_TAIL_TRUNCATED,
-                                   streamName + "[" + partition + "]@" + cut.firstRemoved(),
+                                   streamName + "[" + partition + "]@" + epoch + "@" + cut.firstRemoved() + "#settled=" + settled,
                                    "Replica {}[{}] discarded offsets [{}, {}] ({} events, epoch {}) that diverged from its owner; "
                                   + "ackedAtOwner=true: confirmation_factor is 1, so they may have been acknowledged by their writer "
-                                  + "and are lost",
+                                  + "and are lost; repairSettled={}",
                                    streamName,
                                    partition,
                                    cut.firstRemoved(),
                                    cut.lastRemoved(),
                                    cut.removed(),
-                                   cut.epoch().map(Epoch::toString).or("unknown"));
+                                   epoch,
+                                   settled);
 
             return;
         }

@@ -172,6 +172,63 @@ class StreamPartitionManagerDivergentTailTest {
         one.close();
     }
 
+    /// B9 residual: a durable cut whose repair never settles inside a RUNNING process is reported within the bound, with the range
+    /// known so far and repairSettled=false; if it later settles with a LARGER range it is reported once more (a distinct event),
+    /// and with the same range it is not repeated.
+    @Test
+    void repairDivergence_neverSettling_isReportedWithinTheBound_andOnceMoreOnlyIfTheRangeGrew() {
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir.resolve("cf1-bound")));
+
+        one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.repairReportBound(org.pragmatica.lang.io.TimeSpan.timeSpan(300).millis());
+        for (var i = 0; i < 12; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 9, "different".getBytes(UTF_8), 1009L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+
+        awaitWarnings(1);
+
+        assertThat(warnings).as("reported inside the bound although nothing settled").singleElement()
+                            .satisfies(warning -> assertThat(warning.message()).contains("[9, 11]").contains("repairSettled=false"));
+
+        one.appendRecovered("single", PARTITION, 5, "different".getBytes(UTF_8), 1005L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        one.quarantineView().repairSettled("single", PARTITION);
+        awaitWarnings(2);
+        quietPeriod();
+
+        assertThat(warnings).as("the larger range is reported once more, as a distinct settled event").hasSize(2);
+        assertThat(warnings.get(1).message()).contains("[5, 11]").contains("repairSettled=true");
+        one.close();
+    }
+
+    /// Control: the same range already reported while unsettled is not repeated on settle.
+    @Test
+    void repairDivergence_reportedUnsettled_thenSettledWithTheSameRange_isNotRepeated() {
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir.resolve("cf1-same")));
+
+        one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.repairReportBound(org.pragmatica.lang.io.TimeSpan.timeSpan(300).millis());
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        awaitWarnings(1);
+        one.quarantineView().repairSettled("single", PARTITION);
+        quietPeriod();
+
+        assertThat(warnings).as("settled with the range already reported: no second event").hasSize(1);
+        one.close();
+    }
+
     /// B9 (v1890): a divergence older than the compared window is cut back one window per run. The operator is told ONCE, when the
     /// repair settles, with the FINAL range (from the last cut's first offset up to the original local head), not once per step.
     @Test
