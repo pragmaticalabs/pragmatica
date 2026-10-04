@@ -138,8 +138,8 @@ public final class TopicRoutes implements RouteSource {
 
     private Promise<TopicGroupsResponse> groups(String namespace, String topic, String version, String groupsLiteral) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
-                              .async()
-                              .flatMap(address -> groupsOf(address.asString()));
+                           .async()
+                           .flatMap(address -> groupsOf(address.asString()));
     }
 
     private Promise<TopicGroupsResponse> groupsOf(String topicAddress) {
@@ -259,9 +259,9 @@ public final class TopicRoutes implements RouteSource {
                                              String rebuildLiteral,
                                              String group) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
-                              .async()
-                              .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
-                                                               URLDecoder.decode(group, StandardCharsets.UTF_8)));
+                           .async()
+                           .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
+                                                            URLDecoder.decode(group, StandardCharsets.UTF_8)));
     }
 
     /// Two conditions, both LOCAL: the projection must be attached here AND this node must consume at

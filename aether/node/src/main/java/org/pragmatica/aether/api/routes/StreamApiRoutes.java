@@ -465,9 +465,9 @@ public final class StreamApiRoutes implements RouteSource {
 
     Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .flatMap(addr -> namespacesService.lookup(addr)
-                                                                .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
-                              .flatMap(this::toMetadataResponse);
+                           .flatMap(addr -> namespacesService.lookup(addr)
+                                                             .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
+                           .flatMap(this::toMetadataResponse);
     }
 
     private Result<StreamMetadataResponse> toMetadataResponse(StreamRegistryEntry entry) {
@@ -510,9 +510,9 @@ public final class StreamApiRoutes implements RouteSource {
                                                     String partitionsLiteral,
                                                     Integer partition) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .flatMap(addr -> streamManager().partitionInfo(StreamManager.engineKey(addr),
-                                                                             partition))
-                              .map(PartitionDetail::partitionDetail);
+                           .flatMap(addr -> streamManager().partitionInfo(StreamManager.engineKey(addr),
+                                                                          partition))
+                           .map(PartitionDetail::partitionDetail);
     }
 
     /// #260/#261/#333 replica-state observability, catalog-identity variant — see
@@ -528,7 +528,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                          String replicasLiteral,
                                                          Integer partition) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).map(addr -> StreamRoutes.toReplicasResponse(streamReadRouter().replicaSnapshot(StreamManager.engineKey(addr),
-                                                                                                                                                          partition)));
+                                                                                                                                                                                  partition)));
     }
 
     /// Catalog-scoped STREAM_GET handler — #742 fold of [StreamRoutes#streamInfo]'s flat-name legacy
@@ -542,8 +542,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                         String version,
                                                         String infoLiteral) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .async()
-                              .flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
+                           .async()
+                           .flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
     }
 
     /// #1478: STREAM_GET is delegate-routed (`taskGroup(STREAMING)`), so the answering node is arbitrary
@@ -602,8 +602,8 @@ public final class StreamApiRoutes implements RouteSource {
         var preference = preferenceOpt.fold(() -> ReadPreference.GOVERNOR, StreamApiRoutes::parseReadPreference);
 
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .async()
-                              .flatMap(addr -> readEventsAtPartition(addr, partition, from, max, preference));
+                           .async()
+                           .flatMap(addr -> readEventsAtPartition(addr, partition, from, max, preference));
     }
 
     private Promise<ReadEventsResponse> readEventsAtPartition(ResourceAddress addr,
@@ -637,7 +637,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                  String version,
                                                  String groupsLiteral) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).map(addr -> new GroupListResponse(addr.asString(),
-                                                                                                             List.of()));
+                                                                                                                                     List.of()));
     }
 
     /// Wave 6B: Tail subscription via SSE/WebSocket is deferred to issue #212 — the streaming
@@ -672,8 +672,8 @@ public final class StreamApiRoutes implements RouteSource {
         var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
 
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .async()
-                              .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
+                           .async()
+                           .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
     }
 
     private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
@@ -730,9 +730,9 @@ public final class StreamApiRoutes implements RouteSource {
     /// `POST /streams/{namespace}/{stream}/{version}/events` request also goes through.
     Promise<PublishResponse> publishEvent(String namespace, String stream, String version, PublishRequest request) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .async()
-                              .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
-                                                                                                           offset)));
+                           .async()
+                           .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
+                                                                                                        offset)));
     }
 
     /// Package-visible for direct unit coverage, like [#publishEvent].
@@ -742,8 +742,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                String publishBatchLiteral,
                                                PublishRequest[] requests) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .async()
-                              .flatMap(addr -> publishMany(addr, requests));
+                           .async()
+                           .flatMap(addr -> publishMany(addr, requests));
     }
 
     /// Every item is written concurrently and reports its own outcome (#1342); a failed item never hides the
@@ -996,7 +996,8 @@ public final class StreamApiRoutes implements RouteSource {
     /// `StreamApiRoutesCreateStreamTest` can exercise the full create path — including the
     /// catalog registration this ticket adds — without going through HTTP dispatch.
     Result<CreateResponse> createStream(String namespace, String stream, String version, CreateRequest request) {
-        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> createAtAddress(addr, request));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> createAtAddress(addr,
+                                                                                                                                   request));
     }
 
     /// Idempotent on an already-registered address (check-exists-first; shared with the body-carried
@@ -1069,7 +1070,7 @@ public final class StreamApiRoutes implements RouteSource {
                                               String groupsLiteral,
                                               GroupCreateRequest request) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> joinGroupAtAddress(addr,
-                                                                                                              request));
+                                                                                                                                      request));
     }
 
     private Result<GroupResponse> joinGroupAtAddress(ResourceAddress addr, GroupCreateRequest request) {
@@ -1091,7 +1092,7 @@ public final class StreamApiRoutes implements RouteSource {
                                               String groupsLiteral,
                                               String group) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> leaveGroupAtAddress(addr,
-                                                                                                               group));
+                                                                                                                                       group));
     }
 
     private Result<GroupResponse> leaveGroupAtAddress(ResourceAddress addr, String group) {
@@ -1114,8 +1115,8 @@ public final class StreamApiRoutes implements RouteSource {
 
     Promise<DeleteResponse> deleteStream(String namespace, String stream, String version) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                              .async()
-                              .flatMap(this::destroyAtAddress);
+                           .async()
+                           .flatMap(this::destroyAtAddress);
     }
 
     /// Engine key via [StreamManager#engineKey] — same reasoning as [#publishOne]: a `system`-namespace
