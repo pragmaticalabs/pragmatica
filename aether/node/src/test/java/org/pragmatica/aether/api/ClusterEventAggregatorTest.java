@@ -236,6 +236,53 @@ class ClusterEventAggregatorTest {
                                      .containsEntry("requestedBy", "operator-x");
     }
 
+    /// #1777 R1b (owner rule): a DHT replication change entering and leaving the overdue condition reaches the
+    /// cluster-events stream as the typed pair, with the change, its factors and the reason, through the codec transport.
+    @Test
+    void dhtReplicationUnsettledAndSettled_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onDhtReplicationUnsettled(OperationalEvent.DhtReplicationUnsettled.dhtReplicationUnsettled(9,
+                                                                                                                   3,
+                                                                                                                   1,
+                                                                                                                   "APPLYING",
+                                                                                                                   1000,
+                                                                                                                   "unsettled for longer than 5 minutes"));
+        h.aggregator().onDhtReplicationSettled(OperationalEvent.DhtReplicationSettled.dhtReplicationSettled(9, 3, 1, 1000, "settled"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.DhtReplicationUnsettled.class);
+        assertThat(events.get(0).type()).isEqualTo("DHT_REPLICATION_UNSETTLED");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("changeVersion", "9")
+                                           .containsEntry("replicationFactor", "3")
+                                           .containsEntry("confirmationFactor", "1")
+                                           .containsEntry("stage", "APPLYING")
+                                           .containsEntry("since", "1000");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.DhtReplicationSettled.class);
+        assertThat(events.get(1).type()).isEqualTo("DHT_REPLICATION_SETTLED");
+        assertThat(events.get(1).details()).containsEntry("reason", "settled");
+    }
+
+    /// #1777 (owner rule): a stale DHT writer's own announcement and its resolution reach the stream as the typed pair.
+    @Test
+    void dhtWriterStaleAndResolved_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onDhtWriterStale(OperationalEvent.DhtWriterStale.dhtWriterStale("writer-1", 5, 1000));
+        h.aggregator().onDhtWriterStaleResolved(OperationalEvent.DhtWriterStaleResolved.dhtWriterStaleResolved("writer-1", 5, 1000));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0).type()).isEqualTo("DHT_WRITER_STALE");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("nodeId", "writer-1")
+                                           .containsEntry("fence", "5")
+                                           .containsEntry("since", "1000");
+        assertThat(events.get(1).type()).isEqualTo("DHT_WRITER_STALE_RESOLVED");
+    }
+
     /// #1730 owner ruling: the stream failover refusal and its resolution reach the cluster-events stream as typed
     /// events carrying the stream, partition, owner, ISR, live set and reason, through the codec transport.
     @Test
