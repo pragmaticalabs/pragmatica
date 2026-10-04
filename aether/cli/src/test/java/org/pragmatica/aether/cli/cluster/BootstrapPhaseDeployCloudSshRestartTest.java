@@ -33,9 +33,15 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -328,8 +334,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(cmd0.contains("-e NODE_ID=\"eu-1-core-0\""), "NODE_ID must be set per node: " + cmd0);
         assertTrue(cmd0.contains("-e CLUSTER_PORT=\"" + clusterPort + "\""), "CLUSTER_PORT must be set: " + cmd0);
         assertTrue(cmd0.contains("-e MANAGEMENT_PORT=\"" + mgmtPort + "\""), "MANAGEMENT_PORT must be set: " + cmd0);
-        assertTrue(cmd0.contains("-e AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""),
-                   "AETHER_CLUSTER_SECRET must be threaded through: " + cmd0);
+        assertTrue(cmd0.contains("--env-file " + BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE),
+                   "AETHER_CLUSTER_SECRET must be threaded through by env-file: " + cmd0);
+        assertFalse(cmd0.contains(CLUSTER_SECRET), "#828: no secret material on the command line: " + cmd0);
 
         var cmd1 = commands.get("203.0.113.11");
         assertTrue(cmd1.contains("-e NODE_ID=\"eu-1-core-1\""), "NODE_ID must be node-specific: " + cmd1);
@@ -381,7 +388,6 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                               8090,
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090",
-                                                              CLUSTER_SECRET,
                                                               hostEnv);
         var jvm = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-2-worker-0",
                                                               NodeRole.WORKER,
@@ -390,7 +396,6 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                               8090,
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090",
-                                                              CLUSTER_SECRET,
                                                               CLUSTER_NAME,
                                                               hostEnv);
 
@@ -596,7 +601,6 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
-                                                           CLUSTER_SECRET,
                                                            emptyEnv());
         assertTrue(cmd.contains("docker rm -f aether-node"), cmd);
         assertTrue(cmd.contains("docker run -d --name aether-node --restart no --network host"), cmd);
@@ -607,8 +611,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(cmd.contains("-e CLUSTER_PORT=\"8090\""), cmd);
         assertTrue(cmd.contains("-e MANAGEMENT_PORT=\"8091\""), cmd);
         assertTrue(cmd.contains("-e PEERS=\"eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091\""), cmd);
-        assertTrue(cmd.contains("-e AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""), cmd);
-        assertTrue(cmd.endsWith("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION), cmd);
+        assertTrue(cmd.contains("--env-file " + BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE), cmd);
+        assertTrue(cmd.contains(" ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION + ";"), cmd);
         assertFalse(cmd.contains(":latest"), "Image tag must follow cluster.version, not :latest. Got: " + cmd);
     }
 
@@ -631,7 +635,6 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
-                                                           CLUSTER_SECRET,
                                                            envOf(Map.of("AETHER_INSECURE_DEV_MODE", "true")));
         assertTrue(cmd.contains("-e AETHER_INSECURE_DEV_MODE=\"true\""),
                    () -> "Re-launch MUST carry AETHER_INSECURE_DEV_MODE from the host env (C2 gate): " + cmd);
@@ -648,7 +651,6 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
-                                                           CLUSTER_SECRET,
                                                            emptyEnv());
         assertFalse(cmd.contains("AETHER_INSECURE_DEV_MODE"),
                     () -> "Unset dev-mode MUST NOT be emitted (no empty -e VAR=\"\"; prod-safe): " + cmd);
@@ -665,20 +667,19 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
-                                                           CLUSTER_SECRET,
-                                                           envOf(Map.of("AETHER_API_KEY", "ak-123")));
-        assertTrue(cmd.contains("-e AETHER_API_KEY=\"ak-123\""),
+                                                           envOf(Map.of("AETHER_API_KEY", "ak-123", "AETHER_PROVISIONED_BY", "ops")));
+        assertTrue(cmd.contains("-e AETHER_PROVISIONED_BY=\"ops\""),
                    () -> "Present identity allow-list var MUST be threaded into the re-launch: " + cmd);
-        assertFalse(cmd.contains("AETHER_PROVISIONED_BY"),
+        assertFalse(cmd.contains("ak-123"), () -> "#828: a credential-class var must not ride argv: " + cmd);
+        assertFalse(cmd.contains("AETHER_ZONE"),
                     () -> "Absent identity var MUST NOT be emitted as empty -e VAR=\"\": " + cmd);
         assertFalse(cmd.contains("-e VAR=\"\""), cmd);
     }
 
     @Test
-    void buildRestartCommand_clusterSecretAppearsExactlyOnce_evenWhenInIdentityAllowList() {
-        // AETHER_CLUSTER_SECRET is BOTH in ClusterIdentityEnv.IDENTITY_VARS AND passed explicitly.
-        // The allow-list pass must exclude it so it is never emitted twice. Inject it into the
-        // host-env lookup too, to prove the exclusion holds regardless of host env.
+    void buildRestartCommand_secretIsDeliveredByEnvFileOnly_neverOnTheCommandLine() {
+        // #828: the host-env AETHER_CLUSTER_SECRET is in IDENTITY_VARS; the allow-list pass must not
+        // inline it either, and the secret itself is not a parameter of the builder at all.
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
@@ -688,16 +689,14 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
-                                                           CLUSTER_SECRET,
                                                            envOf(Map.of("AETHER_CLUSTER_SECRET", "host-env-secret")));
-        var occurrences = cmd.split("-e AETHER_CLUSTER_SECRET=", -1).length - 1;
-        assertEquals(1, occurrences,
-                     () -> "AETHER_CLUSTER_SECRET must appear exactly once (explicit param, not duplicated "
-                           + "from the identity allow-list). Got " + occurrences + " in: " + cmd);
-        assertTrue(cmd.contains("-e AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""),
-                   () -> "The single AETHER_CLUSTER_SECRET must carry the finalized param value: " + cmd);
-        assertFalse(cmd.contains("host-env-secret"),
-                    () -> "Host-env AETHER_CLUSTER_SECRET must NOT leak in via the allow-list pass: " + cmd);
+        assertFalse(cmd.contains("AETHER_CLUSTER_SECRET"),
+                    () -> "no -e AETHER_CLUSTER_SECRET on the command line: " + cmd);
+        assertFalse(cmd.contains("host-env-secret"), () -> "host-env secret must not leak in: " + cmd);
+        assertEquals(1, cmd.split("--env-file ", -1).length - 1, () -> "exactly one env-file: " + cmd);
+        assertTrue(cmd.contains("rm -f " + BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE),
+                   () -> "the secret file must be removed after the launch: " + cmd);
+        assertTrue(cmd.endsWith("exit $rc"), () -> "launch status must survive the cleanup: " + cmd);
     }
 
     @Test
@@ -712,12 +711,11 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
-                                                           CLUSTER_SECRET,
                                                            envOf(Map.of("AETHER_INSECURE_DEV_MODE", "true",
                                                                         "AETHER_API_KEY", "ak-1")));
         assertFalse(cmd.contains("\\\n"), () -> "Single-line SSH command must not contain line continuations: " + cmd);
         assertFalse(cmd.contains("\n"), () -> "Restart command must be a single line: " + cmd);
-        assertTrue(cmd.endsWith("img:1"), () -> "Identity flags must precede the image; image stays last: " + cmd);
+        assertTrue(cmd.contains(" img:1;"), () -> "Identity flags must precede the image: " + cmd);
     }
 
     @Test
@@ -729,14 +727,12 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
-                                                             CLUSTER_SECRET,
                                                              CLUSTER_NAME,
                                                              envOf(Map.of("AETHER_INSECURE_DEV_MODE", "true")));
         assertTrue(cmd.contains("'AETHER_INSECURE_DEV_MODE=true'"),
                    () -> "JVM re-launch MUST write AETHER_INSECURE_DEV_MODE from host env into the unit's env file (C2 gate): " + cmd);
-        var secretOccurrences = cmd.split("AETHER_CLUSTER_SECRET=", -1).length - 1;
-        assertEquals(1, secretOccurrences,
-                     () -> "AETHER_CLUSTER_SECRET must appear exactly once in the JVM command: " + cmd);
+        assertFalse(cmd.contains("AETHER_CLUSTER_SECRET"),
+                    () -> "#828: the JVM command must not carry the secret: " + cmd);
         assertTrue(cmd.indexOf("AETHER_INSECURE_DEV_MODE") < cmd.indexOf("systemctl restart"),
                    () -> "every env line must be written BEFORE the unit is restarted, or the restart reads the old file: " + cmd);
         assertTrue(cmd.contains("systemctl restart aether-node.service"),
@@ -753,7 +749,6 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
-                                                             CLUSTER_SECRET,
                                                              CLUSTER_NAME,
                                                              emptyEnv());
         assertFalse(cmd.contains("AETHER_INSECURE_DEV_MODE"),
@@ -871,7 +866,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var dockerCommands = commands.values().stream().filter(c -> c.startsWith("docker")).toList();
         assertFalse(dockerCommands.isEmpty(), "At least one docker-restart command must have been issued");
         for (var cmd : dockerCommands) {
-            assertTrue(cmd.endsWith(configuredImage),
+            assertTrue(cmd.contains(" " + configuredImage + ";"),
                        () -> "Docker run MUST use image from [runtime.default].image verbatim. Got: " + cmd);
             assertFalse(cmd.contains("aether-node:" + CLUSTER_VERSION + " "),
                         () -> "Configured image MUST override derived (cluster.version). Got: " + cmd);
@@ -898,7 +893,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
         for (var cmd : commands.values()) {
             if (!cmd.startsWith("docker")) { continue; }
-            assertTrue(cmd.endsWith("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION),
+            assertTrue(cmd.contains(" ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION + ";"),
                        () -> "Without runtime.image config, image MUST fall back to cluster.version. Got: " + cmd);
         }
     }
@@ -1077,8 +1072,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                        () -> "JVM restart MUST carry the management port: " + cmd);
             assertTrue(cmd.contains("'AETHER_PEERS="),
                        () -> "JVM restart MUST carry the finalized peers: " + cmd);
-            assertTrue(cmd.contains("'AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET + "'"),
-                       () -> "JVM restart MUST carry AETHER_CLUSTER_SECRET so the C2 gate passes: " + cmd);
+            assertTrue(cmd.contains("cat " + BootstrapPhaseDeploy.JVM_SECRET_ENV_FILE),
+                       () -> "JVM restart MUST carry AETHER_CLUSTER_SECRET (from the pushed file) so the C2 gate passes: " + cmd);
+            assertFalse(cmd.contains(CLUSTER_SECRET), () -> "#828: no secret material on the command line: " + cmd);
             assertTrue(cmd.contains("chmod 600 /etc/aether/node.env"),
                        () -> "the env file carries the cluster secret and must be owner-only: " + cmd);
             // `--config=` and the `/var/log/aether-node.log` redirect are deliberately NOT asserted
@@ -1197,7 +1193,6 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                               8090,
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",
-                                                              CLUSTER_SECRET,
                                                               CLUSTER_NAME);
         // #1021 — the re-launch drives the systemd unit instead of pattern-matching the process.
         // `pkill -f` is FORBIDDEN here for two independent reasons: it matched the SSH session's own
@@ -1211,7 +1206,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                     "#1021: the node must run UNDER the unit, not beside it as a detached process. Got: " + cmd);
         assertTrue(cmd.contains("systemctl restart aether-node.service"),
                    "#1021: the re-launch must restart the unit by name. Got: " + cmd);
-        assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET), cmd);
+        assertTrue(cmd.contains("cat " + BootstrapPhaseDeploy.JVM_SECRET_ENV_FILE + " &&"), cmd);
+        assertFalse(cmd.contains(CLUSTER_SECRET), cmd);
         assertTrue(cmd.contains("AETHER_NODE_ID=eu-1-core-0"), cmd);
         assertTrue(cmd.contains("AETHER_CLUSTER_PORT=8090"), cmd);
         assertTrue(cmd.contains("AETHER_MANAGEMENT_PORT=8091"), cmd);
@@ -1387,5 +1383,169 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                    () -> "the refusal must name the node: " + result);
         assertTrue(result.fold(Cause::message, _ -> "").contains("belongs to no source"),
                    () -> "and say why: with exact attribution such an id would otherwise be skipped by every source's launch: " + result);
+    }
+
+    /// #828 — one ordered log of everything the CLI sends to a node: ssh command lines and scp pushes.
+    /// scp records the pushed file's content and mode AT CALL TIME (the CLI deletes its temp copy after).
+    private static final class WireLog {
+        final List<String> sshCommands = new ArrayList<>();
+        final List<String> events = new ArrayList<>();
+        final List<String> scpRemotePaths = new ArrayList<>();
+        final List<String> scpContents = new ArrayList<>();
+        final List<String> scpModes = new ArrayList<>();
+
+        Fn3<Result<String>, String, String, SshConfig> ssh() {
+            return (host, command, config) -> {
+                sshCommands.add(command);
+                events.add("ssh");
+                return Result.success("");
+            };
+        }
+
+        Fn4<Result<Unit>, String, String, String, SshConfig> scp() {
+            return (local, host, remote, config) -> {
+                try {
+                    scpContents.add(Files.readString(Path.of(local)));
+                    scpModes.add(PosixFilePermissions.toString(Files.getPosixFilePermissions(Path.of(local))));
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+                scpRemotePaths.add(remote);
+                events.add("scp");
+                return Result.unitResult();
+            };
+        }
+    }
+
+    @Test
+    void deployCloudSource_container_neverPutsTheSecretInAnySshCommand_andPushesItAsA0600File() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var wire = new WireLog();
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            wire.ssh(),
+                                                            wire.scp(),
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            1_000,
+                                                            10);
+
+        assertTrue(result.isSuccess(), () -> "control: the deploy must succeed: " + result);
+        assertTrue(wire.sshCommands.stream().anyMatch(c -> c.startsWith("docker run") || c.contains("docker run")),
+                   () -> "control: a launch command was sent: " + wire.sshCommands);
+        for (var cmd : wire.sshCommands) {
+            assertFalse(cmd.contains(CLUSTER_SECRET), () -> "#828: secret on an ssh command line: " + cmd);
+        }
+        assertEquals(3, wire.scpContents.size(), "one secret push per node");
+        for (var i = 0; i < 3; i++) {
+            assertEquals("AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET + "\n", wire.scpContents.get(i));
+            assertEquals("rw-------", wire.scpModes.get(i), "the CLI-host temp copy must be owner-only");
+            assertEquals(BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE, wire.scpRemotePaths.get(i));
+        }
+    }
+
+    @Test
+    void deployCloudSource_apiKeysFromTheHostEnv_ridePushedFile_notAnySshCommand() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var wire = new WireLog();
+        Fn1<String, String> env = name -> switch (name) {
+            case SshKeyResolver.AETHER_SSH_KEY_ENV -> "/home/op/.ssh/aether_id_ed25519";
+            case "AETHER_API_KEYS" -> "key-one,key-two";
+            default -> null;
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            wire.ssh(),
+                                                            wire.scp(),
+                                                            env,
+                                                            1_000,
+                                                            10);
+
+        assertTrue(result.isSuccess(), () -> String.valueOf(result));
+        assertTrue(wire.sshCommands.stream().anyMatch(c -> c.contains("docker run")), "control: launches were sent");
+        wire.sshCommands.forEach(c -> assertFalse(c.contains("key-one"), () -> "#828: API key on argv: " + c));
+        assertEquals("AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET + "\nAETHER_API_KEYS=key-one,key-two\n",
+                     wire.scpContents.get(0));
+    }
+
+    @Test
+    void deployCloudSource_container_pushesTheSecretBeforeTheLaunchThatReadsIt() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var order = new ArrayList<String>();
+        Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, config) -> {
+            order.add(command.contains("docker run") ? "launch:" + host : "other");
+            return Result.success("");
+        };
+        Fn4<Result<Unit>, String, String, String, SshConfig> scp = (local, host, remote, config) -> {
+            order.add("push:" + host);
+            return Result.unitResult();
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            ssh,
+                                                            scp,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            1_000,
+                                                            10);
+
+        assertTrue(result.isSuccess(), () -> String.valueOf(result));
+        for (var host : List.of("203.0.113.10", "203.0.113.11", "203.0.113.12")) {
+            assertTrue(order.indexOf("push:" + host) >= 0 && order.indexOf("push:" + host) < order.indexOf("launch:" + host),
+                       () -> "the secret file must exist on " + host + " before the launch reads it: " + order);
+        }
+    }
+
+    @Test
+    void deployCloudSource_jvm_neverPutsTheSecretInAnySshCommand_andPushesItToTheJvmEnvDir() {
+        var ctx = contextWithJvmRuntime(cloudSource());
+        var wire = new WireLog();
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            wire.ssh(),
+                                                            wire.scp(),
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            1_000,
+                                                            10);
+
+        assertTrue(result.isSuccess(), () -> "control: the deploy must succeed: " + result);
+        assertTrue(wire.sshCommands.stream().anyMatch(c -> c.contains("systemctl restart")),
+                   () -> "control: the unit restart was sent: " + wire.sshCommands);
+        for (var cmd : wire.sshCommands) {
+            assertFalse(cmd.contains(CLUSTER_SECRET), () -> "#828: secret on an ssh command line: " + cmd);
+        }
+        assertFalse(wire.scpRemotePaths.isEmpty(), "the secret must be pushed");
+        assertTrue(wire.scpRemotePaths.stream().allMatch(BootstrapPhaseDeploy.JVM_SECRET_ENV_FILE::equals),
+                   () -> String.valueOf(wire.scpRemotePaths));
+    }
+
+    @Test
+    void deployCloudSource_refusesASecretWithALineBreak_insteadOfTruncatingIt() {
+        var ctx = contextWithThreeCloudNodes(cloudSource()).withClusterSecret("line1\nline2");
+        var wire = new WireLog();
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            wire.ssh(),
+                                                            wire.scp(),
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            1_000,
+                                                            10);
+
+        assertTrue(result.isFailure(), "a secret an env file cannot carry must be refused");
+        assertTrue(result.fold(Cause::message, _ -> "").contains("line break"), () -> String.valueOf(result));
+        assertTrue(wire.scpContents.isEmpty(), "nothing may be pushed");
     }
 }
