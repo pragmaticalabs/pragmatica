@@ -40,6 +40,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
@@ -93,13 +95,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final int HELD_BACK_WARN_SAMPLE = 5;
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+    /// #1278 ruling F: how long the publish auto-create path waits for its proposed config to commit and apply here.
+    /// Inside the 5 s forward timeout that made this path asynchronous; past it the publish refuses retriably.
+    private static final TimeSpan PUBLISH_COMMIT_WAIT = TimeSpan.timeSpan(2).seconds();
+    /// Bound on dropping or checking a stream's durable footprint (a local ref write and one forced snapshot).
+    private static final TimeSpan FOOTPRINT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
+    /// Distinct lost WAL heads (node-wide, since process start): WAL recoveries refused because the WAL started above
+    /// the durable sealed watermark, which already counts every offset retention reclaimed (#1278,
+    /// [StreamError.WalHeadLost]). Counted once per WAL file and lost range, however often the refused recovery is
+    /// re-attempted; every attempt is logged at ERROR naming the range. Any non-zero value is lost records.
+    private static final AtomicLong WAL_RECOVERY_HEADS_LOST = new AtomicLong();
 
-    /// WAL recoveries (node-wide, since process start) that accepted a gap BEFORE the first WAL record as
-    /// reclaimed history (#1258 review B2) — each is also WARNed with the range. Non-zero is expected after
-    /// retention reclaimed every sealed segment of a partition; an operator seeing it without such
-    /// retention is looking at lost records.
-    private static final AtomicLong WAL_RECOVERY_HEAD_GAPS = new AtomicLong();
+    /// The lost-head refusals already counted, by WAL file and the lost range: a refused partition is re-attempted on
+    /// every publish and every placement edge, and each re-attempt is the SAME loss, counted once.
+    private static final java.util.Set<StreamError.WalHeadLost> COUNTED_HEADS_LOST = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /// Absolute per-stream partition ceiling (#265 increment 4, spec §7/§10). Enforced PRE-COMMIT in
     /// {@link #createFreshStream} (mirroring the build-time `StreamConfigParser` check) and surfaced as the
@@ -323,10 +333,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// admission) and by owner-role reads ([#readServing], [#mayServeAsOwner]). Default: [#ADMIT_OWNER].
     /// Volatile: set once at wiring.
     private volatile OwnerServeGate ownerServeGate = ADMIT_OWNER;
-
     /// Why this node's owner promotion of a partition waits for an operator (#1555), read by the partition status
     /// view. Default: [#NO_BLOCK]. Volatile: set once at wiring.
     private volatile OwnerBlockSource ownerBlockSource = NO_BLOCK;
+
+    private volatile StreamFootprint streamFootprint = StreamFootprint.NONE;
 
     /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
@@ -416,9 +427,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         replicationManager.observeAcks(this::onReplicaAck);
     }
 
-    /// See [#WAL_RECOVERY_HEAD_GAPS].
-    public static long walRecoveryHeadGapsAccepted() {
-        return WAL_RECOVERY_HEAD_GAPS.get();
+    /// See [#WAL_RECOVERY_HEADS_LOST].
+    public static long walRecoveryHeadsLost() {
+        return WAL_RECOVERY_HEADS_LOST.get();
     }
 
     public static StreamPartitionManager streamPartitionManager() {
@@ -794,6 +805,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerServeGate = gate;
     }
 
+    /// Late-bind the owner of this node's per-stream durable refs (#1278 review): a destroyed stream drops its sealed
+    /// segment refs and reclaimed-through floors through it, and a stream about to materialize finishes a destroy of
+    /// its name that a crash interrupted. Default: [StreamFootprint#NONE] (no storage of its own).
+    @Contract
+    public void streamFootprint(StreamFootprint footprint) {
+        this.streamFootprint = footprint;
+    }
+
     /// Late-bind the owner promotion block source (#1555). Set once at wiring.
     @Contract
     public void ownerBlockSource(OwnerBlockSource source) {
@@ -947,8 +966,23 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createStream(StreamConfig config, CommitMode commitMode) {
-        return option(streams.get(config.name())).fold(() -> createFreshStream(config, commitMode),
+        return option(streams.get(config.name())).fold(() -> createAbsentStream(config, commitMode),
                                                        existing -> ensureConfigCommitted(config, existing, commitMode));
+    }
+
+    /// #1278 (rulings B/C): a name whose committed life this node has applied is ADOPTED — hydrated from the committed
+    /// config, never re-proposed. Only a name with no applied life (never created, or destroyed here) gets a fresh
+    /// proposal, which always carries a newly minted incarnation.
+    private Result<Unit> createAbsentStream(StreamConfig config, CommitMode commitMode) {
+        return option(appliedConfigs.get(config.name())).fold(() -> createFreshStream(config, commitMode),
+                                                              committed -> adoptCommittedLife(committed, commitMode));
+    }
+
+    /// A hydration that built no entry (native OOM, WAL refusal) has already been flagged; the caller may retry.
+    private Result<Unit> adoptCommittedLife(StreamConfig committed, CommitMode commitMode) {
+        return option(streams.compute(committed.name(),
+                                      (_, existing) -> reconcileCommittedConfig(committed, existing))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()))
+                     .flatMap(_ -> commitMode.alreadyCommitted());
     }
 
     /// Already materialized. A committed config short-circuits with NO consensus: SYNC reports the
@@ -977,10 +1011,22 @@ public final class StreamPartitionManager implements AutoCloseable {
         return false;
     }
 
-    private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
+    private Result<Unit> createFreshStream(StreamConfig requested, CommitMode commitMode) {
+        var config = withIncarnation(requested);
+
         return checkReplicationMinimum(config).flatMap(_ -> checkRetentionCapacity(config))
                                       .flatMap(_ -> checkPartitionCaps(config))
+                                      .flatMap(_ -> adoptIfUnclustered(config))
                                       .flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// #1278 (ruling B): through a cluster a fresh create is only a PROPOSAL, so it adopts nothing — the footprint
+    /// moves to a life when that life's committed config applies ([#commitOwnLife], [#hydrateEntry]). Without a
+    /// cluster the create IS the commit.
+    private Result<Unit> adoptIfUnclustered(StreamConfig config) {
+        return clusterNode.isEmpty()
+               ? adoptIncarnation(config)
+               : success(unit());
     }
 
     /// #1564 engine backstop (R5): whichever path minted the config, its factors satisfy `1 <= CF <= RF`
@@ -1145,10 +1191,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// retry without blocking and reports plain success (the publish path proceeds to `publishLocal`; the
     /// next publish retries the commit if this one fails). Never re-materializes or re-reserves bytes.
     private Result<Unit> republishExistingConfig(StreamConfig config, StreamEntry entry, CommitMode commitMode) {
-        return publishStreamConfig(config, entry, commitMode).flatMap(_ -> commitMode.republished());
+        return publishStreamConfig(config.withIncarnation(entry.config().incarnation()),
+                                   entry,
+                                   commitMode).flatMap(_ -> commitMode.republished());
     }
 
+    /// #1278 (ruling C): the destroyed life stops being this node's applied life at once, not when the asynchronous
+    /// removal comes back, so a create that follows proposes a NEW life instead of adopting the one being removed.
     public Result<Unit> destroyStream(String streamName) {
+        appliedConfigs.remove(streamName);
+
         return option(streams.remove(streamName)).toResult(new StreamError.StreamNotFound(streamName))
                      .flatMap(this::closeAndRelease)
                      .onSuccess(_ -> forgetQuarantine(streamName))
@@ -1200,25 +1252,32 @@ public final class StreamPartitionManager implements AutoCloseable {
         return node.apply(putCommand(config))
                    .await(COMMIT_TIMEOUT)
                    .mapToUnit()
-                   .onSuccess(_ -> entry.markCommitted())
                    .onFailure(cause -> log.debug("Failed to publish stream config for {}: {}",
                                                  config.name(),
                                                  cause.message()))
-                   .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED);
+                   .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED)
+                   .flatMap(_ -> proposalOutcome(config, entry));
     }
 
-    /// Async sibling of {@link #applyPutCommand}: fire the idempotent config `Put` WITHOUT awaiting
-    /// consensus (the publish-path decoupling — Fix #2). Latch the entry committed on the async success
-    /// and log a transient failure (retried by the next publish's already-materialized-but-uncommitted
-    /// path). Returns `Result.unitResult()` immediately so the publish HTTP path is never blocked by a
-    /// still-catching-up leader's backpressured commit.
-    @Contract
-    private void applyPutCommandAsync(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config, StreamEntry entry) {
-        node.apply(putCommand(config))
-            .onSuccess(_ -> entry.markCommitted())
-            .onFailure(cause -> log.debug("Async stream config publish for {} not yet committed: {}",
-                                          config.name(),
-                                          cause.message()));
+    /// #1278 (ruling B): the consensus round resolving does not mean THIS proposal's life committed — the KV applier
+    /// refuses a second life over a committed one ([org.pragmatica.cluster.state.kvstore.IncarnationFenced]) without
+    /// a notification. The entry is latched committed only when its committed config applies here
+    /// ([#commitOwnLife]); a different applied life means another create won, which is a duplicate create.
+    private Result<Unit> proposalOutcome(StreamConfig config, StreamEntry entry) {
+        return option(appliedConfigs.get(config.name())).filter(applied -> applied.incarnation() != entry.config()
+                                                                                                         .incarnation())
+                     .fold(() -> success(unit()),
+                           _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
+    }
+
+    /// Async sibling of {@link #applyPutCommand}: fire the idempotent config `Put` (the publish-path decoupling — Fix
+    /// #2) and hand back its round. Nothing is latched here: the entry becomes committed when its committed config
+    /// applies ([#commitOwnLife]); a transient failure is logged and the next publish re-proposes.
+    private Promise<List<Object>> applyPutCommandAsync(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config) {
+        return node.<Object> apply(putCommand(config))
+                   .onFailure(cause -> log.debug("Async stream config publish for {} not yet committed: {}",
+                                                 config.name(),
+                                                 cause.message()));
     }
 
     private static List<KVCommand<AetherKey>> putCommand(StreamConfig config) {
@@ -1228,15 +1287,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         return List.of(new KVCommand.Put<AetherKey, AetherValue>(key, value));
     }
 
-    /// Fire-and-forget wrapper around {@link #applyPutCommandAsync}: fire the decoupled config `Put`
-    /// and return `Result.unitResult()` immediately. Keeps the publish path off the consensus critical
-    /// path while preserving the `Result<Unit>` shape the create chain composes over.
+    /// Publish-path commit (#1278 ruling F): fire the config `Put` and wait at most [#PUBLISH_COMMIT_WAIT] for it to
+    /// commit and apply here, so the first publish to a new stream normally lands in its committed life. The outcome
+    /// is not read: the accept gate ([#committedLife]) decides from the applied life, and a commit slower than the
+    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it.
     private Result<Unit> fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node,
                                          StreamConfig config,
                                          StreamEntry entry) {
-        applyPutCommandAsync(node, config, entry);
-
-        return success(unit());
+        return applyPutCommandAsync(node, config).await(PUBLISH_COMMIT_WAIT)
+                                   .fold(_ -> success(unit()),
+                                         _ -> success(unit()));
     }
 
     /// Commit strategy threaded through the shared create/materialize chain so `createStream` (explicit
@@ -1323,8 +1383,57 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// management default (see {@link #adoptIfMoreDurable}).
     @NullReturn
     private StreamEntry reconcileCommittedConfig(StreamConfig config, StreamEntry existing) {
-        return option(existing).map(entry -> adoptIfMoreDurable(config, entry))
+        return option(existing).map(entry -> reconcileExisting(config, entry))
                      .or(() -> hydrateEntry(config));
+    }
+
+    /// #1278 (rulings A/B): the committed life is the only life. The local entry of THAT life becomes committed here
+    /// (and only here); a local entry of another life was a losing proposal — under ruling A it never accepted a
+    /// write — and is discarded for the committed one.
+    @NullReturn
+    private StreamEntry reconcileExisting(StreamConfig config, StreamEntry existing) {
+        if (config.incarnation() != existing.config().incarnation()) {
+            return replaceLosingLife(config, existing);
+        }
+
+        commitOwnLife(config, existing);
+
+        return adoptIfMoreDurable(config, existing);
+    }
+
+    @Contract
+    private void commitOwnLife(StreamConfig config, StreamEntry entry) {
+        if (entry.isCommitted()) {
+            return;
+        }
+
+        adoptIncarnation(config).onFailure(cause -> log.warn("Stream '{}' committed; reclaiming other lives of its name did"
+                                                            + " not complete: {}",
+                                                             config.name(),
+                                                             cause.message()));
+        entry.markCommitted();
+    }
+
+    @NullReturn
+    private StreamEntry replaceLosingLife(StreamConfig committed, StreamEntry local) {
+        if (local.isCommitted()) {
+            // Not reachable through the life fence: a committed life is replaced only after its removal applied,
+            // which removes the local entry first. Kept loud, and the WALs are kept for inspection.
+            log.error("Stream '{}' replaces COMMITTED local incarnation {} with committed incarnation {} without a removal",
+                      committed.name(),
+                      local.config().incarnation(),
+                      committed.incarnation());
+            releaseEntry(local);
+        } else {
+            log.info("Stream '{}' adopts the committed incarnation {}; this node's proposal {} lost and held no writes",
+                     committed.name(),
+                     committed.incarnation(),
+                     local.config().incarnation());
+            releaseEntry(local);
+            local.deleteWals();
+        }
+
+        return hydrateEntry(committed);
     }
 
     /// A committed config for an ALREADY-materialized stream. The publish auto-create path
@@ -1385,6 +1494,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partitions materialize later through the single deferred-retry entry point once budget frees (see
     /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
     private StreamEntry hydrateEntry(StreamConfig config) {
+        adoptIncarnation(config).onFailure(cause -> log.warn("Stream '{}' hydrates; reclaiming other lives of its name did"
+                                                            + " not complete: {}",
+                                                             config.name(),
+                                                             cause.message()));
         reportOverCeilingIfViolating(config);
         var floorBytes = materializedFloorBytes(config);
 
@@ -1647,21 +1760,21 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       long timestamp,
                                       Epoch ownerEpoch,
                                       int minAcks) {
-        return resolveStreamEntry(streamName).flatMap(entry -> publishInSection(entry,
-                                                                                streamName,
-                                                                                partition,
-                                                                                payload,
-                                                                                timestamp,
-                                                                                ownerEpoch,
-                                                                                admitOwnerWrite(streamName,
-                                                                                                partition,
-                                                                                                minAcks).flatMap(_ -> provenanceAdmits(streamName,
-                                                                                                                                       partition,
-                                                                                                                                       some(ownerEpoch)))))
-                                 .flatMap(this::awaitDurable)
-                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset))
-                                 .fold(cause -> handleDrop(cause, streamName, partition),
-                                       Result::success);
+        return resolveWritableEntry(streamName).flatMap(entry -> publishInSection(entry,
+                                                                                  streamName,
+                                                                                  partition,
+                                                                                  payload,
+                                                                                  timestamp,
+                                                                                  ownerEpoch,
+                                                                                  admitOwnerWrite(streamName,
+                                                                                                  partition,
+                                                                                                  minAcks).flatMap(_ -> provenanceAdmits(streamName,
+                                                                                                                                         partition,
+                                                                                                                                         some(ownerEpoch)))))
+                                   .flatMap(this::awaitDurable)
+                                   .onSuccess(offset -> ownerDurable(streamName, partition, offset))
+                                   .fold(cause -> handleDrop(cause, streamName, partition),
+                                         Result::success);
     }
 
     /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
@@ -2067,15 +2180,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  int minAcks) {
         var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
 
-        return resolveStreamEntry(streamName).flatMap(entry -> publishBatchInSection(entry,
-                                                                                     streamName,
-                                                                                     partition,
-                                                                                     payloads,
-                                                                                     timestamp,
-                                                                                     ownerEpoch,
-                                                                                     minAcks))
-                                 .flatMap(this::awaitDurable)
-                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset));
+        return resolveWritableEntry(streamName).flatMap(entry -> publishBatchInSection(entry,
+                                                                                       streamName,
+                                                                                       partition,
+                                                                                       payloads,
+                                                                                       timestamp,
+                                                                                       ownerEpoch,
+                                                                                       minAcks))
+                                   .flatMap(this::awaitDurable)
+                                   .onSuccess(offset -> ownerDurable(streamName, partition, offset));
     }
 
     private Result<LoggedAppend> publishBatchInSection(StreamEntry entry,
@@ -2270,14 +2383,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                         byte[] payload,
                                         long timestamp,
                                         Epoch ownerEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedInSection(entry,
-                                                                                         streamName,
-                                                                                         partition,
-                                                                                         payload,
-                                                                                         timestamp,
-                                                                                         ownerEpoch))
-                                 .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
-                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+        return resolveWritableEntry(streamName).flatMap(entry -> appendReplicatedInSection(entry,
+                                                                                           streamName,
+                                                                                           partition,
+                                                                                           payload,
+                                                                                           timestamp,
+                                                                                           ownerEpoch))
+                                   .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
+                                   .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// Offset-addressed replica append (#1505) stamped with the no-epoch floor ([Epoch#ZERO]), for callers that
@@ -2296,16 +2409,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                        byte[] payload,
                                        long timestamp,
                                        Epoch fenceEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
-                                                                                  streamName,
-                                                                                  partition,
-                                                                                  offset,
-                                                                                  payload,
-                                                                                  timestamp,
-                                                                                  fenceEpoch,
-                                                                                  none()))
-                                 .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
-                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+        return resolveWritableEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
+                                                                                    streamName,
+                                                                                    partition,
+                                                                                    offset,
+                                                                                    payload,
+                                                                                    timestamp,
+                                                                                    fenceEpoch,
+                                                                                    none()))
+                                   .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
+                                   .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// Offset-addressed replica append (#1505): the single offset authority shared by the replica's catch-up
@@ -2326,16 +2439,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                         byte[] payload,
                                         long timestamp,
                                         Epoch ownerEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
-                                                                                  streamName,
-                                                                                  partition,
-                                                                                  offset,
-                                                                                  payload,
-                                                                                  timestamp,
-                                                                                  ownerEpoch,
-                                                                                  some(ownerEpoch)))
-                                 .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
-                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+        return resolveWritableEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
+                                                                                    streamName,
+                                                                                    partition,
+                                                                                    offset,
+                                                                                    payload,
+                                                                                    timestamp,
+                                                                                    ownerEpoch,
+                                                                                    some(ownerEpoch)))
+                                   .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
+                                   .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
@@ -3146,10 +3259,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                  partition))));
     }
 
-    private static Option<Long> walHead(AppendLog.Opener opener, String streamName, int partition) {
-        return opener.inspect(StreamEntry.logName(streamName, partition))
-                     .map(AppendLog.LogExtent::headOffset)
-                     .option();
+    /// The head of the WAL of the stream's CURRENT life (#1278 review): no stream entry, no WAL of its to read.
+    private Option<Long> walHead(AppendLog.Opener opener, String streamName, int partition) {
+        return option(streams.get(streamName)).flatMap(entry -> opener.inspect(StreamEntry.logName(entry.config(),
+                                                                                                   partition))
+                                                                      .map(AppendLog.LogExtent::headOffset)
+                                                                      .option());
     }
 
     /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
@@ -3263,6 +3378,25 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return new StreamWalView(name, partitions);
     }
+
+    /// #1730: every partition materialized on this node with its appended head — what the owner's ISR maintenance
+    /// ([org.pragmatica.aether.stream.replication.IsrMonitor]) measures replica lag against.
+    public List<PartitionHead> materializedHeads() {
+        return streams.entrySet()
+                      .stream()
+                      .flatMap(entry -> entry.getValue()
+                                             .materialized()
+                                             .entrySet()
+                                             .stream()
+                                             .map(partition -> new PartitionHead(entry.getKey(),
+                                                                                 partition.getKey(),
+                                                                                 partition.getValue()
+                                                                                          .ring()
+                                                                                          .headOffset())))
+                      .toList();
+    }
+
+    public record PartitionHead(String streamName, int partition, long head) {}
 
     /// [Option#none] for a partition this node has not materialized — nothing local exists to report,
     /// and reporting zeros would be indistinguishable from a real empty WAL.
@@ -3535,6 +3669,25 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName));
     }
 
+    /// #1278 ruling A — the ONE resolution every append uses: the owner paths ([#publishLocal] — which
+    /// `publishLocalAtFloor` and `publishForwarded` reach — and [#publishLocalBatchAtFloor]) and the replica paths
+    /// (every `appendRecovered` overload and `appendCaughtUp`). A replica holding a proposal that has not committed
+    /// must not ack a replicated record into it, any more than an owner may accept one. The only ring writes that
+    /// bypass it replay a life's own fsynced WAL while its ring is built, which accepts nothing new.
+    private Result<StreamEntry> resolveWritableEntry(String streamName) {
+        return resolveStreamEntry(streamName).flatMap(this::committedLife);
+    }
+
+    /// #1278 ruling A — THE accept gate: a write is accepted only into the life whose committed config this node has
+    /// applied. A proposed life (materialized locally, config not yet committed and applied here) refuses with the
+    /// retriable [StreamError.StreamConfigNotYetVisible] before anything reaches the ring, the WAL or a replica, so a
+    /// proposal that loses holds nothing to lose. Without a cluster the create is the commit ([#latchCommitted]).
+    private Result<StreamEntry> committedLife(StreamEntry entry) {
+        return entry.isCommitted()
+               ? success(entry)
+               : new StreamError.StreamConfigNotYetVisible(entry.config().name()).result();
+    }
+
     private static Result<Unit> checkEventSize(StreamEntry entry, byte[] payload) {
         if (payload.length > entry.config().maxEventSizeBytes()) {
             return new StreamError.EventTooLarge(payload.length,
@@ -3588,8 +3741,44 @@ public final class StreamPartitionManager implements AutoCloseable {
         entry.deleteWals();
         evictionListener.onStreamDeleted(entry.config().name());
         forgetHeldBack(entry);
+        forgetFootprint(entry.config().name());
 
         return success(unit());
+    }
+
+    /// A destroyed stream stops being served and its life's durable refs are reclaimed (#1278 review). Best-effort:
+    /// the refs are keyed by the stream's incarnation, so whatever survives is garbage a recreated stream never reads.
+    @Contract
+    private void forgetFootprint(String streamName) {
+        streamFootprint.forget(streamName)
+                       .await(FOOTPRINT_TIMEOUT)
+                       .onFailure(cause -> log.warn("Stream '{}' was destroyed; reclaiming its durable refs did not complete: {}",
+                                                    streamName,
+                                                    cause.message()));
+    }
+
+    /// Before a stream materializes: serve the life `config` names (#1278 review), so recovery anchors only at that
+    /// life's sealed watermark and floor, and reclaim any other life of the name.
+    private Result<Unit> adoptIncarnation(StreamConfig config) {
+        return streamFootprint.adopt(config.name(),
+                                     config.incarnation())
+                              .await(FOOTPRINT_TIMEOUT);
+    }
+
+    /// The incarnation a fresh proposal carries (#1278, ruling C): always a newly minted one when the config is
+    /// committed through a cluster — a name with an applied life never reaches here ([#createAbsentStream]). A manager
+    /// without a cluster has no cluster-wide life to distinguish, so the config keeps the incarnation it was built with.
+    private StreamConfig withIncarnation(StreamConfig config) {
+        if (config.incarnation() != StreamConfig.NO_INCARNATION || clusterNode.isEmpty()) {
+            return config;
+        }
+
+        return config.withIncarnation(mintIncarnation());
+    }
+
+    private static long mintIncarnation() {
+        return java.util.concurrent.ThreadLocalRandom.current()
+                                                     .nextLong(1L, Long.MAX_VALUE);
     }
 
     /// The held-back bookkeeping ([#noteHeldBack]) is keyed per partition; a removed stream's keys would
@@ -4751,7 +4940,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// The snapshot runs behind the live refs (≤100 mutations / 30 s), so the floor alone is not the highest
         /// sealed offset after a crash. Each path covers that lag: with a WAL, truncation is bounded by the same
         /// on-disk floor (#1345), so the WAL still holds every record above it; without one, a seal resolves only
-        /// once a snapshot holding its ref is on disk (`StorageSegmentSink.RefDurability`), so the floor covers
+        /// once a snapshot holding its ref is on disk (`RefDurability`), so the floor covers
         /// every completed seal. What a no-WAL crash loses is the range above the last COMPLETED seal -- records
         /// never in the durable tier, which that mode does not promise to keep.
         ///
@@ -4818,8 +5007,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// `fileRecords` is the whole file in offset order — the records at or below `base` too (lazy
-        /// truncation keeps them until compaction) — because only the file's LOWEST stored offset can tell
-        /// reclaimed history from a hole (see [#seedFor]). The tail placed is the records above `base`.
+        /// truncation keeps them until compaction) — because only the file's LOWEST stored offset can tell a
+        /// lost head from a hole (see [#requireHead]). The tail placed is the records above `base`.
         ///
         /// Recovery therefore holds the whole file in memory at boot, one partition at a time: the
         /// un-sealed tail plus any lazily truncated records below the floor, which compaction bounds at
@@ -4837,10 +5026,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               long base,
                                               List<WalRecord> fileRecords) {
             var tail = recordsAbove(fileRecords, base);
-            var seed = seedFor(streamName, partition, walFile, base, fileRecords);
 
-            return requireContiguous(streamName, partition, walFile, seed, tail).flatMap(_ -> seedRing(ring, seed))
-                                    .flatMap(_ -> appendTail(streamName, partition, walFile, ring, tail));
+            return requireHead(streamName, partition, walFile, base, fileRecords).flatMap(_ -> requireContiguous(streamName,
+                                                                                                                 partition,
+                                                                                                                 walFile,
+                                                                                                                 base,
+                                                                                                                 tail))
+                              .flatMap(_ -> seedRing(ring, base))
+                              .flatMap(_ -> appendTail(streamName, partition, walFile, ring, tail));
         }
 
         /// Every tail record must carry the offset the ring will assign it — `seed + 1, seed + 2, …`. The
@@ -4877,48 +5070,40 @@ public final class StreamPartitionManager implements AutoCloseable {
                    : success(unit());
         }
 
-        /// The ring seed: `base`, unless the file's LOWEST stored offset sits above `base + 1` (#1258 review
-        /// B2, R2-3). The lowest offset is the file's first record in offset order; for a file written by
-        /// the fixed writer, which refuses a non-increasing offset, it is also the first physical record.
-        /// The two differ only for an out-of-order file (pre-#1232, or a writer defect), and there the
-        /// lowest offset is the right evidence: frames `[5, 2]` at floor 1 still hold offset 2 = floor + 1,
-        /// so the missing 3 and 4 are a hole, where "first physical record 5" would call it reclaimed.
-        /// That head gap is indistinguishable today from retention having reclaimed the
-        /// partition's sealed segments — the durable floor then drops (to -1 when every segment is gone)
-        /// while WAL compaction already removed the records below the old floor — so it is accepted as
-        /// reclaimed history: the ring is seeded just below the first record, reads of the gap miss as
-        /// expired, and the range is WARNed and counted ([#WAL_RECOVERY_HEAD_GAPS]). When the file still
-        /// holds records at or below `floor + 1`, a missing offset above them is a HOLE, never reclaimed
-        /// history: the ring stays at `base` and [#placeRecord] refuses at the first missing offset.
-        private static long seedFor(String streamName,
-                                    int partition,
-                                    Path walFile,
-                                    long base,
-                                    List<WalRecord> fileRecords) {
+        /// The file's LOWEST stored offset must be at most `base + 1` (#1278). `base` already counts every offset
+        /// retention reclaimed: the sealed watermark is rebuilt from the persisted reclaimed-through floor
+        /// ([org.pragmatica.aether.stream.segment.SegmentIndex#lastSealedOffset]), and retention makes that floor
+        /// durable before it drops the refs it licenses. So a file starting above `base + 1` is not reclaimed
+        /// history: the offsets between were neither sealed under a surviving ref nor reclaimed, and the WAL
+        /// records that held them are gone -- a LOST head, refused with [StreamError.WalHeadLost] naming the range.
+        /// It used to be accepted with a WARN (#1258), when nothing could tell it from retention.
+        ///
+        /// The lowest offset is the file's first record in offset order; for a file written by the fixed writer,
+        /// which refuses a non-increasing offset, it is also the first physical record. The two differ only for an
+        /// out-of-order file (pre-#1232, or a writer defect), and there the lowest offset is the right evidence:
+        /// frames `[5, 2]` at floor 1 still hold offset 2 = floor + 1, so the missing 3 and 4 are a HOLE, refused
+        /// by [#requireContiguous] as [StreamError.WalReplayMismatch].
+        private static Result<Unit> requireHead(String streamName,
+                                                int partition,
+                                                Path walFile,
+                                                long base,
+                                                List<WalRecord> fileRecords) {
             return fileRecords.isEmpty() || fileRecords.getFirst()
                                                        .offset() <= base + 1
-                   ? base
-                   : acceptHeadGap(streamName,
-                                   partition,
-                                   walFile,
-                                   base,
-                                   fileRecords.getFirst().offset());
+                   ? success(unit())
+                   : headLost(new StreamError.WalHeadLost(streamName,
+                                                          partition,
+                                                          walFile,
+                                                          base,
+                                                          fileRecords.getFirst().offset()));
         }
 
-        private static long acceptHeadGap(String streamName, int partition, Path walFile, long base, long firstOffset) {
-            WAL_RECOVERY_HEAD_GAPS.incrementAndGet();
-            log.warn("Stream {} partition {}: WAL {} starts at offset {} but the durable sealed floor is {} — offsets [{}, {}] are"
-                    + " treated as reclaimed history (their sealed segments were removed by retention) and read as"
-                    + " expired. If no retention reclaimed this partition, those records are LOST.",
-                     streamName,
-                     partition,
-                     walFile,
-                     firstOffset,
-                     base,
-                     base + 1,
-                     firstOffset - 1);
+        private static Result<Unit> headLost(StreamError.WalHeadLost lost) {
+            if (COUNTED_HEADS_LOST.add(lost)) {
+                WAL_RECOVERY_HEADS_LOST.incrementAndGet();
+            }
 
-            return firstOffset - 1;
+            return lost.result();
         }
 
         /// Place the recovered records by their STORED offsets (#1232): sorted by offset (stable, so a
@@ -4991,9 +5176,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                         List<Integer> selected,
                                                                         AppendLog.Opener opener) {
             var results = selected.stream()
-                                  .map(partition -> openPartitionWal(opener,
-                                                                     config.name(),
-                                                                     partition).map(Option::some))
+                                  .map(partition -> openPartitionWal(opener, config, partition).map(Option::some))
                                   .toList();
 
             return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
@@ -5004,21 +5187,20 @@ public final class StreamPartitionManager implements AutoCloseable {
         private static Result<Option<AppendLog>> openWal(StreamConfig config,
                                                          int partition,
                                                          Option<AppendLog.Opener> logs) {
-            return logs.map(opener -> openPartitionWal(opener,
-                                                       config.name(),
-                                                       partition).map(Option::some))
+            return logs.map(opener -> openPartitionWal(opener, config, partition).map(Option::some))
                        .or(() -> success(Option.none()));
         }
 
-        /// The log `<stream>/<partition>`: under the storage instance's log root in production, which keeps
-        /// the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal`.
-        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, String streamName, int partition) {
-            return opener.open(logName(streamName, partition));
+        /// The log `<stream>[@<incarnation>]/<partition>`: under the storage instance's log root in production, which
+        /// keeps the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal` for a config with no incarnation.
+        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, StreamConfig config, int partition) {
+            return opener.open(logName(config, partition));
         }
 
-        /// The log `<stream>/<partition>` names, shared by the open and the read-only inspect of it.
-        static String logName(String streamName, int partition) {
-            return streamName + "/" + partition;
+        /// The log of one partition of one LIFE of a stream (#1278 review), shared by the open and the read-only
+        /// inspect of it: keyed by the config's incarnation, so a recreated stream never reopens the old life's WAL.
+        static String logName(StreamConfig config, int partition) {
+            return SegmentIndex.durableName(config.name(), config.incarnation()) + "/" + partition;
         }
 
         private static List<Option<AppendLog>> noWals(int count) {

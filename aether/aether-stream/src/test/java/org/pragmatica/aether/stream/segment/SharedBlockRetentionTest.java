@@ -43,7 +43,7 @@ class SharedBlockRetentionTest {
             .as("identical events in two streams dedup onto one block")
             .isEqualTo(storage.resolveRef("streams/audit/0/0-2"));
 
-        retentionEnforcer(storage, index, 1L, (stream, _) -> STREAM_A.equals(stream) ? Long.MAX_VALUE : -1L).enforce();
+        retentionEnforcer(storage, index, 1L, (stream, _) -> STREAM_A.equals(stream) ? Long.MAX_VALUE : -1L).enforceNow().await();
 
         assertThat(storage.resolveRef("streams/orders/0/0-2").isPresent()).as("A's segment was reclaimed").isFalse();
         var readB = SegmentReader.segmentReader(storage, index).readEvents(STREAM_B, 0, 0, 3).await();

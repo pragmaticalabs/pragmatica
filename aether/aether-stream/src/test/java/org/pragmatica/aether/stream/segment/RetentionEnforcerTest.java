@@ -54,7 +54,7 @@ class RetentionEnforcerTest {
             assertThat(index.listSegments(STREAM, PARTITION)).hasSize(2);
 
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             var remaining = index.listSegments(STREAM, PARTITION);
             assertThat(remaining).hasSize(1);
@@ -72,7 +72,7 @@ class RetentionEnforcerTest {
             sink.seal(segment2).await();
 
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             assertThat(index.listSegments(STREAM, PARTITION)).hasSize(2);
         }
@@ -88,7 +88,7 @@ class RetentionEnforcerTest {
             sink.seal(seg2).await();
 
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
         }
@@ -103,7 +103,7 @@ class RetentionEnforcerTest {
             assertThat(storage.resolveRef(refName).isEmpty()).isFalse();
 
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             assertThat(storage.resolveRef(refName).isEmpty()).isTrue();
         }
@@ -120,7 +120,7 @@ class RetentionEnforcerTest {
             sink.seal(seg1).await();
 
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             assertThat(index.listSegments(STREAM, 0)).isEmpty();
             assertThat(index.listSegments(STREAM, 1)).hasSize(1);
@@ -145,7 +145,7 @@ class RetentionEnforcerTest {
             sink.seal(seg).await();
 
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             // Zero-timestamp segment (from rebuild) is preserved — age-only limit, unknown age never fires it.
             assertThat(index.listSegments(STREAM, PARTITION)).hasSize(1);
@@ -162,7 +162,7 @@ class RetentionEnforcerTest {
             var enforcer = retentionEnforcer(storage,
                                              index,
                                              RetentionPolicy.retentionPolicy(0, Long.MAX_VALUE, Long.MAX_VALUE));
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
         }
@@ -176,7 +176,7 @@ class RetentionEnforcerTest {
             var enforcer = retentionEnforcer(storage,
                                              index,
                                              RetentionPolicy.retentionPolicy(Long.MAX_VALUE, 100, Long.MAX_VALUE));
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
         }
@@ -193,7 +193,7 @@ class RetentionEnforcerTest {
 
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
             enforcer.close();
-            enforcer.enforce();
+            enforcer.enforceNow().await();
 
             // Segment should NOT be removed because enforcer is closed
             assertThat(index.listSegments(STREAM, PARTITION)).hasSize(1);
@@ -239,12 +239,13 @@ class RetentionEnforcerTest {
         /// is removed.
         @Test
         void enforce_keepsExpiredSegment_entirelyAboveTheFloor() {
+            sealRecent(0, 9);
             sealExpired(10, 19);
 
             enforceWithFloor(floorAt(9));
 
-            assertThat(index.listSegments(STREAM, PARTITION)).hasSize(1);
-            assertThat(index.listSegments(STREAM, PARTITION).getFirst().startOffset()).isEqualTo(10);
+            assertThat(index.listSegments(STREAM, PARTITION)).extracting(SegmentIndex.SegmentRef::startOffset)
+                                                             .containsExactly(0L, 10L);
         }
 
         /// Segments are deleted as whole units, so a segment straddling the checkpoint must be kept
@@ -252,11 +253,12 @@ class RetentionEnforcerTest {
         /// part above it too — which is the very state nothing else holds.
         @Test
         void enforce_keepsExpiredSegment_straddlingTheFloor() {
+            sealRecent(0, 4);
             sealExpired(5, 14);
 
             enforceWithFloor(floorAt(9));
 
-            assertThat(index.listSegments(STREAM, PARTITION)).hasSize(1);
+            assertThat(index.listSegments(STREAM, PARTITION)).hasSize(2);
         }
 
         /// An entity partition with no checkpoint yet has folded nothing anywhere, so nothing may be
@@ -276,13 +278,19 @@ class RetentionEnforcerTest {
         /// or one lagging partition would hold the whole keyspace's storage.
         @Test
         void enforce_appliesFloorPerPartition() {
+            var now = System.currentTimeMillis();
+
+            // A recent 0-9 on each partition: segments are sealed in offset order from 0, and retention never
+            // reclaims past the contiguous sealed watermark (#1278).
+            sink.seal(sealedSegment(STREAM, 0, 0, 9, 10, now, now, new byte[] {1})).await();
+            sink.seal(sealedSegment(STREAM, 1, 0, 9, 10, now, now, new byte[] {2})).await();
             sealExpired(STREAM, 0, 10, 19);
             sealExpired(STREAM, 1, 10, 19);
 
             enforceWithFloor((_, partition) -> partition == 0 ? 9 : Long.MAX_VALUE);
 
-            assertThat(index.listSegments(STREAM, 0)).hasSize(1);
-            assertThat(index.listSegments(STREAM, 1)).isEmpty();
+            assertThat(index.listSegments(STREAM, 0)).hasSize(2);
+            assertThat(index.listSegments(STREAM, 1)).hasSize(1);
         }
 
         /// The floor may only ever WITHHOLD a deletion, never cause one: a segment inside the age policy
@@ -303,7 +311,16 @@ class RetentionEnforcerTest {
         }
 
         private void enforceWithFloor(RetentionEnforcer.SegmentRetentionFloor floor) {
-            retentionEnforcer(storage, index, ONE_HOUR_MS, floor).enforce();
+            retentionEnforcer(storage, index, ONE_HOUR_MS, floor).enforceNow().await();
+        }
+
+        /// A recent prefix keeps the contiguous sealed watermark above the segment under test, so the
+        /// retention floor -- not the #1278 cap at that watermark -- is what decides.
+        private void sealRecent(long startOffset, long endOffset) {
+            var now = System.currentTimeMillis();
+
+            sink.seal(sealedSegment(STREAM, PARTITION, startOffset, endOffset, 10, now, now, new byte[] {9, (byte) startOffset}))
+                .await();
         }
 
         private void sealExpired(long startOffset, long endOffset) {

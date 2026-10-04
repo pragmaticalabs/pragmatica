@@ -756,6 +756,34 @@ class ConfigLoaderTest {
                                      .isEqualTo(StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES));
     }
 
+    /// #1730: the ISR lag bound is configurable; unset keeps the 30 s default.
+    @Test
+    void loadFromString_isrLagMax_parsedAsDuration_andDefaultsTo30Seconds() {
+        var withBound = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            isr_lag_max = "45s"
+            """;
+        var withoutBound = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            reshuffle_concurrency = 2
+            """;
+
+        ConfigLoader.loadFromString(withBound)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().isrLagMax().millis()).isEqualTo(45_000L));
+        ConfigLoader.loadFromString(withoutBound)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().isrLagMax()).isEqualTo(StreamingConfig.DEFAULT_ISR_LAG_MAX));
+    }
+
     // SPEC: §8.3 absence of [streaming] section → defaults
     @Test
     void loadFromString_streamingSectionAbsent_defaultsApplied() {

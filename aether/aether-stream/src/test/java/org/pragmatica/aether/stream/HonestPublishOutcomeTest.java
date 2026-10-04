@@ -28,6 +28,8 @@ import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -447,15 +449,20 @@ class HonestPublishOutcomeTest {
     /// one, which needs a cluster node for the config commit and a high-water for the fence. Both are
     /// inert here: the commit is accepted and discarded, and an empty high-water admits the zero epoch.
     private StreamPartitionManager walBackedManager(ReplicationManager replication) {
-        return streamPartitionManager(Long.MAX_VALUE,
+        var node = new AcceptingClusterNode();
+        var manager = streamPartitionManager(Long.MAX_VALUE,
                                       EvictionListener.NOOP,
                                       replication,
-                                      new AcceptingClusterNode(),
+                                      node,
                                       OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
                                       StreamOwnerEpochSource.zero(),
                                       Option.some(AppendLog.Opener.directory(walDir)),
                                       LastSealedOffsetSource.none(),
                                       DurableSealedOffsetSource.none());
+
+        node.manager = manager;
+
+        return manager;
     }
 
     private static void createStream(StreamPartitionManager manager) {
@@ -514,7 +521,11 @@ class HonestPublishOutcomeTest {
         return new KVStore<>(MessageRouter.mutable(), TO_STRING_BYTES, UNUSED_DESERIALIZER);
     }
 
+    /// Accepts every command, and — as the real KV store does on local apply — delivers each stream-config Put to
+    /// its manager as committed (#1278 round 4: a life accepts writes only once its committed config applied).
     private static final class AcceptingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private volatile StreamPartitionManager manager;
+
         @Override
         public NodeId self() {
             return SELF;
@@ -535,9 +546,13 @@ class HonestPublishOutcomeTest {
             return Promise.unitPromise();
         }
 
-        @SuppressWarnings("unchecked")
+        @SuppressWarnings({"unchecked", "rawtypes"})
         @Override
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            commands.stream()
+                    .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.key() instanceof StreamConfigKey)
+                    .forEach(command -> manager.onStreamConfigPut(new ValuePut<>((KVCommand.Put) command, Option.empty())));
+
             return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
         }
     }

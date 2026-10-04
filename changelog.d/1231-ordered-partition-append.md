@@ -35,9 +35,9 @@
   shifted every later record relative to replicas, sealed segments and consumer cursors. Recovery now
   places records by their stored offsets. A file whose frames are only out of order recovers correctly.
   A frame file that needed reordering is WARNed. A gap before the file's lowest stored offset is
-  accepted as reclaimed history, since retention removing every sealed segment drops the sealed floor
-  below the WAL's first record: the gap reads as expired, it is WARNed with its range, and it is counted
-  in `GET /api/v1/storage/retention` as `walRecoveryHeadGapsAccepted`. A missing offset while the file
+  no longer accepted as reclaimed history: #1278 (same release) persists a reclaimed-through floor, so such
+  a gap is a lost head, refused with `StreamError.WalHeadLost` and counted in
+  `GET /api/v1/storage/retention` as `walRecoveryHeadsLost`. A missing offset while the file
   still holds records at or below the floor is a hole, and refuses. A gap BETWEEN records,
   or a duplicate, refuses with `StreamError.WalReplayMismatch`, logged at ERROR. The stream is then not
   materialized on that node (a lazy per-partition materialize leaves only that partition unbuilt).

@@ -18,7 +18,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -230,6 +232,21 @@ public final class OwnerActivation {
             }
         }
 
+        /// #1730: the committed owner left the live set and no member of the committed in-sync replica set `isr` is
+        /// live, so no node may be elected: every other copy may lack acknowledged records (unclean failover is off).
+        /// The partition stays unavailable until an ISR member returns or an operator picks a source.
+        record NoInSyncReplica(String streamName, int partition, NodeId owner, List<NodeId> isr) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Partition %s[%d] has no owner: committed owner %s is not live and no member of its in-sync "
+                       + "replica set %s is live, so no copy is known to hold every acknowledged record; the partition "
+                       + "stays unavailable until an in-sync replica returns; there is no operator override yet (#1569)").formatted(streamName,
+                                                                                                                                    partition,
+                                                                                                                                    owner,
+                                                                                                                                    isr);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -332,15 +349,29 @@ public final class OwnerActivation {
 
     /// Whether this node may act as owner of `(stream, partition)` right now: its consensus engine is active,
     /// it is the owner (the committed record names it, or no record exists and placement names it), and it was
-    /// activated for exactly the record it currently holds.
+    /// activated for exactly the ownership it currently holds. #1730: the ownership is the record without its ISR
+    /// (owner, epoch, term, transfer stamp) — an ISR change moves no ownership, and re-running the whole gate on every
+    /// ISR shrink or expansion would refuse the partition's writes each time for nothing.
     public boolean isActivated(String stream, int partition) {
         var current = records.committed(stream, partition);
 
         return consensusActive.getAsBoolean()
                && claimsOwnership(stream, partition, current)
                && Option.option(activated.get(PartitionKey.partitionKey(stream, partition)))
-                        .filter(current::equals)
+                        .filter(recorded -> sameOwnership(recorded, current))
                         .isPresent();
+    }
+
+    static boolean sameOwnership(Option<StreamPartitionOwnershipValue> left,
+                                 Option<StreamPartitionOwnershipValue> right) {
+        return left.map(OwnerActivation::ownershipOf)
+                   .equals(right.map(OwnerActivation::ownershipOf));
+    }
+
+    private record Ownership(NodeId owner, Epoch ownerEpoch, long ownershipTerm, HlcTimestamp transferredAt) {}
+
+    private static Ownership ownershipOf(StreamPartitionOwnershipValue record) {
+        return new Ownership(record.owner(), record.ownerEpoch(), record.ownershipTerm(), record.transferredAt());
     }
 
     /// The gate every owner action passes: admitted when activated; otherwise an activation is started and the

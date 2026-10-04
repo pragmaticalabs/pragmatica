@@ -43,7 +43,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullEpoch_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO);
+        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO, null, 0L, false);
 
         assertThat(v.ownerEpoch()).isEqualTo(Epoch.ZERO);
     }
@@ -52,8 +52,33 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullTransferredAt_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null);
+        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false);
 
         assertThat(v.transferredAt()).isEqualTo(HlcTimestamp.ZERO);
+    }
+
+    /// #1730: a record without an ISR (null or empty) carries the owner alone, never an empty set an ack could be
+    /// judged against.
+    @Test
+    void construct_missingIsr_normalizesToOwnerAlone() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false).isr()).containsExactly(owner);
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, java.util.List.of(), 0L, false).isr()).containsExactly(owner);
+    }
+
+    /// #1730: an ISR change keeps the ownership and advances only the ISR version.
+    @Test
+    void withIsr_keepsOwnership_andAdvancesTheVersion() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+        var peer = NodeId.nodeId("core-2").unwrap();
+        var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.ZERO, 3L, HlcTimestamp.ZERO, java.util.List.of(owner), 4L);
+        var next = v.withIsr(java.util.List.of(owner, peer));
+
+        assertThat(next.isr()).containsExactly(owner, peer);
+        assertThat(next.isrVersion()).isEqualTo(5L);
+        assertThat(next.owner()).isEqualTo(owner);
+        assertThat(next.ownershipTerm()).isEqualTo(3L);
+        assertThat(next.ownerEpoch()).isEqualTo(v.ownerEpoch());
     }
 }

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.List;
+
 import org.pragmatica.messaging.Message;
 
 
@@ -109,6 +111,43 @@ public sealed interface OperationalEvent extends Message.Local {
     record DhtWriterStaleResolved(String nodeId, long fence, long since, long timestamp) implements OperationalEvent {
         public static DhtWriterStaleResolved dhtWriterStaleResolved(String nodeId, long fence, long since) {
             return new DhtWriterStaleResolved(nodeId, fence, since, System.currentTimeMillis());
+        }
+    }
+
+    /// #1730 (owner ruling): failover refused for a stream partition — its owner is dead and no in-sync replica is
+    /// live. Raised once per committed refusal by the leader that committed it ([ClusterEvent.StreamFailoverRefused]).
+    record StreamFailoverRefused(String stream,
+                                 int partition,
+                                 String owner,
+                                 List<String> isr,
+                                 List<String> live,
+                                 String reason,
+                                 long timestamp) implements OperationalEvent {
+        public static StreamFailoverRefused streamFailoverRefused(String stream,
+                                                                  int partition,
+                                                                  String owner,
+                                                                  List<String> isr,
+                                                                  List<String> live,
+                                                                  String reason) {
+            return new StreamFailoverRefused(stream, partition, owner, isr, live, reason, System.currentTimeMillis());
+        }
+    }
+
+    /// #1730: a refused stream partition has an owner again ([ClusterEvent.StreamFailoverResolved]).
+    record StreamFailoverResolved(String stream,
+                                  int partition,
+                                  String owner,
+                                  List<String> isr,
+                                  List<String> live,
+                                  String reason,
+                                  long timestamp) implements OperationalEvent {
+        public static StreamFailoverResolved streamFailoverResolved(String stream,
+                                                                    int partition,
+                                                                    String owner,
+                                                                    List<String> isr,
+                                                                    List<String> live,
+                                                                    String reason) {
+            return new StreamFailoverResolved(stream, partition, owner, isr, live, reason, System.currentTimeMillis());
         }
     }
 }
