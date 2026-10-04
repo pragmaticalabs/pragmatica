@@ -34,7 +34,8 @@ public interface StreamIsrAnnouncer {
     @Contract
     void onOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put);
 
-    static StreamIsrAnnouncer streamIsrAnnouncer(ToIntFunction<String> confirmationFactor, Consumer<OperationalEvent> sink) {
+    static StreamIsrAnnouncer streamIsrAnnouncer(ToIntFunction<String> confirmationFactor,
+                                                 Consumer<OperationalEvent> sink) {
         return put -> transition(put.cause().key(),
                                  put.oldValue(),
                                  put.cause().value(),
@@ -57,7 +58,8 @@ public interface StreamIsrAnnouncer {
 
     /// A record minted before #1730 (`isrVersion` 0) carries no committed ISR, so it is never below anything.
     private static boolean below(StreamPartitionOwnershipValue record, int confirmationFactor) {
-        return record.isrVersion() > 0 && record.isr().size() < confirmationFactor;
+        return record.isrVersion() > 0 && record.isr()
+                                                .size() < confirmationFactor;
     }
 
     private static OperationalEvent event(StreamPartitionOwnershipKey key,

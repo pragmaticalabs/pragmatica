@@ -5428,7 +5428,6 @@ public interface AetherNode extends ManageableNode {
         // the cluster-events aggregator publishes only on its partition owner, so it reaches the stream exactly once.
         var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
                                                                                       delegateRouter::route);
-
         // #1883: the same derivation for the in-sync set falling below / returning to the confirmation factor.
         var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
                                                                        delegateRouter::route);

@@ -102,7 +102,13 @@ public sealed interface OperationalEvent extends Message.Local {
                                                                   List<String> isr,
                                                                   List<String> fenced,
                                                                   int confirmationFactor) {
-            return new StreamIsrBelowMinimum(stream, partition, owner, isr, fenced, confirmationFactor, System.currentTimeMillis());
+            return new StreamIsrBelowMinimum(stream,
+                                             partition,
+                                             owner,
+                                             isr,
+                                             fenced,
+                                             confirmationFactor,
+                                             System.currentTimeMillis());
         }
     }
 
@@ -120,7 +126,13 @@ public sealed interface OperationalEvent extends Message.Local {
                                                           List<String> isr,
                                                           List<String> fenced,
                                                           int confirmationFactor) {
-            return new StreamIsrRestored(stream, partition, owner, isr, fenced, confirmationFactor, System.currentTimeMillis());
+            return new StreamIsrRestored(stream,
+                                         partition,
+                                         owner,
+                                         isr,
+                                         fenced,
+                                         confirmationFactor,
+                                         System.currentTimeMillis());
         }
     }
 }
