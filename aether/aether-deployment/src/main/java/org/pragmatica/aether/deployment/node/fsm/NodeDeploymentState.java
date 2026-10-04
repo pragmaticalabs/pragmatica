@@ -78,6 +78,7 @@ import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -1658,12 +1659,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         /// Resolve the stream a `[streams.X]` consumer subscribes to.
         ///
-        /// Binds [StreamConfig] through the generic record binder and takes ONLY its `name`, which that binder
-        /// derives from the section suffix (`[streams.orders]` → `orders`) — the same alias the stream
-        /// resource factories' own section binder (#1549, `StreamConfigParser.parseStreamConfig`) assigns, so a
-        /// consumer resolves to exactly the stream its publisher writes to. No other field of this binding is
-        /// read: since #1549 the record binder is NOT what provisions the stream, and its other fields would
-        /// carry `StreamConfig.DEFAULT` values for the documented dashed keys.
+        /// Takes the stream name from the section suffix (`[streams.orders]` → `orders`) — the same alias the
+        /// stream resource factories' own section binder (#1549, `StreamConfigParser.parseStreamConfig`)
+        /// assigns, so a consumer resolves to exactly the stream its publisher writes to. Nothing else of the
+        /// section is read (since #1549 the record binder is NOT what provisions the stream); it no longer binds
+        /// [StreamConfig] at all (#822, see below).
         ///
         /// This previously bound a dedicated `StreamNameConfig(String streamName)`, which required a
         /// `stream-name` key that no `resources.toml` carries (the stream's name comes from the config
@@ -1724,14 +1724,34 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
         }
 
+        /// The consumer needs only the stream's NAME, which is the section's last segment: `StreamConfigParser`
+        /// accepts no `name` key, so the name never came from the section's contents. It used to bind the whole
+        /// `StreamConfig` through the generic record binder just to read `name` back, which refuses a documented
+        /// section (`retention = "time"` is a scalar where `StreamConfig.retention` is a record) and had no business
+        /// interpreting the stream's other keys; that is the parser's job (#822). The section must still exist: a
+        /// consumer on a section nobody declared is not registered.
         private Result<String> resolveStreamName(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                     .flatMap(svc -> svc.config(configSection, StreamConfig.class))
-                                     .map(StreamConfig::name)
+                                     .flatMap(svc -> requireSection(svc, configSection))
+                                     .flatMap(_ -> streamNameOf(configSection))
                                      .flatMap(alias -> BlueprintStreamAddresses.engineKeyFor(ctx.kvStore(),
                                                                                              artifact,
                                                                                              alias));
+        }
+
+        private static Result<ConfigService> requireSection(ConfigService svc, String configSection) {
+            return svc.hasSection(configSection)
+                   ? Result.success(svc)
+                   : ConfigError.sectionNotFound(configSection).result();
+        }
+
+        private static Result<String> streamNameOf(String configSection) {
+            var lastDot = configSection.lastIndexOf('.');
+
+            return lastDot < 0 || lastDot == configSection.length() - 1
+                   ? Causes.cause("Stream section '" + configSection + "' has no stream name segment").result()
+                   : Result.success(configSection.substring(lastDot + 1));
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {

@@ -85,6 +85,50 @@ class MavenProtocolHandlerTransientFailureTest {
                             .onSuccess(response -> assertThat(response.statusCode()).isEqualTo(404));
     }
 
+    private static final String METADATA = "/repository/org/example/test/maven-metadata.xml";
+
+    /// `<lastUpdated>` is derived from the stored metadata of EVERY listed version, so a transient read failure on
+    /// any one of them must not become a 500 for the listing or its checksums: it answers 503 + retry.
+    @Test
+    void handleGetMetadata_andItsChecksums_answer503_whenOneVersionsMetadataReadFailsTransiently() {
+        var handler = MavenProtocolHandler.mavenProtocolHandler(versionsStore(version -> version.equals("2.0.0")
+                                                                                       ? DHTError.OPERATION_TIMEOUT.promise()
+                                                                                       : Promise.success(Option.none())));
+
+        for (var suffix : List.of("", ".md5", ".sha1", ".sha256", ".sha512")) {
+            handler.handleGet(METADATA + suffix)
+                   .await()
+                   .onFailureRun(() -> Assertions.fail("maven-metadata.xml" + suffix + " must answer a status, not fail the promise"))
+                   .onSuccess(response -> assertThat(response.statusCode()).as("maven-metadata.xml%s", suffix).isEqualTo(503));
+        }
+    }
+
+    @Test
+    void handleGetMetadata_answers500_whenOneVersionsMetadataReadFailsWithANonTransientCause() {
+        var handler = MavenProtocolHandler.mavenProtocolHandler(versionsStore(_ -> new ArtifactStore.ArtifactStoreError.CorruptedArtifact(file()).promise()));
+
+        handler.handleGet(METADATA)
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> assertThat(response.statusCode()).isEqualTo(500));
+    }
+
+    /// The control: versions whose per-file metadata is simply absent (legacy or never written) are not an error,
+    /// and neither is a version listing with nothing stored.
+    @Test
+    void handleGetMetadata_answers200WithoutLastUpdated_whenNoVersionHasStoredMetadata() {
+        var handler = MavenProtocolHandler.mavenProtocolHandler(versionsStore(_ -> Promise.success(Option.none())));
+
+        handler.handleGet(METADATA)
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> {
+                   assertThat(response.statusCode()).isEqualTo(200);
+                   assertThat(new String(response.content(), StandardCharsets.UTF_8)).contains("<version>2.0.0</version>")
+                                                                                     .doesNotContain("lastUpdated");
+               });
+    }
+
     private static void assertUploaded(MavenProtocolHandler.MavenResponse response) {
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(new String(response.content(), StandardCharsets.UTF_8)).contains("\"status\":\"uploaded\"");
@@ -100,6 +144,53 @@ class MavenProtocolHandlerTransientFailureTest {
 
     private static Promise<byte[]> notFound() {
         return new ArtifactStore.ArtifactStoreError.NotFound(file(), "test-key", 0L).promise();
+    }
+
+    /// A store listing 1.0.0 and 2.0.0 whose per-version metadata read behaves as the test says, keyed by version.
+    private static ArtifactStore versionsStore(java.util.function.Function<String, Promise<Option<ArtifactStore.ArtifactMetadata>>> metadataOf) {
+        var base = store(deploySucceeds(), notFound());
+
+        return new ArtifactStore() {
+            @Override
+            public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
+                return base.deploy(file, content);
+            }
+
+            @Override
+            public Promise<byte[]> resolve(ArtifactFile file) {
+                return base.resolve(file);
+            }
+
+            @Override
+            public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
+                return base.resolveWithMetadata(file);
+            }
+
+            @Override
+            public Promise<Boolean> exists(ArtifactFile file) {
+                return base.exists(file);
+            }
+
+            @Override
+            public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
+                return metadataOf.apply(file.artifact().version().withQualifier());
+            }
+
+            @Override
+            public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
+                return Promise.success(List.of(Version.version("1.0.0").unwrap(), Version.version("2.0.0").unwrap()));
+            }
+
+            @Override
+            public Promise<Unit> archive(Artifact artifact) {
+                return base.archive(artifact);
+            }
+
+            @Override
+            public Metrics metrics() {
+                return base.metrics();
+            }
+        };
     }
 
     private static ArtifactStore store(Promise<ArtifactStore.DeployResult> deploy, Promise<byte[]> resolve) {

@@ -2,6 +2,7 @@ package org.pragmatica.http.routing;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Option;
 
@@ -124,7 +125,25 @@ public final class RouteShapeSelector {
 
         var pathElements = extractPathElements(inputPath, basePath);
 
-        return allSpacersPresent(route.spacers(), pathElements);
+        return positional(route)
+               ? allSpacersAtTheirSlots(route.spacers(), route.spacerSlots(), pathElements)
+               : allSpacersPresent(route.spacers(), pathElements);
+    }
+
+    /// #755: a shape that carries a slot for every spacer is matched by POSITION. One that does not (a replicated
+    /// route entry, #1678) keeps the set-membership match, the only one its data supports.
+    private static boolean positional(RouteShape route) {
+        return ! route.spacers()
+                      .isEmpty() && route.spacerSlots()
+                                         .size() == route.spacers()
+                                                         .size();
+    }
+
+    private static boolean allSpacersAtTheirSlots(List<String> spacers, List<Integer> slots, String[] pathElements) {
+        return IntStream.range(0,
+                               spacers.size())
+                        .allMatch(index -> slots.get(index) < pathElements.length && spacers.get(index)
+                                                                                            .equals(pathElements[slots.get(index)]));
     }
 
     private static String[] extractPathElements(String inputPath, String basePath) {
