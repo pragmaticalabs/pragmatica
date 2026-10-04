@@ -379,9 +379,45 @@ class DHTCatchUpGateTest {
                                                                                      .isEqualTo(Readiness.CATCHING_UP);
     }
 
+    /// The far-edge test above with the monotonic clock starting at a NEGATIVE value, which `System.nanoTime`'s contract allows
+    /// (v1882 F1): the decided round must still be replaced after a whole round timeout, whatever the clock origin.
+    @Test
+    void negativeClockOrigin_decidedRoundIsStillReplacedAfterAWholeRoundTimeout() {
+        var clock = new ManualClock(-10_000_000_000L);
+        var cluster = Cluster.of(5, timeSpan(50).millis(), clock);
+        var joiner = new NodeId("node-5");
+        var key = cluster.keyGainedBy(joiner, "k5-late-tick");
+
+        cluster.seedOnReplicas(key);
+        cluster.joinWithoutCatchUp(joiner);
+
+        var silent = cluster.replicasOf(key).stream().filter(id -> !id.equals(joiner)).findFirst().orElseThrow();
+
+        cluster.silence(silent);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        clock.advanceMillis(60);
+        cluster.holdPullAnswers();
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        clock.advanceMillis(51);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        cluster.releasePullAnswers();
+
+        var readiness = cluster.member(joiner).node().readiness(cluster.partitionOf(key));
+        assertThat(readiness).as("the replaced round's pull completes nothing, whatever the clock origin")
+                             .isEqualTo(Readiness.CATCHING_UP);
+    }
+
     /// A clock the test moves by hand.
     private static final class ManualClock implements java.util.function.LongSupplier {
         private long nanos;
+
+        ManualClock() {
+        }
+
+        /// A clock whose origin is NEGATIVE, which `System.nanoTime` allows.
+        ManualClock(long startNanos) {
+            nanos = startNanos;
+        }
 
         @Override
         public long getAsLong() {
