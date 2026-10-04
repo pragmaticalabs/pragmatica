@@ -2128,6 +2128,72 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> CLUSTER_INCARNATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-incarnation key format: %s");
 
+    /// Runtime (#1777, CTO ruling R1b): the cluster's latest DHT replication change and how far it has settled. The
+    /// leader commits it; every node derives its DHT quorums from it. Runtime, so never backed up: the DHT store is in
+    /// memory, so after a cold restart there is nothing written under older factors to protect.
+    record DhtReplicationChangeKey() implements RuntimeKey {
+        private static final String KEY = "dht-replication-change";
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static final DhtReplicationChangeKey SINGLETON = new DhtReplicationChangeKey();
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static DhtReplicationChangeKey dhtReplicationChangeKey() {
+            return SINGLETON;
+        }
+
+        public static Result<DhtReplicationChangeKey> dhtReplicationChangeKey(String key) {
+            if (!KEY.equals(key)) {
+                return DHT_REPLICATION_CHANGE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> DHT_REPLICATION_CHANGE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dht-replication-change key format: %s");
+
+    /// Runtime (#1777, CTO ruling R1b): one member's report on the latest DHT replication change — what it applied and
+    /// what it caught up for. Written by the member itself (a worker through its forwarding cluster node), read by the
+    /// leader, removed by the leader once its membership view holds the member `Dead`. Never projected to workers.
+    record DhtReplicationReportKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "dht-replication-report/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static DhtReplicationReportKey dhtReplicationReportKey(NodeId nodeId) {
+            return new DhtReplicationReportKey(nodeId);
+        }
+
+        public static Result<DhtReplicationReportKey> dhtReplicationReportKey(String key) {
+            if (!key.startsWith(PREFIX) || key.length() == PREFIX.length()) {
+                return DHT_REPLICATION_REPORT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(DhtReplicationReportKey::new);
+        }
+    }
+
+    Fn1<Cause, String> DHT_REPLICATION_REPORT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dht-replication-report key format: %s");
+
     /// Runtime (#1533): the committed outcome of this incarnation's restore decision. Every node's submit
     /// path refuses writes to backed-up keys until it holds a terminal outcome, so no seeder can race a
     /// restore. Runtime, so never backed up: after a cold restart it is absent and the decision is taken

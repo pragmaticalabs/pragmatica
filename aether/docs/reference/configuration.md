@@ -572,14 +572,17 @@ Default `path` by environment:
 [dht.replication]
 cooldown_delay_ms = 10000
 cooldown_rate = 10000
-target_rf = 3
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cooldown_delay_ms` | long | `10000` | Delay (ms) after node startup before upgrading to target RF |
+| `cooldown_delay_ms` | long | `10000` | Delay (ms) after node startup before replication warmup starts |
 | `cooldown_rate` | int | `10000` | Max entries/sec during replication warmup |
-| `target_rf` | int | `3` | Target replication factor (0 = full replication) |
+
+The DHT's replication factor and confirmation factor are not node-local settings: they come from the
+cluster's committed `[replication]` section, and the cache namespace's from `[cache]` (#1777; see
+[bootstrap-config.md](bootstrap-config.md#replication--default-replication-factors-cluster-wide-1564)). The former
+`target_rf` key is removed, and a node config that still sets it is refused at load.
 
 ## Streaming Configuration
 
