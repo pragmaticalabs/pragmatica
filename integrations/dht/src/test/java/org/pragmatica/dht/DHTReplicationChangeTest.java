@@ -719,6 +719,89 @@ class DHTReplicationChangeTest {
         assertThat(stale).as("refused as stale although one replica accepted: " + outcome).isTrue();
     }
 
+    /// v1882 r9 probe E, REMOVE form (#1885): the first remote reply is a NON-stale refusal (a restarted replica, fence unknown):
+    /// no evidence, the remove stays pending; the replica on the newer change then refuses as stale and the remove fails.
+    @Test
+    void v1882r9_remove_orderE_nonStaleRefusalFirst_thenStale_failsInsteadOfAckingOnTheNonStaleReply() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var restarting = replicas.get(1);
+        var applied = replicas.get(2);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(restarting);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        cluster.deliverHeldRemovesTo(restarting);
+
+        assertThat(remove.isResolved()).as("a fence-unknown refusal is not evidence: the remove is not acknowledged yet").isFalse();
+
+        cluster.deliverHeldRemovesTo(applied);
+        var outcome = remove.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale: " + outcome).isTrue();
+    }
+
+    /// v1882 r9, REMOVE: a non-stale refusal first, then a success from a replica that had not applied the change: acknowledged.
+    @Test
+    void v1882r9_remove_nonStaleRefusalFirst_thenSuccess_acks() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var restarting = replicas.get(1);
+        var unaware = replicas.get(2);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(restarting);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        cluster.deliverHeldRemovesTo(restarting);
+
+        assertThat(remove.isResolved()).as("arming: the non-stale refusal alone does not release the remove").isFalse();
+
+        cluster.deliverHeldRemovesTo(unaware);
+
+        assertThat(remove.await().isSuccess()).as("acknowledged on a remote success").isTrue();
+    }
+
+    /// v1882 r9, REMOVE: every remote replies and none is a success or a stale refusal: no evidence, acknowledged per the
+    /// named limit before the timeout, and no stale record is set.
+    @Test
+    void v1882r9_remove_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(replicas.get(1));
+        cluster.restart(replicas.get(2));
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        cluster.deliverHeldRemovesTo(replicas.get(1));
+
+        assertThat(remove.isResolved()).as("arming: one non-stale reply is not the end of the evidence").isFalse();
+
+        cluster.deliverHeldRemovesTo(replicas.get(2));
+        var outcome = remove.await(org.pragmatica.lang.io.TimeSpan.timeSpan(150).millis());
+
+        assertThat(outcome.isSuccess()).as("acknowledged per the limit once every remote replied: " + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).isEqualTo(Option.none());
+    }
+
     /// V1882 r6 CONTROL: the same refusals delivered BEFORE the writer adopts; adoption clears the record.
     @Test
     void v1882r6_control_refusalBeforeAdoption_isClearedByAdoption() {
