@@ -12,6 +12,9 @@ import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
+import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
 import org.pragmatica.aether.api.ClusterEvent.OperatorWarning;
@@ -375,7 +378,10 @@ class ClusterEventCodecTest {
                        new ClusterEvent.DhtWriterStale(ts, sev, "DhtWriterStale", d),
                        new ClusterEvent.DhtWriterStaleResolved(ts, sev, "DhtWriterStaleResolved", d),
                        new StreamFailoverRefused(ts, sev, "StreamFailoverRefused", d),
-                       new StreamFailoverResolved(ts, sev, "StreamFailoverResolved", d));
+                       new StreamFailoverResolved(ts, sev, "StreamFailoverResolved", d),
+                       new StreamIsrBelowMinimum(ts, sev, "StreamIsrBelowMinimum", d),
+                       new StreamIsrRestored(ts, sev, "StreamIsrRestored", d),
+                       new StreamConfigChangeNotApplied(ts, sev, "StreamConfigChangeNotApplied", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.
