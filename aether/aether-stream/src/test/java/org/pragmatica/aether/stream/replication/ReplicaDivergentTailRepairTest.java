@@ -105,6 +105,23 @@ class ReplicaDivergentTailRepairTest {
 
     /// Same head, different records from offset 3: nothing is above the owner, and the replica is still not trusted
     /// until its records are compared.
+    /// #1890, at the replication-manager level (the real manager reading the registry the real backfill wrote): the replica
+    /// held offsets 0..9 of a lineage the owner does not share and the owner's head is 4. The owner then appends offset 5,
+    /// which the replica never received. Its await for 5 must stay pending: before the fix the replica was promoted at its
+    /// OWN head (9) and the await resolved from that row, counting a confirmation of a record that replica never held.
+    @Test
+    void ownerAwaitingOffset5_isNotResolvedFromAReplicaRowAt9ThatNeverReceived5() {
+        seedReplica(10, 3);
+
+        backfill(owner(5, 3, new AtomicLong()));
+        backfill(owner(5, 3, new AtomicLong()));
+        var ownerSide = org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager(OWNER, registry);
+        var await = ownerSide.awaitReplication(STREAM, PARTITION, 5L, 1);
+
+        assertThat(descriptor().confirmedOffset()).as("the row the await seeds from").isEqualTo(4L);
+        assertThat(await.isResolved()).as("offset 5 was never received by the only replica").isFalse();
+    }
+
     @Test
     void replicaAtTheOwnersHead_divergingAtOffset3_isRepaired() {
         seedReplica(5, 3);
