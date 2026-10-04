@@ -196,7 +196,7 @@ class SwimProtocolTombstoneTest {
             // gated introduction is admitted — as OBSERVED (#336/#241): re-admitted and
             // probe-eligible, but NOT counted ALIVE/HEALTHY until a probe-ack confirms it.
             var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoA, "", 0));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoA, "", 0));
 
             assertThat(protocol.members().containsKey(NODE_A))
                 .as("Self-ANNOUNCE must re-admit a tombstoned id")
@@ -486,7 +486,7 @@ class SwimProtocolTombstoneTest {
         // higher-incarnation gossip then re-admits the member as SUSPECT. Authoritative
         // self-liveness wins via the clear.
         var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
-        protocol.onMessage(ADDR_A, Announce.announce(nodeInfoA, "", 5));
+        protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoA, "", 5));
 
         assertThat(protocol.tombstonedForTest(NODE_A))
             .as("Self-ANNOUNCE must clear the tombstone (partition heal)")

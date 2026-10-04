@@ -14,6 +14,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimAnnounceClusterGateTest.RecordingListener;
 import org.pragmatica.swim.SwimAnnounceClusterGateTest.RecordingTransport;
+import org.pragmatica.swim.SwimProtocolTest.SentMessage;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
@@ -41,11 +42,13 @@ class SwimBootTokenTest {
     private static final long OTHER_TOKEN = 0x2222L;
 
     private final CopyOnWriteArrayList<SwimObservation> observations = new CopyOnWriteArrayList<>();
+    private final SwimProtocolTest.RecordingTransport targetTransport = new SwimProtocolTest.RecordingTransport();
+    private int answeredPings;
     private SwimProtocol protocol;
 
     @BeforeEach
     void setUp() {
-        protocol = SwimProtocol.swimProtocol(config(), new RecordingTransport(), new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimProtocol.swimProtocol(config(), targetTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         protocol.addObservationListener(observations::add);
     }
@@ -91,16 +94,34 @@ class SwimBootTokenTest {
         assertThat(protocol.bootTokenRefusals()).isEqualTo(3);
     }
 
+    /// Old expectation: a different token in gossip retired the identity. That trusted a datagram to say which process
+    /// wrote it; hearsay cannot retire anything now.
     @Test
-    void differentToken_gossip_retiresIdentity() {
+    void differentToken_inGossip_retiresNothing() {
         announce(5, TOKEN);
 
         gossip(MemberState.ALIVE, 99, OTHER_TOKEN);
 
-        assertThat(protocol.isRetiredIdentity(NODE_A)).isTrue();
+        assertThat(protocol.isRetiredIdentity(NODE_A)).isFalse();
+        assertThat(protocol.members().get(NODE_A).state()).isNotEqualTo(MemberState.FAULTY);
+        assertThat(protocol.bootTokenRefusals()).isZero();
+    }
+
+    @Test
+    void differentToken_inTheMembersOwnAnswerToOurProbe_retiresIdentity() {
+        announce(5, TOKEN);
+        protocol.probeOnceForTest();
+        var probe = targetTransport.sentMessages.stream()
+                                                .filter(sent -> sent.target().equals(ADDR_A) && sent.message() instanceof Ping)
+                                                .map(sent -> (Ping) sent.message())
+                                                .reduce((_, last) -> last)
+                                                .orElseThrow();
+
+        protocol.onMessage(ADDR_A,
+                           Ack.ack(NODE_A, probe.sequence(), List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 99, ADDR_A, OTHER_TOKEN))));
+
+        assertThat(protocol.isRetiredIdentity(NODE_A)).as("the process answering at the address is a different one").isTrue();
         assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.FAULTY);
-        assertThat(protocol.members().get(NODE_A).incarnation()).as("the refused process's incarnation is never adopted")
-                                                                .isNotEqualTo(99);
     }
 
     @Test
@@ -217,20 +238,15 @@ class SwimBootTokenTest {
     /// A refused ANNOUNCE is answered with an explicit IdentityRefused to the announcer's address.
     @Test
     void refusedAnnounce_isAnsweredWithIdentityRefused() {
-        var transport = new RecordingTransport();
-        var answering = SwimProtocol.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
-                                    .unwrap();
+        announce(5, TOKEN);
+        assertThat(targetTransport.sentMessages).as("control: an admitted announce is not refused")
+                                                .noneMatch(sent -> sent.message() instanceof SwimMessage.IdentityRefused);
 
-        answering.onMessage(ADDR_A, Announce.announce(INFO_A, "", 5, TOKEN));
-        assertThat(transport.sentMessages).as("control: an admitted announce is not refused")
-                                          .noneMatch(SwimMessage.IdentityRefused.class::isInstance);
+        announce(6, OTHER_TOKEN);
 
-        answering.onMessage(ADDR_A, Announce.announce(INFO_A, "", 6, OTHER_TOKEN));
-
-        assertThat(transport.sentMessages).filteredOn(SwimMessage.IdentityRefused.class::isInstance)
-                                          .singleElement()
-                                          .satisfies(message -> assertThat(((SwimMessage.IdentityRefused) message).refused()).isEqualTo(NODE_A));
-        answering.stop();
+        assertThat(targetTransport.sentMessages).filteredOn(sent -> sent.message() instanceof SwimMessage.IdentityRefused)
+                                                .singleElement()
+                                                .satisfies(sent -> assertThat(((SwimMessage.IdentityRefused) sent.message()).refused()).isEqualTo(NODE_A));
     }
 
     /// The refused process learns it: an IdentityRefused about ITS NodeId reaches the registry's
@@ -250,8 +266,23 @@ class SwimBootTokenTest {
         assertThat(reasons).containsExactly("retired");
     }
 
+    /// The announce, then the process answering the probe that the announce earns when its token is not yet
+    /// proven (a token already recorded needs no probe). The old expectation assumed the datagram's token was trusted.
     private void announce(long incarnation, long bootToken) {
-        protocol.onMessage(ADDR_A, Announce.announce(INFO_A, "", incarnation, bootToken));
+        protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(INFO_A, "", incarnation, bootToken));
+        var pings = targetTransport.sentMessages.stream()
+                                                .filter(sent -> sent.target().equals(ADDR_A) && sent.message() instanceof Ping)
+                                                .map(SentMessage::message)
+                                                .map(Ping.class::cast)
+                                                .toList();
+
+        pings.stream()
+             .skip(answeredPings)
+             .forEach(ping -> protocol.onMessage(ADDR_A,
+                                                 Ack.ack(NODE_A,
+                                                         ping.sequence(),
+                                                         List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, incarnation, ADDR_A, bootToken)))));
+        answeredPings = pings.size();
     }
 
     private void gossip(MemberState state, long incarnation, long bootToken) {

@@ -109,7 +109,7 @@ class SwimGossipLabelsTest {
 
     @Test
     void gossipedStateChange_withoutLabels_keepsAnnouncedLabels() {
-        protocol.onMessage(REPLACEMENT_ADDR, Announce.announce(announcedInfo(), "", 0L));
+        protocol.announceFromPinnedSourceForTest(REPLACEMENT_ADDR, Announce.announce(announcedInfo(), "", 0L));
         gossip(1L, update(MemberState.ALIVE, 0L, Map.of()));
 
         assertThat(protocol.members().get(REPLACEMENT).state()).isEqualTo(MemberState.ALIVE);

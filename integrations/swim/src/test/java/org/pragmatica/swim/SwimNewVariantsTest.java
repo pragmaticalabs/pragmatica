@@ -309,7 +309,7 @@ class SwimNewVariantsTest {
         @Test
         void onMessage_announce_emitsJoinAnnounced() {
             var announce = Announce.announce(NODE_INFO, CLUSTER, INCARNATION);
-            protocol.onMessage(SENDER_ADDR, announce);
+            protocol.announceFromPinnedSourceForTest(SENDER_ADDR, announce);
 
             var emitted = observations.byType(JoinAnnounced.class);
             assertThat(emitted).hasSize(1);
@@ -324,8 +324,8 @@ class SwimNewVariantsTest {
         @Test
         void onMessage_announce_multipleAnnounces_emitsOnePerCall() {
             var announce = Announce.announce(NODE_INFO, CLUSTER, INCARNATION);
-            protocol.onMessage(SENDER_ADDR, announce);
-            protocol.onMessage(SENDER_ADDR, announce);
+            protocol.announceFromPinnedSourceForTest(SENDER_ADDR, announce);
+            protocol.announceFromPinnedSourceForTest(SENDER_ADDR, announce);
 
             assertThat(observations.byType(JoinAnnounced.class)).hasSize(2);
         }

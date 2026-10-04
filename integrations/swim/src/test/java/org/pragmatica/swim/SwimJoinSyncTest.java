@@ -129,7 +129,7 @@ class SwimJoinSyncTest {
         seed.putMemberForTest(X, X_ADDR, MemberState.ALIVE);
         seed.putMemberForTest(new NodeId("dead"), new InetSocketAddress("127.0.0.1", 29104), MemberState.FAULTY);
         seed.putMemberForTest(new NodeId("joiner-b"), JOINER_ADDR, MemberState.ALIVE);
-        seed.onMessage(JOINER_ADDR, Announce.announce(selfInfo("joiner-b", 29102), "c", 1L));
+        seed.announceFromPinnedSourceForTest(JOINER_ADDR, Announce.announce(selfInfo("joiner-b", 29102), "c", 1L));
 
         var replied = transport.sentMessages.stream()
                                .filter(sent -> sent.message() instanceof Ack ack && ack.sequence() == 0L)
